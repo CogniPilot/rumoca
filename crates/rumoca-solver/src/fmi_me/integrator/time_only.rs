@@ -149,7 +149,12 @@ mod tests {
     use crate::fmi_me::integrator::detached_handle;
 
     fn empty(time: f64) -> MeContinuousPoint {
-        MeContinuousPoint::new(time, Vec::new(), 0).expect("empty point is checked")
+        MeContinuousPoint::new(
+            time,
+            Vec::new(),
+            super::super::MeContinuousStateDomain::verification_fixture(0),
+        )
+        .expect("empty point is checked")
     }
 
     #[test]
@@ -192,8 +197,12 @@ mod tests {
     #[test]
     fn the_plugin_refuses_a_state_carrying_point() {
         let mut plugin = TimeOnlyIntegrator::new();
-        let stateful =
-            MeContinuousPoint::new(0.0, vec![1.0], 1).expect("state-carrying point is checked");
+        let stateful = MeContinuousPoint::new(
+            0.0,
+            vec![1.0],
+            super::super::MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("state-carrying point is checked");
         assert!(plugin.initialize(&stateful, detached_handle()).is_err());
         assert!(plugin.truncate_reset(&stateful).is_err());
     }

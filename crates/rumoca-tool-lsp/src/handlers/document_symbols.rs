@@ -35,7 +35,7 @@ fn to_lsp_symbol(symbol: &QueryDocumentSymbol, source: &str) -> DocumentSymbol {
         .collect::<Vec<_>>();
     #[expect(
         deprecated,
-        reason = "lsp-types still requires deprecated field; remove once the field is dropped"
+        reason = "current upstream lsp-types 0.97.0 still requires this LSP wire field; remove once upstream drops it (verified 2026-08-30)"
     )]
     DocumentSymbol {
         name: symbol.name.clone(),

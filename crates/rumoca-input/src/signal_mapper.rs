@@ -44,7 +44,8 @@ pub struct SignalMapper {
     send: Vec<(String, CompiledSpec)>,
     viewer: Vec<(String, CompiledSpec)>,
     model_inputs: Vec<(String, CompiledSpec)>,
-    model_lookup_names: Vec<String>,
+    model_input_lookup_names: Vec<String>,
+    payload_observation_lookup_names: Vec<String>,
 }
 
 // ── Compiled source representation ─────────────────────────────────────────
@@ -85,12 +86,14 @@ impl SignalMapper {
         let send = compile_section(&cfg.send, locals, "signals.send")?;
         let viewer = compile_section(&cfg.viewer, locals, "signals.viewer")?;
         let model_inputs = compile_section(&cfg.model_inputs, locals, "signals.model_inputs")?;
-        let model_lookup_names = collect_model_lookup_names([&send, &viewer, &model_inputs]);
+        let model_input_lookup_names = collect_model_lookup_names([&model_inputs]);
+        let payload_observation_lookup_names = collect_model_lookup_names([&send, &viewer]);
         Ok(Self {
             send,
             viewer,
             model_inputs,
-            model_lookup_names,
+            model_input_lookup_names,
+            payload_observation_lookup_names,
         })
     }
 
@@ -134,8 +137,14 @@ impl SignalMapper {
             .collect()
     }
 
-    pub fn model_lookup_names(&self) -> &[String] {
-        &self.model_lookup_names
+    /// Model values read before applying the current frame's model inputs.
+    pub fn model_input_lookup_names(&self) -> &[String] {
+        &self.model_input_lookup_names
+    }
+
+    /// Model values observed after the frame's numerical advance.
+    pub fn payload_observation_lookup_names(&self) -> &[String] {
+        &self.payload_observation_lookup_names
     }
 }
 
@@ -450,6 +459,9 @@ input_mode = "runtime:input_mode"
 q0 = { from = "model:quat[1]", default = 1.0 }
 rc_throttle = "local:rc.2"
 t = "model:time"
+
+[signals.model_inputs]
+feedback_command = "model:feedback"
 "#;
 
     fn build_engine(cfg: &Bundle) -> InputEngine {
@@ -512,6 +524,28 @@ t = "model:time"
         // conditional: rc_valid when runtime:input_connected=true -> 1
         assert_eq!(frame.get("rc_valid"), Some(&1.0));
         assert_eq!(frame.get("rc_link_quality"), Some(&255.0));
+    }
+
+    #[test]
+    fn model_lookup_inventories_are_exact_and_role_specific() {
+        let cfg = load_cfg();
+        let mut engine = build_engine(&cfg);
+        engine.apply_derive_for_test();
+        let mapper = SignalMapper::new(cfg.signals.as_ref().unwrap(), &cfg.locals).unwrap();
+
+        assert_eq!(mapper.model_input_lookup_names(), &["feedback"]);
+        assert_eq!(
+            mapper.payload_observation_lookup_names(),
+            &["accel[3]", "gyro[1]", "quat[1]"]
+        );
+
+        let model_vars = HashMap::from([("feedback".to_owned(), 2.5)]);
+        let get = model_get_fn(&model_vars);
+        let rt = make_rt(0.5, &get);
+        assert_eq!(
+            mapper.build_model_inputs(&engine, &rt).unwrap(),
+            vec![("feedback_command".to_owned(), 2.5)]
+        );
     }
 
     #[test]

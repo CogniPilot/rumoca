@@ -38,7 +38,13 @@ pub(in crate::construction) fn call_free_target_shape(
     apply_subscripts(declared, &target.subs, values).ok()
 }
 
-pub(super) type FunctionResultShape<'scope> = dyn FnMut(&rumoca_core::Reference, &[Expression], bool, Span) -> Result<ValueShape, ToDaeError>
+pub(super) type FunctionResultShape<'scope> = dyn FnMut(
+        &rumoca_core::Reference,
+        &[Expression],
+        bool,
+        rumoca_core::FunctionCallKind,
+        Span,
+    ) -> Result<ValueShape, ToDaeError>
     + 'scope;
 
 fn reference_shape(
@@ -94,23 +100,28 @@ pub(super) fn expression_shape(
             name,
             args,
             is_constructor,
+            call_kind,
             ..
-        } if *is_constructor && name.as_str().starts_with("__rumoca_named_arg__.") => {
-            let [value] = args.as_slice() else {
-                return Err(ToDaeError::unsupported_flat(
-                    "function shape proof",
-                    "named argument wrapper must contain one value",
-                    span,
-                ));
-            };
-            expression_shape(value, values, function_result)
-        }
-        Expression::FunctionCall {
+        } => match rumoca_core::classify_named_function_arg_marker(
             name,
             args,
-            is_constructor,
-            ..
-        } => function_result(name, args, *is_constructor, span),
+            *is_constructor,
+            *call_kind,
+        ) {
+            rumoca_core::NamedFunctionArgMarker::Valid { .. } => Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                "generated named-argument wrappers must be eliminated before DAE construction",
+                span,
+            )),
+            rumoca_core::NamedFunctionArgMarker::Malformed => Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                "a generated named argument must be a constructor invocation with one value and a nonempty name",
+                span,
+            )),
+            rumoca_core::NamedFunctionArgMarker::NotMarker => {
+                function_result(name, args, *is_constructor, *call_kind, span)
+            }
+        },
         Expression::If {
             branches,
             else_branch,
@@ -172,9 +183,7 @@ fn field_access_shape(
     function_result: &mut FunctionResultShape<'_>,
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
-    let plans = values
-        .record_array_fields()
-        .ok_or_else(|| unshaped_expression_form(expression, span))?;
+    let plans = values.record_array_fields();
     if let Some(plan) = plans.get(expression) {
         return match plan {
             RecordArrayFieldPlan::MaterializedCoordinate { shape, .. } => {
@@ -556,6 +565,7 @@ pub(super) fn reject_shape_call(
     name: &rumoca_core::Reference,
     _arguments: &[Expression],
     _is_constructor: bool,
+    _call_kind: rumoca_core::FunctionCallKind,
     span: Span,
 ) -> Result<ValueShape, ToDaeError> {
     Err(ToDaeError::unsupported_flat(

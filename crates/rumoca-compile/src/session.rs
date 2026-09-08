@@ -14,14 +14,14 @@ use rumoca_core::{
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
-use rumoca_phase_dae::{ToDaeError, to_dae};
-use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_ref_with_options};
+use rumoca_phase_dae::{ToDaeError, construct as construct_dae};
+use rumoca_phase_flatten::{FlattenError, FlattenOptions, flatten_typed};
 use rumoca_phase_instantiate::{
     InstantiateError, InstantiateOptions, InstantiateWarning, InstantiationOutcome,
     instantiate_model_with_outcome_options,
 };
 use rumoca_phase_resolve::{ResolvedTree, resolve_with_diagnostics};
-use rumoca_phase_typecheck::typecheck_instanced;
+use rumoca_phase_typecheck::typecheck_instanced_tree;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::mem;
@@ -139,6 +139,7 @@ use strict_compile_diagnostics::{
     document_parse_diagnostics, phase_result_to_failures, same_path,
 };
 mod strict_compile_report;
+pub(crate) use strict_compile_report::CanonicalModelIdentity;
 pub use strict_compile_report::{StrictCompilation, StrictCompileReport};
 mod session_impl_caches;
 mod session_impl_diagnostics;
@@ -293,15 +294,77 @@ struct InstantiatedModelArtifact {
     outcome: InstantiatedModelOutcome,
 }
 
-#[derive(Debug, Clone)]
+/// The typecheck-phase result carrying the affine proof.
+///
+/// `Success` holds the Typecheck-minted proof, which is not `Clone`: it moves
+/// exactly once, into the flatten mint. This outcome is therefore never
+/// cached; the cache stores [`TypedModelRecord`] instead.
+#[derive(Debug)]
 enum TypedModelOutcome {
-    Success(Box<ast::InstanceOverlay>),
+    Success(rumoca_phase_typecheck::TypedInstancedTree),
     NeedsInner {
         missing_inners: Vec<String>,
         missing_spans: Vec<Span>,
     },
     InstantiateError(Box<InstantiateError>),
     TypecheckError(Vec<CommonDiagnostic>),
+}
+
+impl TypedModelOutcome {
+    /// The `Clone`-able cache/diagnostics record for this outcome. A success
+    /// record shares the proof's immutable payload read-only; it carries no
+    /// phase capability and cannot re-enter the pipeline as a proof.
+    fn record(&self) -> TypedModelRecord {
+        match self {
+            Self::Success(typed) => TypedModelRecord::Success(typed.shared_projection()),
+            Self::NeedsInner {
+                missing_inners,
+                missing_spans,
+            } => TypedModelRecord::NeedsInner {
+                missing_inners: missing_inners.clone(),
+                missing_spans: missing_spans.clone(),
+            },
+            Self::InstantiateError(error) => TypedModelRecord::InstantiateError(error.clone()),
+            Self::TypecheckError(diags) => TypedModelRecord::TypecheckError(diags.clone()),
+        }
+    }
+}
+
+/// Read-only typecheck record for the session cache and diagnostics queries.
+///
+/// A cached failure short-circuits a rebuild; a cached success serves only
+/// read-only queries. The consumable proof is never stored, so a flat rebuild
+/// re-runs the sole typecheck mint from its inputs instead of recovering a
+/// consumed proof.
+#[derive(Debug, Clone)]
+enum TypedModelRecord {
+    Success(rumoca_phase_typecheck::TypedOverlayProjection),
+    NeedsInner {
+        missing_inners: Vec<String>,
+        missing_spans: Vec<Span>,
+    },
+    InstantiateError(Box<InstantiateError>),
+    TypecheckError(Vec<CommonDiagnostic>),
+}
+
+impl TypedModelRecord {
+    /// Convert a cached failure back into a pipeline outcome. A success
+    /// record deliberately yields `None`: it carries no proof, so the
+    /// pipeline must re-run the sole mint.
+    fn into_failure_outcome(self) -> Option<TypedModelOutcome> {
+        match self {
+            Self::Success(_) => None,
+            Self::NeedsInner {
+                missing_inners,
+                missing_spans,
+            } => Some(TypedModelOutcome::NeedsInner {
+                missing_inners,
+                missing_spans,
+            }),
+            Self::InstantiateError(error) => Some(TypedModelOutcome::InstantiateError(error)),
+            Self::TypecheckError(diags) => Some(TypedModelOutcome::TypecheckError(diags)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -319,7 +382,7 @@ impl TypedModelCacheKey {
 #[derive(Debug, Clone)]
 struct TypedModelArtifact {
     fingerprint: Fingerprint,
-    outcome: TypedModelOutcome,
+    record: TypedModelRecord,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -567,6 +630,40 @@ pub enum SourceRootLoadMode {
     /// Continue loading with partial results when some files fail.
     #[default]
     Tolerant,
+}
+
+/// Closed outcome of attempting to reserve one source-root load.
+#[must_use = "source-root reservation outcomes authorize or reject a load"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRootLoadReservation {
+    Reserved,
+    AlreadyLoaded,
+    InFlight {
+        reservation_epoch: u64,
+    },
+    StaleEpoch {
+        expected_epoch: u64,
+        current_epoch: u64,
+    },
+}
+
+/// Closed outcome of applying a parsed source root to a session.
+#[must_use = "source-root apply outcomes must be checked before compiling"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceRootApplyDisposition {
+    Applied {
+        inserted_file_count: usize,
+        status: Option<SourceRootStatusSnapshot>,
+    },
+    AlreadyLoaded,
+    StaleEpoch {
+        expected_epoch: u64,
+        current_epoch: u64,
+    },
+    ReservationLost {
+        expected_epoch: u64,
+        reservation_epoch: Option<u64>,
+    },
 }
 
 /// Report for tolerant source-root loading.

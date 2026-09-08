@@ -5,6 +5,7 @@ mod clocks;
 mod conditions;
 mod discrete_values;
 mod enumeration_conversion;
+mod equation_lowering;
 mod equation_systems;
 mod expression;
 mod function_array_assembly;
@@ -37,44 +38,52 @@ use rumoca_eval_flat::constant::{EvalContext, Value as EvalValue, eval_expr};
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
-use crate::ToDaeError;
-use crate::balance::BalanceDetail;
+use crate::{DaeConstructionProduct, ToDaeError};
 use algorithm::{
-    AlgorithmFunctionCall, AlgorithmStatementContext, lower_algorithm_assignment,
-    lower_algorithm_function_call, lower_algorithm_tensor_loop, own_clocked_algorithm_targets,
+    AlgorithmAssignment as LoweredAlgorithmAssignment, AlgorithmFunctionCall,
+    AlgorithmStatementContext, lower_algorithm_assignment, lower_algorithm_function_call,
+    lower_algorithm_tensor_loop, own_clocked_algorithm_targets,
 };
-use algorithm_lowering::{AlgorithmEnvironment, ModelAlgorithmsRequest, lower_algorithms};
+use algorithm_lowering::{AlgorithmBaseEnvironment, ModelAlgorithmsRequest, lower_algorithms};
+use analysis::function_statement_products::FunctionLoweringPlan as FunctionStatementPlan;
 use analysis::{
-    AggregateDiscreteConnections, Analysis, ClockPlan, ComprehensionKey, ComprehensionPlans,
-    DelayPlan, DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
-    DynamicTimeEventOperand, EquationPartition, ExpressionEventPlan, ExpressionEventPlans,
-    ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan, FunctionAssignmentPlan,
-    FunctionIntegerReduction, FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan,
-    FunctionRecordCallAssemblyPlan, FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan,
-    FunctionStatementPlan, FunctionValueSeed, HistoryOperatorPlans, ModelAlgorithmPlan,
+    AlgorithmConditionProduct, AlgorithmRelationOwner, Analysis, AnalyzedModel, ClockPlan,
+    ClockTransferPlans, ComprehensionKey, ComprehensionPlans, DelayPlan, DerivativePlans,
+    DerivedParameterPlan, DiscreteValueAssignmentPlan, DiscreteValueTopologyPlan,
+    DynamicTimeEventOperand, EquationPartition, EventAssignmentRoute, EventBlockPlan,
+    EventElseProduct, EventLoweringProduct, EventStatementPlan, ExpressionEventPlan,
+    ExpressionEventPlans, ExternalArgumentPlan, ExternalFunctionPlan, FunctionArrayAssemblyPlan,
+    FunctionAssignmentPlan, FunctionConditionalTarget, FunctionIntegerReduction,
+    FunctionLoopLowering, FunctionPlan, FunctionRecordAssemblyPlan, FunctionRecordCallAssemblyPlan,
+    FunctionRecordFieldAssembly, FunctionRecordFieldAssemblyPlan, FunctionRecordFieldIdentity,
+    FunctionStatementProduct, FunctionStatementSequence, FunctionValueSeed, HistoryOperatorPlans,
+    ModelAlgorithmPlan, ModelAlgorithmSequence, ModelEquationRow, ModelEquationSequence,
     ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan, ModelEventTensorLoopPlan,
     MultiOutputEquationPlan, PlannedRole, RecordArrayFieldPlan, RecordArrayFieldPlans,
-    RecordEquationFieldValue, RecordEquationPlan, RuntimeVariableRole, SemiLinearRules,
-    StructuredSource, analyze, assigned_function_targets, discrete_value_assignment,
-    effective_function_scalar_type, effective_variable_scalar_type,
-    empty_array_bound_to_declaration, equation_partition, flattened_function_loop_source,
-    function_assertion, function_record_field_name, is_event_condition,
+    RecordEquationAggregateSide, RecordEquationCoordinate, RecordEquationFieldPlan,
+    RecordEquationFieldValue, RecordEquationPlan, ResolvedFunctionRecordField, RuntimeVariableRole,
+    SemiLinearRules, StructuredSource, WhenOccurrenceId, analyze, assigned_function_targets,
+    discrete_value_assignment, effective_function_scalar_type, effective_variable_scalar_type,
+    empty_array_bound_to_declaration, function_record_field_name, is_event_condition,
     is_inferred_clock_condition, is_whole_clock_coordinate, model_algorithm_targets,
-    record_field_projections, selected_conditional_statements, specialized_comprehension_plan,
-    structured_assignment_names,
+    record_field_projections, specialized_comprehension_plan,
 };
 use clocks::{LoweredClocks, lower_clocked_value_owners, lower_clocks};
-use conditions::{combine_conditions, condition_owner_clock, lower_condition, negate_condition};
+use conditions::{combine_conditions, lower_condition, negate_condition};
 use discrete_values::{DiscreteValueOwnerHandle, DiscreteValueStaging};
 use enumeration_conversion::{
     enumeration_conversion, enumeration_range_ordinals, enumeration_range_type,
     has_enumeration_range_bound, is_flat_enumeration_literal,
 };
-use equation_systems::{lower_equation_expression, lower_equation_systems};
+use equation_lowering::{
+    DeferredModelEquationRows, EquationRows, EquationSource, equation_generation,
+    equation_owner_provenance, lower_equations,
+};
+use equation_systems::{EquationSystemInputs, lower_equation_expression, lower_equation_systems};
 use expression::{
-    FunctionArrayUpdate, FunctionCallLowering, LoweringSymbols, all_model_expressions,
-    classify_function_call, derivative_reference, expression_children, expression_span,
-    lower_array_update, lower_call_operands, lower_clocked_expression,
+    FunctionArrayUpdate, FunctionCallLowering, FunctionExpressionValues, LoweringSymbols,
+    all_model_expressions, classify_function_call, derivative_reference, expression_children,
+    expression_span, lower_array_update, lower_call_operands, lower_clocked_expression,
     lower_clocked_model_algorithm_expression, lower_expression, lower_expression_scoped,
     lower_function_array_update, lower_function_expression, lower_function_expression_scoped,
     lower_model_algorithm_expression, lower_scoped_model_algorithm_expression,
@@ -82,13 +91,16 @@ use expression::{
 };
 use function_array_assembly::lower_function_array_assembly;
 use function_body::{
-    FunctionConditional, FunctionFold, TotalArrayDefinition, function_value_coordinate,
-    lower_function_conditional, lower_function_fold, lower_function_value_seed,
-    lower_generated_boolean_assignment, lower_guarded_function_return, lower_integer_reduction,
-    lower_total_function_array_definition,
+    FunctionConditional, FunctionFold, GuardedFunctionReturn, TotalArrayDefinition,
+    function_assignment_coordinate, function_value_coordinate, lower_function_conditional,
+    lower_function_fold, lower_function_value_seed, lower_generated_boolean_assignment,
+    lower_guarded_function_return, lower_integer_reduction, lower_total_function_array_definition,
 };
 use function_construction::{
-    FunctionRegistry, FunctionRegistryInput, construct_functions, function_value_type,
+    FunctionRecordStagedValue, FunctionRecordStagingAvailability, FunctionRecordStagingScope,
+    FunctionRecordStagingValues, FunctionRegistry, FunctionRegistryInput, FunctionSymbols,
+    advance_function_lowering_record_staging as advance_function_record_staging,
+    construct_functions, function_value_type,
 };
 use function_external::define_external_function;
 use function_record_assembly::{
@@ -109,14 +121,14 @@ use model_algorithm::{
 };
 use model_events::{WhenChainsRequest, always_condition, lower_when_assignment, lower_when_chains};
 use multi_output_equations::lower_multi_output_equation;
-use record_equation::lower_record_equation;
+use record_equation::{RecordEquationLowering, lower_record_equation};
 use structured_body::{lower_structured_body, normalize_conditional_residual};
 use variable_construction::{
     VariableConstructionPlan, VariableDefinitionContext, define_reserved_variables,
     insert_variable_identities, plan_variable_construction,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Coordinate<'dae> {
     Parameter(dae::ParameterId<'dae>),
     Input(dae::InputId<'dae>),
@@ -141,23 +153,6 @@ impl<'dae> Coordinate<'dae> {
             Self::FunctionValue(_) => {
                 unreachable!("function values require their semantic body owner")
             }
-        }
-    }
-
-    fn derivative(self, span: Span) -> Result<dae::CoordinateInput<'dae>, ToDaeError> {
-        match self {
-            Self::State(id) => Ok(dae::CoordinateInput::Derivative(id)),
-            Self::Parameter(_)
-            | Self::Input(_)
-            | Self::Algebraic(_)
-            | Self::DiscreteReal(_)
-            | Self::DiscreteValue(_)
-            | Self::FunctionParameter(_)
-            | Self::FunctionValue(_) => Err(ToDaeError::unsupported_flat(
-                "derivative target",
-                "der(...) must name a coordinate classified as a continuous state",
-                span,
-            )),
         }
     }
 
@@ -186,9 +181,94 @@ impl<'dae> Coordinate<'dae> {
     }
 }
 
+/// A coordinate whose discrete event role was fixed when model coordinates
+/// were issued.
+///
+/// This view is stored beside the general coordinate inventory. Event
+/// lowering can therefore consume a closed carrier instead of repeatedly
+/// checking that an arbitrary coordinate has one of the two event roles.
+#[derive(Clone, Copy)]
+enum EventCoordinate<'dae> {
+    Real(dae::DiscreteRealId<'dae>),
+    Value(dae::DiscreteValueId<'dae>),
+}
+
+#[derive(Clone, Copy)]
+enum ReadableCoordinate<'dae> {
+    Parameter(dae::ParameterId<'dae>),
+    Input(dae::InputId<'dae>),
+    State(dae::StateId<'dae>),
+    Algebraic(dae::AlgebraicId<'dae>),
+    DiscreteReal(dae::DiscreteRealId<'dae>),
+    DiscreteValue(dae::DiscreteValueId<'dae>),
+}
+
+impl<'dae> ReadableCoordinate<'dae> {
+    fn from_coordinate(coordinate: Coordinate<'dae>) -> Option<Self> {
+        match coordinate {
+            Coordinate::Parameter(id) => Some(Self::Parameter(id)),
+            Coordinate::Input(id) => Some(Self::Input(id)),
+            Coordinate::State(id) => Some(Self::State(id)),
+            Coordinate::Algebraic(id) => Some(Self::Algebraic(id)),
+            Coordinate::DiscreteReal(id) => Some(Self::DiscreteReal(id)),
+            Coordinate::DiscreteValue(id) => Some(Self::DiscreteValue(id)),
+            Coordinate::FunctionParameter(_) | Coordinate::FunctionValue(_) => None,
+        }
+    }
+
+    fn current(self) -> dae::CoordinateInput<'dae> {
+        match self {
+            Self::Parameter(id) => dae::CoordinateInput::Parameter(id),
+            Self::Input(id) => dae::CoordinateInput::Input(id),
+            Self::State(id) => dae::CoordinateInput::State(id),
+            Self::Algebraic(id) => dae::CoordinateInput::Algebraic(id),
+            Self::DiscreteReal(id) => dae::CoordinateInput::DiscreteReal(id),
+            Self::DiscreteValue(id) => dae::CoordinateInput::DiscreteValue(id),
+        }
+    }
+}
+
+impl<'dae> EventCoordinate<'dae> {
+    fn from_coordinate(coordinate: Coordinate<'dae>) -> Option<Self> {
+        match coordinate {
+            Coordinate::DiscreteReal(id) => Some(Self::Real(id)),
+            Coordinate::DiscreteValue(id) => Some(Self::Value(id)),
+            _ => None,
+        }
+    }
+
+    fn coordinate(self) -> Coordinate<'dae> {
+        match self {
+            Self::Real(id) => Coordinate::DiscreteReal(id),
+            Self::Value(id) => Coordinate::DiscreteValue(id),
+        }
+    }
+
+    fn previous(self) -> dae::CoordinateInput<'dae> {
+        match self {
+            Self::Real(id) => dae::CoordinateInput::PreDiscreteReal(id),
+            Self::Value(id) => dae::CoordinateInput::PreDiscreteValue(id),
+        }
+    }
+
+    fn target(self) -> dae::ModelEventTarget<'dae> {
+        match self {
+            Self::Real(id) => dae::ModelEventTarget::DiscreteReal(id),
+            Self::Value(id) => dae::ModelEventTarget::DiscreteValue(id),
+        }
+    }
+}
+
 struct ModelCoordinates<'dae> {
     by_name: HashMap<VarName, Coordinate<'dae>>,
     by_instance: HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
+    state_by_occurrence: HashMap<rumoca_core::SourceOccurrenceId, dae::StateId<'dae>>,
+    by_occurrence: HashMap<rumoca_eval_flat::constant::ResolvedOccurrenceKey, Coordinate<'dae>>,
+    event_by_name: HashMap<VarName, EventCoordinate<'dae>>,
+    event_by_occurrence:
+        HashMap<rumoca_eval_flat::constant::ResolvedOccurrenceKey, EventCoordinate<'dae>>,
+    readable_by_occurrence:
+        HashMap<rumoca_eval_flat::constant::ResolvedOccurrenceKey, ReadableCoordinate<'dae>>,
 }
 
 impl<'dae> ModelCoordinates<'dae> {
@@ -196,20 +276,120 @@ impl<'dae> ModelCoordinates<'dae> {
         Self {
             by_name: HashMap::new(),
             by_instance: HashMap::new(),
+            state_by_occurrence: HashMap::new(),
+            by_occurrence: HashMap::new(),
+            event_by_name: HashMap::new(),
+            event_by_occurrence: HashMap::new(),
+            readable_by_occurrence: HashMap::new(),
         }
     }
 
-    fn insert(&mut self, variable: &flat::Variable, coordinate: Coordinate<'dae>) {
+    fn insert(
+        &mut self,
+        variable: &flat::Variable,
+        coordinate: Coordinate<'dae>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let reference = variable.component_ref.as_ref().ok_or(
+            dae::DaeConstructionError::InvalidExpressionForm {
+                span: variable.source_span,
+            },
+        )?;
+        let occurrence = rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+            instance_id: variable.instance_id,
+            root_def_id: reference.root_def_id(),
+        };
+        if self.by_occurrence.contains_key(&occurrence) {
+            return Err(dae::DaeConstructionError::DuplicateKey {
+                kind: "runtime variable occurrence",
+                key: format!("{}:{}", occurrence.instance_id, occurrence.root_def_id),
+                span: variable.source_span,
+            });
+        }
+        if self.by_name.contains_key(&variable.name) {
+            return Err(dae::DaeConstructionError::DuplicateKey {
+                kind: "runtime variable name",
+                key: variable.name.to_string(),
+                span: variable.source_span,
+            });
+        }
+        if self.by_instance.contains_key(&variable.instance_id) {
+            return Err(dae::DaeConstructionError::DuplicateKey {
+                kind: "runtime variable instance",
+                key: variable.instance_id.to_string(),
+                span: variable.source_span,
+            });
+        }
+        let event = EventCoordinate::from_coordinate(coordinate);
+        let readable = ReadableCoordinate::from_coordinate(coordinate);
         self.by_name.insert(variable.name.clone(), coordinate);
-        let previous = self.by_instance.insert(variable.instance_id, coordinate);
-        debug_assert!(
-            previous.is_none(),
-            "analysis rejects duplicate runtime variable instance identities"
-        );
+        self.by_instance.insert(variable.instance_id, coordinate);
+        if let Coordinate::State(state) = coordinate {
+            let source_occurrence = rumoca_core::SourceOccurrenceId::try_from(variable.instance_id)
+                .map_err(|_| dae::DaeConstructionError::InvalidExpressionForm {
+                    span: variable.source_span,
+                })?;
+            self.state_by_occurrence.insert(source_occurrence, state);
+        }
+        self.by_occurrence.insert(occurrence, coordinate);
+        if let Some(event) = event {
+            self.event_by_name.insert(variable.name.clone(), event);
+            self.event_by_occurrence.insert(occurrence, event);
+        }
+        if let Some(readable) = readable {
+            self.readable_by_occurrence.insert(occurrence, readable);
+        }
+        Ok(())
     }
 
     fn by_instance(&self) -> &HashMap<rumoca_core::InstanceId, Coordinate<'dae>> {
         &self.by_instance
+    }
+
+    fn state_by_occurrence(&self) -> &HashMap<rumoca_core::SourceOccurrenceId, dae::StateId<'dae>> {
+        &self.state_by_occurrence
+    }
+
+    fn event(
+        &self,
+        name: &VarName,
+        span: Span,
+    ) -> Result<EventCoordinate<'dae>, dae::DaeConstructionError> {
+        self.event_by_name.get(name).copied().ok_or_else(|| {
+            dae::DaeConstructionError::InvalidVariableRole {
+                name: name.clone(),
+                span,
+            }
+        })
+    }
+
+    fn event_occurrence(
+        &self,
+        identity: rumoca_eval_flat::constant::ResolvedOccurrenceKey,
+        name: &VarName,
+        span: Span,
+    ) -> Result<EventCoordinate<'dae>, dae::DaeConstructionError> {
+        self.event_by_occurrence
+            .get(&identity)
+            .copied()
+            .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+                name: name.clone(),
+                span,
+            })
+    }
+
+    fn readable_occurrence(
+        &self,
+        identity: rumoca_eval_flat::constant::ResolvedOccurrenceKey,
+        name: &VarName,
+        span: Span,
+    ) -> Result<ReadableCoordinate<'dae>, dae::DaeConstructionError> {
+        self.readable_by_occurrence
+            .get(&identity)
+            .copied()
+            .ok_or_else(|| dae::DaeConstructionError::InvalidVariableRole {
+                name: name.clone(),
+                span,
+            })
     }
 }
 
@@ -229,29 +409,38 @@ struct ReservedVariable<'flat, 'dae> {
     definition: dae::VariableReservation<'dae>,
 }
 
-pub(crate) fn construct(flat: &flat::Model, source_map: SourceMap) -> Result<dae::Dae, ToDaeError> {
-    let analysis = analyze(flat)?.with_semi_linear_rules(flat);
-    if !flat.is_partial && !analysis.balance.is_balanced() {
-        return Err(ToDaeError::unbalanced_from_detail(analysis.balance));
+pub(crate) fn construct(
+    flat: &flat::Model,
+    source_map: SourceMap,
+) -> Result<DaeConstructionProduct, ToDaeError> {
+    let analyzed = analyze(flat)?.with_semi_linear_rules();
+    if !flat.is_partial && !analyzed.analysis.balance.is_balanced() {
+        return Err(ToDaeError::unbalanced_from_detail(
+            analyzed.analysis.balance.clone(),
+        ));
     }
-    let variable_plan = plan_variable_construction(flat, &analysis)?;
+    let balance_detail = analyzed.analysis.balance.clone();
+    let variable_plan = plan_variable_construction(flat, &analyzed.analysis)?;
 
-    dae::Dae::construct(source_map, |construction| {
-        build_checked(flat, &analysis, &variable_plan, construction)
+    let dae = dae::Dae::construct(source_map, move |construction| {
+        build_checked(analyzed, variable_plan, construction)
     })
-    .map_err(ToDaeError::from)
-}
-
-pub(crate) fn balance_detail(flat: &flat::Model) -> Result<BalanceDetail, ToDaeError> {
-    analyze(flat).map(|analysis| analysis.balance)
+    .map_err(ToDaeError::from)?;
+    Ok(DaeConstructionProduct::new(dae, balance_detail))
 }
 
 fn build_checked<'dae>(
-    flat: &flat::Model,
-    analysis: &Analysis,
-    variable_plan: &VariableConstructionPlan,
+    analyzed: AnalyzedModel<'_>,
+    variable_plan: VariableConstructionPlan,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
+    let AnalyzedModel {
+        analysis,
+        model_algorithms,
+        model_equations,
+    } = analyzed;
+    let flat = model_algorithms.flat();
+    let analysis = &analysis;
     if let Some(declaration) = flat.predefined_string_declaration {
         construction.register_predefined_string(declaration)?;
     }
@@ -259,11 +448,13 @@ fn build_checked<'dae>(
     let clocks = lower_analysis_clocks(construction, flat, analysis)?;
     let no_function_ids = HashMap::new();
     let no_coordinate_instances = HashMap::new();
+    let no_state_instances = HashMap::new();
     let analysis_functions = model_function_registry(
         flat,
         analysis,
         &no_function_ids,
         &no_coordinate_instances,
+        &no_state_instances,
         &clocks,
     );
     let variable_identities = insert_variable_identities(
@@ -286,11 +477,13 @@ fn build_checked<'dae>(
             record_array_fields: &analysis.record_array_fields,
             constants: &analysis.constants,
             delay_plans: &analysis.delay_plans,
+            derivatives: &analysis.derivatives,
             history_operators: &analysis.history_operators,
             coordinate_instances: coordinates.by_instance(),
+            state_occurrences: coordinates.state_by_occurrence(),
             expression_events: &analysis.expression_events,
             sample_alias_schedules: &analysis.sample_alias_schedules,
-            clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
+            clock_transfer_plans: &analysis.clock_transfer_plans,
             clocks: &clocks,
         },
         &analysis.function_plans,
@@ -300,6 +493,7 @@ fn build_checked<'dae>(
         analysis,
         &function_ids,
         coordinates.by_instance(),
+        coordinates.state_by_occurrence(),
         &clocks,
     );
     define_reserved_variables(
@@ -312,7 +506,6 @@ fn build_checked<'dae>(
             derived_parameters: &analysis.derived_parameters,
             initial_parameters: &analysis.initial_parameters,
         },
-        variable_plan,
         variable_identities.reserved,
     )?;
     lower_clocked_value_owners(
@@ -322,37 +515,69 @@ fn build_checked<'dae>(
         &analysis.clocked_value_owners,
         &clocks,
     )?;
+    lower_checked_model_content(
+        construction,
+        analysis,
+        &model_algorithms,
+        model_equations,
+        &coordinates,
+        &functions,
+        &clocks,
+    )
+}
+
+/// Lower the model's content once every identity it refers to exists.
+///
+/// Split out of `build_checked` so the preparation phase and the lowering phase
+/// are separately readable. `flat` is derived from `model_algorithms` here
+/// rather than passed alongside it, so the two cannot disagree about which
+/// model is being lowered.
+fn lower_checked_model_content<'scope, 'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    analysis: &'scope Analysis<'scope>,
+    model_algorithms: &'scope ModelAlgorithmSequence<'scope>,
+    model_equations: ModelEquationSequence<'scope>,
+    coordinates: &ModelCoordinates<'dae>,
+    functions: &FunctionRegistry<'scope, 'dae>,
+    clocks: &LoweredClocks<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let flat = model_algorithms.flat();
     let mut discrete_values = DiscreteValueStaging::new();
     lower_bindings(
         construction,
         &mut discrete_values,
-        &coordinates,
-        &functions,
+        coordinates,
+        functions,
         BindingsRequest {
             roles: &analysis.roles,
             topology: &analysis.discrete_value_topology,
             flat,
             coordinate_owners: &analysis.clocked_coordinate_owners,
-            clocks: &clocks,
+            clocks,
         },
     )?;
     lower_model_owners(
         construction,
-        flat,
-        analysis,
-        &coordinates,
-        &functions,
-        &clocks,
-        discrete_values,
+        ModelOwnersRequest {
+            flat,
+            analysis,
+            model_algorithms,
+            model_equations,
+            coordinates,
+            functions,
+            clocks,
+            discrete_values,
+        },
     )?;
     lower_scheduled_time_events(construction, &analysis.expression_events)
 }
 
 fn model_function_registry<'scope, 'dae>(
     flat: &'scope flat::Model,
-    analysis: &'scope Analysis,
+    analysis: &'scope Analysis<'scope>,
     ids: &'scope HashMap<FunctionSpecializationKey, dae::FunctionId<'dae>>,
     coordinate_instances: &'scope HashMap<InstanceId, Coordinate<'dae>>,
+    state_occurrences: &'scope HashMap<rumoca_core::SourceOccurrenceId, dae::StateId<'dae>>,
     clocks: &'scope LoweredClocks<'dae>,
 ) -> FunctionRegistry<'scope, 'dae> {
     FunctionRegistry {
@@ -363,11 +588,13 @@ fn model_function_registry<'scope, 'dae>(
         record_array_fields: &analysis.record_array_fields,
         constants: &analysis.constants,
         delay_plans: &analysis.delay_plans,
+        derivatives: &analysis.derivatives,
         history_operators: &analysis.history_operators,
         coordinate_instances,
+        state_occurrences,
         expression_events: &analysis.expression_events,
         sample_alias_schedules: &analysis.sample_alias_schedules,
-        clocked_coordinate_owners: &analysis.clocked_coordinate_owners,
+        clock_transfer_plans: &analysis.clock_transfer_plans,
         clocks,
     }
 }
@@ -375,13 +602,14 @@ fn model_function_registry<'scope, 'dae>(
 fn lower_analysis_clocks<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     flat: &flat::Model,
-    analysis: &Analysis,
+    analysis: &Analysis<'_>,
 ) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
     lower_clocks(
         construction,
         flat,
         &analysis.clock_plans,
         &analysis.clocked_value_owners,
+        &analysis.clock_transfer_plans,
         analysis
             .expression_events
             .ordered()
@@ -412,23 +640,36 @@ fn lower_scheduled_time_events<'dae>(
     Ok(())
 }
 
+struct ModelOwnersRequest<'scope, 'dae> {
+    flat: &'scope flat::Model,
+    analysis: &'scope Analysis<'scope>,
+    model_algorithms: &'scope ModelAlgorithmSequence<'scope>,
+    model_equations: ModelEquationSequence<'scope>,
+    coordinates: &'scope ModelCoordinates<'dae>,
+    functions: &'scope FunctionRegistry<'scope, 'dae>,
+    clocks: &'scope LoweredClocks<'dae>,
+    discrete_values: DiscreteValueStaging<'dae>,
+}
+
 fn lower_model_owners<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    flat: &flat::Model,
-    analysis: &Analysis,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    clocks: &LoweredClocks<'dae>,
-    mut discrete_values: DiscreteValueStaging<'dae>,
+    request: ModelOwnersRequest<'_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    lower_equation_systems(
-        construction,
-        &mut discrete_values,
+    let ModelOwnersRequest {
         flat,
         analysis,
+        model_algorithms,
+        model_equations,
         coordinates,
         functions,
         clocks,
+        mut discrete_values,
+    } = request;
+    lower_equation_systems(
+        construction,
+        &mut discrete_values,
+        &EquationSystemInputs::new(flat, analysis, coordinates, functions, clocks),
+        model_equations,
     )?;
     initial_discrete_values::lower_initial_discrete_values(
         construction,
@@ -450,16 +691,12 @@ fn lower_model_owners<'dae>(
         construction,
         &mut discrete_values,
         ModelAlgorithmsRequest {
-            flat,
-            environment: AlgorithmEnvironment {
+            environment: AlgorithmBaseEnvironment {
                 coordinates,
                 functions,
                 sample_lattices: &analysis.sample_lattices,
-                tensor_loops: None,
-                function_calls: None,
-                transaction_steps: None,
             },
-            plans: &analysis.model_algorithm_plans,
+            algorithms: model_algorithms,
             topology: &analysis.discrete_value_topology,
         },
     )?;
@@ -482,27 +719,31 @@ fn lower_model_owners<'dae>(
 
 fn reserve_value_types<'dae>(
     flat: &flat::Model,
-    analysis: &Analysis,
+    analysis: &Analysis<'_>,
     construction: &mut dae::DaeConstruction<'dae>,
 ) -> Result<HashMap<VarName, dae::ValueTypeId<'dae>>, dae::DaeConstructionError> {
     let mut value_types = HashMap::new();
     for (name, variable) in &flat.variables {
-        if matches!(analysis.roles[name], PlannedRole::Clock) {
+        let role =
+            analysis
+                .roles
+                .get(name)
+                .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: variable.source_span,
+                })?;
+        if matches!(role, PlannedRole::Clock) {
             continue;
         }
         let provenance = dae::DaeProvenance::source(variable.source_span)?;
-        let scalar = effective_variable_scalar_type(flat, variable)
-            .expect("analysis accepts only primitive value types");
+        let scalar = effective_variable_scalar_type(flat, variable).ok_or(
+            dae::DaeConstructionError::InvalidExpressionForm {
+                span: variable.source_span,
+            },
+        )?;
         let dimensions = variable
             .dims
             .iter()
-            .map(|extent| {
-                u32::try_from(*extent).map_err(|_| dae::DaeConstructionError::CapacityExceeded {
-                    arena: "variable dimension",
-                    attempted_index: usize::MAX,
-                    span: variable.source_span,
-                })
-            })
+            .map(|extent| checked_source_array_extent(*extent, variable.source_span))
             .collect::<Result<Vec<_>, _>>()?;
         let value_type = construction.types(|types| {
             types.intern(
@@ -516,61 +757,60 @@ fn reserve_value_types<'dae>(
     Ok(value_types)
 }
 
-#[derive(Clone, Copy)]
-struct FunctionSymbols<'symbols, 'dae> {
-    coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
-    functions: &'symbols FunctionRegistry<'symbols, 'dae>,
-    shapes: &'symbols ShapeEnvironment,
+fn checked_source_array_extent(extent: i64, span: Span) -> Result<u32, dae::DaeConstructionError> {
+    if extent < 0 {
+        return Err(dae::DaeConstructionError::InvalidArrayExtent { span });
+    }
+    u32::try_from(extent)
+        .map_err(|_| dae::DaeConstructionError::SourceArrayExtentOverflow { extent, span })
 }
 
 fn lower_function_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    statements: &[rumoca_core::Statement],
-    plans: &[FunctionStatementPlan],
+    sequence: &FunctionStatementSequence,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
-    debug_assert_eq!(statements.len(), plans.len());
-    let mut index = 0usize;
-    while index < statements.len() {
-        let statement = &statements[index];
-        let plan = &plans[index];
+    let mut record_staging_available = symbols.record_staging_available.clone();
+    for product in sequence.products() {
+        let statements = product.source();
+        let plan = product.plan();
+        let current_symbols = symbols.with_record_staging_available(&record_staging_available);
         if let FunctionStatementPlan::ArrayAssembly(assembly) = plan {
-            let statement_count = assembly.direct_count + usize::from(assembly.loop_plan.is_some());
             lower_function_array_assembly(
                 construction,
-                symbols,
+                current_symbols,
                 &mut body,
-                &statements[index..index + statement_count],
+                statements,
                 assembly,
             )?;
-            index += statement_count;
+            record_staging_available.advance(plan);
             continue;
         }
         if let FunctionStatementPlan::RecordAssembly(assembly) = plan {
             lower_function_record_assembly(
                 construction,
-                symbols,
+                current_symbols,
                 &mut body,
-                &statements[index..index + assembly.statement_count],
+                statements,
                 assembly,
             )?;
-            index += assembly.statement_count;
+            record_staging_available.advance(plan);
             continue;
         }
         if let FunctionStatementPlan::RecordFieldAssembly(assembly) = plan {
             lower_function_record_field_assembly(
                 construction,
-                symbols,
+                current_symbols,
                 &mut body,
-                &statements[index..index + assembly.statement_count],
+                statements,
                 assembly,
             )?;
-            index += assembly.statement_count;
+            record_staging_available.advance(plan);
             continue;
         }
-        body = lower_function_statement(construction, symbols, body, statement, plan)?;
-        index += 1;
+        body = lower_function_statement(construction, current_symbols, body, product)?;
+        record_staging_available.advance(plan);
     }
     Ok(body)
 }
@@ -579,16 +819,16 @@ fn lower_function_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    statement: &rumoca_core::Statement,
-    plan: &FunctionStatementPlan,
+    product: &FunctionStatementProduct,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
-    match (statement, plan) {
+    let plan = product.plan();
+    match (product.source(), plan) {
         (_, FunctionStatementPlan::ProvenAssertion) => Ok(body),
-        (statement, FunctionStatementPlan::RuntimeAssertion) => {
-            lower_runtime_function_assertion(construction, symbols, body, statement)
+        ([_], FunctionStatementPlan::RuntimeAssertion) => {
+            lower_issued_runtime_assertion(construction, symbols, body, product)
         }
         (
-            _,
+            [_],
             FunctionStatementPlan::GeneratedBooleanAssignment {
                 target,
                 value,
@@ -597,7 +837,7 @@ fn lower_function_statement<'dae>(
             },
         ) => lower_generated_boolean_assignment(construction, symbols, body, target, value, *span),
         (
-            rumoca_core::Statement::Assignment { value, span, .. },
+            [rumoca_core::Statement::Assignment { value, span, .. }],
             FunctionStatementPlan::Assignment(plan),
         ) => {
             lower_function_assignment(
@@ -613,17 +853,14 @@ fn lower_function_statement<'dae>(
             Ok(body)
         }
         (
-            rumoca_core::Statement::For {
-                indices,
-                equations,
-                span,
-            },
+            [_],
             FunctionStatementPlan::For {
                 domain,
                 binder_spans,
                 lowering,
                 statements,
-                source_depth,
+                indices,
+                span,
             },
         ) => lower_function_loop(
             construction,
@@ -631,29 +868,38 @@ fn lower_function_statement<'dae>(
             body,
             FunctionLoop {
                 indices,
-                source_statements: equations,
                 span: *span,
                 domain,
                 binder_spans,
                 lowering,
-                plans: statements,
-                source_depth: *source_depth,
+                statements,
             },
         ),
         (
-            statement @ rumoca_core::Statement::If { .. },
+            [statement @ rumoca_core::Statement::If { .. }],
             FunctionStatementPlan::If { .. } | FunctionStatementPlan::ProvenBranch { .. },
-        ) => lower_function_conditional_statement(construction, symbols, body, statement, plan),
+        ) => lower_function_conditional_statement(
+            construction,
+            symbols,
+            body,
+            statement,
+            plan,
+            product.span(),
+        ),
         (
-            rumoca_core::Statement::FunctionCall {
-                comp, args, span, ..
-            },
+            [
+                rumoca_core::Statement::FunctionCall {
+                    comp, args, span, ..
+                },
+            ],
             FunctionStatementPlan::MultiOutputCall { outputs },
         ) => lower_multi_output_statement(construction, symbols, body, comp, args, *span, outputs),
         (
-            rumoca_core::Statement::FunctionCall {
-                comp, args, span, ..
-            },
+            [
+                rumoca_core::Statement::FunctionCall {
+                    comp, args, span, ..
+                },
+            ],
             FunctionStatementPlan::RecordMultiOutputAssembly(plan),
         ) => lower_record_multi_output_statement(
             construction,
@@ -664,20 +910,32 @@ fn lower_function_statement<'dae>(
             *span,
             plan,
         ),
-        (_, FunctionStatementPlan::ArrayAssemblyMember) => {
-            unreachable!("array assembly members are consumed by their leading owner")
-        }
-        (_, FunctionStatementPlan::RecordAssemblyMember) => {
-            unreachable!("record assembly members are consumed by their leading owner")
-        }
-        (_, FunctionStatementPlan::RecordFieldAssemblyMember) => {
-            unreachable!("record field members are consumed by their staged owner")
-        }
-        (_, FunctionStatementPlan::RecordFieldAssembly(_)) => {
-            unreachable!("record field assemblies lower with their source run")
-        }
-        _ => unreachable!("function analysis and construction plans remain aligned"),
+        _ => Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: product.span(),
+        }),
     }
+}
+
+fn lower_issued_runtime_assertion<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    symbols: FunctionSymbols<'_, 'dae>,
+    body: dae::FunctionBody<'dae>,
+    product: &FunctionStatementProduct,
+) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
+    let assertion =
+        product
+            .runtime_assertion()
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: product.span(),
+            })?;
+    lower_runtime_function_assertion(
+        construction,
+        symbols,
+        body,
+        &assertion.condition,
+        &assertion.message,
+        assertion.span,
+    )
 }
 
 fn lower_multi_output_statement<'dae>(
@@ -703,28 +961,29 @@ fn lower_runtime_function_assertion<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    statement: &rumoca_core::Statement,
+    condition: &Expression,
+    message: &Expression,
+    span: Span,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
-    let assertion = function_assertion(statement, symbols.functions.flat)
-        .expect("analysis already validates the assertion statement")
-        .expect("a runtime assertion plan owns an assertion statement");
     let condition = lower_function_expression(
         construction,
         symbols.coordinates,
+        Some(symbols.record_staging_scope()),
         symbols.functions,
         symbols.shapes,
         &body,
-        assertion.condition,
+        condition,
     )?;
     let message = lower_function_expression(
         construction,
         symbols.coordinates,
+        Some(symbols.record_staging_scope()),
         symbols.functions,
         symbols.shapes,
         &body,
-        assertion.message,
+        message,
     )?;
-    let provenance = dae::DaeProvenance::source(assertion.span)?;
+    let provenance = dae::DaeProvenance::source(span)?;
     construction
         .functions(|functions| functions.assertion(&mut body, condition, message, provenance))?;
     Ok(body)
@@ -763,20 +1022,16 @@ fn lower_function_conditional_statement<'dae>(
     mut body: dae::FunctionBody<'dae>,
     statement: &rumoca_core::Statement,
     plan: &FunctionStatementPlan,
+    source_span: Span,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
-    let rumoca_core::Statement::If {
-        cond_blocks,
-        else_block,
-        span,
-    } = statement
-    else {
-        unreachable!("a conditional plan owns a conditional statement")
-    };
+    let _ = statement;
     match plan {
         FunctionStatementPlan::If {
+            conditions,
             branches,
             fallback,
             targets,
+            span,
         } => {
             let binders = HashMap::new();
             lower_function_conditional(
@@ -785,25 +1040,19 @@ fn lower_function_conditional_statement<'dae>(
                 FunctionConditional {
                     symbols,
                     binders: &binders,
-                    blocks: cond_blocks,
-                    fallback: else_block.as_deref(),
-                    branch_plans: branches,
-                    fallback_plans: fallback.as_deref(),
+                    conditions,
+                    branches,
+                    fallback: fallback.as_ref(),
                     targets,
                     span: *span,
                 },
             )?;
             Ok(body)
         }
-        FunctionStatementPlan::ProvenBranch {
-            selected,
-            statements,
-        } => {
-            let selected =
-                selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-            lower_function_statements(construction, symbols, body, selected, statements)
+        FunctionStatementPlan::ProvenBranch { statements, .. } => {
+            lower_function_statements(construction, symbols, body, statements)
         }
-        _ => unreachable!("function analysis and construction plans remain aligned"),
+        _ => Err(dae::DaeConstructionError::InvalidExpressionForm { span: source_span }),
     }
 }
 
@@ -839,6 +1088,7 @@ fn lower_function_multi_output_call<'dae>(
         construction,
         LoweringSymbols {
             coordinates: symbols.coordinates,
+            record_staging: Some(symbols.record_staging_scope()),
             functions: symbols.functions,
             shapes: symbols.shapes,
             function_body: Some(body),
@@ -863,7 +1113,7 @@ fn lower_function_multi_output_call<'dae>(
     )?;
     let mut assignments = Vec::with_capacity(selected.len());
     for ((_, plan), mut value) in selected.into_iter().zip(results) {
-        let target = function_value_coordinate(symbols.coordinates, plan.target());
+        let target = function_assignment_coordinate(symbols, plan, call.span)?;
         if !plan.subscripts().is_empty() {
             let base = plan
                 .seed()
@@ -874,6 +1124,7 @@ fn lower_function_multi_output_call<'dae>(
                 FunctionArrayUpdate {
                     symbols: LoweringSymbols {
                         coordinates: symbols.coordinates,
+                        record_staging: Some(symbols.record_staging_scope()),
                         functions: symbols.functions,
                         shapes: symbols.shapes,
                         function_body: Some(body),
@@ -908,6 +1159,7 @@ fn lower_function_record_multi_output_assembly<'dae>(
         construction,
         LoweringSymbols {
             coordinates: symbols.coordinates,
+            record_staging: Some(symbols.record_staging_scope()),
             functions: symbols.functions,
             shapes: symbols.shapes,
             function_body: Some(body),
@@ -924,7 +1176,7 @@ fn lower_function_record_multi_output_assembly<'dae>(
         .iter()
         .map(|field| operands.result(construction, field.result_ordinal, provenance))
         .collect::<Result<Vec<_>, _>>()?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
+    let target = function_value_coordinate(symbols.coordinates, &plan.target, span)?;
     let value_type =
         construction.functions(|functions| functions.value_type(target, provenance))?;
     construction.types(|types| {
@@ -945,10 +1197,11 @@ fn lower_function_assignment<'dae>(
     body: &mut dae::FunctionBody<'dae>,
     assignment: FunctionAssignment<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let target = function_value_coordinate(symbols.coordinates, assignment.plan.target());
+    let target = function_assignment_coordinate(symbols, assignment.plan, assignment.span)?;
     let mut value = lower_function_expression(
         construction,
         symbols.coordinates,
+        Some(symbols.record_staging_scope()),
         symbols.functions,
         symbols.shapes,
         body,
@@ -968,6 +1221,7 @@ fn lower_function_assignment<'dae>(
             FunctionArrayUpdate {
                 symbols: LoweringSymbols {
                     coordinates: symbols.coordinates,
+                    record_staging: Some(symbols.record_staging_scope()),
                     functions: symbols.functions,
                     shapes: symbols.shapes,
                     function_body: Some(body),
@@ -988,13 +1242,11 @@ fn lower_function_assignment<'dae>(
 
 struct FunctionLoop<'statement> {
     indices: &'statement [rumoca_core::ForIndex],
-    source_statements: &'statement [rumoca_core::Statement],
     span: Span,
     domain: &'statement StructuredIndexDomain,
     binder_spans: &'statement [Span],
     lowering: &'statement FunctionLoopLowering,
-    plans: &'statement [FunctionStatementPlan],
-    source_depth: usize,
+    statements: &'statement FunctionStatementSequence,
 }
 
 fn lower_function_loop<'dae>(
@@ -1010,8 +1262,7 @@ fn lower_function_loop<'dae>(
     };
     let domain = construction
         .domains(|domains| domains.structured(input.domain.clone(), domain_provenance))?;
-    let (indices, statements) =
-        flattened_function_loop_source(input.indices, input.source_statements, input.source_depth);
+    let indices = input.indices.iter().collect::<Vec<_>>();
     let binders = lower_function_binders(construction, domain, &indices, input.binder_spans)?;
     let mut loop_shapes = symbols.shapes.clone();
     for binder in binders.keys() {
@@ -1021,6 +1272,9 @@ fn lower_function_loop<'dae>(
     }
     let loop_symbols = FunctionSymbols {
         coordinates: symbols.coordinates,
+        function_values: symbols.function_values,
+        record_staging: symbols.record_staging,
+        record_staging_available: symbols.record_staging_available,
         functions: symbols.functions,
         shapes: &loop_shapes,
     };
@@ -1033,8 +1287,7 @@ fn lower_function_loop<'dae>(
                     symbols: loop_symbols,
                     domain,
                     binders: &binders,
-                    statements,
-                    plans: input.plans,
+                    statements: input.statements,
                     owner,
                 },
             )?;
@@ -1050,8 +1303,7 @@ fn lower_function_loop<'dae>(
             FunctionFold {
                 domain,
                 binders: &binders,
-                statements,
-                plans: input.plans,
+                statements: input.statements,
                 targets,
                 iteration_locals,
                 owner,
@@ -1096,6 +1348,7 @@ fn lower_attribute_expression<'dae>(
         construction,
         LoweringSymbols {
             coordinates,
+            record_staging: None,
             functions,
             shapes: functions.shapes.model_values(),
             function_body: None,
@@ -1300,11 +1553,8 @@ struct EventGuard<'dae> {
 
 #[derive(Clone, Copy)]
 struct StructuredEquationEnvironment<'scope, 'dae> {
-    flat: &'scope flat::Model,
     roles: &'scope HashMap<VarName, PlannedRole>,
     topology: &'scope DiscreteValueTopologyPlan,
-    connection_ranks: &'scope HashMap<VarName, usize>,
-    aggregate_connections: &'scope AggregateDiscreteConnections,
     clocked_owners: &'scope HashMap<usize, ClockPlan>,
     clocks: &'scope LoweredClocks<'dae>,
 }
@@ -1313,23 +1563,30 @@ struct StructuredEquationEnvironment<'scope, 'dae> {
 struct StructuredEquationRows<'scope, 'dae> {
     equations: &'scope [flat::Equation],
     families: &'scope [flat::StructuredEquationFamily],
+    family_rows: &'scope HashMap<usize, std::ops::Range<usize>>,
     excluded_families: &'scope HashSet<usize>,
     environment: Option<StructuredEquationEnvironment<'scope, 'dae>>,
     initialization: bool,
 }
 
-fn lower_structured_equations<'dae>(
+fn lower_structured_equations<'flat, 'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    rows: StructuredEquationRows<'_, 'dae>,
+    functions: &FunctionRegistry<'flat, 'dae>,
+    rows: StructuredEquationRows<'flat, 'dae>,
+    mut deferred_equations: Option<&mut DeferredModelEquationRows<'flat>>,
 ) -> Result<(), dae::DaeConstructionError> {
     for (family_index, family) in rows.families.iter().enumerate() {
         if rows.excluded_families.contains(&family_index) {
             continue;
         }
         let owner = equation_owner_provenance(&family.origin, family.span)?;
+        let row_range = rows
+            .family_rows
+            .get(&family_index)
+            .cloned()
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: family.span })?;
         let generated_root = equation_generation(&family.origin);
         let domain =
             construction.domains(|domains| domains.structured(family.domain.clone(), owner))?;
@@ -1353,11 +1610,13 @@ fn lower_structured_equations<'dae>(
                     coordinates,
                     functions,
                     family,
+                    row_range,
                     domain,
                     scalar_view: template.scalar_view,
                     binders: &binders,
                     shapes: &scoped_shapes,
                     environment: rows.environment,
+                    deferred_equations: deferred_equations.as_deref_mut(),
                     owner,
                 },
             )? {
@@ -1369,6 +1628,7 @@ fn lower_structured_equations<'dae>(
                 .map(|body| {
                     let symbols = LoweringSymbols {
                         coordinates,
+                        record_staging: None,
                         functions,
                         shapes: &scoped_shapes,
                         function_body: None,
@@ -1418,32 +1678,56 @@ enum StructuredFamilyPartition<'flat> {
     ConsumedDiscreteValue,
 }
 
-struct StructuredTemplatePartitionInput<'scope, 'flat, 'dae> {
+struct StructuredTemplatePartitionInput<'borrow, 'local, 'scope, 'flat, 'dae> {
     coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     functions: &'scope FunctionRegistry<'flat, 'dae>,
-    family: &'scope flat::StructuredEquationFamily,
+    family: &'flat flat::StructuredEquationFamily,
+    row_range: std::ops::Range<usize>,
     domain: dae::DomainId<'dae>,
     scalar_view: rumoca_core::ComprehensionScalarView,
-    binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
-    shapes: &'scope ShapeEnvironment,
+    binders: &'local HashMap<VarName, dae::DomainBinderId<'dae>>,
+    shapes: &'local ShapeEnvironment,
     environment: Option<StructuredEquationEnvironment<'scope, 'dae>>,
+    deferred_equations: Option<&'borrow mut DeferredModelEquationRows<'flat>>,
     owner: dae::DaeProvenance,
 }
 
 fn lower_partitioned_structured_template<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    input: StructuredTemplatePartitionInput<'_, '_, 'dae>,
+    mut input: StructuredTemplatePartitionInput<'_, '_, '_, '_, 'dae>,
 ) -> Result<bool, dae::DaeConstructionError> {
     let Some(environment) = input.environment else {
         return Ok(false);
     };
-    let template = input
-        .family
-        .template
-        .as_ref()
-        .expect("partitioned structured lowering receives a template family");
-    let assignments = match structured_family_partition(input.family, template, environment) {
+    let template =
+        input
+            .family
+            .template
+            .as_ref()
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: input.family.span,
+            })?;
+    if input.family.interiors_materialized
+        && template.body.len() != input.family.equations_per_point
+    {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: input.family.span,
+        });
+    }
+    let partition = structured_family_partition(
+        input.family,
+        template,
+        environment.roles,
+        input.deferred_equations.as_deref_mut(),
+    )?;
+    consume_structured_family_claims(
+        input.family,
+        input.row_range,
+        &partition,
+        input.deferred_equations,
+    )?;
+    let assignments = match partition {
         StructuredFamilyPartition::Continuous => return Ok(false),
         StructuredFamilyPartition::ConsumedDiscreteValue => return Ok(true),
         StructuredFamilyPartition::DiscreteValue(assignments) => assignments,
@@ -1467,65 +1751,96 @@ fn lower_partitioned_structured_template<'dae>(
     Ok(true)
 }
 
+fn consume_structured_family_claims(
+    family: &flat::StructuredEquationFamily,
+    rows: std::ops::Range<usize>,
+    partition: &StructuredFamilyPartition<'_>,
+    deferred_equations: Option<&mut DeferredModelEquationRows<'_>>,
+) -> Result<(), dae::DaeConstructionError> {
+    let Some(deferred_equations) = deferred_equations else {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm { span: family.span });
+    };
+    if rows.start != family.first_equation_index {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm { span: family.span });
+    }
+    let already_consumed = if family.interiors_materialized {
+        family.equations_per_point
+    } else {
+        0
+    };
+    for row in rows.skip(already_consumed) {
+        let row_partition = deferred_equations.take_partition(row, family.span)?;
+        let compatible = matches!(
+            (partition, row_partition),
+            (
+                StructuredFamilyPartition::Continuous,
+                EquationPartition::Continuous
+            ) | (
+                StructuredFamilyPartition::ConsumedDiscreteValue,
+                EquationPartition::ConsumedDiscreteValue
+            ) | (
+                StructuredFamilyPartition::DiscreteValue(_),
+                EquationPartition::DiscreteValue(_) | EquationPartition::ConsumedDiscreteValue
+            )
+        );
+        if !compatible {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm { span: family.span });
+        }
+    }
+    Ok(())
+}
+
 fn structured_family_partition<'flat>(
     family: &'flat flat::StructuredEquationFamily,
     template: &'flat rumoca_core::ComprehensionTemplate,
-    environment: StructuredEquationEnvironment<'flat, '_>,
-) -> StructuredFamilyPartition<'flat> {
-    let assignments = template
-        .body
-        .iter()
-        .enumerate()
-        .map(|(ordinal, body)| {
-            // Materialized family rows and their compact template are two
-            // views of one semantic owner. Consult the authoritative row
-            // claim for every origin, so an aggregate owner constructed from
-            // exact element coverage consumes the template view as well.
-            if family.interiors_materialized {
-                let row = family.first_equation_index + ordinal;
-                let equation = &environment.flat.equations[row];
-                return match equation_partition(
-                    environment.flat,
-                    row,
-                    equation,
-                    environment.roles,
-                    environment.connection_ranks,
-                    environment.aggregate_connections,
-                )
-                .expect("analysis validates structured connection ownership")
-                {
-                    EquationPartition::DiscreteValue(plan) => Some(Ok(plan)),
-                    EquationPartition::ConsumedDiscreteValue => Some(Err(())),
-                    EquationPartition::Continuous | EquationPartition::DiscreteReal { .. } => None,
-                };
+    roles: &HashMap<VarName, PlannedRole>,
+    mut deferred_equations: Option<&mut DeferredModelEquationRows<'flat>>,
+) -> Result<StructuredFamilyPartition<'flat>, dae::DaeConstructionError> {
+    let mut assignments = Vec::with_capacity(template.body.len());
+    for (ordinal, body) in template.body.iter().enumerate() {
+        // Materialized family rows and their compact template are two views of
+        // one semantic owner. Move the already-issued role out of the deferred
+        // sequence row; never classify the scalar occurrence again.
+        let assignment = if family.interiors_materialized {
+            let Some(deferred_equations) = deferred_equations.as_deref_mut() else {
+                return Err(dae::DaeConstructionError::InvalidExpressionForm { span: family.span });
+            };
+            match deferred_equations
+                .take_partition(family.first_equation_index + ordinal, family.span)?
+            {
+                EquationPartition::DiscreteValue(plan) => Some(Ok(plan)),
+                EquationPartition::ConsumedDiscreteValue => Some(Err(())),
+                EquationPartition::Continuous | EquationPartition::DiscreteReal { .. } => None,
             }
-            discrete_value_assignment(body, environment.roles, family.span)
-                .expect("analysis validates structured equation partition ownership")
+        } else {
+            discrete_value_assignment(body, roles, family.span)
+                .map_err(|_| dae::DaeConstructionError::InvalidExpressionForm {
+                    span: family.span,
+                })?
                 .map(Ok)
-        })
-        .collect::<Vec<_>>();
+        };
+        assignments.push(assignment);
+    }
     if assignments.iter().all(Option::is_none) {
-        return StructuredFamilyPartition::Continuous;
+        return Ok(StructuredFamilyPartition::Continuous);
     }
     if assignments
         .iter()
         .all(|assignment| matches!(assignment, Some(Err(()))))
     {
-        return StructuredFamilyPartition::ConsumedDiscreteValue;
+        return Ok(StructuredFamilyPartition::ConsumedDiscreteValue);
     }
-    StructuredFamilyPartition::DiscreteValue(
-        assignments
-            .into_iter()
-            .map(|assignment| {
-                assignment
-                    .expect("analysis prohibits a mixed structured equation partition")
-                    .expect("analysis prohibits mixed consumed and owning discrete families")
-            })
-            .collect(),
-    )
+    let mut plans = Vec::with_capacity(assignments.len());
+    for assignment in assignments {
+        let Some(Ok(plan)) = assignment else {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm { span: family.span });
+        };
+        plans.push(plan);
+    }
+    Ok(StructuredFamilyPartition::DiscreteValue(plans))
 }
 
-struct StructuredDiscreteFamilyInput<'scope, 'flat, 'dae> {
+struct StructuredDiscreteFamilyInput<'assignments, 'scope, 'flat, 'dae> {
     coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
     functions: &'scope FunctionRegistry<'flat, 'dae>,
     family: &'scope flat::StructuredEquationFamily,
@@ -1533,7 +1848,7 @@ struct StructuredDiscreteFamilyInput<'scope, 'flat, 'dae> {
     scalar_view: rumoca_core::ComprehensionScalarView,
     binders: &'scope HashMap<VarName, dae::DomainBinderId<'dae>>,
     shapes: &'scope ShapeEnvironment,
-    assignments: &'scope [DiscreteValueAssignmentPlan<'flat>],
+    assignments: &'assignments [DiscreteValueAssignmentPlan<'flat>],
     environment: StructuredEquationEnvironment<'scope, 'dae>,
     owner: dae::DaeProvenance,
 }
@@ -1541,7 +1856,7 @@ struct StructuredDiscreteFamilyInput<'scope, 'flat, 'dae> {
 fn lower_structured_discrete_family<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    input: StructuredDiscreteFamilyInput<'_, '_, 'dae>,
+    input: StructuredDiscreteFamilyInput<'_, '_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let owner_clock = input
         .environment
@@ -1558,10 +1873,13 @@ fn lower_structured_discrete_family<'dae>(
             input.coordinates,
             input.environment.topology,
         )?
-        .expect("a structured discrete family has one planned B.1c owner");
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+            span: input.family.span,
+        })?;
     for plan in input.assignments {
         let symbols = LoweringSymbols {
             coordinates: input.coordinates,
+            record_staging: None,
             functions: input.functions,
             shapes: input.shapes,
             function_body: None,
@@ -1580,8 +1898,12 @@ fn lower_structured_discrete_family<'dae>(
             generation,
             input.family.span,
         )?;
-        let Coordinate::DiscreteValue(target) = input.coordinates[plan.target] else {
-            unreachable!("analysis classifies the family target as discrete-valued")
+        let Some(Coordinate::DiscreteValue(target)) = input.coordinates.get(&plan.target).copied()
+        else {
+            return Err(dae::DaeConstructionError::InvalidVariableRole {
+                name: plan.target.clone(),
+                span: input.family.span,
+            });
         };
         let action_span = plan.value.span().unwrap_or(input.family.span);
         discrete_values.always(
@@ -1657,6 +1979,7 @@ fn lower_materialized_family_bodies<'dae>(
             let equation = &equations[family.first_equation_index + offset];
             let symbols = LoweringSymbols {
                 coordinates,
+                record_staging: None,
                 functions,
                 shapes: functions.shapes.model_values(),
                 function_body: None,
@@ -1695,19 +2018,16 @@ pub(super) fn pack_row_major_body<'dae>(
     let checked_extents = extents
         .iter()
         .copied()
-        .map(u32::try_from)
-        .collect::<Result<Vec<_>, _>>()
-        .ok();
-    if let Some(base) = checked_extents
-        .as_deref()
-        .map(|extents| {
-            construction.expressions(|expressions| {
-                expressions.exact_row_major_projection_base(scalars, extents, provenance)
+        .map(|extent| {
+            u32::try_from(extent).map_err(|_| dae::DaeConstructionError::ArrayExtentOverflow {
+                extent,
+                span: provenance.span(),
             })
         })
-        .transpose()?
-        .flatten()
-    {
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(base) = construction.expressions(|expressions| {
+        expressions.exact_row_major_projection_base(scalars, &checked_extents, provenance)
+    })? {
         return Ok(base);
     }
     let Some((&outer, inner_extents)) = extents.split_first() else {
@@ -1727,223 +2047,4 @@ pub(super) fn pack_row_major_body<'dae>(
         )?);
     }
     construction.expressions(|expressions| expressions.at(provenance).array(elements))
-}
-
-struct EquationRows<'scope, 'dae> {
-    flat: &'scope flat::Model,
-    equations: &'scope [flat::Equation],
-    excluded: &'scope HashSet<usize>,
-    records: &'scope HashMap<usize, RecordEquationPlan>,
-    multi_output: &'scope HashMap<usize, MultiOutputEquationPlan>,
-    roles: &'scope HashMap<VarName, PlannedRole>,
-    connection_ranks: &'scope HashMap<VarName, usize>,
-    aggregate_connections: &'scope AggregateDiscreteConnections,
-    topology: &'scope DiscreteValueTopologyPlan,
-    clocked_owners: &'scope HashMap<usize, ClockPlan>,
-    clocks: &'scope LoweredClocks<'dae>,
-    /// MLS §3.7.4.5 Rule 1 / Rule 2 replacements proven by analysis. A row
-    /// listed here is lowered from the rule's residual instead of the source
-    /// one; the row count, its owner, and its balance contribution are
-    /// unchanged, which is why the rule needs no separate equation identity.
-    semi_linear: &'scope SemiLinearRules,
-    initialization: bool,
-}
-
-impl<'scope> EquationRows<'scope, '_> {
-    fn partition(
-        &'scope self,
-        row: usize,
-        equation: &'scope flat::Equation,
-    ) -> EquationPartition<'scope> {
-        equation_partition(
-            self.flat,
-            row,
-            equation,
-            self.roles,
-            self.connection_ranks,
-            self.aggregate_connections,
-        )
-        .expect("analysis already validates equation ownership")
-    }
-}
-
-struct OrdinaryEquationRow<'input, 'scope, 'dae> {
-    input: &'input EquationRows<'scope, 'dae>,
-    index: usize,
-    equation: &'scope flat::Equation,
-    owner: dae::DaeProvenance,
-    generation: Option<dae::DaeGeneration>,
-    owner_clock: Option<dae::PeriodicClockId<'dae>>,
-}
-
-fn lower_equations<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    discrete_values: &mut DiscreteValueStaging<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    input: EquationRows<'_, 'dae>,
-) -> Result<(), dae::DaeConstructionError> {
-    for (index, equation) in input.equations.iter().enumerate() {
-        if input.excluded.contains(&index) {
-            continue;
-        }
-        let owner = equation_owner_provenance(&equation.origin, equation.span)?;
-        let generation = equation_generation(&equation.origin);
-        let owner_clock = input
-            .clocked_owners
-            .get(&index)
-            .map(|plan| input.clocks.id(plan, equation.span))
-            .transpose()?;
-        if let Some(plan) = input.multi_output.get(&index) {
-            lower_multi_output_equation(
-                construction,
-                coordinates,
-                functions,
-                equation,
-                plan,
-                owner,
-                input.initialization,
-            )?;
-            continue;
-        }
-        if let Some(plan) = input.records.get(&index) {
-            lower_record_equation(
-                construction,
-                coordinates,
-                functions,
-                equation,
-                plan,
-                owner,
-                input.initialization,
-            )?;
-            continue;
-        }
-        lower_ordinary_equation(
-            construction,
-            discrete_values,
-            coordinates,
-            functions,
-            OrdinaryEquationRow {
-                input: &input,
-                index,
-                equation,
-                owner,
-                generation,
-                owner_clock,
-            },
-        )?;
-    }
-    Ok(())
-}
-
-fn lower_ordinary_equation<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    discrete_values: &mut DiscreteValueStaging<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
-    functions: &FunctionRegistry<'_, 'dae>,
-    row: OrdinaryEquationRow<'_, '_, 'dae>,
-) -> Result<(), dae::DaeConstructionError> {
-    let OrdinaryEquationRow {
-        input,
-        index,
-        equation,
-        owner,
-        generation,
-        owner_clock,
-    } = row;
-    if input.initialization {
-        let residual = lower_expression(
-            construction,
-            coordinates,
-            functions,
-            &equation.residual,
-            generation,
-        )?;
-        construction.initialization(|system| system.value_equation(owner, residual))?;
-        return Ok(());
-    }
-    match input.partition(index, equation) {
-        EquationPartition::Continuous => {
-            let (source, generation) = match input.semi_linear.residual(index) {
-                Some(replacement) => (replacement, Some(dae::DaeGeneration::SemiLinearLowering)),
-                None => (&equation.residual, generation),
-            };
-            let residual = lower_equation_expression(
-                construction,
-                coordinates,
-                functions,
-                owner_clock,
-                source,
-                generation,
-            )?;
-            construction.continuous(|system| system.value_equation(owner, residual))?;
-        }
-        EquationPartition::DiscreteReal { .. } => {
-            let residual = lower_equation_expression(
-                construction,
-                coordinates,
-                functions,
-                owner_clock,
-                &equation.residual,
-                generation,
-            )?;
-            construction.discrete(|system| {
-                system.real_equation(owner, |equation| equation.residual(residual))
-            })?;
-        }
-        EquationPartition::DiscreteValue(plan) => {
-            let generation = if plan.generated {
-                Some(dae::DaeGeneration::DiscreteUpdate)
-            } else {
-                generation
-            };
-            let value = lower_equation_expression(
-                construction,
-                coordinates,
-                functions,
-                owner_clock,
-                plan.value.as_ref(),
-                generation,
-            )?;
-            let Coordinate::DiscreteValue(target) = coordinates[plan.target] else {
-                unreachable!("analysis classifies the equation target as discrete-valued")
-            };
-            let semantic_owner = discrete_values
-                .owner(owner, [plan.target.clone()], coordinates, input.topology)?
-                .expect("a discrete equation has one planned B.1c owner");
-            discrete_values.always(
-                semantic_owner,
-                target,
-                value,
-                owner,
-                dae::DaeProvenance::source(equation.span)?,
-            )?;
-        }
-        EquationPartition::ConsumedDiscreteValue => {}
-    }
-    Ok(())
-}
-
-fn equation_generation(origin: &flat::EquationOrigin) -> Option<dae::DaeGeneration> {
-    match origin {
-        flat::EquationOrigin::ComponentEquation { .. } => None,
-        flat::EquationOrigin::Connection { .. } => Some(dae::DaeGeneration::ConnectionEquation),
-        flat::EquationOrigin::FlowSum { .. } | flat::EquationOrigin::UnconnectedFlow { .. } => {
-            Some(dae::DaeGeneration::FlowBalanceEquation)
-        }
-        flat::EquationOrigin::Algorithm { .. } => Some(dae::DaeGeneration::AlgorithmEquation),
-        flat::EquationOrigin::Reinit { .. } => Some(dae::DaeGeneration::EventActionLowering),
-        flat::EquationOrigin::WhenAssignment { .. } => Some(dae::DaeGeneration::DiscreteUpdate),
-        flat::EquationOrigin::Binding { .. } => Some(dae::DaeGeneration::BindingEquation),
-    }
-}
-
-fn equation_owner_provenance(
-    origin: &flat::EquationOrigin,
-    span: Span,
-) -> Result<dae::DaeProvenance, dae::DaeConstructionError> {
-    match equation_generation(origin) {
-        Some(generation) => dae::DaeProvenance::generated(generation, span),
-        None => dae::DaeProvenance::source(span),
-    }
 }

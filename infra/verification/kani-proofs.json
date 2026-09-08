@@ -22,6 +22,61 @@
       ],
       "bound": { "kind": "unwind", "value": 16, "domain": "three production event-history lanes with arbitrary value kinds, typed values, fixed-point ownership, and invalid-input injection" },
       "covers": 3
+    },
+    {
+      "package": "rumoca-phase-solve",
+      "harness": "bounded_c61_instruction_projection_matches_original_programs",
+      "source": "crates/rumoca-phase-solve/src/scalar_constant_derivative_refinement/verification.rs",
+      "claims": ["BEHAVIOR-PIN:C61-bounded-instruction-projection"],
+      "selection": {
+        "production_kernel": "project_operations -> exact_program / operation_fact -> check_kernel / check_full_jacobian / check_visible_rows",
+        "symbolic_inputs": "0..2 original candidate programs of length 0..4; independently selected Const, LoadY, StoreOutput, LoadP, LoadTime or LoadSeed with arbitrary u32 registers, usize indices and u64 constant bits; independent expected u64 bits",
+        "exhaustive_test_infeasible_because": "arbitrary 64-bit constants and independent expected bits, register identities, storage indices and sequence shapes form an impractically enumerable product",
+        "counterexample_means": "shipping selection, opcode projection or one of the three C61 program checkers accepts a different original program shape or rejects its declared exact shape"
+      },
+      "assumptions": [
+        "only the six named instruction kinds and at most two programs of at most four instructions are generated; all other LinearOp kinds and larger collections remain unproved",
+        "original-program shape predicates independently state the C61 derivative, JVP and visible-row contracts; this proves structural and bit-preservation correspondence, not numerical evaluation or MLS semantics",
+        "Kani's pinned Rust/library models include f64 from_bits/to_bits and collection operations; compiler/linker and verifier correctness remain trusted",
+        "the pinned verifier disables allocation failure while generating caller-owned candidate inputs; this borrowed functional contract does not prove allocation or resource-reclamation behavior",
+        "outer ComputeBlock and output-index projection, DAE profile admission, owner and metadata projections, C60/C61 root binding, runtime evaluation and emitted artifacts are outside this harness",
+        "the harness retains its caller-owned candidate input after all assertions and covers; input destruction and resource reclamation after the borrowed checker calls are outside this functional contract, and no production destructor is removed or stubbed",
+        "unwind 8 is required with unwinding checks enabled; an unwinding failure or unsupported operation invalidates the result"
+      ],
+      "bound": {
+        "kind": "unwind",
+        "value": 8,
+        "domain": "zero through two six-kind instruction programs, each zero through four operations, with arbitrary register, index and constant-bit fields"
+      },
+      "covers": 6
+    },
+    {
+      "package": "rumoca-phase-solve",
+      "harness": "c61_complete_fact_checker_matches_positive_profile",
+      "source": "crates/rumoca-phase-solve/src/scalar_constant_derivative_refinement/verification/fact_contract/proof.rs",
+      "claims": [
+        "BEHAVIOR-PIN:C61-complete-fact-comparison"
+      ],
+      "selection": {
+        "production_kernel": "check_scalar_constant_derivative_refinement and its complete start, owner, metadata, derivative, JVP and visible comparisons",
+        "symbolic_inputs": "arbitrary normalized profile u64 start/constant bits, all Solve fact shapes and operations with full-width payloads, arbitrary 28 owner counts and 46 metadata counts, all mass-matrix/pattern variants and dimensions",
+        "exhaustive_test_infeasible_because": "independent full-width bit patterns, count arrays, metadata fields, registers and enum variants form an impractically enumerable input product",
+        "counterexample_means": "the shipping whole pure comparison issues a receipt for facts outside the independent exact scalar profile or rejects facts satisfying it"
+      },
+      "assumptions": [
+        "the subject is the complete pure comparison over checker facts, not a DAE/Solve IR constructor, root projection or full DAE-to-Solve transformation",
+        "the profile retains only normalized start/constant bits; the DAE census policy and both residual forms are checked at actual admission and exercised by direct production tests, not represented as synthetic inputs or covers in this comparison harness; admission and source representability of arbitrary bits remain outside this relation",
+        "all Solve fact scalar payloads use their full native widths and all closed variants are selectable, including all five typed nonempty derivative-pattern representations; diagnostic formatting remains outside the property",
+        "the oracle states the whole positive profile independently by exhaustive field patterns and bit equality; it does not call a production checker or assume acceptance",
+        "Kani's pinned Rust/library models, verifier, Rust compiler and linking are trusted; no numerical evaluation, projection completeness, carrier installation, runtime or artifact semantics are implied",
+        "unwind 32 covers the complete 28-slot count loop and fixed arrays, with unwinding checks enabled; incomplete or unsupported verification is not evidence"
+      ],
+      "bound": {
+        "kind": "unwind",
+        "value": 32,
+        "domain": "the whole fixed-size C61 pure fact input vocabulary with arbitrary normalized profile bits, full-width Solve numeric payloads and all five closed nonempty pattern representations"
+      },
+      "covers": 5
     }
   ]
 }

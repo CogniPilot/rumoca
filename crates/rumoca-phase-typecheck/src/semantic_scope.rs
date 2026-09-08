@@ -9,8 +9,8 @@
 use rumoca_core::{ComponentPath, DefId, InstanceId, TypeId};
 use rumoca_eval_ast::eval::VariabilityLevel;
 use rumoca_ir_ast::{
-    Component, ComponentRefPart, ComponentReference, Expression, InstanceOverlay, Subscript,
-    TerminalType,
+    Component, ComponentRefPart, ComponentReference, Expression, InstanceOverlay,
+    RequiredValueViolation, Subscript, TerminalType,
 };
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -45,6 +45,7 @@ pub(crate) enum SemanticLookup<T> {
     Found(T),
     Missing,
     Ambiguous,
+    InvalidAstSubscript,
 }
 
 impl<T> SemanticLookup<T> {
@@ -53,6 +54,7 @@ impl<T> SemanticLookup<T> {
             Self::Found(value) => SemanticLookup::Found(f(value)),
             Self::Missing => SemanticLookup::Missing,
             Self::Ambiguous => SemanticLookup::Ambiguous,
+            Self::InvalidAstSubscript => SemanticLookup::InvalidAstSubscript,
         }
     }
 }
@@ -138,6 +140,9 @@ impl InstanceSemanticScope {
         class_instance_id: Option<InstanceId>,
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<ComponentSemantics> {
+        if invalid_subscript_owner(reference).is_some() {
+            return SemanticLookup::InvalidAstSubscript;
+        }
         let candidates =
             self.resolve_reference(reference, prefix_len, class_instance_id, current_scope);
         self.consensus(candidates)
@@ -205,6 +210,9 @@ impl InstanceSemanticScope {
         class_instance_id: Option<InstanceId>,
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Option<Vec<usize>>> {
+        if invalid_subscript_owner(reference).is_some() {
+            return SemanticLookup::InvalidAstSubscript;
+        }
         match self.resolve_reference_by_identity(reference, prefix_len, class_instance_id) {
             SemanticLookup::Found(ids) => {
                 let shape = self.identity_shape(&ids);
@@ -213,6 +221,9 @@ impl InstanceSemanticScope {
                 }
             }
             SemanticLookup::Ambiguous => return SemanticLookup::Ambiguous,
+            SemanticLookup::InvalidAstSubscript => {
+                return SemanticLookup::InvalidAstSubscript;
+            }
             SemanticLookup::Missing
                 if class_instance_id.is_some()
                     && reference
@@ -422,12 +433,17 @@ impl InstanceSemanticScope {
         current_scope: Option<&ComponentPath>,
     ) -> SemanticLookup<Vec<InstanceId>> {
         match expression {
-            Expression::ComponentReference(reference) => self.resolve_reference(
-                reference,
-                reference.parts.len(),
-                class_instance_id,
-                current_scope,
-            ),
+            Expression::ComponentReference(reference) => {
+                if invalid_subscript_owner(reference).is_some() {
+                    return SemanticLookup::InvalidAstSubscript;
+                }
+                self.resolve_reference(
+                    reference,
+                    reference.parts.len(),
+                    class_instance_id,
+                    current_scope,
+                )
+            }
             Expression::FieldAccess { base, field, .. } => {
                 let parents = self.resolve_expression(base, class_instance_id, current_scope);
                 self.resolve_named_children(parents, field, None)
@@ -435,6 +451,9 @@ impl InstanceSemanticScope {
             Expression::ArrayIndex {
                 base, subscripts, ..
             } => {
+                if subscripts_required_value_violation(subscripts).is_some() {
+                    return SemanticLookup::InvalidAstSubscript;
+                }
                 let candidates = self.resolve_expression(base, class_instance_id, current_scope);
                 filter_candidates_by_subscripts(
                     candidates,
@@ -458,7 +477,9 @@ impl InstanceSemanticScope {
     ) -> SemanticLookup<Vec<InstanceId>> {
         let exact = self.resolve_reference_by_identity(reference, prefix_len, class_instance_id);
         match exact {
-            SemanticLookup::Found(_) | SemanticLookup::Ambiguous => return exact,
+            SemanticLookup::Found(_)
+            | SemanticLookup::Ambiguous
+            | SemanticLookup::InvalidAstSubscript => return exact,
             SemanticLookup::Missing
                 if class_instance_id.is_some()
                     && reference
@@ -699,6 +720,9 @@ impl InstanceSemanticScope {
             SemanticLookup::Found(ids) => ids,
             SemanticLookup::Missing => return SemanticLookup::Missing,
             SemanticLookup::Ambiguous => return SemanticLookup::Ambiguous,
+            SemanticLookup::InvalidAstSubscript => {
+                return SemanticLookup::InvalidAstSubscript;
+            }
         };
         let mut semantics = ids
             .iter()
@@ -816,8 +840,10 @@ fn filter_candidates_by_part(
     part: &ComponentRefPart,
     terminal_subscripts: &HashMap<InstanceId, Vec<i64>>,
 ) -> SemanticLookup<Vec<InstanceId>> {
-    let Some(expected) = literal_subscripts(part.subs.as_deref()) else {
-        return SemanticLookup::Found(candidates);
+    let expected = match literal_subscripts(part.subs.as_deref()) {
+        LiteralSubscriptSelection::Exact(expected) => expected,
+        LiteralSubscriptSelection::Symbolic => return SemanticLookup::Found(candidates),
+        LiteralSubscriptSelection::Invalid => return SemanticLookup::InvalidAstSubscript,
     };
     let has_expanded_candidates = candidates.iter().any(|instance_id| {
         terminal_subscripts
@@ -845,11 +871,16 @@ fn filter_candidates_by_subscripts(
     subscripts: &[Subscript],
     terminal_subscripts: &HashMap<InstanceId, Vec<i64>>,
 ) -> SemanticLookup<Vec<InstanceId>> {
+    if subscripts_required_value_violation(subscripts).is_some() {
+        return SemanticLookup::InvalidAstSubscript;
+    }
     let SemanticLookup::Found(candidates) = candidates else {
         return candidates;
     };
-    let Some(expected) = literal_subscripts(Some(subscripts)) else {
-        return SemanticLookup::Found(candidates);
+    let expected = match literal_subscripts(Some(subscripts)) {
+        LiteralSubscriptSelection::Exact(expected) => expected,
+        LiteralSubscriptSelection::Symbolic => return SemanticLookup::Found(candidates),
+        LiteralSubscriptSelection::Invalid => return SemanticLookup::InvalidAstSubscript,
     };
     let has_expanded_candidates = candidates.iter().any(|instance_id| {
         terminal_subscripts
@@ -870,15 +901,48 @@ fn filter_candidates_by_subscripts(
     }
 }
 
-fn literal_subscripts(subscripts: Option<&[Subscript]>) -> Option<Vec<i64>> {
-    let subscripts = subscripts?;
-    subscripts
+enum LiteralSubscriptSelection {
+    Exact(Vec<i64>),
+    Symbolic,
+    Invalid,
+}
+
+fn literal_subscripts(subscripts: Option<&[Subscript]>) -> LiteralSubscriptSelection {
+    let Some(subscripts) = subscripts else {
+        return LiteralSubscriptSelection::Symbolic;
+    };
+    if subscripts_required_value_violation(subscripts).is_some() {
+        return LiteralSubscriptSelection::Invalid;
+    }
+    match subscripts
         .iter()
         .map(|subscript| match subscript {
             Subscript::Expression(expression) => literal_integer(expression),
-            Subscript::Range { .. } | Subscript::Empty => None,
+            Subscript::Range { .. } => None,
+            Subscript::Empty => unreachable!("recovery subscripts were rejected above"),
         })
         .collect()
+    {
+        Some(values) => LiteralSubscriptSelection::Exact(values),
+        None => LiteralSubscriptSelection::Symbolic,
+    }
+}
+
+pub(crate) fn invalid_subscript_owner(
+    reference: &ComponentReference,
+) -> Option<(&ComponentRefPart, RequiredValueViolation)> {
+    reference.parts.iter().find_map(|part| {
+        subscripts_required_value_violation(part.subs.as_deref().unwrap_or_default())
+            .map(|violation| (part, violation))
+    })
+}
+
+pub(crate) fn subscripts_required_value_violation(
+    subscripts: &[Subscript],
+) -> Option<RequiredValueViolation> {
+    subscripts
+        .iter()
+        .find_map(rumoca_ir_ast::subscript_required_value_violation)
 }
 
 fn literal_integer(expression: &Expression) -> Option<i64> {

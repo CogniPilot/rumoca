@@ -19,20 +19,30 @@ Built-in targets include:
 | `casadi-ode` | solve | symbolic | Differentiable CasADi explicit RHS |
 | `jax-ode` | solve | symbolic | JIT/AD-capable JAX explicit RHS |
 | `rust-fixed-ode` | solve | compiled | Fixed-size, allocation-free Rust explicit-ODE derivative kernel |
-| `rust-ode` / `c-ode` | solve | compiled | Checked explicit-ODE derivative kernels |
+| `rust-ode` | solve | compiled | Checked explicit-ODE derivative kernel |
 | `cuda-ode` | solve | compiled | Batched CUDA explicit-ODE derivative kernel |
 | `wgsl-ode` | solve | JIT | Experimental WebGPU explicit-ODE kernels for browser execution |
 | `mlir` | solve | source | Inspectible MLIR solve-kernel source with affine tensor loops |
-| `flat-modelica` / `base-modelica` | flat | source-transform | Flattened Modelica-family interchange artifacts |
 | `dae-modelica` | dae | source-transform | Modelica representation of the checked DAE |
 | `fmi2` / `fmi3` | fmi | standards container | Source-code Model Exchange and Co-Simulation FMUs |
 | `fmi-ls-wasm` | fmi | compiled component | Experimental FMI-LS WebAssembly component crate |
-| `galec` / `galec-production` | algorithm-code | eFMI | Algorithm Code and Production Code eFMU containers |
-| `embedded-c-galec` | algorithm-code | compiled | GALEC-derived embedded C without an eFMI container |
+| `galec` | algorithm-code | eFMI | Algorithm Code eFMU container |
 
 Targets without a complete checked artifact and executable or independent
 validation evidence are intentionally absent. Rumoca does not expose aliases
 for removed target names or route those names through a weaker IR.
+`flat-modelica` and `base-modelica` are therefore not registered: until Flat
+construction retains every equation body exactly, use `--emit flat-json`.
+
+The deleted `c-ode`, `embedded-c-galec`, and `galec-production` spellings have
+no registry entries or tailored compatibility behavior; like any unknown
+target, they do not resolve. For general C today, use the `fmi3` target
+(FMI 3.0 ME+CS): Model Exchange serves host-owned integration and
+Co-Simulation serves the built-in solver. GALEC never emits C. The eventual
+deployable eFMI product is the `efmu` target: one `SolveAlgorithmProduct`
+retains its checked `AlgorithmCodePackage` and correlated `SolveAlgorithmBlock`,
+and each output file borrows the appropriate view. Production Code C renders
+only from the Solve block.
 
 The `rumoca targets` table also reports a readiness level (0 = experimental
 … 2 = validated) and per-feature support columns (scalarization, tensor
@@ -45,8 +55,8 @@ truth.
 ```bash
 rumoca compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target c-ode \
-  --output /tmp/decay_c_ode
+  --target fmi3 \
+  --output /tmp/decay_fmi3
 ```
 
 `--output` may be a file or directory depending on what the target renders.
@@ -58,7 +68,7 @@ with `task = "codegen"`. Runnable examples live under `examples/codegen/`
 and write into `examples/codegen/gen/` (git-ignored):
 
 - `examples/codegen/rumoca-scenario.ball_jax_ode.toml` — checked ODE RHS JAX target
-- `examples/codegen/rumoca-scenario.sympy_decay_c_ode.toml` — checked ODE RHS C target
+- `examples/codegen/rumoca-scenario.sympy_decay_fmi3.toml` — FMI 3.0 ME+CS export
 - `examples/codegen/rumoca-scenario.sympy_decay_checked_dae_report.toml` —
   custom checked-DAE report target
 - `examples/codegen/rumoca-scenario.sympy_decay_custom_checked_variables.toml`

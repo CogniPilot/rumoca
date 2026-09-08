@@ -1,132 +1,771 @@
+mod artifact_identity_name;
+mod checked_plan;
+mod descriptors;
 mod feature_analysis;
-#[cfg(test)]
-mod tests;
+mod filesystem;
+mod profiles;
+mod target_sources;
+mod validation;
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use rumoca_ir_dae as dae;
 use rumoca_phase_codegen::templates;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use sha2::{Digest as _, Sha256};
 
+pub(crate) use checked_plan::CheckedTargetArtifactStem;
+pub use checked_plan::{
+    ArtifactGenerationInstant, ArtifactIdentitySeed, ArtifactSessionInput,
+    ArtifactSessionInputError, CheckedTargetBundle, CompletedArtifactMemberRef, CompletedPackage,
+    CompletedRenderedFile, CompletedRenderedFileRef, CompletedTargetArtifact, CompletedUnpackaged,
+    PublishedTargetArtifact, TargetArtifactIdentityScope, TargetArtifactIdentityScopeKind,
+    TargetBundle,
+};
+use checked_plan::{CheckedTargetCapabilityContract, TargetBundleSource};
+use descriptors::{
+    CapabilityTarget, parse_target_manifest_construction, phase_artifact_kind,
+    phase_semantic_context, validate_dae_render_capability_contract,
+    validate_solve_capability_contract,
+};
+pub use descriptors::{
+    builtin_target_compatibility_matrix, builtin_target_descriptors,
+    builtin_target_descriptors_requiring,
+};
+#[cfg(test)]
+use descriptors::{validate_dae_capabilities, validate_solve_capabilities};
 use feature_analysis::{
     dae_has_clocks, dae_has_dynamic_derivative_subscripts, dae_has_dynamic_ranges, dae_has_events,
-    dae_has_external_functions, dae_has_initialization, dae_has_runtime_events,
-    dae_has_unlowered_source_temporal_operators, dae_uses_external_tables, dae_uses_random,
+    dae_has_external_functions, dae_has_initialization, dae_has_runtime_events, dae_uses_random,
     solve_requires_residual_equations,
 };
+#[cfg(test)]
+use filesystem::MAX_TARGET_INPUT_FILE_BYTES;
+pub(crate) use filesystem::safe_target_join;
+use filesystem::{TargetSnapshotBudget, read_regular_file_bounded, read_utf8_regular_file_bounded};
+use profiles::TargetSolveExecutableProfiles;
+#[cfg(test)]
+use target_sources::target_asset_relative_path;
+use target_sources::{
+    TargetAssetFile, borrowed_asset_files, close_asset_member_order, collect_target_assets,
+    target_template_source_for,
+};
+use validation::{
+    construct_artifact_identity_catalog, construct_render_authority,
+    ensure_target_has_rendered_files, target_file_role_name, unsupported_feature,
+    unsupported_feature_at, validate_product_member_roles, validate_target_file_contract,
+    validate_target_manifest,
+};
+
+/// Checked target manifest retained only inside target construction.
+#[derive(Debug)]
+pub(crate) struct TargetManifest {
+    version: u32,
+    arithmetic: TargetArithmeticSelection,
+    required_product: TargetRequiredProduct,
+    name: Option<String>,
+    description: Option<String>,
+    execution_mode: Option<String>,
+    deployment_class: Option<String>,
+    readiness_level: Option<u8>,
+    package: Option<TargetPackage>,
+    completion_message: Option<String>,
+    capabilities: Option<TargetCapabilities>,
+    solve_executable: TargetSolveExecutableSelection,
+    files: Vec<TargetFile>,
+    /// Canonically sorted logical artifact identities proved to use the exact
+    /// dot-addressable grammar and to be unique by the construction pass that
+    /// issues `render_plan`.
+    artifact_identity_keys: Box<[String]>,
+    /// Declared target-relative asset trees copied verbatim into the product.
+    assets: Vec<AssetBundle>,
+}
+
+/// Complete normalized numeric profile fixed by an Algorithm Code target.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetAlgorithmCodeArithmetic {
+    pub source_real: rumoca_ir_galec::package::AlgorithmCodeRealFormat,
+    pub source_integer: rumoca_ir_galec::package::AlgorithmCodeIntegerFormat,
+    pub real_matrix_multiply: rumoca_core::RealMatrixMultiplySemantics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetArithmeticSelection {
+    NotApplicable,
+    AlgorithmCode(TargetAlgorithmCodeArithmetic),
+}
+
+#[derive(Debug)]
+enum TargetSolveExecutableSelection {
+    NotApplicable,
+    Prepared(rumoca_phase_codegen::SolveAlgorithmProductionProfile),
+}
+
+/// Untrusted TOML shape. It never escapes deserialization: conditional
+/// arithmetic applicability is closed before [`TargetManifest`] exists.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetManifestDraft {
+    version: u32,
+    arithmetic: Option<TargetAlgorithmCodeArithmetic>,
+    name: Option<String>,
+    description: Option<String>,
+    execution_mode: Option<String>,
+    deployment_class: Option<String>,
+    readiness_level: Option<u8>,
+    package: Option<TargetPackage>,
+    completion_message: Option<String>,
+    capabilities: Option<TargetCapabilities>,
+    solve_executable: Option<TargetSolveExecutableProfiles>,
+    #[serde(default)]
+    files: Vec<TargetFileDraft>,
+    #[serde(default)]
+    assets: Vec<AssetBundle>,
+}
+
+impl<'de> Deserialize<'de> for TargetManifest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let draft = TargetManifestDraft::deserialize(deserializer)?;
+        Self::from_draft(draft)
+            .map(|construction| construction.manifest)
+            .map_err(D::Error::custom)
+    }
+}
+
+impl TargetManifest {
+    fn from_draft(mut draft: TargetManifestDraft) -> Result<TargetManifestConstruction> {
+        let artifact_identity_keys = construct_artifact_identity_catalog(&draft.files)?;
+        let files = std::mem::take(&mut draft.files)
+            .into_iter()
+            .map(|file| {
+                TargetFile::from_draft(file, draft.name.as_deref(), &artifact_identity_keys)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let required_product = TargetRequiredProduct::from_declarations(&files)?;
+        let arithmetic = match (
+            required_product.carries_algorithm_code_package(),
+            draft.arithmetic,
+        ) {
+            (true, Some(arithmetic)) => TargetArithmeticSelection::AlgorithmCode(arithmetic),
+            (true, None) => {
+                bail!("Algorithm Code target manifest must declare an [arithmetic] table")
+            }
+            (false, Some(_)) => bail!(
+                "target manifest whose checked product carries no AlgorithmCodePackage must not declare an [arithmetic] table"
+            ),
+            (false, None) => TargetArithmeticSelection::NotApplicable,
+        };
+        let solve_executable = match (required_product, draft.solve_executable, arithmetic) {
+            (
+                TargetRequiredProduct::SolveAlgorithmProduct,
+                Some(profiles),
+                TargetArithmeticSelection::AlgorithmCode(arithmetic),
+            ) => TargetSolveExecutableSelection::Prepared(
+                profiles.into_production_profile(arithmetic)?,
+            ),
+            (TargetRequiredProduct::SolveAlgorithmProduct, None, _) => bail!(
+                "SolveAlgorithmProduct target manifest must declare a complete [solve_executable] profile"
+            ),
+            (
+                TargetRequiredProduct::SolveAlgorithmProduct,
+                Some(_),
+                TargetArithmeticSelection::NotApplicable,
+            ) => bail!(
+                "SolveAlgorithmProduct target manifest lost its required Algorithm Code numeric profile"
+            ),
+            (_, Some(_), _) => bail!(
+                "target manifest whose product is not SolveAlgorithmProduct must not declare [solve_executable]"
+            ),
+            (_, None, _) => TargetSolveExecutableSelection::NotApplicable,
+        };
+        let validated_members = validate_product_member_roles(
+            required_product,
+            &files,
+            &draft.assets,
+            draft.package.as_ref(),
+        )?;
+        let render_authority = construct_render_authority(
+            &files,
+            validated_members.render_members,
+            draft.package.as_ref(),
+        )?;
+        let manifest = Self {
+            version: draft.version,
+            arithmetic,
+            required_product,
+            name: draft.name,
+            description: draft.description,
+            execution_mode: draft.execution_mode,
+            deployment_class: draft.deployment_class,
+            readiness_level: draft.readiness_level,
+            package: draft.package,
+            completion_message: draft.completion_message,
+            capabilities: draft.capabilities,
+            solve_executable,
+            files,
+            artifact_identity_keys,
+            assets: draft.assets,
+        };
+        validate_target_manifest(&manifest)?;
+        Ok(TargetManifestConstruction {
+            manifest,
+            render_authority,
+        })
+    }
+
+    /// The explicit Algorithm Code numeric profile carried by this target kind.
+    /// `None` means the checked target kind is not Algorithm Code, never that
+    /// an Algorithm Code declaration was omitted.
+    #[must_use]
+    pub(crate) const fn algorithm_code_arithmetic(&self) -> Option<TargetAlgorithmCodeArithmetic> {
+        match self.arithmetic {
+            TargetArithmeticSelection::AlgorithmCode(arithmetic) => Some(arithmetic),
+            TargetArithmeticSelection::NotApplicable => None,
+        }
+    }
+
+    /// Construction-issued semantic product required by all per-file views in
+    /// this manifest.
+    ///
+    /// Orchestration consumes this product directly. It must not infer it from
+    /// target identity or output suffixes.
+    #[must_use]
+    pub(crate) fn required_product(&self) -> TargetRequiredProduct {
+        self.required_product
+    }
+
+    #[must_use]
+    pub(crate) const fn solve_algorithm_production_profile(
+        &self,
+    ) -> Option<rumoca_phase_codegen::SolveAlgorithmProductionProfile> {
+        match self.solve_executable {
+            TargetSolveExecutableSelection::Prepared(profile) => Some(profile),
+            TargetSolveExecutableSelection::NotApplicable => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn files(&self) -> &[TargetFile] {
+        &self.files
+    }
+
+    fn canonical_artifact_identity_digest(&self) -> Result<String> {
+        let arithmetic = match &self.arithmetic {
+            TargetArithmeticSelection::NotApplicable => None,
+            TargetArithmeticSelection::AlgorithmCode(profile) => Some(profile),
+        };
+        let solve_executable = match self.solve_executable {
+            TargetSolveExecutableSelection::NotApplicable => None,
+            TargetSolveExecutableSelection::Prepared(profile) => {
+                Some(CanonicalSolveExecutableIdentity {
+                    maximum_method_automatic_payload_bytes: profile
+                        .maximum_method_automatic_payload_bytes(),
+                    failure_transport: match profile.failure_transport() {
+                        rumoca_phase_codegen::SolveAlgorithmProductionFailureTransport::ReturnedStatusI32 => {
+                            "returned-status-i32"
+                        }
+                    },
+                })
+            }
+        };
+        let canonical = CanonicalTargetManifestIdentity {
+            version: self.version,
+            arithmetic,
+            required_product: self.required_product,
+            execution_mode: self.execution_mode.as_deref(),
+            deployment_class: self.deployment_class.as_deref(),
+            readiness_level: self.readiness_level,
+            package: self.package.as_ref(),
+            capabilities: self.capabilities.as_ref(),
+            solve_executable,
+            files: &self.files,
+            assets: &self.assets,
+        };
+        let bytes = serde_json::to_vec(&canonical)
+            .context("Serialize canonical checked target manifest identity")?;
+        Ok(blake3::hash(&bytes).to_hex().to_string())
+    }
+}
+
+/// Canonical target facts that can affect artifact construction or admission.
+/// Human-facing `name`, `description`, and completion text are deliberately
+/// absent: presentation is not target identity.
+#[derive(Serialize)]
+struct CanonicalTargetManifestIdentity<'a> {
+    version: u32,
+    arithmetic: Option<&'a TargetAlgorithmCodeArithmetic>,
+    required_product: TargetRequiredProduct,
+    execution_mode: Option<&'a str>,
+    deployment_class: Option<&'a str>,
+    readiness_level: Option<u8>,
+    package: Option<&'a TargetPackage>,
+    capabilities: Option<&'a TargetCapabilities>,
+    solve_executable: Option<CanonicalSolveExecutableIdentity<'static>>,
+    files: &'a [TargetFile],
+    assets: &'a [AssetBundle],
+}
+
+#[derive(Serialize)]
+struct CanonicalSolveExecutableIdentity<'a> {
+    maximum_method_automatic_payload_bytes: u32,
+    failure_transport: &'a str,
+}
+
+/// Product membership and the complete per-declaration rendering authority
+/// are issued by one construction pass. The latter is consumed directly into
+/// the checksum plan, so no parallel role array survives checked manifest
+/// construction.
+struct ValidatedTargetProductMembers {
+    render_members: Box<[TargetPreparedMemberPlan]>,
+}
+
+/// Private result of parsing and closing target semantics before target-bundle
+/// bytes are snapshotted. The render authority is consumed by
+/// [`TargetBundle::check`]; public manifest inspection receives metadata only.
+struct TargetManifestConstruction {
+    manifest: TargetManifest,
+    render_authority: TargetDeclaredRenderAuthority,
+}
+
+/// The one declared render authority. Packaged targets own one mixed sequence;
+/// non-package targets own only their file sequence.
+enum TargetDeclaredRenderAuthority {
+    Unpackaged(Box<[TargetDeclaredRenderPlanStep]>),
+    Packaged(Box<[TargetDeclaredPackageMemberPlan]>),
+}
+
+enum TargetDeclaredPackageMemberPlan {
+    File(TargetDeclaredRenderPlanStep),
+    Asset {
+        source: String,
+        relative_path: String,
+    },
+}
+
+enum PendingTargetRenderAuthority {
+    Unpackaged(Box<[PendingTargetRenderStep]>),
+    Packaged(Box<[PendingTargetPackageMemberPlan]>),
+}
+
+struct PendingTargetRenderStep {
+    file: TargetDeclaredFileSpec,
+    file_id: Option<Box<str>>,
+    checksum_needs: Box<[ChecksumNeed]>,
+    prepared_member: TargetPreparedMemberPlan,
+}
+
+enum PendingTargetPackageMemberPlan {
+    File(PendingTargetRenderStep),
+    Asset {
+        source: String,
+        relative_path: String,
+    },
+}
+
+enum TargetSnapshottedRenderAuthority {
+    Unpackaged(Box<[TargetRenderPlanStep]>),
+    Packaged(Box<[TargetSnapshottedPackageMemberPlan]>),
+}
+
+enum TargetSnapshottedPackageMemberPlan {
+    File(TargetRenderPlanStep),
+    Asset {
+        source: String,
+        relative_path: String,
+    },
+}
+
+/// Closed preparation route for one exact manifest file declaration.
+///
+/// This value is private and can be issued only while the product's complete
+/// role family is being checked. It is consumed into the product-specific
+/// target member sequence before rendering begins.
+#[derive(Debug)]
+enum TargetPreparedMemberPlan {
+    Direct,
+    AlgorithmCodeSource {
+        output_path_template: rumoca_phase_codegen::AlgorithmCodeSourceOutputPathTemplate,
+    },
+    PackagedAlgorithmCode {
+        role: rumoca_phase_codegen::AlgorithmCodeArtifactRole,
+    },
+    CorrelatedAlgorithmCode {
+        role: rumoca_phase_codegen::CorrelatedAlgorithmCodeArtifactRole,
+    },
+    ProductionCode {
+        role: rumoca_phase_codegen::ProductionCodeFileRole,
+    },
+}
+
+/// Closed identity of one rendered artifact's byte-level format.
+///
+/// This is an admission field, not a filename inference. Construction checks
+/// that the declared output path has this kind's one legal suffix, so a target
+/// cannot label a C/H product as generic text to bypass its semantic-context
+/// gate (SPEC_0034 GAL-043).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetArtifactKind {
+    AlgorithmCode,
+    CHeader,
+    CSource,
+    CudaSource,
+    Json,
+    Markdown,
+    MlirSource,
+    ModelicaSource,
+    PythonSource,
+    RustSource,
+    Text,
+    Toml,
+    WgslSource,
+    Xml,
+}
+
+/// Closed role of one member in a correlated Algorithm/Production Code eFMU.
+///
+/// This is independent of byte format and IR authority: those remain owned by
+/// [`TargetArtifactKind`] and [`TargetSemanticView`]. The role lets manifest
+/// construction issue one complete, typed package-member layout without
+/// guessing from a path, suffix, template name, or target identity.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+enum TargetProductMemberRole {
+    PackageManifest,
+    AlgorithmCodeManifest,
+    AlgorithmCodeSource,
+    ProductionManifest,
+    ProductionHeader,
+    ProductionSource,
+    Schema,
+}
+
+/// Construction-issued role of one rendered correlated-product member.
+///
+/// Unlike the source-manifest [`TargetProductMemberRole`], this vocabulary
+/// cannot represent the asset-only `Schema` role. Manifest construction also
+/// proves the role's artifact-kind and semantic-view relation before issuing
+/// this value, so rendering never rechecks or narrows a raw declaration role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetProductFileRole {
+    PackageManifest,
+    AlgorithmCodeManifest,
+    AlgorithmCodeSource,
+    ProductionManifest,
+    ProductionHeader,
+    ProductionSource,
+}
+
+/// Construction-issued rendered-member role for a standalone packaged
+/// Algorithm Code product. Production roles are absent at the type level, so
+/// orchestration can map this vocabulary exhaustively without an impossible
+/// fallback arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetAlgorithmCodeFileRole {
+    PackageManifest,
+    AlgorithmCodeManifest,
+    AlgorithmCodeSource,
+}
+
+impl TargetArtifactKind {
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::AlgorithmCode => "alg",
+            Self::CHeader => "h",
+            Self::CSource => "c",
+            Self::CudaSource => "cu",
+            Self::Json => "json",
+            Self::Markdown => "md",
+            Self::MlirSource => "mlir",
+            Self::ModelicaSource => "mo",
+            Self::PythonSource => "py",
+            Self::RustSource => "rs",
+            Self::Text => "txt",
+            Self::Toml => "toml",
+            Self::WgslSource => "wgsl",
+            Self::Xml => "xml",
+        }
+    }
+
+    const fn admits_context(self, context: TargetSemanticContext) -> bool {
+        match context {
+            TargetSemanticContext::Galec => matches!(self, Self::AlgorithmCode | Self::Xml),
+            TargetSemanticContext::Solve => !matches!(self, Self::AlgorithmCode),
+            TargetSemanticContext::Ast
+            | TargetSemanticContext::Flat
+            | TargetSemanticContext::Dae => !matches!(
+                self,
+                Self::AlgorithmCode | Self::CHeader | Self::CSource | Self::CudaSource
+            ),
+        }
+    }
+}
+
+/// Closed semantic authority made available while rendering one file.
+///
+/// The vocabulary is exactly the five `rumoca-ir-*` crate names. Roots and
+/// product flavors inside an IR crate never become manifest contexts.
+macro_rules! define_target_semantic_contexts {
+    ($( $variant:ident => $wire_name:literal ),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum TargetSemanticContext {
+            $(#[serde(rename = $wire_name)] $variant),+
+        }
+
+        impl TargetSemanticContext {
+            /// Complete context vocabulary, generated from the same list as
+            /// the enum so architecture tests cannot observe a partial list.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire_name),+
+                }
+            }
+        }
+    };
+}
+
+define_target_semantic_contexts! {
+    Ast => "ast",
+    Flat => "flat",
+    Dae => "dae",
+    Galec => "galec",
+    Solve => "solve",
+}
+
+/// Closed checked IR root or view supplied while rendering one file.
+///
+/// A missing `[[files]].view` is resolved explicitly from the file's semantic
+/// context by [`TargetSemanticView::canonical_for_context`]. This type has no
+/// `Default`: adding a context or a view requires extending the closed
+/// construction relation.
+macro_rules! define_target_semantic_views {
+    ($( $variant:ident => ($wire_name:literal, $context:ident) ),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum TargetSemanticView {
+            $(#[serde(rename = $wire_name)] $variant),+
+        }
+
+        impl TargetSemanticView {
+            /// Complete view vocabulary, generated from the same list as the
+            /// enum so architecture tests can prove every member's IR owner.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire_name),+
+                }
+            }
+
+            #[must_use]
+            pub const fn semantic_context(self) -> TargetSemanticContext {
+                match self {
+                    $(Self::$variant => TargetSemanticContext::$context),+
+                }
+            }
+        }
+    };
+}
+
+define_target_semantic_views! {
+    ClassTree => ("class-tree", Ast),
+    FlatModel => ("flat-model", Flat),
+    Dae => ("dae", Dae),
+    AlgorithmCodePackage => ("algorithm-code-package", Galec),
+    SolveModel => ("solve-model", Solve),
+    FmiComponent => ("fmi-component", Solve),
+    SolveAlgorithmBlock => ("solve-algorithm-block", Solve),
+}
+
+impl TargetSemanticView {
+    const fn canonical_for_context(context: TargetSemanticContext) -> Self {
+        match context {
+            TargetSemanticContext::Ast => Self::ClassTree,
+            TargetSemanticContext::Flat => Self::FlatModel,
+            TargetSemanticContext::Dae => Self::Dae,
+            TargetSemanticContext::Galec => Self::AlgorithmCodePackage,
+            TargetSemanticContext::Solve => Self::SolveModel,
+        }
+    }
+}
+
+/// Closed semantic product required by the per-file contexts in one target.
+///
+/// `SolveAlgorithmProduct` is one correlated product retaining both its
+/// `AlgorithmCodePackage` and `SolveAlgorithmBlock`; it is never a request to
+/// construct or pair those views independently.
+macro_rules! define_target_required_products {
+    ($( $variant:ident => $wire_name:literal ),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+        pub enum TargetRequiredProduct {
+            $(#[serde(rename = $wire_name)] $variant),+
+        }
+
+        impl TargetRequiredProduct {
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire_name),+
+                }
+            }
+        }
+    };
+}
+
+define_target_required_products! {
+    Ast => "ast",
+    Flat => "flat",
+    Dae => "dae",
+    AlgorithmCodePackage => "algorithm-code-package",
+    SolveModel => "solve-model",
+    FmiComponent => "fmi-component",
+    SolveAlgorithmProduct => "solve-algorithm-product",
+}
+
+impl TargetRequiredProduct {
+    fn from_declarations(files: &[TargetFile]) -> Result<Self> {
+        let views = files
+            .iter()
+            .map(|file| file.semantic_view)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if files
+            .iter()
+            .any(|file| file.semantic_context == TargetSemanticContext::Galec)
+        {
+            let source_count = files
+                .iter()
+                .filter(|file| file.artifact_kind == TargetArtifactKind::AlgorithmCode)
+                .count();
+            if source_count != 1 {
+                bail!(
+                    "a 'galec' semantic context must declare exactly one artifact_kind = 'algorithm-code' source file; found {source_count}"
+                );
+            }
+        }
+        if views.is_empty() {
+            bail!("target.toml must contain at least one file entry");
+        }
+        if let [view] = views.as_slice() {
+            return match view {
+                TargetSemanticView::ClassTree => Ok(Self::Ast),
+                TargetSemanticView::FlatModel => Ok(Self::Flat),
+                TargetSemanticView::Dae => Ok(Self::Dae),
+                TargetSemanticView::AlgorithmCodePackage => Ok(Self::AlgorithmCodePackage),
+                TargetSemanticView::SolveModel => Ok(Self::SolveModel),
+                TargetSemanticView::FmiComponent => Ok(Self::FmiComponent),
+                TargetSemanticView::SolveAlgorithmBlock => bail!(
+                    "a 'solve-algorithm-block' view is only admitted as the correlated Production Code view of one SolveAlgorithmProduct"
+                ),
+            };
+        }
+        if views.as_slice()
+            == [
+                TargetSemanticView::AlgorithmCodePackage,
+                TargetSemanticView::SolveAlgorithmBlock,
+            ]
+        {
+            return Ok(Self::SolveAlgorithmProduct);
+        }
+        bail!(
+            "target files declare incompatible checked IR views; independently provisioned roots cannot share one target"
+        )
+    }
+
+    const fn carries_algorithm_code_package(self) -> bool {
+        match self {
+            Self::AlgorithmCodePackage | Self::SolveAlgorithmProduct => true,
+            Self::Ast | Self::Flat | Self::Dae | Self::SolveModel | Self::FmiComponent => false,
+        }
+    }
+
+    const fn carries_solve_tensor_program(self) -> bool {
+        match self {
+            Self::SolveModel | Self::FmiComponent | Self::SolveAlgorithmProduct => true,
+            Self::Ast | Self::Flat | Self::Dae | Self::AlgorithmCodePackage => false,
+        }
+    }
+
+    const fn requires_declared_capabilities(self) -> bool {
+        match self {
+            Self::Dae
+            | Self::AlgorithmCodePackage
+            | Self::SolveModel
+            | Self::FmiComponent
+            | Self::SolveAlgorithmProduct => true,
+            Self::Ast | Self::Flat => false,
+        }
+    }
+
+    const fn admits_exact_algebraic_assignment_capability(self) -> bool {
+        match self {
+            Self::SolveModel | Self::FmiComponent => true,
+            Self::Ast
+            | Self::Flat
+            | Self::Dae
+            | Self::AlgorithmCodePackage
+            | Self::SolveAlgorithmProduct => false,
+        }
+    }
+}
+
+/// Target-declared package layout. Rendered artifact authority remains owned
+/// by each checked `[[files]].semantic_context` declaration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TargetPackage {
+    root: String,
+    #[serde(default)]
+    required_files: Vec<String>,
+    archive: Option<TargetArchive>,
+    /// Sole declared package-member order. Every rendered file and expanded
+    /// asset member must occur exactly once in this closed sum.
+    members: Vec<TargetPackageMember>,
+}
+
+/// One exact member reference in the package's target-issued order.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum TargetPackageMember {
+    File { file: String },
+    Asset { source: String, path: String },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TargetArchive {
+    path: String,
+    format: TargetArchiveFormat,
+    root: TargetArchiveRoot,
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum TargetTemplateIr {
-    Dae,
-    Solve,
-    Fmi,
-    Flat,
-    Ast,
-    AlgorithmCode,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetManifest {
-    pub version: u32,
-    pub ir: TargetTemplateIr,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub execution_mode: Option<String>,
-    pub deployment_class: Option<String>,
-    pub readiness_level: Option<u8>,
-    pub package: Option<TargetPackage>,
-    pub integer: Option<TargetIntegerDomain>,
-    pub completion_message: Option<String>,
-    #[serde(alias = "requirements", alias = "requires")]
-    pub capabilities: Option<TargetCapabilities>,
-    #[serde(default)]
-    pub files: Vec<TargetFile>,
-    /// Support partials this target contributes to the shared render
-    /// environment. A partial renders no product file, so it never has a
-    /// `[[files]]` entry; see [`TargetPartial`].
-    #[serde(default)]
-    pub partials: Vec<TargetPartial>,
-    /// Declared target-relative asset trees copied verbatim into the product.
-    #[serde(default)]
-    pub assets: Vec<AssetBundle>,
-}
-
-/// One declared **support partial**: a template that renders no product file
-/// and exists only to be `import`ed, `include`d, or `extends`ed by artifact
-/// templates.
-///
-/// This is the first-class alternative to leaving a bundled template
-/// undeclared. A partial cannot be a `[[files]]` entry (it produces no
-/// artifact), and every bundled `.jinja` file must be one or the other, so
-/// "declared but not rendered" is a state the manifest can express exactly
-/// once, rather than a hole that render-coverage CI has to carve out.
-///
-/// # Name resolution
-///
-/// `name` is the identifier templates spell in `{% import %}`. Shared names
-/// form ONE global namespace owned by the built-in target manifests: the
-/// render environment is built from
-/// `rumoca_phase_codegen::templates::shared_templates()`, whose entries the
-/// code-gen crate's `build.rs` generates from these declarations and rejects
-/// on collision. An external (directory) target therefore cannot register or
-/// override a shared name — a copied target directory whose partial was
-/// edited would otherwise silently render against the built-in text — so
-/// [`TargetBundle::parse_manifest`] rejects a directory manifest whose
-/// declared partials do not match the built-in registry byte for byte.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetPartial {
-    /// Target-relative path of the partial's template file.
-    pub template: String,
-    /// Shared render-environment name templates import it under.
-    pub name: String,
-}
-
-/// Target-declared product layout. All paths are target templates rendered
-/// against the same semantic context as `[[files]]`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetPackage {
-    pub root: String,
-    #[serde(default)]
-    pub required_files: Vec<String>,
-    pub archive: Option<TargetArchive>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetArchive {
-    pub path: String,
-    pub format: TargetArchiveFormat,
-    pub root: TargetArchiveRoot,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum TargetArchiveFormat {
+enum TargetArchiveFormat {
     Zip,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub enum TargetArchiveRoot {
+enum TargetArchiveRoot {
     Flat,
 }
 
-/// Integer range whose operations a target promises to represent.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetIntegerDomain {
-    pub minimum: i64,
-    pub maximum: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetCapabilities {
     pub continuous_states: Option<bool>,
@@ -137,9 +776,11 @@ pub struct TargetCapabilities {
     /// The target consumes compact DAE `structured_equations` as the
     /// authoritative body instead of blindly iterating placeholder scalar rows.
     pub structured_equation_families: Option<bool>,
-    pub scalar_fallback: Option<bool>,
+    /// Whether a Solve-derived target admits the construction-issued scalar
+    /// lowering alternative for tensor operations. This declaration is total:
+    /// omission is not permission to scalarize.
+    pub scalar_fallback: bool,
     pub external_functions: Option<bool>,
-    pub external_tables: Option<bool>,
     pub random: Option<bool>,
     pub initialization: Option<bool>,
     pub events: Option<bool>,
@@ -154,7 +795,7 @@ pub struct TargetCapabilities {
     pub tensor: Option<TensorCapabilities>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TensorCapabilities {
     pub matmul: Option<TensorCapability>,
@@ -168,7 +809,7 @@ pub struct TensorCapabilities {
     pub dtypes: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TensorCapability {
     Native,
@@ -176,71 +817,350 @@ pub enum TensorCapability {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TensorLayoutCapability {
     RowMajor,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetFile {
-    pub path: String,
-    pub template: String,
-    /// Shared render-environment name this artifact template is additionally
-    /// published under, so another target's template can `{% extends %}` it
-    /// (the target-agnostic GALEC-derived C body, for example). Unlike a
-    /// `[[partials]]` entry this template still renders its own product file;
-    /// the shared-name namespace and its uniqueness rule are the same one
-    /// documented on [`TargetPartial`].
-    pub shared_as: Option<String>,
-    pub mode: Option<String>,
+/// Checked rendered-file declaration retained only inside target construction.
+#[derive(Debug, Serialize)]
+pub(crate) struct TargetFile {
+    /// Closed byte-level artifact identity; its output suffix is checked once
+    /// when the manifest is constructed.
+    artifact_kind: TargetArtifactKind,
+    /// The sole semantic authority this file may observe while rendering.
+    semantic_context: TargetSemanticContext,
+    /// Checked root/view inside `semantic_context`, resolved during manifest
+    /// construction even when the source declaration omits `view`.
+    semantic_view: TargetSemanticView,
+    product_role: Option<TargetProductMemberRole>,
+    path: String,
+    template: String,
+    /// Exact registered built-in owner of this complete template's bytes.
+    /// Absence means the declaring target owns a local template file.
+    template_shared_from: Option<String>,
+    mode: Option<String>,
+    /// Construction-parsed Unix permission bits for unpackaged publication.
+    /// The declaration spelling remains only for canonical manifest identity.
+    mode_bits: Option<u32>,
     /// Stable logical identity of this rendered file within the target
     /// (contract §4a). Only files a checksum edge points at (`of = <id>`)
     /// need one; the identity is keyed off `id`, never the templated `path`,
     /// so it is stable across path interpolation (`{{ model_name }}`).
-    pub id: Option<String>,
+    id: Option<String>,
+    /// Exact artifact identity keys this file may observe while rendering.
+    /// Manifest construction proves every key was issued by this target's
+    /// complete logical file-ID catalog before any template plan exists.
+    required_artifact_identities: CheckedArtifactIdentityDependencies,
     /// Checksum edges this file consumes: for each entry, the SHA-1 of the
     /// producer file `of` is exposed to this file's templates under the
     /// context key `as` (contract §4a). The declaration is co-located with
     /// the template that interpolates the key, so under strict-undefined
     /// minijinja a template referencing `{{ <as> }}` without a matching
     /// entry fails loudly at render — declaration and use cannot drift.
+    checksums: Vec<ChecksumNeed>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetFileDraft {
+    artifact_kind: TargetArtifactKind,
+    semantic_context: TargetSemanticContext,
+    view: Option<TargetSemanticView>,
+    product_role: Option<TargetProductMemberRole>,
+    path: String,
+    template: String,
+    template_shared_from: Option<String>,
+    mode: Option<String>,
+    id: Option<String>,
     #[serde(default)]
-    pub checksums: Vec<ChecksumNeed>,
+    required_artifact_identities: Vec<String>,
+    #[serde(default)]
+    checksums: Vec<ChecksumNeed>,
+}
+
+impl TargetFile {
+    fn from_draft(
+        draft: TargetFileDraft,
+        target_name: Option<&str>,
+        artifact_identity_keys: &[String],
+    ) -> Result<Self> {
+        validate_target_file_contract(draft.artifact_kind, draft.semantic_context, &draft.path)?;
+        let semantic_view = draft
+            .view
+            .unwrap_or_else(|| TargetSemanticView::canonical_for_context(draft.semantic_context));
+        if semantic_view.semantic_context() != draft.semantic_context {
+            bail!(
+                "[[files]] path '{}' declares view = '{}' outside semantic_context = '{}'",
+                draft.path,
+                semantic_view.as_str(),
+                draft.semantic_context.as_str()
+            );
+        }
+        if let Some(owner) = draft.template_shared_from.as_deref() {
+            validate_borrowed_template(
+                target_name,
+                owner,
+                &draft.template,
+                draft.artifact_kind,
+                draft.semantic_context,
+                semantic_view,
+            )?;
+        }
+        let mode_bits = draft
+            .mode
+            .as_deref()
+            .map(|mode| {
+                u32::from_str_radix(mode.trim_start_matches("0o"), 8)
+                    .with_context(|| format!("Parse target file mode '{mode}'"))
+            })
+            .transpose()?;
+        let required_artifact_identities = CheckedArtifactIdentityDependencies::construct(
+            draft.required_artifact_identities,
+            artifact_identity_keys,
+            &draft.path,
+        )?;
+        Ok(Self {
+            artifact_kind: draft.artifact_kind,
+            semantic_context: draft.semantic_context,
+            semantic_view,
+            product_role: draft.product_role,
+            path: draft.path,
+            template: draft.template,
+            template_shared_from: draft.template_shared_from,
+            mode: draft.mode,
+            mode_bits,
+            id: draft.id,
+            required_artifact_identities,
+            checksums: draft.checksums,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn template(&self) -> &str {
+        &self.template
+    }
+
+    #[must_use]
+    pub(crate) fn template_shared_from(&self) -> Option<&str> {
+        self.template_shared_from.as_deref()
+    }
+}
+
+/// Construction-checked artifact identities visible to one template file.
+///
+/// This carrier is neither deserializable nor publicly constructible. Its
+/// keys are canonicalized and proven members of the target-wide issued
+/// identity catalog before the render authority is created.
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+struct CheckedArtifactIdentityDependencies(Box<[String]>);
+
+impl CheckedArtifactIdentityDependencies {
+    fn construct(
+        declared: Vec<String>,
+        artifact_identity_keys: &[String],
+        file_path: &str,
+    ) -> Result<Self> {
+        let mut keys = BTreeSet::new();
+        for key in declared {
+            if key.trim().is_empty() {
+                bail!(
+                    "[[files]].required_artifact_identities must not contain an empty key (file '{file_path}')"
+                );
+            }
+            if !keys.insert(key.clone()) {
+                bail!(
+                    "[[files]].required_artifact_identities contains duplicate key '{key}' (file '{file_path}')"
+                );
+            }
+            if artifact_identity_keys.binary_search(&key).is_err() {
+                bail!(
+                    "[[files]].required_artifact_identities key '{key}' on file '{file_path}' names no target-issued [[files]] id"
+                );
+            }
+        }
+        Ok(Self(
+            keys.into_iter().collect::<Vec<_>>().into_boxed_slice(),
+        ))
+    }
+
+    fn keys(&self) -> &[String] {
+        &self.0
+    }
+}
+
+fn validate_borrowed_template(
+    target_name: Option<&str>,
+    owner: &str,
+    template: &str,
+    artifact_kind: TargetArtifactKind,
+    semantic_context: TargetSemanticContext,
+    semantic_view: TargetSemanticView,
+) -> Result<()> {
+    if owner.trim() != owner || owner.is_empty() || owner.chars().any(char::is_control) {
+        bail!("[[files]].template_shared_from must be one exact nonempty built-in target name");
+    }
+    if target_name == Some(owner) {
+        bail!("[[files]] template '{template}' cannot borrow from its declaring target '{owner}'");
+    }
+    let builtin = templates::builtin_target(owner).with_context(|| {
+        format!("[[files]] template '{template}' borrows from unknown built-in target '{owner}'")
+    })?;
+    if builtin.template_source(template).is_none() {
+        bail!(
+            "[[files]] template '{template}' borrows from target '{owner}', which owns no such template"
+        );
+    }
+    let owner_draft: TargetManifestDraft = toml::from_str(builtin.manifest)
+        .with_context(|| format!("parse registered template owner target manifest '{owner}'"))?;
+    let mut matches = owner_draft
+        .files
+        .into_iter()
+        .filter(|file| file.template == template);
+    let owner_file = matches.next().with_context(|| {
+        format!(
+            "registered target '{owner}' bundles template '{template}' without one owning [[files]] declaration"
+        )
+    })?;
+    if matches.next().is_some() {
+        bail!("registered target '{owner}' declares template '{template}' more than once");
+    }
+    if owner_file.template_shared_from.is_some() {
+        bail!(
+            "[[files]] template '{template}' must name its canonical owner, not borrowing target '{owner}'"
+        );
+    }
+    let owner_view = owner_file
+        .view
+        .unwrap_or_else(|| TargetSemanticView::canonical_for_context(owner_file.semantic_context));
+    if (
+        owner_file.artifact_kind,
+        owner_file.semantic_context,
+        owner_view,
+    ) != (artifact_kind, semantic_context, semantic_view)
+    {
+        bail!(
+            "[[files]] template '{template}' cannot borrow from target '{owner}': artifact/context/view declarations differ"
+        );
+    }
+    Ok(())
 }
 
 /// One consumer-declared checksum edge: "embed the producer `of`'s SHA-1
-/// under my context key `as`" (contract §4a). Modeled as the directed edge
-/// `of -> this` ("`of` rendered + hashed before this file") by the packaging
-/// topo sort; a manifest can never checksum itself (no self edge) so the
-/// edge set is a DAG by construction (contract §4c).
-#[derive(Debug, Clone, Deserialize)]
+/// under my context key `as`" (contract §4a). Manifest construction resolves
+/// the directed edge `of -> this`, proves the DAG, and issues its render plan;
+/// packaging receives no string edge to resolve or graph to sort.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ChecksumNeed {
+pub(crate) struct ChecksumNeed {
     /// The producer file's `id` whose exact rendered bytes are hashed.
-    pub of: String,
+    of: String,
     /// Hash algorithm selected by the target format.
-    pub algorithm: ChecksumAlgorithm,
+    algorithm: ChecksumAlgorithm,
     /// The context key this file's templates read the producer's SHA-1 from.
     /// `as` is a Rust keyword, so the field is renamed for the struct.
     #[serde(rename = "as")]
-    pub as_key: String,
+    as_key: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "kebab-case")]
-pub enum ChecksumAlgorithm {
+pub(crate) enum ChecksumAlgorithm {
     Sha1,
+}
+
+/// One construction-resolved checksum input for a consumer file.
+///
+/// The producer is an immutable earlier render position, not the source
+/// manifest's string id. This value has no public constructor or deserializer.
+#[derive(Debug)]
+enum TargetResolvedChecksumBinding {
+    Sha1 {
+        producer: TargetFileResultId,
+        as_key: String,
+    },
+}
+
+impl TargetResolvedChecksumBinding {
+    fn erase_after_resolution(self) {
+        match self {
+            Self::Sha1 { .. } => {}
+        }
+    }
+}
+
+/// Opaque identity of one file result in the package plan's private dense
+/// file arena.
+///
+/// The token's representation and constructor stay private to manifest
+/// construction. In particular, packaging cannot convert arbitrary integers
+/// into producer authority or perform a bounds/missing-producer check.
+#[derive(Debug, Clone, Copy)]
+struct TargetFileResultId(usize);
+
+impl TargetFileResultId {
+    fn resolve<'a, T>(&self, rendered_prefix: &'a [T]) -> &'a T {
+        &rendered_prefix[self.0]
+    }
+}
+
+#[derive(Debug)]
+struct TargetDeclaredRenderPlanStep {
+    file: TargetDeclaredFileSpec,
+    incoming_checksums: Vec<TargetResolvedChecksumBinding>,
+    prepared_member: TargetPreparedMemberPlan,
+}
+
+#[derive(Debug)]
+struct TargetRenderPlanStep {
+    file: TargetSnapshottedFile,
+    incoming_checksums: Vec<TargetResolvedChecksumBinding>,
+    prepared_member: TargetPreparedMemberPlan,
+}
+
+#[derive(Debug)]
+struct TargetDeclaredFileSpec {
+    artifact_kind: TargetArtifactKind,
+    semantic_context: TargetSemanticContext,
+    path: Box<str>,
+    template: Box<str>,
+    template_shared_from: Option<Box<str>>,
+    mode_bits: Option<u32>,
+    role_name: &'static str,
+    artifact_identity_dependencies: CheckedArtifactIdentityDependencies,
+}
+
+impl TargetDeclaredFileSpec {
+    fn from_file(file: &TargetFile) -> Self {
+        Self {
+            artifact_kind: file.artifact_kind,
+            semantic_context: file.semantic_context,
+            path: file.path.clone().into_boxed_str(),
+            template: file.template.clone().into_boxed_str(),
+            template_shared_from: file.template_shared_from.as_deref().map(Box::<str>::from),
+            mode_bits: file.mode_bits,
+            role_name: target_file_role_name(file),
+            artifact_identity_dependencies: file.required_artifact_identities.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TargetSnapshottedFile {
+    declaration: TargetDeclaredFileSpec,
+    template_body: Box<str>,
 }
 
 /// A declared asset tree copied from `source` under the target directory to
 /// `dest` under the package root.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AssetBundle {
-    pub source: String,
-    pub dest: String,
+struct AssetBundle {
+    source: String,
+    dest: String,
+    product_role: Option<TargetProductMemberRole>,
     /// The built-in target that owns these bytes, when this target borrows a
     /// bundle instead of vendoring its own copy of it.
     ///
@@ -251,7 +1171,7 @@ pub struct AssetBundle {
     /// bytes once; for a directory target [`TargetBundle::asset_files`] reads
     /// them out of the owner's embedded bundle. Both spellings of the same
     /// target therefore emit the same bytes.
-    pub shared_from: Option<String>,
+    shared_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -259,7 +1179,33 @@ pub struct AssetBundle {
 pub struct BuiltinTargetDescriptor {
     pub id: String,
     pub label: String,
-    pub manifest: &'static str,
+    pub description: Option<String>,
+    pub required_product: TargetRequiredProduct,
+    pub capabilities: Option<TargetCapabilities>,
+    pub file_plans: Vec<TargetFileDescriptor>,
+}
+
+/// Passive discovery facts for one checked built-in target output.
+///
+/// This value carries no template body, declaration identity, package-member
+/// role, checksum edge, or render authority.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetFileDescriptor {
+    pub path: String,
+    pub semantic_context: TargetSemanticContext,
+    pub semantic_view: TargetSemanticView,
+}
+
+struct TargetDescriptorFacts {
+    label: String,
+    description: Option<String>,
+    required_product: TargetRequiredProduct,
+    capabilities: Option<TargetCapabilities>,
+    execution_mode: Option<String>,
+    deployment_class: Option<String>,
+    readiness_level: Option<u8>,
+    file_plans: Vec<TargetFileDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -276,7 +1222,7 @@ pub enum TargetFeatureSupport {
 pub struct TargetCompatibilityEntry {
     pub id: String,
     pub label: String,
-    pub ir: TargetTemplateIr,
+    pub required_product: TargetRequiredProduct,
     pub execution_mode: Option<String>,
     pub deployment_class: Option<String>,
     pub readiness_level: Option<u8>,
@@ -295,1065 +1241,4 @@ pub struct TargetCompatibilityEntry {
     pub reverse_ad: TargetFeatureSupport,
     pub dynamic_control_flow: TargetFeatureSupport,
     pub host_callbacks: TargetFeatureSupport,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RenderedTargetFile {
-    pub path: String,
-    pub content: String,
-}
-
-pub enum TargetBundle {
-    Builtin {
-        target: &'static templates::BuiltinTarget,
-    },
-    Directory {
-        dir: PathBuf,
-        manifest: String,
-    },
-}
-
-impl TargetBundle {
-    pub fn load(target: &str) -> Result<Self> {
-        if let Some(bundle) = Self::builtin(target) {
-            return Ok(bundle);
-        }
-
-        let dir = PathBuf::from(target);
-        let manifest_path = dir.join("target.toml");
-        let manifest = std::fs::read_to_string(&manifest_path).with_context(|| {
-            format!(
-                "Read target manifest for '{}' at {}",
-                target,
-                manifest_path.display()
-            )
-        })?;
-        Ok(Self::Directory { dir, manifest })
-    }
-
-    pub fn builtin(target: &str) -> Option<Self> {
-        templates::builtin_target(target).map(|target| Self::Builtin { target })
-    }
-
-    pub fn parse_manifest(&self) -> Result<TargetManifest> {
-        match self {
-            Self::Builtin { target } => parse_target_manifest(target.manifest),
-            Self::Directory { dir, manifest } => {
-                let manifest = parse_target_manifest(manifest)?;
-                // The render environment registers shared names from the
-                // built-in registry only, so a directory target's shared
-                // declarations must be honorable before anything renders.
-                validate_directory_shared_templates(dir, &manifest)?;
-                Ok(manifest)
-            }
-        }
-    }
-
-    pub fn label<'a>(&'a self, manifest: &'a TargetManifest) -> &'a str {
-        manifest.name.as_deref().unwrap_or(match self {
-            Self::Builtin { target } => target.name,
-            Self::Directory { dir, .. } => dir.to_str().unwrap_or("custom"),
-        })
-    }
-
-    /// Read one declared `[[assets]]` bundle's files.
-    ///
-    /// A bundle that declares `shared_from` names the built-in target that
-    /// owns its bytes, and is read from that target either way: a built-in
-    /// borrower already carries the owner's files, because the codegen build
-    /// script grafts them into its bundle, and a directory target reads them
-    /// straight out of the owner's embedded bundle. A target directory copied
-    /// out of the tree therefore emits the bytes the built-in it came from
-    /// emits. Without that, a borrowing target would work as a built-in and
-    /// fail as a directory, which is the shape `--target <dir>` documents.
-    pub fn asset_files(&self, bundle: &AssetBundle) -> Result<Vec<TargetAssetFile>> {
-        let source = bundle.source.as_str();
-        if let Some(owner) = bundle.shared_from.as_deref()
-            && !matches!(self, Self::Builtin { .. })
-        {
-            return borrowed_asset_files(owner, source);
-        }
-        match self {
-            Self::Builtin { target } => target
-                .asset_files(source)
-                .map(|files| {
-                    files
-                        .into_iter()
-                        .map(|(relative_path, bytes)| TargetAssetFile {
-                            relative_path: relative_path.to_owned(),
-                            bytes: bytes.to_vec(),
-                        })
-                        .collect()
-                })
-                .with_context(|| {
-                    format!(
-                        "Built-in target '{}' contains no asset source '{source}'",
-                        target.name
-                    )
-                }),
-            Self::Directory { dir, .. } => {
-                let root = safe_target_join(dir, source)?;
-                collect_target_assets(&root)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TargetAssetFile {
-    pub relative_path: String,
-    pub bytes: Vec<u8>,
-}
-
-/// The files a `shared_from` bundle borrows, read from the owning built-in
-/// target's embedded bundle.
-fn borrowed_asset_files(owner: &str, source: &str) -> Result<Vec<TargetAssetFile>> {
-    let target = rumoca_phase_codegen::templates::builtin_target(owner).with_context(|| {
-        format!("[[assets]] source '{source}' borrows from unknown target '{owner}'")
-    })?;
-    let files = target
-        .asset_files(source)
-        .with_context(|| format!("Target '{owner}' lends no asset source '{source}' to borrow"))?;
-    Ok(files
-        .into_iter()
-        .map(|(relative_path, bytes)| TargetAssetFile {
-            relative_path: relative_path.to_owned(),
-            bytes: bytes.to_vec(),
-        })
-        .collect())
-}
-
-fn collect_target_assets(root: &Path) -> Result<Vec<TargetAssetFile>> {
-    if !root.is_dir() {
-        bail!(
-            "Target asset source '{}' is not a directory",
-            root.display()
-        );
-    }
-    let mut paths = Vec::new();
-    collect_target_asset_paths(root, root, &mut paths)?;
-    paths.sort_by(|left, right| left.0.cmp(&right.0));
-    paths
-        .into_iter()
-        .map(|(relative_path, path)| {
-            Ok(TargetAssetFile {
-                relative_path,
-                bytes: std::fs::read(&path)
-                    .with_context(|| format!("Read target asset '{}'", path.display()))?,
-            })
-        })
-        .collect()
-}
-
-fn collect_target_asset_paths(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<(String, PathBuf)>,
-) -> Result<()> {
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("Read target asset directory '{}'", dir.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("Read target asset entry in '{}'", dir.display()))?;
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("Stat target asset '{}'", entry.path().display()))?;
-        if file_type.is_symlink() {
-            bail!(
-                "Target asset source may not contain symlinks: '{}'",
-                entry.path().display()
-            );
-        }
-        if file_type.is_dir() {
-            collect_target_asset_paths(root, &entry.path(), out)?;
-        } else if file_type.is_file() {
-            let relative_path = target_asset_relative_path(root, &entry.path())?;
-            out.push((relative_path, entry.path()));
-        }
-    }
-    Ok(())
-}
-
-fn target_asset_relative_path(root: &Path, path: &Path) -> Result<String> {
-    let relative = path.strip_prefix(root).with_context(|| {
-        format!(
-            "Target asset '{}' is not beneath source root '{}'",
-            path.display(),
-            root.display()
-        )
-    })?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        let Component::Normal(part) = component else {
-            bail!(
-                "Target asset path must contain only normal components: '{}'",
-                path.display()
-            );
-        };
-        let part = part
-            .to_str()
-            .with_context(|| format!("Target asset path must be UTF-8: '{}'", path.display()))?;
-        parts.push(part);
-    }
-    if parts.is_empty() {
-        bail!(
-            "Target asset path must identify a file beneath source root: '{}'",
-            path.display()
-        );
-    }
-    Ok(parts.join("/"))
-}
-
-impl TargetTemplateSource for TargetBundle {
-    fn template_source<'a>(&'a self, template: &str) -> Result<Cow<'a, str>> {
-        match self {
-            Self::Builtin { target } => target
-                .template_source(template)
-                .map(Cow::Borrowed)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Built-in target references unknown template '{template}'")
-                }),
-            Self::Directory { dir, .. } => {
-                let path = safe_target_join(dir, template)?;
-                std::fs::read_to_string(&path)
-                    .map(Cow::Owned)
-                    .with_context(|| format!("Read target template {}", path.display()))
-            }
-        }
-    }
-}
-
-pub trait TargetTemplateSource {
-    fn template_source<'a>(&'a self, template: &str) -> Result<Cow<'a, str>>;
-}
-
-impl TargetTemplateSource for BTreeMap<String, String> {
-    fn template_source<'a>(&'a self, template: &str) -> Result<Cow<'a, str>> {
-        self.get(template)
-            .map(|source| Cow::Borrowed(source.as_str()))
-            .ok_or_else(|| anyhow::anyhow!("Target template not found: {template}"))
-    }
-}
-
-pub fn builtin_target_descriptors_for_ir(ir: TargetTemplateIr) -> Vec<BuiltinTargetDescriptor> {
-    templates::builtin_targets()
-        .iter()
-        .filter(|target| target_manifest_ir(target.manifest) == Some(ir))
-        .map(|target| BuiltinTargetDescriptor {
-            id: target.name.to_string(),
-            label: target.name.to_string(),
-            manifest: target.manifest,
-        })
-        .collect()
-}
-
-pub fn builtin_target_compatibility_matrix() -> Result<Vec<TargetCompatibilityEntry>> {
-    templates::builtin_targets()
-        .iter()
-        .map(|target| {
-            let manifest = parse_target_manifest(target.manifest)
-                .with_context(|| format!("Parse built-in target '{}'", target.name))?;
-            Ok(target_compatibility_entry(target.name, &manifest))
-        })
-        .collect()
-}
-
-fn target_compatibility_entry(id: &str, manifest: &TargetManifest) -> TargetCompatibilityEntry {
-    let capabilities = manifest.capabilities.as_ref();
-    let tensor = capabilities.and_then(|capabilities| capabilities.tensor.as_ref());
-    let scalar_fallback = capabilities
-        .and_then(|capabilities| capabilities.scalar_fallback)
-        .unwrap_or(true);
-    TargetCompatibilityEntry {
-        id: id.to_string(),
-        label: manifest.name.clone().unwrap_or_else(|| id.to_string()),
-        ir: manifest.ir,
-        execution_mode: manifest.execution_mode.clone(),
-        deployment_class: manifest.deployment_class.clone(),
-        readiness_level: manifest.readiness_level,
-        scalar_programs: scalar_program_support(manifest.ir),
-        matmul: tensor_feature_support(
-            manifest.ir,
-            scalar_fallback,
-            tensor.and_then(|tensor| tensor.matmul),
-        ),
-        linsolve: tensor_feature_support(
-            manifest.ir,
-            scalar_fallback,
-            tensor.and_then(|tensor| tensor.linsolve),
-        ),
-        elementwise: tensor_feature_support(
-            manifest.ir,
-            scalar_fallback,
-            tensor.and_then(|tensor| tensor.elementwise),
-        ),
-        stencil: tensor_feature_support(
-            manifest.ir,
-            scalar_fallback,
-            tensor.and_then(|tensor| tensor.stencil),
-        ),
-        reductions: tensor_feature_support(
-            manifest.ir,
-            scalar_fallback,
-            tensor.and_then(|tensor| tensor.reductions),
-        ),
-        supports_dynamic_shapes: tensor.and_then(|tensor| tensor.supports_dynamic_shapes),
-        sparse: feature_support(tensor.and_then(|tensor| tensor.sparse)),
-        dtypes: tensor_dtypes(tensor),
-        events: feature_support(capabilities.and_then(|capabilities| capabilities.events)),
-        runtime_events: feature_support(
-            capabilities.and_then(|capabilities| capabilities.runtime_events),
-        ),
-        forward_ad: feature_support(capabilities.and_then(|capabilities| capabilities.forward_ad)),
-        reverse_ad: feature_support(capabilities.and_then(|capabilities| capabilities.reverse_ad)),
-        dynamic_control_flow: feature_support(
-            capabilities.and_then(|capabilities| capabilities.dynamic_control_flow),
-        ),
-        host_callbacks: feature_support(
-            capabilities.and_then(|capabilities| capabilities.host_callbacks),
-        ),
-    }
-}
-
-fn tensor_dtypes(tensor: Option<&TensorCapabilities>) -> Vec<String> {
-    match tensor.and_then(|tensor| tensor.dtypes.as_ref()) {
-        Some(dtypes) => dtypes.clone(),
-        None => Vec::new(),
-    }
-}
-
-fn scalar_program_support(ir: TargetTemplateIr) -> TargetFeatureSupport {
-    match ir {
-        TargetTemplateIr::Solve => TargetFeatureSupport::Native,
-        TargetTemplateIr::Dae
-        | TargetTemplateIr::Fmi
-        | TargetTemplateIr::Flat
-        | TargetTemplateIr::Ast
-        | TargetTemplateIr::AlgorithmCode => TargetFeatureSupport::Unsupported,
-    }
-}
-
-fn tensor_feature_support(
-    ir: TargetTemplateIr,
-    scalar_fallback: bool,
-    capability: Option<TensorCapability>,
-) -> TargetFeatureSupport {
-    if !matches!(ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi) {
-        return TargetFeatureSupport::Unsupported;
-    }
-    match capability {
-        Some(TensorCapability::Native) => TargetFeatureSupport::Native,
-        Some(TensorCapability::Scalar) if scalar_fallback => TargetFeatureSupport::Scalar,
-        Some(TensorCapability::Scalar) => TargetFeatureSupport::Unsupported,
-        Some(TensorCapability::Unsupported) => TargetFeatureSupport::Unsupported,
-        None => TargetFeatureSupport::Unknown,
-    }
-}
-
-fn feature_support(value: Option<bool>) -> TargetFeatureSupport {
-    match value {
-        Some(true) => TargetFeatureSupport::Native,
-        Some(false) => TargetFeatureSupport::Unsupported,
-        None => TargetFeatureSupport::Unknown,
-    }
-}
-
-pub fn parse_target_manifest(source: &str) -> Result<TargetManifest> {
-    let manifest: TargetManifest = toml::from_str(source).context("Parse target.toml")?;
-    validate_target_manifest(&manifest)?;
-    Ok(manifest)
-}
-
-pub fn target_manifest_ir(source: &str) -> Option<TargetTemplateIr> {
-    parse_target_manifest(source)
-        .ok()
-        .map(|manifest| manifest.ir)
-}
-
-pub fn target_ir_is_dae_renderable(ir: TargetTemplateIr) -> bool {
-    matches!(ir, TargetTemplateIr::Dae | TargetTemplateIr::Fmi)
-}
-
-pub fn render_dae_target_files(
-    source: &impl TargetTemplateSource,
-    manifest: &TargetManifest,
-    dae: &dae::Dae,
-    model_name: &str,
-) -> Result<Vec<RenderedTargetFile>> {
-    ensure_target_has_rendered_files(manifest)?;
-    if !target_ir_is_dae_renderable(manifest.ir) {
-        bail!(
-            "{:?} IR is not available from DAE-only target render state",
-            manifest.ir
-        );
-    }
-    let capabilities = manifest
-        .capabilities
-        .as_ref()
-        .context("DAE target manifest must declare a [capabilities] table")?;
-    validate_dae_target_capabilities(dae, manifest, capabilities)?;
-    let mut files = Vec::with_capacity(manifest.files.len());
-    for file in &manifest.files {
-        let path = render_dae_target_str(dae, &file.path, model_name)
-            .with_context(|| format!("Render target output path '{}'", file.path))?;
-        let template = source.template_source(&file.template)?;
-        let content = render_dae_target_str(dae, template.as_ref(), model_name)
-            .with_context(|| format!("Render target template '{}'", file.template))?;
-        files.push(RenderedTargetFile {
-            path: path.trim().to_string(),
-            content,
-        });
-    }
-    Ok(files)
-}
-
-pub fn validate_dae_target_capabilities(
-    dae: &dae::Dae,
-    manifest: &TargetManifest,
-    capabilities: &TargetCapabilities,
-) -> Result<()> {
-    if dae_has_unlowered_source_temporal_operators(dae) {
-        bail!(
-            "invalid canonical DAE for target '{}': a source temporal or synchronous operator survived the Phase-DAE boundary",
-            manifest.name.as_deref().unwrap_or("<unnamed>")
-        );
-    }
-    let (state_count, residual_owner_count, continuous_family_count) = dae.inspect(|view| {
-        let state_count = view
-            .variables()
-            .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
-            .count();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        (
-            state_count,
-            definitions.remaining_owner_count(),
-            view.continuous_family_count(),
-        )
-    });
-    // DAE templates must explicitly consume compact families. Algorithm Code
-    // targets own a stronger, target-specific projection proof and re-check
-    // every family before lowering; the generic renderer must not reject that
-    // canonical input before the projection can inspect it.
-    if manifest.ir == TargetTemplateIr::Dae
-        && capabilities.structured_equation_families != Some(true)
-        && continuous_family_count != 0
-    {
-        unsupported_feature(
-            manifest,
-            "structured_equation_families",
-            format!("{continuous_family_count} compact equation family owner(s)"),
-        )?;
-    }
-    if capabilities.continuous_states == Some(false) && state_count != 0 {
-        unsupported_feature(
-            manifest,
-            "continuous_states",
-            format!("{state_count} state(s)"),
-        )?;
-    }
-    // A Solve/FMI target does not emit DAE owners directly. Its later checked
-    // projection distinguishes explicit derivative rows from retained
-    // algebraic residuals; rejecting every source equation here would make a
-    // plain explicit ODE impossible to export.
-    if manifest.ir == TargetTemplateIr::Dae
-        && capabilities.residual_equations == Some(false)
-        && residual_owner_count != 0
-    {
-        unsupported_feature(
-            manifest,
-            "residual_equations",
-            format!("{residual_owner_count} equation(s)"),
-        )?;
-    }
-    if capabilities.external_functions == Some(false) && dae_has_external_functions(dae) {
-        unsupported_feature(
-            manifest,
-            "external_functions",
-            "external declarations present",
-        )?;
-    }
-    if capabilities.external_tables == Some(false) && dae_uses_external_tables(dae) {
-        unsupported_feature(manifest, "external_tables", "table runtime calls present")?;
-    }
-    if capabilities.random == Some(false) && dae_uses_random(dae) {
-        unsupported_feature(manifest, "random", "random runtime calls present")?;
-    }
-    if capabilities.initialization == Some(false) && dae_has_initialization(dae) {
-        unsupported_feature(manifest, "initialization", "initial equations present")?;
-    }
-    if capabilities.events != Some(true) && dae_has_events(dae) {
-        unsupported_feature(manifest, "events", "event or condition partitions present")?;
-    }
-    if capabilities.runtime_events == Some(false) && dae_has_runtime_events(dae) {
-        unsupported_feature(
-            manifest,
-            "runtime_events",
-            "delay-history or terminal-event runtime support is required",
-        )?;
-    }
-    if capabilities.clocks != Some(true) && dae_has_clocks(dae) {
-        unsupported_feature(manifest, "clocks", "clock partition entries present")?;
-    }
-    if capabilities.dynamic_ranges == Some(false) && dae_has_dynamic_ranges(dae) {
-        unsupported_feature(
-            manifest,
-            "dynamic_ranges",
-            "non-literal range expressions present",
-        )?;
-    }
-    if capabilities.dynamic_derivative_subscripts == Some(false)
-        && dae_has_dynamic_derivative_subscripts(dae)
-    {
-        unsupported_feature(
-            manifest,
-            "dynamic_derivative_subscripts",
-            "derivative references with dynamic subscripts present",
-        )?;
-    }
-    Ok(())
-}
-
-pub fn validate_solve_target_capabilities(
-    solve: &rumoca_ir_solve::SolveProblem,
-    manifest: &TargetManifest,
-    capabilities: &TargetCapabilities,
-) -> Result<()> {
-    solve.validate()?;
-    if capabilities.residual_equations != Some(true)
-        && solve_requires_residual_equations(solve, capabilities.exact_algebraic_assignments)
-    {
-        unsupported_feature(
-            manifest,
-            "residual_equations",
-            "checked algebraic refresh retains residual projection stages",
-        )?;
-    }
-    // The Solve presence queries below are owned by `rumoca_ir_solve`
-    // (SPEC_0041 §1) and are called qualified so this gate and the checked FMI
-    // projection provably read the same facts.
-    if capabilities.initialization == Some(false)
-        && rumoca_ir_solve::solve_has_initialization(solve)
-    {
-        unsupported_feature(
-            manifest,
-            "initialization",
-            "initialization residual, projection, or assignment owners present",
-        )?;
-    }
-    if capabilities.events != Some(true) && rumoca_ir_solve::solve_has_events(solve) {
-        unsupported_feature(manifest, "events", "event or discrete partitions present")?;
-    }
-    if capabilities.runtime_events == Some(false)
-        && rumoca_ir_solve::solve_has_runtime_events(solve)
-    {
-        unsupported_feature(
-            manifest,
-            "runtime_events",
-            "delay-history or terminal-event runtime support is required",
-        )?;
-    }
-    if capabilities.clocks != Some(true) && rumoca_ir_solve::solve_has_clocks(solve) {
-        unsupported_feature(manifest, "clocks", "clock partition entries present")?;
-    }
-    let mut inventory = solve.compute_node_counts();
-    inventory.add_assign(solve.initialization.residual.compute_node_counts());
-    let uses_linear_solve_component = solve.uses_linear_solve_component()
-        || solve.initialization.residual.uses_linear_solve_component();
-    validate_solve_tensor_inventory(
-        manifest,
-        capabilities,
-        inventory,
-        uses_linear_solve_component,
-    )
-}
-
-pub fn validate_solve_tensor_inventory(
-    manifest: &TargetManifest,
-    capabilities: &TargetCapabilities,
-    inventory: rumoca_ir_solve::ComputeNodeCounts,
-    uses_linear_solve_component: bool,
-) -> Result<()> {
-    let scalar_fallback = capabilities.scalar_fallback.unwrap_or(true);
-    let tensor = capabilities.tensor.as_ref();
-
-    validate_solve_tensor_feature(
-        manifest,
-        "tensor.matmul",
-        "MatMul",
-        inventory.matmul,
-        tensor.and_then(|tensor| tensor.matmul),
-        scalar_fallback,
-    )?;
-    validate_solve_tensor_feature(
-        manifest,
-        "tensor.linsolve",
-        "LinSolve",
-        inventory
-            .linsolve
-            .saturating_add(usize::from(uses_linear_solve_component)),
-        tensor.and_then(|tensor| tensor.linsolve),
-        scalar_fallback,
-    )?;
-    validate_solve_tensor_feature(
-        manifest,
-        "tensor.elementwise",
-        "Map",
-        inventory.map,
-        tensor.and_then(|tensor| tensor.elementwise),
-        scalar_fallback,
-    )?;
-    validate_solve_tensor_feature(
-        manifest,
-        "tensor.stencil",
-        "AffineStencil",
-        inventory.affine_stencil,
-        tensor.and_then(|tensor| tensor.stencil),
-        scalar_fallback,
-    )
-}
-
-fn validate_solve_tensor_feature(
-    manifest: &TargetManifest,
-    feature: &str,
-    display_name: &str,
-    count: usize,
-    capability: Option<TensorCapability>,
-    scalar_fallback: bool,
-) -> Result<()> {
-    if count == 0 {
-        return Ok(());
-    }
-    match capability {
-        Some(TensorCapability::Native) => Ok(()),
-        Some(TensorCapability::Scalar) if scalar_fallback => Ok(()),
-        Some(TensorCapability::Scalar) => unsupported_tensor_feature(
-            manifest,
-            feature,
-            format!(
-                "{display_name} is configured for scalar fallback but scalar fallback is disabled"
-            ),
-        ),
-        Some(TensorCapability::Unsupported) => unsupported_tensor_feature(
-            manifest,
-            feature,
-            format!(
-                "{display_name} nodes are present but the target declares {feature} unsupported"
-            ),
-        ),
-        None if scalar_fallback => Ok(()),
-        None => unsupported_tensor_feature(
-            manifest,
-            feature,
-            format!(
-                "{display_name} nodes are present but the target does not declare native \
-                 {display_name} support and scalar fallback is disabled"
-            ),
-        ),
-    }
-}
-
-fn unsupported_tensor_feature(
-    manifest: &TargetManifest,
-    feature: &str,
-    detail: impl std::fmt::Display,
-) -> Result<()> {
-    bail!(
-        "unsupported-feature:{feature}: Target '{}' does not support feature '{feature}': {detail}",
-        manifest.name.as_deref().unwrap_or("custom")
-    )
-}
-
-pub fn safe_target_join(root: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
-    let relative = relative.as_ref();
-    if relative.as_os_str().is_empty() {
-        bail!("Target manifest path must not be empty");
-    }
-    if relative.is_absolute() {
-        bail!(
-            "Target manifest path '{}' must be relative",
-            relative.display()
-        );
-    }
-    for component in relative.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                bail!(
-                    "Target manifest path '{}' must not escape the target root",
-                    relative.display()
-                );
-            }
-        }
-    }
-    Ok(root.join(relative))
-}
-
-fn validate_target_manifest(manifest: &TargetManifest) -> Result<()> {
-    if manifest.version != 1 {
-        bail!(
-            "Unsupported target manifest version {}; expected version 1",
-            manifest.version
-        );
-    }
-    if manifest.name.as_deref().is_some_and(str::is_empty) {
-        bail!("target name must not be empty when present");
-    }
-    if manifest.description.as_deref().is_some_and(str::is_empty) {
-        bail!("target description must not be empty when present");
-    }
-    if manifest
-        .completion_message
-        .as_deref()
-        .is_some_and(str::is_empty)
-    {
-        bail!("target completion_message must not be empty when present");
-    }
-    if manifest
-        .readiness_level
-        .is_some_and(|readiness_level| readiness_level > 5)
-    {
-        bail!("target readiness_level must be between 0 and 5");
-    }
-    if manifest.files.is_empty() {
-        bail!("target.toml must contain at least one file entry");
-    }
-    if matches!(
-        manifest.ir,
-        TargetTemplateIr::Dae | TargetTemplateIr::Fmi | TargetTemplateIr::AlgorithmCode
-    ) && manifest.capabilities.is_none()
-    {
-        bail!(
-            "unsupported-feature:target-capabilities-undeclared: DAE-derived target manifest \
-             must declare a [capabilities] table"
-        );
-    }
-    if let Some(capabilities) = &manifest.capabilities {
-        validate_target_capabilities(manifest, capabilities)?;
-    }
-    for file in &manifest.files {
-        if let Some(mode) = file.mode.as_deref() {
-            u32::from_str_radix(mode.trim_start_matches("0o"), 8)
-                .with_context(|| format!("Parse target file mode '{mode}'"))?;
-        }
-    }
-    validate_checksum_web(&manifest.files)?;
-    validate_shared_templates(manifest)?;
-    validate_asset_bundles(&manifest.assets)?;
-    validate_package(manifest.package.as_ref())?;
-    if let Some(integer) = manifest.integer
-        && integer.minimum > integer.maximum
-    {
-        bail!(
-            "[integer] minimum ({}) must not exceed maximum ({})",
-            integer.minimum,
-            integer.maximum
-        );
-    }
-    Ok(())
-}
-
-/// Structural checks on a manifest's shared render-environment declarations
-/// (`[[partials]]` and `[[files]].shared_as`).
-///
-/// The two declarations are disjoint by construction: a support partial
-/// renders no product file, so declaring the same template both ways is a
-/// contradiction rather than a merge. Shared names are global, so a manifest
-/// that spells one twice is rejected here before the built-in registry's own
-/// cross-target uniqueness check (in the code-gen crate's `build.rs`) can even
-/// see it.
-fn validate_shared_templates(manifest: &TargetManifest) -> Result<()> {
-    let mut shared_names = BTreeMap::<&str, &str>::new();
-    for file in &manifest.files {
-        let Some(shared_as) = file.shared_as.as_deref() else {
-            continue;
-        };
-        if shared_as.trim().is_empty() {
-            bail!(
-                "[[files]] entry for template '{}' declares an empty shared_as name",
-                file.template
-            );
-        }
-        if let Some(previous) = shared_names.insert(shared_as, &file.template) {
-            bail!(
-                "shared render-environment name '{shared_as}' is declared twice in one \
-                 target, by '{previous}' and '{}'",
-                file.template
-            );
-        }
-    }
-    for partial in &manifest.partials {
-        if partial.template.trim().is_empty() {
-            bail!("[[partials]] entry must name a template file");
-        }
-        if partial.name.trim().is_empty() {
-            bail!(
-                "[[partials]] entry for template '{}' must declare the shared \
-                 render-environment name templates import it under",
-                partial.template
-            );
-        }
-        if let Some(file) = manifest
-            .files
-            .iter()
-            .find(|file| file.template == partial.template)
-        {
-            bail!(
-                "template '{}' is declared both as a [[files]] artifact (path '{}') and as \
-                 a [[partials]] support partial; a support partial renders no product file, \
-                 so the two declarations are mutually exclusive",
-                partial.template,
-                file.path
-            );
-        }
-        if let Some(previous) = shared_names.insert(&partial.name, &partial.template) {
-            bail!(
-                "shared render-environment name '{}' is declared twice in one target, by \
-                 '{previous}' and '{}'",
-                partial.name,
-                partial.template
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Reject a directory target whose shared render-environment declarations
-/// cannot be honored.
-///
-/// The render environment is built once from the built-in registry
-/// (`templates::shared_templates()`), so a directory target's own partial file
-/// is never registered. Without this check a user who copies a built-in target
-/// directory and edits its partial gets output rendered from the built-in
-/// text: a silent no-op, and precisely the trap a "first-class" partial
-/// concept must not ship with. Both failure modes are named exactly:
-///
-/// * an unknown shared name would fail later, deep inside a render, as a
-///   missing template; and
-/// * a known name whose bytes differ would not fail at all.
-fn validate_directory_shared_templates(dir: &Path, manifest: &TargetManifest) -> Result<()> {
-    let declarations = manifest
-        .partials
-        .iter()
-        .map(|partial| (partial.name.as_str(), partial.template.as_str()))
-        .chain(manifest.files.iter().filter_map(|file| {
-            file.shared_as
-                .as_deref()
-                .map(|shared_as| (shared_as, file.template.as_str()))
-        }));
-    for (name, template) in declarations {
-        let Some(shared) = templates::shared_template(name) else {
-            bail!(
-                "Target directory '{}' declares shared render-environment name '{name}' for \
-                 template '{template}', but shared names are registered only from built-in \
-                 targets. A directory target cannot add one: render '{template}' from a \
-                 [[files]] entry, or use the built-in name a built-in target already \
-                 publishes.",
-                dir.display()
-            );
-        };
-        let path = safe_target_join(dir, template)?;
-        let source = std::fs::read_to_string(&path)
-            .with_context(|| format!("Read target template {}", path.display()))?;
-        if source != shared.source {
-            bail!(
-                "Target directory '{}' declares shared render-environment name '{name}' for \
-                 template '{template}', but that name resolves to the built-in \
-                 '{}/{}' and this copy differs from it. Every template importing '{name}' \
-                 would render the built-in text, so the local edit would silently do \
-                 nothing. Rename the template and render it from a [[files]] entry, or \
-                 revert it to the built-in source.",
-                dir.display(),
-                shared.target,
-                shared.path
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_package(package: Option<&TargetPackage>) -> Result<()> {
-    let Some(package) = package else {
-        return Ok(());
-    };
-    if package.root.trim().is_empty() {
-        bail!("[package] root must not be empty");
-    }
-    for required in &package.required_files {
-        if required.trim().is_empty() {
-            bail!("[package] required_files entries must not be empty");
-        }
-    }
-    if let Some(archive) = &package.archive
-        && archive.path.trim().is_empty()
-    {
-        bail!("[package.archive] path must not be empty");
-    }
-    Ok(())
-}
-
-/// Fail-early structural checks on the declared checksum web (contract §4a/
-/// §4c), before any rendering: file `id`s are unique, every `[[files.checksums]]`
-/// `of` resolves to a declared `id`, no file checksums itself (the no-self-hash
-/// invariant that keeps the edge set a DAG), and every `as` key is non-empty and
-/// unique per file. Cycle detection is the packaging topo sort's job (it renders
-/// nothing on a cycle); this rejects the malformed declarations that can be seen
-/// without ordering.
-fn validate_checksum_web(files: &[TargetFile]) -> Result<()> {
-    let mut ids = std::collections::BTreeSet::new();
-    for file in files {
-        if let Some(id) = &file.id {
-            if id.trim().is_empty() {
-                bail!("[[files]] id must not be empty (path '{}')", file.path);
-            }
-            if !ids.insert(id.as_str()) {
-                bail!("duplicate [[files]] id '{id}' (ids must be unique per target)");
-            }
-        }
-    }
-    for file in files {
-        let mut as_keys = std::collections::BTreeSet::new();
-        for need in &file.checksums {
-            if need.as_key.trim().is_empty() {
-                bail!(
-                    "[[files.checksums]] `as` must not be empty (file '{}', of = '{}')",
-                    file.path,
-                    need.of
-                );
-            }
-            if !as_keys.insert(need.as_key.as_str()) {
-                bail!(
-                    "[[files.checksums]] `as` = '{}' is declared twice on file '{}'; each `as` \
-                     key names one distinct injected checksum, so a duplicate would silently \
-                     overwrite one producer's real SHA-1 with another's",
-                    need.as_key,
-                    file.path
-                );
-            }
-            if !ids.contains(need.of.as_str()) {
-                bail!(
-                    "[[files.checksums]] of = '{}' on file '{}' names no [[files]] id \
-                     (declare `id = \"{}\"` on the producer file)",
-                    need.of,
-                    file.path,
-                    need.of
-                );
-            }
-            if file.id.as_deref() == Some(need.of.as_str()) {
-                bail!(
-                    "[[files.checksums]] of = '{}' on file '{}' checksums itself; a file \
-                     can never embed its own hash (contract §4c no-self-hash invariant)",
-                    need.of,
-                    file.path
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Fail-early checks on declared target-relative asset trees.
-fn validate_asset_bundles(assets: &[AssetBundle]) -> Result<()> {
-    for asset in assets {
-        if asset.source.trim().is_empty() {
-            bail!("[[assets]] source must not be empty");
-        }
-        if asset.dest.trim().is_empty() {
-            bail!(
-                "[[assets]] dest must not be empty (source '{}')",
-                asset.source
-            );
-        }
-        if asset
-            .shared_from
-            .as_deref()
-            .is_some_and(|owner| owner.trim().is_empty())
-        {
-            bail!(
-                "[[assets]] shared_from must name the owning target when present (source '{}')",
-                asset.source
-            );
-        }
-    }
-    Ok(())
-}
-
-pub fn ensure_target_has_rendered_files(manifest: &TargetManifest) -> Result<()> {
-    if manifest.files.is_empty() {
-        bail!(
-            "target '{}' is manifest-only and does not define generated files yet",
-            manifest.name.as_deref().unwrap_or("custom")
-        );
-    }
-    Ok(())
-}
-
-fn validate_target_capabilities(
-    manifest: &TargetManifest,
-    capabilities: &TargetCapabilities,
-) -> Result<()> {
-    if capabilities.structured_equation_families.is_some() && manifest.ir != TargetTemplateIr::Dae {
-        bail!("structured_equation_families capability is only valid for ir = \"dae\" targets");
-    }
-    if capabilities.exact_algebraic_assignments.is_some()
-        && !matches!(manifest.ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi)
-    {
-        bail!("exact_algebraic_assignments capability is only valid for Solve-derived targets");
-    }
-    if capabilities.tensor.is_some()
-        && !matches!(manifest.ir, TargetTemplateIr::Solve | TargetTemplateIr::Fmi)
-    {
-        bail!("tensor capabilities are only valid for Solve-derived targets");
-    }
-    if capabilities.scalar_fallback == Some(false) {
-        let Some(tensor) = &capabilities.tensor else {
-            return Ok(());
-        };
-        let scalar_tensor_ops = [
-            ("tensor.matmul", tensor.matmul),
-            ("tensor.linsolve", tensor.linsolve),
-            ("tensor.elementwise", tensor.elementwise),
-            ("tensor.stencil", tensor.stencil),
-            ("tensor.reductions", tensor.reductions),
-        ]
-        .into_iter()
-        .filter_map(|(name, mode)| (mode == Some(TensorCapability::Scalar)).then_some(name))
-        .collect::<Vec<_>>();
-        if !scalar_tensor_ops.is_empty() {
-            bail!(
-                "target.toml sets scalar_fallback = false but marks {} as scalar",
-                scalar_tensor_ops.join(", ")
-            );
-        }
-    }
-    if let Some(tensor) = &capabilities.tensor
-        && tensor
-            .dtypes
-            .as_ref()
-            .is_some_and(|dtypes| dtypes.iter().any(|dtype| dtype.trim().is_empty()))
-    {
-        bail!("target tensor dtypes must not contain empty entries");
-    }
-    Ok(())
-}
-
-fn render_dae_target_str(dae: &dae::Dae, template: &str, model_name: &str) -> Result<String> {
-    crate::codegen_api::render_dae_template_with_name(dae, template, model_name)
-        .map_err(anyhow::Error::from)
-}
-
-fn unsupported_feature(
-    manifest: &TargetManifest,
-    feature: &str,
-    detail: impl std::fmt::Display,
-) -> Result<()> {
-    bail!(
-        "unsupported-feature:{}: Target '{}' does not support feature '{}': {} \
-         (see `rumoca targets` for a target supporting the '{}' column)",
-        feature,
-        manifest.name.as_deref().unwrap_or("custom"),
-        feature,
-        detail,
-        feature
-    )
 }

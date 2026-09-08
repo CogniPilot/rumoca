@@ -79,49 +79,35 @@ fn validate_component_redeclare_constraint(
     replacement_def_id: DefId,
     span: rumoca_core::Span,
 ) -> InstantiateResult<()> {
-    let Some(constraint_def_id) = component_redeclare_constraint_def_id(nested_class) else {
-        return Err(Box::new(InstantiateError::redeclare_error(
-            target_name,
-            "resolved replaceable declaration has no constraining-type identity",
-            span,
-        )));
-    };
-    let replacement_name = tree
-        .def_map
-        .get(&replacement_def_id)
-        .cloned()
-        .or_else(|| {
-            tree.get_class_by_def_id(replacement_def_id)
-                .map(|class| class.name.text.to_string())
-        })
-        .ok_or_else(|| {
+    let constraint_def_id =
+        component_redeclare_constraint_def_id(nested_class).ok_or_else(|| {
             Box::new(InstantiateError::redeclare_error(
                 target_name,
-                "resolved redeclare value has no class identity",
+                "resolved replaceable declaration has no constraining-type identity",
                 span,
             ))
         })?;
-    let constraint_name = tree
-        .def_map
-        .get(&constraint_def_id)
-        .cloned()
-        .or_else(|| {
-            tree.get_class_by_def_id(constraint_def_id)
-                .map(|class| class.name.text.to_string())
-        })
-        .ok_or_else(|| {
-            Box::new(InstantiateError::redeclare_error(
-                target_name,
-                "resolved constraining type has no class identity",
-                span,
-            ))
-        })?;
-
-    if !crate::inheritance::is_type_subtype(tree, &replacement_name, &constraint_name) {
+    let compatible = crate::inheritance::is_type_subtype_by_def_id(
+        tree,
+        replacement_def_id,
+        constraint_def_id,
+        &mut crate::inheritance::SubtypeCache::default(),
+    )?;
+    if !compatible {
+        let display_name = |def_id| {
+            tree.def_map
+                .get(&def_id)
+                .cloned()
+                .or_else(|| {
+                    tree.get_class_by_def_id(def_id)
+                        .map(|class| class.name.text.to_string())
+                })
+                .unwrap_or_else(|| format!("{def_id:?}"))
+        };
         return Err(Box::new(InstantiateError::redeclare_constraint_violation(
             target_name,
-            &replacement_name,
-            &constraint_name,
+            display_name(replacement_def_id),
+            display_name(constraint_def_id),
             span,
         )));
     }
@@ -130,17 +116,13 @@ fn validate_component_redeclare_constraint(
 }
 
 fn component_redeclare_constraint_def_id(nested_class: &ast::ClassDef) -> Option<DefId> {
-    nested_class
-        .constrainedby
-        .as_ref()
-        .and_then(|constraint| constraint.def_id)
-        .or_else(|| {
-            nested_class
-                .extends
-                .first()
-                .and_then(|extend| extend.base_def_id.or(extend.base_name.def_id))
-        })
-        .or(nested_class.def_id)
+    if let Some(constraint) = nested_class.constrainedby.as_ref() {
+        return constraint.def_id;
+    }
+    if let Some(extend) = nested_class.extends.first() {
+        return extend.base_def_id.or(extend.base_name.def_id);
+    }
+    nested_class.def_id
 }
 
 pub(super) fn validate_component_source_modifier_metadata(
@@ -170,7 +152,7 @@ pub(super) fn reject_unmarked_component_class_replacement(
     if !matches!(source_mod_expr, ast::Expression::Modification { .. }) {
         return Ok(());
     }
-    if resolve_redeclare_value_def_id(tree, resolved_mod_expr, None).is_none() {
+    if resolve_redeclare_value_def_id(tree, resolved_mod_expr, None)?.is_none() {
         return Ok(());
     }
     let span = class_redeclare_alias_ref(source_mod_expr)

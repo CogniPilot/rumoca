@@ -1,5 +1,4 @@
 version = 1
-ir = "fmi"
 name = "fmi-ls-wasm"
 description = "Experimental FMI 3 Co-Simulation WebAssembly component using the pinned FMI-LS-Wasm WIT draft"
 execution_mode = "compiled"
@@ -13,12 +12,67 @@ Contract: modelica/fmi-ls-wasm@c1aac17d392bec989fe2d059db3cc57bb7a0fff5 (non-nor
 root = "{{ model_name }}"
 required_files = ["Cargo.toml", "src/lib.rs", "src/model.rs", "wit/world.wit", "UPSTREAM.md", "upstream/LICENSE.txt"]
 
+[[package.members]]
+kind = "file"
+file = "fmu"
+
+[[package.members]]
+kind = "file"
+file = "library_source"
+
+[[package.members]]
+kind = "file"
+file = "model_source"
+
+[[package.members]]
+kind = "file"
+file = "upstream_notice"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-callbacks.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-co-simulation.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-common.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-model-exchange.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-scheduled-execution.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "fmi3-types.wit"
+
+[[package.members]]
+kind = "asset"
+source = "wit"
+path = "world.wit"
+
+[[package.members]]
+kind = "asset"
+source = "upstream"
+path = "LICENSE.txt"
+
 [capabilities]
 continuous_states = true
 residual_equations = false
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -51,18 +105,34 @@ source = "upstream"
 dest = "upstream/"
 
 [[files]]
+id = "fmu"
+artifact_kind = "toml"
+semantic_context = "solve"
+view = "fmi-component"
 path = "Cargo.toml"
 template = "Cargo.toml.jinja"
-id = "fmu"
 
 [[files]]
+id = "library_source"
+artifact_kind = "rust-source"
+semantic_context = "solve"
+view = "fmi-component"
 path = "src/lib.rs"
 template = "lib.rs.jinja"
+required_artifact_identities = ["fmu"]
 
 [[files]]
+id = "model_source"
+artifact_kind = "rust-source"
+semantic_context = "solve"
+view = "fmi-component"
 path = "src/model.rs"
 template = "model.rs.jinja"
 
 [[files]]
+id = "upstream_notice"
+artifact_kind = "markdown"
+semantic_context = "solve"
+view = "fmi-component"
 path = "UPSTREAM.md"
 template = "UPSTREAM.md.jinja"

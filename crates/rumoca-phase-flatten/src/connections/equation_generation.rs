@@ -138,17 +138,23 @@ fn var_shape_evidence(flat: &flat::Model, var: &rumoca_core::VarName) -> ShapeEv
                 .iter()
                 .take(selected.indices.len())
                 .any(|extent| *extent > 1);
-            if selects_strict_subdomain {
-                // AS-017 / SPEC_0043 §7: Flat currently owns only a
-                // declaration-wide connected bit. Marking it for one strict
-                // subdomain would suppress zero-flow equations for untouched
-                // elements, so refusal must precede every Flat mutation until
-                // construction owns checked connected subdomains.
+            if selects_strict_subdomain && selected.declaration.stream {
+                // A strict subdomain of a compact stream array has a checked
+                // connected-domain owner, but MLS §15.2 mixing pairs each
+                // stream member with the flow member of the same connector
+                // occurrence, and the stream rewrite resolves that pairing per
+                // declaration rather than per element. Refusing here keeps the
+                // element and its whole-declaration flow partner from being
+                // mixed at different granularities.
                 return ShapeEvidence::Invalid(
-                    "partial connectivity of a compact array is not representable; expand the connector occurrence before connection lowering"
+                    "partial connectivity of a compact stream array is not representable; expand the connector occurrence before connection lowering"
                     .to_string(),
                 );
             }
+            // A strict subdomain of a flow or potential declaration is
+            // representable: the member's owner carries its selection, the
+            // connection transaction marks exactly those elements, and the
+            // MLS §9.2 zero-flow planner reads the per-element domain.
             selected_shape
         }
         Ok(None) => ShapeEvidence::Missing,
@@ -665,6 +671,9 @@ fn plan_flow_equation(
     let eq = flat::Equation::new_array(sum, span, origin, scalar_count);
     projection.plan_equation(eq, Some(&flow_shapes[0].dims))?;
     for owner in &owners {
+        // Claiming precedes marking so that an element summed by two sets at
+        // this scope refuses before any of its connected state is planned.
+        projection.claim_flow_member(flat, scope, owner)?;
         projection.mark_connected(flat, owner)?;
     }
 
@@ -915,15 +924,15 @@ fn validate_closed_connection_inputs(
     var_index: &ConnectionVarIndex,
 ) -> Result<(), FlattenError> {
     flat.validate().map_err(|error| {
-        let span = connections
-            .first()
-            .map_or(Span::DUMMY, |connection| connection.span());
-        FlattenError::invalid_connection_evidence(
-            format!(
-                "connection compatibility requires a complete finalized Flat effective-type catalog: {error:?}"
-            ),
-            span,
-        )
+        let reason = format!(
+            "connection compatibility requires a complete finalized Flat effective-type catalog: {error:?}"
+        );
+        match connections.first() {
+            Some(connection) => {
+                FlattenError::invalid_connection_evidence(reason, connection.span())
+            }
+            None => FlattenError::internal(reason),
+        }
     })?;
     #[cfg(feature = "tracing")]
     {
@@ -1027,52 +1036,174 @@ fn plan_unconnected_flow_equations(
     flat: &flat::Model,
     projection: &mut OpenConnectionProjection,
 ) -> Result<(), FlattenError> {
-    // Find all flow variables that are NOT marked as connected
-    let unconnected_flows: Vec<(rumoca_core::VarName, usize)> = flat
-        .variables
-        .iter()
-        .filter(|(name, var)| var.flow && !var.connected && !projection.is_connected(name))
-        .map(|(name, var)| {
-            compute_var_scalar_count(var).map(|scalar_count| (name.clone(), scalar_count))
-        })
-        .collect::<Result<_, _>>()?;
-
-    for (var_name, scalar_count) in unconnected_flows {
-        // Skip empty arrays (Real[0]) — no equations needed
-        if scalar_count == 0 {
+    // The effective domain of a declaration is what earlier transactions
+    // committed plus what this open transaction has planned; both are read so
+    // an element summed by a set planned moments ago is not zeroed as well.
+    let mut zero_rows: Vec<UnconnectedFlowRows> = Vec::new();
+    for (name, var) in &flat.variables {
+        if !var.flow {
             continue;
         }
+        let mut domain = var.connected.clone();
+        if let Some(pending) = projection.pending_domain(name) {
+            domain.union_with(pending);
+        }
+        zero_rows.push(unconnected_flow_rows(name, var, &domain)?);
+    }
 
-        // Per MLS §9.2, unconnected flow variables always get zero-flow
-        // equations, even if their parent record appears in a body equation.
-        // Both record-level body equations (like `port_p.Phi = Phi`) AND
-        // scalar zero-flow equations (like `port_p.Phi.re = 0`) are generated.
-        // The balance check counts both.
-
-        // Create equation: flow_var = 0 (in residual form: flow_var - 0 = flow_var)
-        let provenance =
-            require_flat_variable_provenance(flat, &var_name, "unconnected flow equation")?;
-        let value = connection_member_value(flat, &var_name, provenance)?;
-
-        let origin = flat::EquationOrigin::UnconnectedFlow {
-            variable: var_name.as_str().to_string(),
-        };
-        let preferred_dims = flat
-            .variables
-            .get(&var_name)
-            .map(|variable| variable.dims.clone());
-        let equation =
-            flat::Equation::new_array(value.expression, provenance.span(), origin, scalar_count);
-        projection.plan_equation(equation, preferred_dims.as_deref())?;
-
-        // Note: We do NOT mark the variable as connected here because it's
-        // semantically UNCONNECTED. The `connected` flag indicates involvement
-        // in actual connection equations (flow sums with other components),
-        // not just having any equation. This distinction is important for
-        // interface flow detection per MLS §4.7.
+    for rows in zero_rows {
+        plan_unconnected_flow_rows(flat, rows, "unconnected flow equation", projection)?;
+        // The zeroed elements are NOT marked connected: the domain records
+        // participation in actual connection sets (flow sums with other
+        // members), not the mere presence of an equation. Interface flow
+        // detection per MLS §4.7 depends on that distinction.
     }
 
     Ok(())
+}
+
+/// Zero-flow rows owed to one flow declaration by MLS §9.2, decided from its
+/// checked connected domain.
+///
+/// An unconnected declaration keeps its compact array row so that structured
+/// lowering sees one family; a partially connected declaration emits one
+/// scalar row per untouched element, because a compact row over the whole
+/// declaration would also zero the connected elements on top of their flow
+/// sums. Per MLS §9.2, unconnected flow variables always get zero-flow
+/// equations, even if their parent record appears in a body equation. Both
+/// record-level body equations (like `port_p.Phi = Phi`) AND scalar zero-flow
+/// equations (like `port_p.Phi.re = 0`) are generated; the balance check
+/// counts both.
+enum UnconnectedFlowRows {
+    None,
+    Whole {
+        variable: rumoca_core::VarName,
+        dims: Vec<i64>,
+        scalar_count: usize,
+    },
+    Elements {
+        variable: rumoca_core::VarName,
+        coordinates: Vec<Vec<i64>>,
+    },
+}
+
+fn unconnected_flow_rows(
+    name: &rumoca_core::VarName,
+    var: &flat::Variable,
+    domain: &flat::ConnectedDomain,
+) -> Result<UnconnectedFlowRows, FlattenError> {
+    let scalar_count = compute_var_scalar_count(var)?;
+    // An empty value (some extent is 0) has no element to zero.
+    if scalar_count == 0 {
+        return Ok(UnconnectedFlowRows::None);
+    }
+    let coverage = domain.coverage(&var.dims).map_err(|reason| {
+        FlattenError::invalid_connection_evidence(
+            format!("connected domain of `{name}` contradicts its declared dimensions: {reason}"),
+            var.source_span,
+        )
+    })?;
+    match coverage {
+        flat::ConnectedCoverage::Whole => Ok(UnconnectedFlowRows::None),
+        flat::ConnectedCoverage::Unconnected => Ok(UnconnectedFlowRows::Whole {
+            variable: name.clone(),
+            dims: var.dims.clone(),
+            scalar_count,
+        }),
+        flat::ConnectedCoverage::Partial => {
+            // Enumerating the complement materializes one scalar row per
+            // untouched element, so it obeys the same eager materialization
+            // budget as every other compact connection family.
+            let limit = crate::equations::MAX_EAGER_RANGE_ELEMENTS;
+            if scalar_count > limit {
+                return Err(FlattenError::RangeMaterializationLimit {
+                    element_count: scalar_count as u128,
+                    limit,
+                    span: var.source_span,
+                });
+            }
+            let coordinates = domain.unconnected_coordinates(&var.dims).map_err(|reason| {
+                FlattenError::invalid_connection_evidence(
+                    format!(
+                        "connected domain of `{name}` contradicts its declared dimensions: {reason}"
+                    ),
+                    var.source_span,
+                )
+            })?;
+            debug_assert!(
+                !coordinates.is_empty(),
+                "partial coverage of `{name}` leaves at least one element unconnected"
+            );
+            Ok(UnconnectedFlowRows::Elements {
+                variable: name.clone(),
+                coordinates,
+            })
+        }
+    }
+}
+
+/// Rendered Flat name of one element of a compact declaration, in the same
+/// `base[i,j]` spelling the selection-evidence resolver accepts.
+fn rendered_element_name(base: &rumoca_core::VarName, coordinates: &[i64]) -> rumoca_core::VarName {
+    let rendered = coordinates
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    rumoca_core::VarName::new(format!("{}[{rendered}]", base.as_str()))
+}
+
+fn plan_unconnected_flow_rows(
+    flat: &flat::Model,
+    rows: UnconnectedFlowRows,
+    context: &'static str,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    match rows {
+        UnconnectedFlowRows::None => Ok(()),
+        UnconnectedFlowRows::Whole {
+            variable,
+            dims,
+            scalar_count,
+        } => plan_zero_flow_row(
+            flat,
+            &variable,
+            Some(&dims),
+            scalar_count,
+            context,
+            projection,
+        ),
+        UnconnectedFlowRows::Elements {
+            variable,
+            coordinates,
+        } => {
+            for coordinate in coordinates {
+                let element = rendered_element_name(&variable, &coordinate);
+                plan_zero_flow_row(flat, &element, Some(&[]), 1, context, projection)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Plan `member = 0` for one flow member (a whole declaration, a leading
+/// selection, or one element), in residual form `member`.
+fn plan_zero_flow_row(
+    flat: &flat::Model,
+    member: &rumoca_core::VarName,
+    preferred_dims: Option<&[i64]>,
+    scalar_count: usize,
+    context: &'static str,
+    projection: &mut OpenConnectionProjection,
+) -> Result<(), FlattenError> {
+    let provenance = require_flat_variable_provenance(flat, member, context)?;
+    let value = connection_member_value(flat, member, provenance)?;
+    let origin = flat::EquationOrigin::UnconnectedFlow {
+        variable: member.as_str().to_string(),
+    };
+    let equation =
+        flat::Equation::new_array(value.expression, provenance.span(), origin, scalar_count);
+    projection.plan_equation(equation, preferred_dims)
 }
 
 /// Collect flow variables that participate in connections at each scope level.
@@ -1272,7 +1403,7 @@ pub(super) fn collect_interface_stream_endpoints_by_scope(
             let path = path_qn.to_flat_string();
             if !is_interface_connection_path_for_scope(
                 &path,
-                &conn.scope(),
+                conn.scope(),
                 interface_connector_roots_by_scope,
             ) {
                 continue;
@@ -1353,23 +1484,75 @@ fn same_scope_segment(path_part: &str, scope_part: &str) -> bool {
     strip_array_index(path_part) == strip_array_index(scope_part)
 }
 
-/// Check if a flow variable is connected at any scope that is a proper
-/// ancestor of the given scope (MLS §9.2).
-fn is_at_ancestor_scope(
-    var_name: &rumoca_core::VarName,
-    scope: &str,
-    flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
-) -> bool {
-    let scope_path = rumoca_core::ComponentPath::from_flat_path(scope);
-    for (s, vars) in flow_vars_at_scope {
-        let candidate = rumoca_core::ComponentPath::from_flat_path(s);
-        let is_ancestor = is_proper_component_path_ancestor(&candidate, &scope_path);
+/// One flow member of a connection path resolved to its Flat declaration and
+/// the leading selection it denotes.
+struct FlowMemberSelection<'flat> {
+    base: rumoca_core::VarName,
+    declaration: &'flat flat::Variable,
+    indices: Vec<i64>,
+}
 
-        if is_ancestor && vars.contains(var_name) {
-            return true;
+fn resolve_flow_member<'flat>(
+    flat: &'flat flat::Model,
+    member: &rumoca_core::VarName,
+) -> Result<Option<FlowMemberSelection<'flat>>, FlattenError> {
+    let diagnostic_span = flat
+        .variables
+        .values()
+        .map(|declaration| declaration.source_span)
+        .find(|span| !span.is_dummy())
+        .unwrap_or(rumoca_core::Span::DUMMY);
+    Ok(
+        classify_connection_declaration(flat, member, diagnostic_span)?.map(|evidence| {
+            FlowMemberSelection {
+                base: evidence.base().clone(),
+                declaration: evidence.declaration(),
+                indices: evidence.indices().to_vec(),
+            }
+        }),
+    )
+}
+
+fn contradicting_domain(
+    name: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+    reason: flat::ConnectedDomainError,
+) -> FlattenError {
+    FlattenError::invalid_connection_evidence(
+        format!("connection member `{name}` selects outside its declaration: {reason}"),
+        span,
+    )
+}
+
+/// Elements of each flow declaration that participate in a flow set at each
+/// scope, derived from the members the scope's connections name.
+///
+/// Membership is measured on checked domains rather than rendered names so a
+/// whole-declaration connection at the parent covers an element connection in
+/// the child and vice versa.
+fn flow_domains_by_scope(
+    flat: &flat::Model,
+    flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
+) -> Result<IndexMap<String, IndexMap<rumoca_core::VarName, flat::ConnectedDomain>>, FlattenError> {
+    let mut result: IndexMap<String, IndexMap<rumoca_core::VarName, flat::ConnectedDomain>> =
+        IndexMap::default();
+    for (scope, members) in flow_vars_at_scope {
+        for member in members {
+            let Some(selection) = resolve_flow_member(flat, member)? else {
+                continue;
+            };
+            result
+                .entry(scope.clone())
+                .or_default()
+                .entry(selection.base.clone())
+                .or_default()
+                .mark(&selection.declaration.dims, &selection.indices)
+                .map_err(|reason| {
+                    contradicting_domain(member, selection.declaration.source_span, reason)
+                })?;
         }
     }
-    false
+    Ok(result)
 }
 
 /// Generate `flow = 0` for interface flow variables not connected externally.
@@ -1401,58 +1584,89 @@ fn plan_external_unconnected_flow_equations(
     let need_flow_zero =
         find_unconnected_interface_flows(&interface_flow_vars_by_scope, flow_vars_at_scope, flat)?;
 
-    for (var_name, scalar_count) in need_flow_zero {
-        // Skip empty arrays (Real[0]) — no equations needed
-        if scalar_count == 0 {
-            continue;
-        }
-        let provenance = require_flat_variable_provenance(
-            flat,
-            &var_name,
-            "external unconnected flow equation",
-        )?;
-        let value = connection_member_value(flat, &var_name, provenance)?;
-        let origin = flat::EquationOrigin::UnconnectedFlow {
-            variable: var_name.as_str().to_string(),
-        };
-        let preferred_dims = flat
-            .variables
-            .get(&var_name)
-            .map(|variable| variable.dims.clone());
-        let equation =
-            flat::Equation::new_array(value.expression, provenance.span(), origin, scalar_count);
-        projection.plan_equation(equation, preferred_dims.as_deref())?;
+    for rows in need_flow_zero {
+        plan_unconnected_flow_rows(flat, rows, "external unconnected flow equation", projection)?;
     }
 
     Ok(())
 }
 
-/// Find interface flow variables that are not connected at any ancestor scope.
+/// Find the elements of interface flow members that are not connected at any
+/// ancestor scope, as the zero-flow rows they need.
+///
+/// Coverage is decided per element: a parent that connects the whole
+/// declaration covers a child's element member, and a parent that connects one
+/// element leaves the rest of a child's whole-declaration member owed a zero
+/// row. Every element receives at most one external zero row even when several
+/// members of one scope denote overlapping selections.
 fn find_unconnected_interface_flows(
     interface_flows: &IndexMap<String, FlowVarSet>,
     flow_vars_at_scope: &IndexMap<String, FlowVarSet>,
     flat: &flat::Model,
-) -> Result<IndexMap<rumoca_core::VarName, usize>, FlattenError> {
-    let mut result: IndexMap<rumoca_core::VarName, usize> = IndexMap::default();
+) -> Result<Vec<UnconnectedFlowRows>, FlattenError> {
+    let domains_by_scope = flow_domains_by_scope(flat, flow_vars_at_scope)?;
+    let mut zeroed: IndexMap<rumoca_core::VarName, flat::ConnectedDomain> = IndexMap::default();
+    let mut rows = Vec::new();
 
     for (scope, interface_vars) in interface_flows {
+        let scope_path = rumoca_core::ComponentPath::from_flat_path(scope);
         for var_name in interface_vars {
-            if result.contains_key(var_name) {
+            let Some(selection) = resolve_flow_member(flat, var_name)? else {
+                continue;
+            };
+            let dims = &selection.declaration.dims;
+            let span = selection.declaration.source_span;
+            let scalar_count = compute_var_scalar_count(selection.declaration)?;
+            if scalar_count == 0 {
                 continue;
             }
 
-            // Root scope has no parent → always needs flow=0 for standalone checking.
-            // Non-root scopes: check if connected at any ancestor scope.
-            let connected_externally =
-                !scope.is_empty() && is_at_ancestor_scope(var_name, scope, flow_vars_at_scope);
+            // Root scope has no parent, so its interface flows always need
+            // flow = 0 for standalone checking. Non-root scopes are covered by
+            // whatever proper ancestor scopes connected of the same declaration.
+            let covered =
+                ancestor_covered_domain(&domains_by_scope, scope, &scope_path, &selection.base);
 
-            if !connected_externally && let Some(var) = flat.variables.get(var_name) {
-                result.insert(var_name.clone(), compute_var_scalar_count(var)?);
+            let mut selected = flat::ConnectedDomain::unconnected();
+            selected
+                .mark(dims, &selection.indices)
+                .map_err(|reason| contradicting_domain(var_name, span, reason))?;
+            let already = zeroed.entry(selection.base.clone()).or_default();
+            if selection.indices.is_empty() && covered.is_unconnected() && already.is_unconnected()
+            {
+                // A whole interface declaration with no ancestor coverage keeps
+                // its compact array row.
+                already
+                    .mark(dims, &[])
+                    .map_err(|reason| contradicting_domain(var_name, span, reason))?;
+                rows.push(UnconnectedFlowRows::Whole {
+                    variable: selection.base.clone(),
+                    dims: dims.clone(),
+                    scalar_count,
+                });
+                continue;
+            }
+
+            let limit = crate::equations::MAX_EAGER_RANGE_ELEMENTS;
+            if scalar_count > limit {
+                return Err(FlattenError::RangeMaterializationLimit {
+                    element_count: scalar_count as u128,
+                    limit,
+                    span,
+                });
+            }
+            let coordinates =
+                uncovered_flow_coordinates(&selected, dims, &covered, already, var_name, span)?;
+            if !coordinates.is_empty() {
+                rows.push(UnconnectedFlowRows::Elements {
+                    variable: selection.base.clone(),
+                    coordinates,
+                });
             }
         }
     }
 
-    Ok(result)
+    Ok(rows)
 }
 
 /// Redirect a ast::QualifiedName if its flat string starts with an outer prefix (MLS §5.4).
@@ -1549,6 +1763,65 @@ pub(super) fn redirect_connection_for_inner_outer(
         }
     }
     ast::InstanceScalarConnection::new(a, b, conn.connector_type(), conn.span(), scope)
+}
+
+/// Union the connected domains that proper ancestor scopes already cover for
+/// this selection.
+///
+/// Root scope has no parent, so its interface flows always need `flow = 0` for
+/// standalone checking; non-root scopes are covered by whatever proper ancestor
+/// scopes connected of the same declaration. Extracting the walk keeps that rule
+/// in one named place rather than nested inside the row loop.
+fn ancestor_covered_domain(
+    domains_by_scope: &IndexMap<String, IndexMap<rumoca_core::VarName, flat::ConnectedDomain>>,
+    scope: &str,
+    scope_path: &rumoca_core::ComponentPath,
+    base: &rumoca_core::VarName,
+) -> flat::ConnectedDomain {
+    let mut covered = flat::ConnectedDomain::unconnected();
+    if scope.is_empty() {
+        return covered;
+    }
+    for (candidate, domains) in domains_by_scope {
+        let candidate_path = rumoca_core::ComponentPath::from_flat_path(candidate);
+        if is_proper_component_path_ancestor(&candidate_path, scope_path)
+            && let Some(domain) = domains.get(base)
+        {
+            covered.union_with(domain);
+        }
+    }
+    covered
+}
+
+/// Collect the coordinates of `selected` that neither an ancestor scope nor an
+/// earlier selection has already claimed, marking each one as claimed.
+///
+/// `span` is supplied by the caller and used verbatim for both refusals. It is
+/// deliberately never reconstructed here: a contradicting-domain diagnostic must
+/// keep pointing at the connection that produced it, and rebuilding a span from
+/// whatever is in scope is how that silently stops being true.
+fn uncovered_flow_coordinates(
+    selected: &flat::ConnectedDomain,
+    dims: &[i64],
+    covered: &flat::ConnectedDomain,
+    already: &mut flat::ConnectedDomain,
+    var_name: &rumoca_core::VarName,
+    span: Span,
+) -> Result<Vec<Vec<i64>>, FlattenError> {
+    let mut coordinates = Vec::new();
+    for coordinate in selected
+        .connected_coordinates(dims)
+        .map_err(|reason| contradicting_domain(var_name, span, reason))?
+    {
+        if covered.covers(&coordinate) || already.covers(&coordinate) {
+            continue;
+        }
+        already
+            .mark(dims, &coordinate)
+            .map_err(|reason| contradicting_domain(var_name, span, reason))?;
+        coordinates.push(coordinate);
+    }
+    Ok(coordinates)
 }
 
 #[cfg(test)]

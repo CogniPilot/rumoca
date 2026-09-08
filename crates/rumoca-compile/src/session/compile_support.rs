@@ -68,11 +68,7 @@ fn summarize_typecheck_error_code(diags: &CommonDiagnostics) -> Option<String> {
 }
 
 pub(super) fn flatten_options_for_tree() -> FlattenOptions {
-    // Connection compatibility is model-local at flatten time (overlay-scoped),
-    // so strict validation should always be enabled for compiled models even
-    // when the source tree contains many external source-root classes.
     FlattenOptions {
-        strict_connection_validation: true,
         simplify_variable_names: false,
         // Family-native lowering: regular state-derivative for-families materialize
         // only their corner cells; the interior cells are reconstructed downstream
@@ -83,10 +79,11 @@ pub(super) fn flatten_options_for_tree() -> FlattenOptions {
 }
 
 fn dae_model_outcome_internal_with_options(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
 ) -> DaeModelOutcome {
+    let tree = resolved.inner();
     notify_compile_phase(FailedPhase::Instantiate, CompilePhaseEvent::Started);
     let instantiate_start = maybe_start_timer();
     let instantiate_outcome = InstantiatedModelOutcome::from_instantiation_outcome(
@@ -98,7 +95,7 @@ fn dae_model_outcome_internal_with_options(
     notify_compile_phase(FailedPhase::Typecheck, CompilePhaseEvent::Started);
     let typecheck_start = maybe_start_timer();
     let (typed_outcome, typechecked_built) =
-        typed_model_outcome_from_instantiated(tree, model_name, instantiate_outcome);
+        typed_model_outcome_from_instantiated(resolved, model_name, instantiate_outcome);
     if typechecked_built {
         maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_start);
     }
@@ -106,8 +103,7 @@ fn dae_model_outcome_internal_with_options(
 
     notify_compile_phase(FailedPhase::Flatten, CompilePhaseEvent::Started);
     let flatten_start = maybe_start_timer();
-    let (flat_outcome, flattened_built) =
-        flat_model_outcome_from_typed(tree, model_name, typed_outcome);
+    let (flat_outcome, flattened_built) = flat_model_outcome_from_typed(typed_outcome);
     if flattened_built {
         maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_start);
     }
@@ -124,8 +120,8 @@ fn dae_model_outcome_internal_with_options(
     dae_outcome
 }
 
-fn dae_model_outcome_internal(tree: &ast::ClassTree, model_name: &str) -> DaeModelOutcome {
-    dae_model_outcome_internal_with_options(tree, model_name, InstantiateOptions::default())
+fn dae_model_outcome_internal(resolved: &ResolvedTree, model_name: &str) -> DaeModelOutcome {
+    dae_model_outcome_internal_with_options(resolved, model_name, InstantiateOptions::default())
 }
 
 /// Internal function for parallel compilation.
@@ -133,45 +129,45 @@ fn dae_model_outcome_internal(tree: &ast::ClassTree, model_name: &str) -> DaeMod
 /// Uses the phase order: Instantiate -> Typecheck -> Flatten -> ToDae
 /// Type checking runs after instantiation so it has full access to the
 /// modification context for dimension evaluation (MLS §10.1).
-pub(super) fn compile_model_internal(tree: &ast::ClassTree, model_name: &str) -> PhaseResult {
-    let dae_outcome = dae_model_outcome_internal(tree, model_name);
-    compile_phase_result_from_dae(tree, model_name, dae_outcome)
+pub(super) fn compile_model_internal(resolved: &ResolvedTree, model_name: &str) -> PhaseResult {
+    let dae_outcome = dae_model_outcome_internal(resolved, model_name);
+    compile_phase_result_from_dae(resolved.inner(), model_name, dae_outcome)
 }
 
 pub(super) fn compile_model_internal_with_options(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
 ) -> PhaseResult {
     let dae_outcome =
-        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
-    compile_phase_result_from_dae(tree, model_name, dae_outcome)
+        dae_model_outcome_internal_with_options(resolved, model_name, instantiation_options);
+    compile_phase_result_from_dae(resolved.inner(), model_name, dae_outcome)
 }
 
 pub(super) fn compile_model_dae_internal(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     model_name: &str,
 ) -> DaePhaseResult {
-    let dae_outcome = dae_model_outcome_internal(tree, model_name);
-    dae_phase_result_from_dae(tree, model_name, dae_outcome)
+    let dae_outcome = dae_model_outcome_internal(resolved, model_name);
+    dae_phase_result_from_dae(resolved.inner(), model_name, dae_outcome)
 }
 
 pub(super) fn compile_model_dae_internal_with_options(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     model_name: &str,
     instantiation_options: InstantiateOptions,
 ) -> DaePhaseResult {
     let dae_outcome =
-        dae_model_outcome_internal_with_options(tree, model_name, instantiation_options);
-    dae_phase_result_from_dae(tree, model_name, dae_outcome)
+        dae_model_outcome_internal_with_options(resolved, model_name, instantiation_options);
+    dae_phase_result_from_dae(resolved.inner(), model_name, dae_outcome)
 }
 
 pub(super) fn typed_model_outcome_from_instantiated(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     model_name: &str,
     instantiate_outcome: InstantiatedModelOutcome,
 ) -> (TypedModelOutcome, bool) {
-    let mut overlay = match instantiate_outcome {
+    let overlay = match instantiate_outcome {
         InstantiatedModelOutcome::Success(overlay) => *overlay,
         InstantiatedModelOutcome::NeedsInner {
             missing_inners,
@@ -190,23 +186,22 @@ pub(super) fn typed_model_outcome_from_instantiated(
         }
     };
 
-    if let Err(diags) = typecheck_instanced(tree, &mut overlay, model_name) {
-        return (
+    match typecheck_instanced_tree(resolved, overlay, model_name) {
+        Ok(typed) => (TypedModelOutcome::Success(typed), true),
+        Err(diags) => (
             TypedModelOutcome::TypecheckError(diags.iter().cloned().collect()),
             true,
-        );
+        ),
     }
-
-    (TypedModelOutcome::Success(Box::new(overlay)), true)
 }
 
 pub(super) fn flat_model_outcome_from_typed(
-    tree: &ast::ClassTree,
-    model_name: &str,
     typed_outcome: TypedModelOutcome,
 ) -> (FlatModelOutcome, bool) {
-    let overlay = match typed_outcome {
-        TypedModelOutcome::Success(overlay) => *overlay,
+    // SPEC_0029 §4: the Typecheck proof moves exactly once, into this sole
+    // flatten consumption. No raw overlay reaches the flatten mint.
+    let typed = match typed_outcome {
+        TypedModelOutcome::Success(typed) => typed,
         TypedModelOutcome::NeedsInner {
             missing_inners,
             missing_spans,
@@ -227,7 +222,7 @@ pub(super) fn flat_model_outcome_from_typed(
         }
     };
 
-    match flatten_ref_with_options(tree, &overlay, model_name, flatten_options_for_tree()) {
+    match flatten_typed(typed, flatten_options_for_tree()) {
         Ok(flat) => (
             FlatModelOutcome::Success(Box::new(FlatModelArtifactData { flat })),
             true,
@@ -272,23 +267,18 @@ pub(super) fn dae_model_outcome_from_flat(
 
     // MLS §5.6 / SPEC_0007: ToDae stays downstream of flatten and should
     // consume the cached flat artifact rather than rebuilding earlier phases.
-    match to_dae(&artifact.flat, tree.source_map.clone()) {
-        Ok(dae) => match rumoca_phase_dae::balance_detail(&artifact.flat) {
-            Ok(balance_detail) => (
+    match construct_dae(&artifact.flat, tree.source_map.clone()) {
+        Ok(product) => {
+            let (dae, balance_detail) = product.into_parts();
+            (
                 DaeModelOutcome::Success(Box::new(DaeModelArtifactData {
                     flat: Arc::new(artifact.flat),
                     dae: Arc::new(dae),
                     balance_detail,
                 })),
                 true,
-            ),
-            Err(error) => (
-                DaeModelOutcome::ToDaeError {
-                    error: Box::new(error),
-                },
-                true,
-            ),
-        },
+            )
+        }
         Err(error) => (
             DaeModelOutcome::ToDaeError {
                 error: Box::new(error),
@@ -531,14 +521,14 @@ where
 }
 
 pub(super) fn finalize_strict_compile_report_from_uncached_targets(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     requested_model: &str,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
 ) -> StrictCompileReport {
     finalize_strict_compile_report_from_uncached_targets_impl(
-        tree,
+        resolved,
         requested_model,
         failures,
         targets,
@@ -548,17 +538,18 @@ pub(super) fn finalize_strict_compile_report_from_uncached_targets(
 
 #[cfg(target_arch = "wasm32")]
 fn finalize_strict_compile_report_from_uncached_targets_impl(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     requested_model: &str,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
 ) -> StrictCompileReport {
+    let tree = resolved.inner();
     let mut failures = failures;
     let results = targets.iter().map(|name| {
         (
             name.clone(),
-            compile_model_internal_with_options(tree, name, instantiation_options.clone()),
+            compile_model_internal_with_options(resolved, name, instantiation_options.clone()),
         )
     });
     finalize_strict_compile_report_from_results(tree, requested_model, &mut failures, results)
@@ -566,12 +557,13 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn finalize_strict_compile_report_from_uncached_targets_impl(
-    tree: &ast::ClassTree,
+    resolved: &ResolvedTree,
     requested_model: &str,
     failures: Vec<ModelFailureDiagnostic>,
     targets: &[String],
     instantiation_options: InstantiateOptions,
 ) -> StrictCompileReport {
+    let tree = resolved.inner();
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<(String, PhaseResult)>(1);
 
     std::thread::scope(|scope| {
@@ -587,8 +579,8 @@ fn finalize_strict_compile_report_from_uncached_targets_impl(
 
         targets.par_iter().for_each_with(result_tx, |tx, name| {
             let result =
-                compile_model_internal_with_options(tree, name, instantiation_options.clone());
-            let _ = tx.send((name.clone(), result));
+                compile_model_internal_with_options(resolved, name, instantiation_options.clone());
+            let _receiver_closed = tx.send((name.clone(), result));
         });
 
         consumer

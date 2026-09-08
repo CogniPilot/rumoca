@@ -1,4 +1,4 @@
-//! Resolve-issued semantic-catalog authority boundary (SPEC_0036 / AS-025).
+//! Resolve-issued semantic-catalog authority boundary (SPEC_0036).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -168,7 +168,7 @@ fn public_instanced_typecheck_requires_resolve_brand() {
         .items
         .iter()
         .find_map(|item| match item {
-            syn::Item::Fn(function) if function.sig.ident == "typecheck_instanced" => {
+            syn::Item::Fn(function) if function.sig.ident == "typecheck_instanced_tree" => {
                 Some(function)
             }
             _ => None,

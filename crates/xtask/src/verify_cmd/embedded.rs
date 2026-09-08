@@ -1,5 +1,9 @@
-//! `cargo xtask verify embedded`: the gate that keeps the flight artifacts
-//! flyable.
+//! `cargo xtask verify embedded`: size/precision gate machinery for an
+//! authenticated embedded product.
+//!
+//! No product is currently eligible. The checked-in manifest has no active
+//! rows and validation rejects it, so invoking this command fails closed until
+//! the `efmu` `SolveAlgorithmProduct` has fresh authenticated measurements.
 //!
 //! # What this gate is for
 //!

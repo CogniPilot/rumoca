@@ -93,7 +93,7 @@ fn semi_linear_lowers_to_the_checked_conditional_of_its_two_segments() {
     let call_span = source.span("semiLinear(x, 2.0, 3.0)", 0);
     let dae = construct(&model, source.map).expect("semiLinear has a checked DAE owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let operator = semi_linear_expression(view);
         let operator_view = view
             .expression(operator)
@@ -175,7 +175,7 @@ fn semi_linear_owns_no_state_event_because_its_definition_is_smooth() {
     let model = semi_linear_model(&source, default_arguments(&source));
     let dae = construct(&model, source.map).expect("semiLinear has a checked DAE owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(
             view.relation_count(),
             0,
@@ -397,7 +397,7 @@ fn rule_one_rewrites_the_underdetermined_pair_into_a_selector_and_a_collapsed_op
     let model = chain_model(&source, 1.0);
     let dae = construct(&model, source.map).expect("the Rule 1 chain has a checked DAE owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         // Row 3 carried `Ha = semiLinear(ma, hn, ha)`. MLS §3.7.4.5 Rule 1 turns
         // it into `s1 = if x >= 0 then sa else sb`, the equation that makes the
         // node enthalpy definite at `x = 0`.
@@ -465,7 +465,7 @@ fn rule_one_relation_owns_no_state_event_because_the_operator_it_replaces_was_sm
     let model = chain_model(&source, 1.0);
     let dae = construct(&model, source.map).expect("the Rule 1 chain has a checked DAE owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(
             view.relation_count(),
             0,
@@ -509,7 +509,7 @@ fn rule_two_replaces_the_operator_with_its_slope_equality_when_both_sides_are_pi
     let model = zero_flow_model(&source);
     let dae = construct(&model, source.map).expect("the Rule 2 shape has a checked DAE owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let residual = view
             .continuous_equation(2)
             .expect("the operator row is constructed")
@@ -666,7 +666,10 @@ fn fixture_model(source: &TestSource, variables: &[&str], rows: &[Row]) -> flat:
 fn fixture_dae(variables: &[&str], rows: &[Row]) -> dae::Dae {
     let source = TestSource::new(&fixture_text(variables, rows));
     let model = fixture_model(&source, variables, rows);
-    construct(&model, source.map).expect("the fixture has a checked DAE owner")
+    construct(&model, source.map)
+        .expect("the fixture has a checked DAE owner")
+        .into_parts()
+        .0
 }
 
 /// A canonical rendering of a lowered expression over coordinate *ordinals*,

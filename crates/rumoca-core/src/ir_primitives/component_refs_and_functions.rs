@@ -1,6 +1,14 @@
 use super::*;
 use crate::{EffectiveType, strip_array_index};
 
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComprehensionIndex {
     pub name: String,
@@ -692,11 +700,18 @@ fn insert_unique(values: &mut Vec<Reference>, value: Reference) {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Function {
     pub name: VarName,
-    #[serde(default)]
+    /// Exact source declaration exposed by this collected function instance.
+    ///
+    /// This is distinct from `def_id` for a replaceable function (slot versus
+    /// selected implementation) and for an ExternalObject call (owner versus
+    /// lifecycle constructor). One Flat function instance owns one exposure.
+    pub exposure_def_id: DefId,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub def_id: Option<DefId>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub instance_id: Option<FunctionInstanceId>,
     pub inputs: Vec<FunctionParam>,
     pub outputs: Vec<FunctionParam>,
@@ -709,7 +724,6 @@ pub struct Function {
     /// `false` is the conservative wire/default value: an exact selected
     /// function identity alone does not prove that its class and inherited
     /// interface contain no replaceable element.
-    #[serde(default)]
     pub transitively_non_replaceable: bool,
     /// MLS 3.7 §12.3 written purity prefix: `false` exactly when the
     /// declaration wrote `impure`.
@@ -734,15 +748,75 @@ pub struct Function {
     /// backend decides whether to substitute this body, the annotation
     /// expressions are long gone, and a compiler that has to guess the author's
     /// intent is a compiler that ignores it.
-    #[serde(default)]
     pub inline: InlineAnnotation,
     pub span: Span,
 }
 
+/// Why one function occurrence cannot authorize MLS automatic vectorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticVectorizationRefusal {
+    FunctionMayBeReplaceable,
+    FunctionHasNoInstanceIdentity,
+    OccurrenceMayBeReplaceable,
+    InstanceIdentityMismatch {
+        occurrence: FunctionInstanceId,
+        function: FunctionInstanceId,
+    },
+}
+
+impl std::fmt::Display for AutomaticVectorizationRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FunctionMayBeReplaceable => {
+                formatter.write_str("the selected function may be replaceable")
+            }
+            Self::FunctionHasNoInstanceIdentity => {
+                formatter.write_str("the selected function has no exact instance identity")
+            }
+            Self::OccurrenceMayBeReplaceable => {
+                formatter.write_str("the call occurrence may traverse a replaceable exposure")
+            }
+            Self::InstanceIdentityMismatch {
+                occurrence,
+                function,
+            } => write!(
+                formatter,
+                "call occurrence instance {} differs from selected function instance {}",
+                occurrence.index(),
+                function.index()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AutomaticVectorizationRefusal {}
+
+/// Exact callable/occurrence authority required by MLS automatic vectorization.
+///
+/// The private fields bind the proof to the selected function and occurrence;
+/// callers can inspect but cannot construct or relabel it.
+#[derive(Debug)]
+#[must_use]
+pub struct AutomaticVectorizationAuthority<'function> {
+    function: &'function Function,
+    instance: FunctionInstanceId,
+}
+
+impl AutomaticVectorizationAuthority<'_> {
+    pub fn function(&self) -> &Function {
+        self.function
+    }
+
+    pub fn instance(&self) -> FunctionInstanceId {
+        self.instance
+    }
+}
+
 impl Function {
-    pub fn new(name: impl Into<String>, span: Span) -> Self {
+    pub fn new(name: impl Into<String>, exposure_def_id: DefId, span: Span) -> Self {
         Self {
             name: VarName::new(name),
+            exposure_def_id,
             def_id: None,
             instance_id: None,
             inputs: Vec::new(),
@@ -758,6 +832,37 @@ impl Function {
             inline: InlineAnnotation::Unstated,
             span,
         }
+    }
+
+    /// Issue the exact MLS §12.4.6 automatic-vectorization authority.
+    ///
+    /// Non-replaceability is required both for the selected function and for
+    /// the exact exposure path of this occurrence. Their concrete instance
+    /// identities must also agree; declaration or display-name equality is
+    /// not callable identity.
+    pub fn automatic_vectorization_authority(
+        &self,
+        occurrence: ResolvedFunctionReference,
+    ) -> Result<AutomaticVectorizationAuthority<'_>, AutomaticVectorizationRefusal> {
+        if !self.transitively_non_replaceable {
+            return Err(AutomaticVectorizationRefusal::FunctionMayBeReplaceable);
+        }
+        let function_instance = self
+            .instance_id
+            .ok_or(AutomaticVectorizationRefusal::FunctionHasNoInstanceIdentity)?;
+        if !occurrence.transitively_non_replaceable {
+            return Err(AutomaticVectorizationRefusal::OccurrenceMayBeReplaceable);
+        }
+        if occurrence.instance_id != function_instance {
+            return Err(AutomaticVectorizationRefusal::InstanceIdentityMismatch {
+                occurrence: occurrence.instance_id,
+                function: function_instance,
+            });
+        }
+        Ok(AutomaticVectorizationAuthority {
+            function: self,
+            instance: function_instance,
+        })
     }
 
     /// MLS 3.7 §12.3 purity of this function *body*, as far as one declaration
@@ -1011,8 +1116,9 @@ impl std::error::Error for FunctionShapeContractError {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionParam {
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub def_id: Option<DefId>,
     /// Resolved source declaration identity of this parameter's type.
     ///
@@ -1020,7 +1126,7 @@ pub struct FunctionParam {
     /// declaration itself. Downstream phases use `type_def_id` for semantic
     /// type metadata lookup instead of reconstructing identity from
     /// `type_name` display text (SPEC_0001).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub type_def_id: Option<DefId>,
     pub name: String,
     pub span: Span,
@@ -1036,10 +1142,10 @@ pub struct FunctionParam {
     /// Optional lower bound from the parameter declaration (for example
     /// `Integer i(min=1)`).  Function lowering must retain this metadata so
     /// finite runtime integer domains can be lowered without an interpreter.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub min: Option<Expression>,
     /// Optional upper bound from the parameter declaration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub max: Option<Expression>,
     pub description: Option<String>,
 }
@@ -1206,6 +1312,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_vectorization_authority_requires_both_proofs_and_exact_identity() {
+        let selected = FunctionInstanceId::new(80_001);
+        let mut function = Function::new("f", DefId::new(80_000), Span::DUMMY);
+        function.instance_id = Some(selected);
+        function.transitively_non_replaceable = true;
+        let occurrence = ResolvedFunctionReference {
+            instance_id: selected,
+            base_part_count: 1,
+            transitively_non_replaceable: true,
+        };
+
+        let authority = function
+            .automatic_vectorization_authority(occurrence)
+            .expect("matching non-replaceable function and occurrence issue authority");
+        assert_eq!(authority.instance(), selected);
+        assert!(std::ptr::eq(authority.function(), &function));
+
+        let mut replaceable_function = function.clone();
+        replaceable_function.transitively_non_replaceable = false;
+        assert!(matches!(
+            replaceable_function.automatic_vectorization_authority(occurrence),
+            Err(AutomaticVectorizationRefusal::FunctionMayBeReplaceable)
+        ));
+
+        let mut unidentified_function = function.clone();
+        unidentified_function.instance_id = None;
+        assert!(matches!(
+            unidentified_function.automatic_vectorization_authority(occurrence),
+            Err(AutomaticVectorizationRefusal::FunctionHasNoInstanceIdentity)
+        ));
+
+        let unproven_occurrence = ResolvedFunctionReference {
+            transitively_non_replaceable: false,
+            ..occurrence
+        };
+        assert!(matches!(
+            function.automatic_vectorization_authority(unproven_occurrence),
+            Err(AutomaticVectorizationRefusal::OccurrenceMayBeReplaceable)
+        ));
+
+        let foreign = FunctionInstanceId::new(80_002);
+        let foreign_occurrence = ResolvedFunctionReference {
+            instance_id: foreign,
+            ..occurrence
+        };
+        assert!(matches!(
+            function.automatic_vectorization_authority(foreign_occurrence),
+            Err(AutomaticVectorizationRefusal::InstanceIdentityMismatch {
+                occurrence,
+                function,
+            }) if occurrence == foreign && function == selected
+        ));
+    }
+
+    #[test]
+    fn current_function_wire_rejects_deleted_semantic_keys() {
+        let function = Function::new("f", DefId::new(701), Span::DUMMY);
+        let complete = serde_json::to_value(function).expect("function serializes");
+        assert_eq!(complete["exposure_def_id"], serde_json::json!(701));
+        assert!(complete["def_id"].is_null());
+        assert!(complete["instance_id"].is_null());
+        for key in [
+            "exposure_def_id",
+            "def_id",
+            "instance_id",
+            "transitively_non_replaceable",
+            "inline",
+        ] {
+            let mut missing = complete.clone();
+            missing
+                .as_object_mut()
+                .expect("function wire is an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("function wire contains `{key}`"));
+            assert!(
+                serde_json::from_value::<Function>(missing).is_err(),
+                "deleted `{key}` must not invent function semantics"
+            );
+        }
+        let mut unknown = complete.clone();
+        unknown
+            .as_object_mut()
+            .expect("function wire is an object")
+            .insert("legacy_selected_def_id".into(), serde_json::json!(701));
+        assert!(serde_json::from_value::<Function>(unknown).is_err());
+
+        let effective = EffectiveType::new(TypeId::new(1), TypeId::new(1), Vec::new()).unwrap();
+        let parameter = FunctionParam::new("x", "Real", effective, Span::DUMMY);
+        let complete = serde_json::to_value(parameter).expect("function parameter serializes");
+        for key in ["def_id", "type_def_id", "min", "max"] {
+            let mut missing = complete.clone();
+            missing
+                .as_object_mut()
+                .expect("function-parameter wire is an object")
+                .remove(key)
+                .unwrap_or_else(|| panic!("function-parameter wire contains `{key}`"));
+            assert!(
+                serde_json::from_value::<FunctionParam>(missing).is_err(),
+                "deleted `{key}` must not invent parameter semantics"
+            );
+        }
+        let mut unknown = complete;
+        unknown
+            .as_object_mut()
+            .expect("function-parameter wire is an object")
+            .insert("legacy_type_name".into(), serde_json::json!("Real"));
+        assert!(serde_json::from_value::<FunctionParam>(unknown).is_err());
+    }
+
+    #[test]
     fn checked_component_reference_rejects_empty_parts() {
         assert_eq!(
             ComponentReference::construct(false, Span::DUMMY, Vec::new()),
@@ -1318,10 +1534,10 @@ mod tests {
     #[test]
     fn record_constructor_lookup_uses_exposure_name_for_shared_definition() {
         let def_id = DefId::new(77);
-        let mut first = Function::new("First.State", Span::DUMMY);
+        let mut first = Function::new("First.State", DefId::new(7_701), Span::DUMMY);
         first.def_id = Some(def_id);
         first.is_constructor = true;
-        let mut second = Function::new("Second.State", Span::DUMMY);
+        let mut second = Function::new("Second.State", DefId::new(7_702), Span::DUMMY);
         second.def_id = Some(def_id);
         second.is_constructor = true;
 
@@ -1335,7 +1551,7 @@ mod tests {
     fn record_constructor_lookup_accepts_equivalent_shared_exposures() {
         let def_id = DefId::new(78);
         let field_type = EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap();
-        let mut first = Function::new("First.State", Span::DUMMY);
+        let mut first = Function::new("First.State", DefId::new(7_801), Span::DUMMY);
         first.def_id = Some(def_id);
         first.is_constructor = true;
         first.add_input(FunctionParam::new(
@@ -1344,7 +1560,7 @@ mod tests {
             field_type.clone(),
             Span::DUMMY,
         ));
-        let mut second = Function::new("Second.State", Span::DUMMY);
+        let mut second = Function::new("Second.State", DefId::new(7_802), Span::DUMMY);
         second.def_id = Some(def_id);
         second.is_constructor = true;
         second.add_input(FunctionParam::new("x", "Real", field_type, Span::DUMMY));
@@ -1358,7 +1574,7 @@ mod tests {
     #[test]
     fn record_constructor_lookup_rejects_distinct_shared_layouts() {
         let def_id = DefId::new(79);
-        let mut first = Function::new("First.State", Span::DUMMY);
+        let mut first = Function::new("First.State", DefId::new(7_901), Span::DUMMY);
         first.def_id = Some(def_id);
         first.is_constructor = true;
         first.add_input(FunctionParam::new(
@@ -1367,7 +1583,7 @@ mod tests {
             EffectiveType::new(TypeId::new(12), TypeId::new(12), Vec::new()).unwrap(),
             Span::DUMMY,
         ));
-        let mut second = Function::new("Second.State", Span::DUMMY);
+        let mut second = Function::new("Second.State", DefId::new(7_902), Span::DUMMY);
         second.def_id = Some(def_id);
         second.is_constructor = true;
         second.add_input(FunctionParam::new(
@@ -1386,9 +1602,9 @@ mod tests {
     #[test]
     fn function_instance_lookup_rejects_duplicate_identity() {
         let instance_id = FunctionInstanceId::new(9);
-        let mut first = Function::new("First.f", Span::DUMMY);
+        let mut first = Function::new("First.f", DefId::new(8_001), Span::DUMMY);
         first.instance_id = Some(instance_id);
-        let mut second = Function::new("Second.f", Span::DUMMY);
+        let mut second = Function::new("Second.f", DefId::new(8_002), Span::DUMMY);
         second.instance_id = Some(instance_id);
 
         assert_eq!(

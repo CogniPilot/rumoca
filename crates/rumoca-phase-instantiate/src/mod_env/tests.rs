@@ -93,25 +93,240 @@ fn active_mod_env_keys(ctx: &InstantiateContext) -> Vec<String> {
         .collect()
 }
 
+fn assert_mod_env_matches(
+    current: &ast::ModificationEnvironment,
+    snapshot: &ast::ModificationEnvironment,
+) {
+    assert_eq!(current.active.len(), snapshot.active.len());
+    for (key, before) in &snapshot.active {
+        let after = current
+            .active
+            .get(key)
+            .expect("snapshot key remains present");
+        assert_eq!(after.value, before.value);
+        assert_eq!(after.source, before.source);
+        assert_eq!(after.source_scope, before.source_scope);
+        assert_eq!(after.each, before.each);
+        assert_eq!(after.final_, before.final_);
+    }
+}
+
 #[test]
-fn indexed_modifier_resolution_rejects_unsupported_selections() {
+fn indexed_modifier_resolution_refuses_proven_malformed_defers_unknown() {
     let array = ast::Expression::Array {
         elements: vec![make_int_expr(1)],
         is_matrix: false,
         span: rumoca_core::Span::DUMMY,
     };
     let subscript = |expr| ast::Subscript::Expression(expr);
-    for invalid in [
-        make_int_expr(0),
-        make_int_expr(2),
-        make_comp_ref_expr(&["i"]),
-    ] {
-        assert_eq!(select_array_value(&array, &[subscript(invalid)]), None);
-    }
+    let signed = |op, value| ast::Expression::Unary {
+        op,
+        rhs: Arc::new(make_int_expr(value)),
+        span: test_span(),
+    };
+    assert!(matches!(
+        select_array_value(&array, &[subscript(make_int_expr(0))]),
+        ArrayValueSelection::Invalid(reason) if reason.contains("zero")
+    ));
+    assert!(matches!(
+        select_array_value(&array, &[subscript(make_int_expr(2))]),
+        ArrayValueSelection::Invalid(reason) if reason.contains("out of bounds")
+    ));
+    assert_eq!(
+        select_array_value(
+            &array,
+            &[subscript(make_resolved_comp_ref_expr(&[("i", 99_001)]))]
+        ),
+        ArrayValueSelection::NotStatic
+    );
+    // A scalar literal value carries no static evidence of malformation: it may
+    // be a broadcast into an array component (`Real x[3] = 1`), which a later
+    // phase resolves once the declared dimensionality is known. Defer, do not
+    // refuse.
     assert_eq!(
         select_array_value(&make_int_expr(1), &[subscript(make_int_expr(1))]),
+        ArrayValueSelection::NotStatic
+    );
+    // A component reference may be array-valued; its shape is invisible here.
+    assert_eq!(
+        select_array_value(
+            &make_resolved_comp_ref_expr(&[("arrayParam", 99_002)]),
+            &[subscript(make_int_expr(1))]
+        ),
+        ArrayValueSelection::NotStatic
+    );
+    // `fill(0.0, 3)` is array-valued but not a literal array. Defer rather than
+    // treating the absence of a literal as proof of malformation.
+    let fill_call = ast::Expression::FunctionCall {
+        comp: ast::ComponentReference {
+            local: false,
+            parts: vec![ast::ComponentRefPart {
+                ident: make_token("fill"),
+                subs: None,
+                def_id: None,
+            }],
+            span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
+        },
+        args: vec![make_int_expr(0), make_int_expr(3)],
+        is_partial_application: false,
+        span: rumoca_core::Span::DUMMY,
+    };
+    assert_eq!(
+        select_array_value(&fill_call, &[subscript(make_int_expr(1))]),
+        ArrayValueSelection::NotStatic
+    );
+    assert_eq!(
+        select_array_value(&array, &[subscript(make_int_expr(1))]),
+        ArrayValueSelection::Selected(make_int_expr(1))
+    );
+    assert!(matches!(
+        select_array_value(
+            &array,
+            &[subscript(signed(rumoca_core::OpUnary::Minus, 1))]
+        ),
+        ArrayValueSelection::Invalid(reason) if reason.contains("negative")
+    ));
+    assert_eq!(
+        select_array_value(&array, &[subscript(signed(rumoca_core::OpUnary::Plus, 1))]),
+        ArrayValueSelection::Selected(make_int_expr(1))
+    );
+}
+
+#[test]
+fn known_modifier_array_static_invalid_indices_are_typed_errors() {
+    let component_id = rumoca_core::DefId::new(99_000);
+    let mut component = resolved_component(component_id.index());
+    component.name = "values".to_string();
+    let mut components = IndexMap::default();
+    components.insert("values".to_string(), component);
+    let mut mod_env = ast::ModificationEnvironment::default();
+    mod_env.add(
+        ast::QualifiedName::from_ident("values"),
+        ast::ModificationValue::simple(ast::Expression::Array {
+            elements: vec![make_int_expr(7)],
+            is_matrix: false,
+            span: test_span(),
+        }),
+    );
+    let indexed_ref = |selector| {
+        let mut expression = make_resolved_comp_ref_expr(&[("values", component_id.index())]);
+        let ast::Expression::ComponentReference(reference) = &mut expression else {
+            unreachable!("reference helper");
+        };
+        reference.span = test_span();
+        reference.parts[0].subs = Some(vec![ast::Subscript::Expression(selector)]);
+        expression
+    };
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    for selector in [
+        make_int_expr(0),
+        make_int_expr(2),
+        ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs: Arc::new(make_int_expr(1)),
+            span: test_span(),
+        },
+    ] {
+        let expression = indexed_ref(selector);
+        let error =
+            resolve_single_part_ref_expr(&expression, &mod_env, &components, &tree, &class_index)
+                .expect_err("a known invalid static modifier selection must not retain the input");
+        assert!(matches!(*error, InstantiateError::InvalidModPath { .. }));
+    }
+
+    let dynamic = indexed_ref(make_resolved_comp_ref_expr(&[("i", 99_001)]));
+    assert_eq!(
+        resolve_single_part_ref_expr(&dynamic, &mod_env, &components, &tree, &class_index)
+            .expect("non-static selector may defer"),
         None
     );
+
+    // A literal array value with an in-range static index still resolves to the
+    // selected element, confirming the deferral change did not weaken the
+    // resolving path.
+    let selected = resolve_single_part_ref_expr(
+        &indexed_ref(make_int_expr(1)),
+        &mod_env,
+        &components,
+        &tree,
+        &class_index,
+    )
+    .expect("in-range static selection resolves")
+    .expect("a resolved edge is produced");
+    assert_eq!(selected.1, make_int_expr(7));
+}
+
+#[test]
+fn subscripted_modifier_over_non_literal_array_value_defers() {
+    // A modifier bound to an array-valued but non-literal expression (a
+    // component reference, `fill`, or an arithmetic expression) has no visible
+    // element extent at this phase. Selecting an element must defer with the
+    // subscripted reference intact rather than refusing, since a later phase
+    // knows the declared shape. Refusing here is the defect this guards against.
+    let component_id = rumoca_core::DefId::new(98_000);
+    let mut component = resolved_component(component_id.index());
+    component.name = "values".to_string();
+    let mut components = IndexMap::default();
+    components.insert("values".to_string(), component);
+
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    let indexed_ref = || {
+        let mut expression = make_resolved_comp_ref_expr(&[("values", component_id.index())]);
+        let ast::Expression::ComponentReference(reference) = &mut expression else {
+            unreachable!("reference helper");
+        };
+        reference.span = test_span();
+        reference.parts[0].subs = Some(vec![ast::Subscript::Expression(make_int_expr(2))]);
+        expression
+    };
+
+    let non_literal_values = [
+        // A reference to another array parameter.
+        make_resolved_comp_ref_expr(&[("arrayParam", 98_100)]),
+        // `fill(0.0, 3)`: array-valued, not a literal array.
+        ast::Expression::FunctionCall {
+            comp: ast::ComponentReference {
+                local: false,
+                parts: vec![ast::ComponentRefPart {
+                    ident: make_token("fill"),
+                    subs: None,
+                    def_id: None,
+                }],
+                span: rumoca_core::Span::DUMMY,
+                qualified_display_name: None,
+            },
+            args: vec![make_int_expr(0), make_int_expr(3)],
+            is_partial_application: false,
+            span: rumoca_core::Span::DUMMY,
+        },
+        // A scalar literal broadcast into an array component (`Real x[3] = 1`).
+        make_int_expr(1),
+    ];
+
+    for value in non_literal_values {
+        let mut mod_env = ast::ModificationEnvironment::default();
+        mod_env.add(
+            ast::QualifiedName::from_ident("values"),
+            ast::ModificationValue::simple(value),
+        );
+        assert_eq!(
+            resolve_single_part_ref_expr(
+                &indexed_ref(),
+                &mod_env,
+                &components,
+                &tree,
+                &class_index
+            )
+            .expect("a non-literal array value defers rather than failing"),
+            None,
+            "non-literal array-valued modifier must defer, preserving the reference"
+        );
+    }
 }
 
 fn make_name(name: &str) -> ast::Name {
@@ -133,10 +348,8 @@ fn string_modifier_type_check_requires_segment_boundary() {
 #[test]
 fn test_resolve_sibling_modification_keeps_class_modification_reference() {
     let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
-    let mut data = ast::Component {
-        name: "aimcData".to_string(),
-        ..ast::Component::empty_with_span(test_span())
-    };
+    let mut data = resolved_component(100);
+    data.name = "aimcData".to_string();
     data.modifications.insert(
         "statorCoreParameters".to_string(),
         ast::Expression::ClassModification {
@@ -184,14 +397,16 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
     );
     effective_components.insert("aimcData".to_string(), data);
 
-    let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
+    let expr = make_resolved_comp_ref_expr(&[("aimcData", 100), ("statorCoreParameters", 101)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let resolved = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
             effective_components: &effective_components,
-            tree: &ast::ClassTree::default(),
-            imports: &[],
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
         },
         false,
     )
@@ -206,22 +421,22 @@ fn test_resolve_sibling_modification_keeps_class_modification_reference() {
 #[test]
 fn test_resolve_sibling_modification_still_resolves_scalar_field_override() {
     let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
-    let mut data = ast::Component {
-        name: "stackData".to_string(),
-        ..ast::Component::empty_with_span(test_span())
-    };
+    let mut data = resolved_component(110);
+    data.name = "stackData".to_string();
     data.modifications
         .insert("mSystems".to_string(), make_int_expr(2));
     effective_components.insert("stackData".to_string(), data);
 
-    let expr = make_comp_ref_expr(&["stackData", "mSystems"]);
+    let expr = make_resolved_comp_ref_expr(&[("stackData", 110), ("mSystems", 111)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let resolved = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
             effective_components: &effective_components,
-            tree: &ast::ClassTree::default(),
-            imports: &[],
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
         },
         false,
     )
@@ -247,11 +462,14 @@ fn test_declaration_binding_preserves_component_reference_identity() {
     );
 
     let expr = make_comp_ref_expr(&["pathLengths"]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let resolved = resolve_declaration_binding_expr(
         &expr,
         &mod_env,
         &IndexMap::default(),
-        &ast::ClassTree::default(),
+        &tree,
+        &class_index,
     )
     .expect("declaration binding resolution should succeed");
 
@@ -264,10 +482,8 @@ fn test_declaration_binding_preserves_component_reference_identity() {
 #[test]
 fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
     let mut effective_components: IndexMap<String, ast::Component> = IndexMap::default();
-    let mut data = ast::Component {
-        name: "aimcData".to_string(),
-        ..ast::Component::empty_with_span(test_span())
-    };
+    let mut data = resolved_component(120);
+    data.name = "aimcData".to_string();
     data.modifications.insert(
         "statorCoreParameters".to_string(),
         ast::Expression::FunctionCall {
@@ -310,14 +526,16 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
     );
     effective_components.insert("aimcData".to_string(), data);
 
-    let expr = make_comp_ref_expr(&["aimcData", "statorCoreParameters"]);
+    let expr = make_resolved_comp_ref_expr(&[("aimcData", 120), ("statorCoreParameters", 121)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let resolved = resolve_modification_expr(
         &expr,
         ModifierResolveScope {
             mod_env: &ast::ModificationEnvironment::default(),
             effective_components: &effective_components,
-            tree: &ast::ClassTree::default(),
-            imports: &[],
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
         },
         false,
     )
@@ -327,6 +545,246 @@ fn test_resolve_sibling_modification_keeps_function_call_record_like_binding() {
         resolved, expr,
         "function-call record-like overrides should stay as references"
     );
+}
+
+#[test]
+fn modifier_resolution_follows_more_than_the_old_depth_limit() {
+    let mut mod_env = ast::ModificationEnvironment::default();
+    let mut effective_components = IndexMap::default();
+    for index in 0..24_u32 {
+        let name = format!("p{index}");
+        let def_id = 500 + index;
+        let mut component = resolved_component(def_id);
+        component.name = name.clone();
+        effective_components.insert(name.clone(), component);
+        let value = if index == 23 {
+            ast::Expression::Empty { span: test_span() }
+        } else {
+            let target = format!("p{}", index + 1);
+            make_resolved_comp_ref_expr(&[(target.as_str(), def_id + 1)])
+        };
+        mod_env.add(
+            ast::QualifiedName::from_ident(&name),
+            ast::ModificationValue::simple(value),
+        );
+    }
+
+    let expression = make_resolved_comp_ref_expr(&[("p0", 500)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let resolved = resolve_modification_expr(
+        &expression,
+        ModifierResolveScope {
+            mod_env: &mod_env,
+            effective_components: &effective_components,
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+        false,
+    )
+    .expect("long acyclic modifier forwarding chain resolves");
+    assert!(matches!(resolved, ast::Expression::Empty { .. }));
+}
+
+#[test]
+fn modifier_resolution_rejects_cycle_without_mutating_catalogs() {
+    let mut mod_env = ast::ModificationEnvironment::default();
+    let mut effective_components = IndexMap::default();
+    for (name, def_id, target, target_id) in [("a", 600, "b", 601), ("b", 601, "a", 600)] {
+        let mut component = resolved_component(def_id);
+        component.name = name.to_string();
+        effective_components.insert(name.to_string(), component);
+        mod_env.add(
+            ast::QualifiedName::from_ident(name),
+            ast::ModificationValue::simple(make_resolved_comp_ref_expr(&[(target, target_id)])),
+        );
+    }
+    let mod_snapshot = mod_env.clone();
+    let component_snapshot = effective_components.clone();
+    let expression = make_resolved_comp_ref_expr(&[("a", 600)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let error = resolve_modification_expr(
+        &expression,
+        ModifierResolveScope {
+            mod_env: &mod_env,
+            effective_components: &effective_components,
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+        false,
+    )
+    .expect_err("modifier forwarding cycle is invalid");
+    assert!(matches!(
+        *error,
+        InstantiateError::InstantiationCycle { .. }
+    ));
+    assert_mod_env_matches(&mod_env, &mod_snapshot);
+    assert_eq!(effective_components, component_snapshot);
+}
+
+#[test]
+fn modifier_resolution_rejects_same_spelling_with_different_identity() {
+    let mut component = resolved_component(700);
+    component.name = "p".to_string();
+    let effective_components = [("p".to_string(), component)]
+        .into_iter()
+        .collect::<IndexMap<_, _>>();
+    let expression = make_resolved_comp_ref_expr(&[("p", 701)]);
+    let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let result = resolve_modification_expr(
+        &expression,
+        ModifierResolveScope {
+            mod_env: &ast::ModificationEnvironment::default(),
+            effective_components: &effective_components,
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+        false,
+    );
+    assert!(matches!(
+        result,
+        Err(error) if matches!(*error, InstantiateError::MissingResolvedIdentity { .. })
+    ));
+}
+
+#[test]
+fn modifier_resolution_uses_the_exact_lexical_component_identity() {
+    let active_id = rumoca_core::DefId::new(710);
+    let lexical_id = rumoca_core::DefId::new(711);
+    let owner_id = rumoca_core::DefId::new(712);
+    let mut active = resolved_component(active_id.index());
+    active.name = "p".to_string();
+    let effective_components = [("p".to_string(), active)]
+        .into_iter()
+        .collect::<IndexMap<_, _>>();
+
+    let mut lexical = resolved_component(lexical_id.index());
+    lexical.name = "p".to_string();
+    let mut owner = ast::ClassDef {
+        name: make_token("Owner"),
+        def_id: Some(owner_id),
+        ..Default::default()
+    };
+    owner.components.insert("p".to_string(), lexical);
+    let mut tree = ast::ClassTree::default();
+    tree.definitions.classes.insert("Owner".to_string(), owner);
+
+    let mut mod_env = ast::ModificationEnvironment::default();
+    mod_env.add(
+        ast::QualifiedName::from_ident("p"),
+        ast::ModificationValue::simple(make_int_expr(5)),
+    );
+    let expression = make_resolved_comp_ref_expr(&[("p", lexical_id.index())]);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let resolved = resolve_modification_expr(
+        &expression,
+        ModifierResolveScope {
+            mod_env: &mod_env,
+            effective_components: &effective_components,
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+        false,
+    )
+    .expect("lexically resolved modifier reference is valid");
+    assert_eq!(resolved, make_int_expr(5));
+}
+
+#[test]
+fn modifier_resolution_leaves_an_exact_class_root_to_its_owner() {
+    let constants_id = rumoca_core::DefId::new(720);
+    let value_id = rumoca_core::DefId::new(721);
+    let constants = ast::ClassDef {
+        name: make_token("Constants"),
+        def_id: Some(constants_id),
+        ..Default::default()
+    };
+    let mut tree = ast::ClassTree::default();
+    tree.definitions
+        .classes
+        .insert("Constants".to_string(), constants);
+    let expression = make_resolved_comp_ref_expr(&[
+        ("Constants", constants_id.index()),
+        ("value", value_id.index()),
+    ]);
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+    let resolved = resolve_modification_expr(
+        &expression,
+        ModifierResolveScope {
+            mod_env: &ast::ModificationEnvironment::default(),
+            effective_components: &IndexMap::default(),
+            tree: &tree,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+        false,
+    )
+    .expect("an exact class root is not a sibling component modifier");
+    assert_eq!(resolved, expression);
+}
+
+#[test]
+fn population_rolls_back_earlier_modifiers_when_override_evidence_is_malformed() {
+    let missing_target_id = rumoca_core::DefId::new(751);
+    let tree = crate::test_support::resolved_tree(
+        "malformed_override_evidence.mo",
+        r"
+package BaseMedium end BaseMedium;
+model Container
+  parameter Integer good = 0;
+  replaceable package Medium = BaseMedium constrainedby BaseMedium;
+end Container;
+model Use
+  replaceable package Medium = BaseMedium constrainedby BaseMedium;
+  Container c(good = 1, redeclare package Medium = Medium);
+end Use;
+",
+    );
+    let target_class = tree
+        .get_class_by_qualified_name("Container")
+        .expect("container identity");
+    let forwarding_alias_id = tree
+        .get_class_by_qualified_name("Use")
+        .and_then(|class| class.classes.get("Medium"))
+        .and_then(|class| class.def_id)
+        .expect("forwarding alias identity");
+    let component = tree
+        .get_class_by_qualified_name("Use")
+        .and_then(|class| class.components.get("c"))
+        .expect("resolved component redeclare");
+    let mut overrides = TypeOverrideMap::new();
+    overrides.insert_alias(forwarding_alias_id, missing_target_id);
+    let mut ctx = InstantiateContext::new();
+    ctx.mod_env_mut().add(
+        ast::QualifiedName::from_ident("sentinel"),
+        ast::ModificationValue::simple(make_int_expr(9)),
+    );
+    let snapshot = ctx.mod_env().clone();
+    let empty_values = IndexMap::default();
+    let empty_keys = IndexMap::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
+
+    let error = populate_modification_environment(
+        &mut ctx,
+        &tree,
+        PopulateModEnvInput {
+            comp: component,
+            effective_components: &IndexMap::default(),
+            type_overrides: &overrides,
+            target_class: Some(target_class),
+            parent_snapshot: &empty_values,
+            shifted_parent_keys: &empty_keys,
+            modifier_imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
+    )
+    .expect_err("missing exact override target must abort publication");
+
+    assert!(matches!(
+        *error,
+        InstantiateError::MissingResolvedIdentity { .. }
+    ));
+    assert_mod_env_matches(ctx.mod_env(), &snapshot);
 }
 
 #[test]
@@ -513,8 +971,11 @@ fn test_apply_component_modifier_rejects_inherited_final_component() {
     let parent_snapshot = IndexMap::default();
     let shifted_parent_keys = IndexMap::default();
     let type_overrides = TypeOverrideMap::default();
+    let comp = ast::Component::empty_with_span(test_span());
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let eval_ctx = ModifierEvalContext {
         tree: &tree,
+        comp: &comp,
         effective_components: &IndexMap::default(),
         type_overrides: &type_overrides,
         target_class: Some(&derived),
@@ -522,7 +983,7 @@ fn test_apply_component_modifier_rejects_inherited_final_component() {
             parent_snapshot: &parent_snapshot,
             shifted_parent_keys: &shifted_parent_keys,
             source_scope: None,
-            imports: &[],
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
         },
     };
 
@@ -561,8 +1022,11 @@ fn test_apply_component_modifier_requires_span_for_final_modifier_error() {
     let shifted_parent_keys = IndexMap::default();
     let type_overrides = TypeOverrideMap::default();
     let tree = ast::ClassTree::default();
+    let comp = ast::Component::empty_with_span(test_span());
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let eval_ctx = ModifierEvalContext {
         tree: &tree,
+        comp: &comp,
         effective_components: &IndexMap::default(),
         type_overrides: &type_overrides,
         target_class: Some(&class),
@@ -570,7 +1034,7 @@ fn test_apply_component_modifier_requires_span_for_final_modifier_error() {
             parent_snapshot: &parent_snapshot,
             shifted_parent_keys: &shifted_parent_keys,
             source_scope: None,
-            imports: &[],
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
         },
     };
 
@@ -646,9 +1110,35 @@ fn test_insert_scoped_modifier_binding_requires_span_for_final_collision() {
 
 #[test]
 fn test_forwarded_modifier_keeps_forwarded_source_scope() {
+    let tree = crate::test_support::resolved_tree(
+        "forwarded_modifier_scope.mo",
+        r"
+record FrictionParameters end FrictionParameters;
+record AimcData
+  FrictionParameters frictionParameters;
+end AimcData;
+model ModifierScope
+  AimcData aimcData;
+  FrictionParameters frictionParameters = aimcData.frictionParameters;
+  FrictionParameters forwarded = frictionParameters;
+end ModifierScope;
+",
+    );
+    let owner = tree
+        .get_class_by_qualified_name("ModifierScope")
+        .expect("resolved modifier scope");
+    let forwarded_value = owner
+        .components
+        .get("frictionParameters")
+        .and_then(|component| component.binding.clone())
+        .expect("resolved forwarded parent value");
+    let local_reference = owner
+        .components
+        .get("forwarded")
+        .and_then(|component| component.binding.as_ref())
+        .expect("resolved local forwarding reference");
     let mut ctx = InstantiateContext::new();
     let key = ast::QualifiedName::from_ident("frictionParameters");
-    let forwarded_value = make_comp_ref_expr(&["aimcData", "frictionParameters"]);
     let forwarded_scope = Some(ast::QualifiedName::new());
 
     ctx.mod_env_mut().active.insert(
@@ -662,26 +1152,27 @@ fn test_forwarded_modifier_keeps_forwarded_source_scope() {
 
     let parent_snapshot = ctx.mod_env().active.clone();
     let shifted_parent_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let insert_ctx = ScopedInsertContext {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: Some(ast::QualifiedName::from_ident("aimc")),
-        imports: &[],
+        imports: crate::dims::ImportRewrite::without_imports(&class_index),
     };
 
     insert_modifier_value_with_structural_overrides(
         &mut ctx,
         "frictionParameters",
-        &make_comp_ref_expr(&["frictionParameters"]),
+        local_reference,
         ModifierInsertOptions {
             allow_string_eval: false,
             prefixes: ModifierPrefixes::default(),
         },
-        &IndexMap::default(),
-        &ast::ClassTree::default(),
+        &owner.components,
+        &tree,
         &insert_ctx,
     )
-    .expect("forwarded modifier insertion should succeed");
+    .expect("resolved forwarded modifier insertion should succeed");
 
     let stored = ctx
         .mod_env()
@@ -704,12 +1195,35 @@ fn test_forwarded_modifier_keeps_forwarded_source_scope() {
 
 #[test]
 fn test_sibling_modifier_reference_keeps_local_source_scope() {
+    let tree = crate::test_support::resolved_tree(
+        "sibling_modifier_scope.mo",
+        r"
+model ModifierScope
+  Real length;
+  Real pathLengths = length;
+  Real pathLengths_internal = pathLengths;
+end ModifierScope;
+",
+    );
+    let owner = tree
+        .get_class_by_qualified_name("ModifierScope")
+        .expect("resolved modifier scope");
+    let resolved_length = owner
+        .components
+        .get("pathLengths")
+        .and_then(|component| component.binding.clone())
+        .expect("resolved sibling value");
+    let sibling_reference = owner
+        .components
+        .get("pathLengths_internal")
+        .and_then(|component| component.binding.as_ref())
+        .expect("resolved sibling reference");
     let mut ctx = InstantiateContext::new();
     ctx.mod_env_mut().active.insert(
         ast::QualifiedName::from_ident("pathLengths"),
         ast::ModificationValue::with_source_scope(
-            make_comp_ref_expr(&["length"]),
-            Some(make_comp_ref_expr(&["length"])),
+            resolved_length.clone(),
+            Some(resolved_length.clone()),
             Some(ast::QualifiedName::from_ident("pipe")),
         ),
     );
@@ -717,43 +1231,62 @@ fn test_sibling_modifier_reference_keeps_local_source_scope() {
     let parent_snapshot = ctx.mod_env().active.clone();
     let shifted_parent_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
     let local_scope = Some(ast::QualifiedName::from_ident("flowModel"));
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let insert_ctx = ScopedInsertContext {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: local_scope.clone(),
-        imports: &[],
+        imports: crate::dims::ImportRewrite::without_imports(&class_index),
     };
 
     insert_modifier_value_with_structural_overrides(
         &mut ctx,
         "pathLengths_internal",
-        &make_comp_ref_expr(&["pathLengths"]),
+        sibling_reference,
         ModifierInsertOptions {
             allow_string_eval: false,
             prefixes: ModifierPrefixes::default(),
         },
-        &IndexMap::default(),
-        &ast::ClassTree::default(),
+        &owner.components,
+        &tree,
         &insert_ctx,
     )
-    .expect("sibling modifier insertion should succeed");
+    .expect("resolved sibling modifier insertion should succeed");
 
     let stored = ctx
         .mod_env()
         .get(&ast::QualifiedName::from_ident("pathLengths_internal"))
         .expect("sibling modifier binding should exist");
-    assert_eq!(
-        stored.source.as_ref(),
-        Some(&make_comp_ref_expr(&["pathLengths"]))
-    );
+    assert_eq!(stored.value, resolved_length);
+    assert_eq!(stored.source.as_ref(), Some(sibling_reference));
     assert_eq!(stored.source_scope, local_scope);
 }
 
 #[test]
 fn test_modifier_with_same_resolved_value_keeps_existing_source_scope() {
+    let tree = crate::test_support::resolved_tree(
+        "same_value_modifier_scope.mo",
+        r"
+record FrictionParameters end FrictionParameters;
+record AimcData
+  FrictionParameters frictionParameters;
+end AimcData;
+model ModifierScope
+  AimcData aimcData;
+  FrictionParameters frictionParameters = aimcData.frictionParameters;
+end ModifierScope;
+",
+    );
+    let owner = tree
+        .get_class_by_qualified_name("ModifierScope")
+        .expect("resolved modifier scope");
+    let forwarded_value = owner
+        .components
+        .get("frictionParameters")
+        .and_then(|component| component.binding.clone())
+        .expect("resolved multi-part modifier value");
     let mut ctx = InstantiateContext::new();
     let key = ast::QualifiedName::from_ident("frictionParameters");
-    let forwarded_value = make_comp_ref_expr(&["aimcData", "frictionParameters"]);
     let forwarded_scope = Some(ast::QualifiedName::new());
 
     ctx.mod_env_mut().active.insert(
@@ -767,11 +1300,12 @@ fn test_modifier_with_same_resolved_value_keeps_existing_source_scope() {
 
     let parent_snapshot = ctx.mod_env().active.clone();
     let shifted_parent_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let insert_ctx = ScopedInsertContext {
         parent_snapshot: &parent_snapshot,
         shifted_parent_keys: &shifted_parent_keys,
         source_scope: Some(ast::QualifiedName::from_ident("aimc")),
-        imports: &[],
+        imports: crate::dims::ImportRewrite::without_imports(&class_index),
     };
 
     insert_modifier_value_with_structural_overrides(
@@ -782,16 +1316,18 @@ fn test_modifier_with_same_resolved_value_keeps_existing_source_scope() {
             allow_string_eval: false,
             prefixes: ModifierPrefixes::default(),
         },
-        &IndexMap::default(),
-        &ast::ClassTree::default(),
+        &owner.components,
+        &tree,
         &insert_ctx,
     )
-    .expect("same-value modifier insertion should succeed");
+    .expect("same resolved value modifier insertion should succeed");
 
     let stored = ctx
         .mod_env()
         .get(&key)
         .expect("modifier binding should exist");
+    assert_eq!(stored.value, forwarded_value);
+    assert_eq!(stored.source.as_ref(), Some(&forwarded_value));
     assert_eq!(
         stored.source_scope, forwarded_scope,
         "resolved multi-part modifier should inherit source scope from existing parent binding"
@@ -819,7 +1355,7 @@ fn test_propagate_record_binding_overrides_non_targeted_field_values() {
         ast::ModificationValue::simple(make_int_expr(7)),
     );
 
-    let binding_expr = make_comp_ref_expr(&["state_in"]);
+    let binding_expr = make_resolved_comp_ref_expr(&[("state_in", 8_001)]);
     let targeted_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
@@ -956,7 +1492,7 @@ fn test_propagate_record_binding_preserves_each_prefix_for_fields() {
         &ast::ClassTree::default(),
         &mut ctx,
         RecordBindingProjection {
-            value: &make_comp_ref_expr(&["R"]),
+            value: &make_resolved_comp_ref_expr(&[("R", 8_002)]),
             source: None,
             source_scope: None,
             each: true,
@@ -992,7 +1528,7 @@ fn test_propagate_record_binding_does_not_treat_start_as_field_default() {
     );
 
     let mut ctx = InstantiateContext::new();
-    let binding_expr = make_comp_ref_expr(&["source"]);
+    let binding_expr = make_resolved_comp_ref_expr(&[("source", 8_003)]);
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
@@ -1047,7 +1583,7 @@ fn test_propagate_record_binding_preserves_targeted_field_modifiers() {
 
     let mut targeted_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
     targeted_keys.insert(phase_qn.clone(), ());
-    let binding_expr = make_comp_ref_expr(&["state_in"]);
+    let binding_expr = make_resolved_comp_ref_expr(&[("state_in", 8_004)]);
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
@@ -1092,10 +1628,10 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     let mut ctx = InstantiateContext::new();
     let binding_expr = ast::Expression::If {
         branches: vec![(
-            make_comp_ref_expr(&["isDegraded"]),
-            make_comp_ref_expr(&["cellDataDegraded"]),
+            make_resolved_comp_ref_expr(&[("isDegraded", 8_400)]),
+            make_resolved_comp_ref_expr(&[("cellDataDegraded", 8_401)]),
         )],
-        else_branch: Arc::new(make_comp_ref_expr(&["cellDataOriginal"])),
+        else_branch: Arc::new(make_resolved_comp_ref_expr(&[("cellDataOriginal", 8_402)])),
         span: rumoca_core::Span::DUMMY,
     };
     let targeted_keys: IndexMap<ast::QualifiedName, ()> = IndexMap::default();
@@ -1139,7 +1675,10 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     };
     assert_eq!(field, "OCV_SOC");
     assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(841)));
-    assert_eq!(*base.as_ref(), make_comp_ref_expr(&["cellDataDegraded"]));
+    assert_eq!(
+        *base.as_ref(),
+        make_resolved_comp_ref_expr(&[("cellDataDegraded", 8_401)])
+    );
 
     let ast::Expression::FieldAccess {
         base: else_base,
@@ -1152,7 +1691,7 @@ fn test_propagate_record_binding_projects_if_expression_branches_per_field() {
     assert_eq!(else_field, "OCV_SOC");
     assert_eq!(
         *else_base.as_ref(),
-        make_comp_ref_expr(&["cellDataOriginal"])
+        make_resolved_comp_ref_expr(&[("cellDataOriginal", 8_402)])
     );
 }
 
@@ -1175,7 +1714,7 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
     );
 
     let mut ctx = InstantiateContext::new();
-    let binding_expr = make_comp_ref_expr(&["cellDataOriginal"]);
+    let binding_expr = make_resolved_comp_ref_expr(&[("cellDataOriginal", 1_202)]);
     propagate_record_binding_to_fields(
         &ast::ClassTree::default(),
         &mut ctx,
@@ -1207,6 +1746,108 @@ fn test_record_alias_from_outer_scope_projects_declared_default_field() {
     assert_eq!(field, "nRC");
     assert_eq!(*field_def_id, Some(rumoca_core::DefId::new(1201)));
     assert_eq!(base.as_ref(), &binding_expr);
+}
+
+#[test]
+fn record_projection_refuses_unresolved_alias_without_partial_field_publication() {
+    let mut nested_record = ast::ClassDef {
+        name: make_token("State"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(rumoca_core::DefId::new(1_210)),
+        ..Default::default()
+    };
+    for (name, def_id) in [("x", 1_211), ("y", 1_212)] {
+        nested_record.components.insert(
+            name.to_string(),
+            ast::Component {
+                def_id: Some(rumoca_core::DefId::new(def_id)),
+                ..ast::Component::empty_with_span(test_span())
+            },
+        );
+    }
+    let mut ctx = InstantiateContext::new();
+    ctx.mod_env_mut().add(
+        ast::QualifiedName::from_ident("sentinel"),
+        ast::ModificationValue::simple(make_int_expr(9)),
+    );
+    let snapshot = ctx.mod_env().clone();
+    let unresolved = make_comp_ref_expr(&["source"]);
+
+    let error = propagate_record_binding_to_fields(
+        &ast::ClassTree::default(),
+        &mut ctx,
+        RecordBindingProjection {
+            value: &unresolved,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
+        &nested_record,
+        &IndexMap::default(),
+    )
+    .expect_err("record alias projection requires exact source identity");
+
+    assert!(matches!(
+        *error,
+        InstantiateError::MissingResolvedIdentity { .. }
+    ));
+    assert_mod_env_matches(ctx.mod_env(), &snapshot);
+}
+
+#[test]
+fn record_projection_does_not_read_same_spelled_local_alias_with_other_identity() {
+    let record_id = rumoca_core::DefId::new(1_300);
+    let mut nested_record = ast::ClassDef {
+        name: make_token("State"),
+        class_type: rumoca_core::ClassType::Record,
+        def_id: Some(record_id),
+        ..Default::default()
+    };
+    nested_record.components.insert(
+        "x".to_string(),
+        ast::Component {
+            name: "x".to_string(),
+            def_id: Some(rumoca_core::DefId::new(1_301)),
+            binding: Some(make_int_expr(1)),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+    nested_record.components.insert(
+        "source".to_string(),
+        ast::Component {
+            name: "source".to_string(),
+            def_id: Some(rumoca_core::DefId::new(1_302)),
+            type_def_id: Some(record_id),
+            ..ast::Component::empty_with_span(test_span())
+        },
+    );
+    let mut ctx = InstantiateContext::new();
+    ctx.mod_env_mut().add(
+        ast::QualifiedName::from_ident("source").child("x"),
+        ast::ModificationValue::simple(make_int_expr(42)),
+    );
+    let binding = make_resolved_comp_ref_expr(&[("source", 1_399)]);
+
+    propagate_record_binding_to_fields(
+        &ast::ClassTree::default(),
+        &mut ctx,
+        RecordBindingProjection {
+            value: &binding,
+            source: None,
+            source_scope: None,
+            each: false,
+        },
+        &nested_record,
+        &IndexMap::default(),
+    )
+    .expect("outer exact alias projects without consulting the colliding local component");
+
+    let x = ctx
+        .mod_env()
+        .get(&ast::QualifiedName::from_ident("x"))
+        .expect("x projection");
+    assert!(matches!(&x.value, ast::Expression::FieldAccess { .. }));
+    assert_ne!(x.value, make_int_expr(42));
 }
 
 #[test]
@@ -1266,49 +1907,40 @@ fn test_propagate_record_binding_preserves_matching_default_record_constructor()
 
 #[test]
 fn test_propagate_record_binding_projects_subtype_default_record_constructor_fields() {
-    let mut nested_record = ast::ClassDef {
-        name: make_token("BaseData"),
-        class_type: rumoca_core::ClassType::Record,
-        def_id: Some(rumoca_core::DefId::new(860)),
-        ..Default::default()
-    };
-    nested_record.components.insert(
-        "mu_i".to_string(),
-        ast::Component {
-            def_id: Some(rumoca_core::DefId::new(861)),
-            binding: Some(make_int_expr(1)),
-            start: make_int_expr(1),
-            ..ast::Component::empty_with_span(test_span())
-        },
+    let tree = crate::test_support::resolved_tree(
+        "record_subtype_projection.mo",
+        r"
+record BaseData
+  Integer mu_i = 1;
+end BaseData;
+record M350_50A
+  extends BaseData(mu_i = 2);
+end M350_50A;
+model Holder
+  BaseData data = M350_50A();
+end Holder;
+",
     );
-
+    let nested_record = tree
+        .get_class_by_qualified_name("BaseData")
+        .expect("resolved base record");
+    let binding_expr = tree
+        .get_class_by_qualified_name("Holder")
+        .and_then(|class| class.components.get("data"))
+        .and_then(|component| component.binding.as_ref())
+        .expect("resolved record constructor binding");
     let mut ctx = InstantiateContext::new();
-    let binding_expr = ast::Expression::FunctionCall {
-        comp: ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: make_token("M350_50A"),
-                subs: None,
-                def_id: Some(rumoca_core::DefId::new(862)),
-            }],
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        },
-        args: Vec::new(),
-        is_partial_application: false,
-        span: rumoca_core::Span::DUMMY,
-    };
 
     propagate_record_binding_to_fields(
-        &ast::ClassTree::default(),
+        &tree,
         &mut ctx,
         RecordBindingProjection {
-            value: &binding_expr,
+            value: binding_expr,
             source: None,
             source_scope: None,
             each: false,
         },
-        &nested_record,
+        nested_record,
         &IndexMap::default(),
     )
     .expect("record field projection should succeed");
@@ -1318,82 +1950,57 @@ fn test_propagate_record_binding_projects_subtype_default_record_constructor_fie
         .active
         .get(&ast::QualifiedName::from_ident("mu_i"))
         .expect("subtype default record constructor should project field binding");
-    let ast::Expression::FieldAccess { base, field, .. } = &field_mod.value else {
-        panic!("subtype constructor field should be projected");
+    let ast::Expression::Terminal {
+        terminal_type,
+        token,
+        ..
+    } = &field_mod.value
+    else {
+        panic!("subtype constructor should publish its effective field default");
     };
-    assert_eq!(field, "mu_i");
-    assert_eq!(base.as_ref(), &binding_expr);
+    assert_eq!(*terminal_type, ast::TerminalType::UnsignedInteger);
+    assert_eq!(token.text.as_ref(), "2");
+    assert_eq!(field_mod.source.as_ref(), Some(&field_mod.value));
 }
 
 #[test]
 fn test_propagate_record_binding_projects_through_unique_constructor_record_field() {
-    let inner_def_id = rumoca_core::DefId::new(1001);
-    let outer_def_id = rumoca_core::DefId::new(1002);
-    let inner_x_def_id = rumoca_core::DefId::new(1003);
-    let outer_inner_params_def_id = rumoca_core::DefId::new(1004);
-    let mut inner_record = ast::ClassDef {
-        name: make_token("Inner"),
-        class_type: rumoca_core::ClassType::Record,
-        def_id: Some(inner_def_id),
-        ..Default::default()
-    };
-    inner_record
-        .components
-        .insert("x".to_string(), resolved_component(inner_x_def_id.index()));
-
-    let mut outer_record = ast::ClassDef {
-        name: make_token("Outer"),
-        class_type: rumoca_core::ClassType::Record,
-        def_id: Some(outer_def_id),
-        ..Default::default()
-    };
-    outer_record.components.insert(
-        "innerParams".to_string(),
-        ast::Component {
-            def_id: Some(outer_inner_params_def_id),
-            type_name: ast::Name {
-                name: vec![make_token("Pkg"), make_token("Inner")],
-                def_id: Some(inner_def_id),
-            },
-            type_def_id: Some(inner_def_id),
-            ..ast::Component::empty_with_span(test_span())
-        },
+    let tree = crate::test_support::resolved_tree(
+        "record_field_projection.mo",
+        r"
+package Pkg
+  record Inner
+    Real x;
+  end Inner;
+  record Outer
+    Inner innerParams;
+  end Outer;
+end Pkg;
+model Holder
+  Pkg.Inner value = Pkg.Outer();
+end Holder;
+",
     );
-
-    let mut tree = ast::ClassTree::default();
-    tree.definitions
-        .classes
-        .insert("Pkg.Outer".to_string(), outer_record);
-    tree.def_map.insert(inner_def_id, "Pkg.Inner".to_string());
-    tree.def_map.insert(outer_def_id, "Pkg.Outer".to_string());
-
+    let inner_record = tree
+        .get_class_by_qualified_name("Pkg.Inner")
+        .expect("resolved inner record");
+    let binding_expr = tree
+        .get_class_by_qualified_name("Holder")
+        .and_then(|class| class.components.get("value"))
+        .and_then(|component| component.binding.as_ref())
+        .expect("resolved outer constructor binding");
     let mut ctx = InstantiateContext::new();
-    let binding_expr = ast::Expression::FunctionCall {
-        comp: ast::ComponentReference {
-            local: false,
-            parts: vec![ast::ComponentRefPart {
-                ident: make_token("Outer"),
-                subs: None,
-                def_id: Some(outer_def_id),
-            }],
-            span: rumoca_core::Span::DUMMY,
-            qualified_display_name: None,
-        },
-        args: Vec::new(),
-        is_partial_application: false,
-        span: rumoca_core::Span::DUMMY,
-    };
 
     propagate_record_binding_to_fields(
         &tree,
         &mut ctx,
         RecordBindingProjection {
-            value: &binding_expr,
+            value: binding_expr,
             source: None,
             source_scope: Some(ast::QualifiedName::from_ident("Pkg")),
             each: false,
         },
-        &inner_record,
+        inner_record,
         &IndexMap::default(),
     )
     .expect("record field projection should succeed");
@@ -1421,7 +2028,7 @@ fn test_propagate_record_binding_projects_through_unique_constructor_record_fiel
         panic!("projection should first select the unique compatible record field");
     };
     assert_eq!(outer_field, "innerParams");
-    assert_eq!(constructor.as_ref(), &binding_expr);
+    assert_eq!(constructor.as_ref(), binding_expr);
 }
 
 #[test]

@@ -1,6 +1,143 @@
 use super::*;
 
-pub(in crate::construction) enum ModelAlgorithmPlan {
+type EventAlgorithmAnalysis<'flat> = (
+    Vec<(Span, PeriodicClockSchedule)>,
+    ModelAlgorithmSequence<'flat>,
+);
+
+struct ModelAlgorithmAnalysisRequest<'analysis> {
+    roles: &'analysis HashMap<VarName, PlannedRole>,
+    expression_roles: &'analysis HashMap<VarName, PlannedRole>,
+    constants: &'analysis EvalContext,
+    function_shapes: &'analysis FunctionShapeAnalysis,
+    sample_aliases: &'analysis HashMap<VarName, PeriodicClockSchedule>,
+    sample_lattices: &'analysis mut Vec<(Span, PeriodicClockSchedule)>,
+}
+
+pub(super) fn analyze_event_algorithms<'flat>(
+    flat: &'flat flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    expression_roles: &HashMap<VarName, PlannedRole>,
+    constants: &EvalContext,
+    function_shapes: &FunctionShapeAnalysis,
+    sample_aliases: &HashMap<VarName, PeriodicClockSchedule>,
+) -> Result<EventAlgorithmAnalysis<'flat>, ToDaeError> {
+    let mut sample_lattices = Vec::new();
+    validate_when_chains(
+        &flat.when_chains,
+        roles,
+        expression_roles,
+        constants,
+        function_shapes.model_values(),
+        &mut sample_lattices,
+    )?;
+    let plans = analyze_model_algorithms(
+        flat,
+        ModelAlgorithmAnalysisRequest {
+            roles,
+            expression_roles,
+            constants,
+            function_shapes,
+            sample_aliases,
+            sample_lattices: &mut sample_lattices,
+        },
+    )?;
+    Ok((sample_lattices, plans))
+}
+
+pub(in crate::construction) struct ModelAlgorithmSequence<'flat> {
+    flat: &'flat flat::Model,
+    entries: Box<[ModelAlgorithmEntry<'flat>]>,
+}
+
+impl<'flat> ModelAlgorithmSequence<'flat> {
+    pub(in crate::construction) fn flat(&self) -> &'flat flat::Model {
+        self.flat
+    }
+
+    pub(in crate::construction) fn entries<'sequence>(
+        &'sequence self,
+    ) -> impl ExactSizeIterator<
+        Item = (&'flat flat::Algorithm, &'sequence ModelAlgorithmPlan<'flat>),
+    > + 'sequence {
+        self.entries.iter().map(|entry| (entry.source, &entry.plan))
+    }
+}
+
+fn analyze_model_algorithms<'flat>(
+    flat: &'flat flat::Model,
+    request: ModelAlgorithmAnalysisRequest<'_>,
+) -> Result<ModelAlgorithmSequence<'flat>, ToDaeError> {
+    let ModelAlgorithmAnalysisRequest {
+        roles,
+        expression_roles,
+        constants,
+        function_shapes,
+        sample_aliases,
+        sample_lattices,
+    } = request;
+    let entries = flat
+        .algorithms
+        .iter()
+        .map(|source| -> Result<ModelAlgorithmEntry<'flat>, ToDaeError> {
+            validate_model_algorithm(
+                flat,
+                source,
+                expression_roles,
+                function_shapes.model_values(),
+                constants,
+                sample_lattices,
+            )?;
+            Ok(ModelAlgorithmEntry {
+                source,
+                plan: analyze_model_algorithm(
+                    flat,
+                    source,
+                    roles,
+                    function_shapes,
+                    constants,
+                    sample_aliases,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ModelAlgorithmSequence {
+        flat,
+        entries: entries.into_boxed_slice(),
+    })
+}
+
+struct ModelAlgorithmEntry<'flat> {
+    source: &'flat flat::Algorithm,
+    plan: ModelAlgorithmPlan<'flat>,
+}
+
+#[cfg(test)]
+mod sequence_api_tests {
+    use super::*;
+
+    macro_rules! assert_not_implemented {
+        ($ty:ty, $bound:path) => {
+            const _: fn() = || {
+                trait AmbiguousIfImplemented<Marker> {
+                    fn probe() {}
+                }
+                impl<T> AmbiguousIfImplemented<()> for T {}
+                struct Implements;
+                impl<T: $bound> AmbiguousIfImplemented<Implements> for T {}
+                let _ = <$ty as AmbiguousIfImplemented<_>>::probe;
+            };
+        };
+    }
+
+    assert_not_implemented!(ModelAlgorithmSequence<'static>, ::core::clone::Clone);
+    assert_not_implemented!(EventLoweringProduct<'static>, ::core::clone::Clone);
+
+    #[test]
+    fn algorithm_sequence_and_event_product_are_affine_api_products() {}
+}
+
+pub(in crate::construction) enum ModelAlgorithmPlan<'flat> {
     Declarative {
         target: VarName,
     },
@@ -15,25 +152,97 @@ pub(in crate::construction) enum ModelAlgorithmPlan {
         domain: StructuredIndexDomain,
         binder_spans: Vec<Span>,
     },
-    Event {
-        tensor_loops: HashMap<Span, ModelEventTensorLoopPlan>,
-        function_calls: HashMap<Span, ModelEventFunctionCallPlan>,
+    Event(EventLoweringProduct<'flat>),
+}
+
+pub(in crate::construction) struct EventLoweringProduct<'flat> {
+    statements: Box<[EventStatementPlan<'flat>]>,
+    targets: Box<[VarName]>,
+}
+
+impl<'flat> EventLoweringProduct<'flat> {
+    pub(in crate::construction) fn statements(&self) -> &[EventStatementPlan<'flat>] {
+        &self.statements
+    }
+
+    pub(in crate::construction) fn targets(&self) -> &[VarName] {
+        &self.targets
+    }
+}
+
+pub(in crate::construction) enum EventStatementPlan<'flat> {
+    Assignment {
+        component: &'flat rumoca_core::ComponentReference,
+        value: &'flat Expression,
+        span: Span,
+        route: EventAssignmentRoute<'flat>,
+    },
+    If {
+        blocks: Box<[EventBlockPlan<'flat>]>,
+        else_product: EventElseProduct<'flat>,
+        span: Span,
+    },
+    When {
+        blocks: Box<[EventBlockPlan<'flat>]>,
+        span: Span,
+    },
+    FunctionCall {
+        component: &'flat rumoca_core::Reference,
+        arguments: &'flat [Expression],
+        span: Span,
+        plan: ModelEventFunctionCallPlan,
+    },
+    TensorLoop(ModelEventTensorLoopPlan<'flat>),
+    Assert {
+        condition: &'flat Expression,
+        message: &'flat Expression,
+        level: Option<&'flat Expression>,
+        span: Span,
     },
 }
 
-#[derive(Clone)]
-pub(in crate::construction) struct ModelEventTensorLoopPlan {
-    pub(in crate::construction) targets: Vec<VarName>,
-    pub(in crate::construction) domain: StructuredIndexDomain,
-    pub(in crate::construction) binder_spans: Vec<Span>,
+pub(in crate::construction) struct EventBlockPlan<'flat> {
+    pub(in crate::construction) condition: AlgorithmConditionProduct<'flat>,
+    pub(in crate::construction) statements: Box<[EventStatementPlan<'flat>]>,
 }
 
-pub(super) fn analyze_model_algorithm(
-    flat: &flat::Model,
-    algorithm: &flat::Algorithm,
+pub(in crate::construction) enum EventElseProduct<'flat> {
+    Absent,
+    Statements(Box<[EventStatementPlan<'flat>]>),
+}
+
+pub(in crate::construction) enum EventAssignmentRoute<'flat> {
+    Coordinate,
+    Structured(StructuredAssignmentPlan),
+    FunctionCall {
+        component: &'flat rumoca_core::Reference,
+        arguments: &'flat [Expression],
+        plan: ModelEventFunctionCallPlan,
+    },
+}
+
+pub(in crate::construction) struct ModelEventTensorLoopPlan<'flat> {
+    pub(in crate::construction) domain: StructuredIndexDomain,
+    pub(in crate::construction) binder_spans: Vec<Span>,
+    pub(in crate::construction) assignments: Box<[ModelEventTensorAssignment<'flat>]>,
+    pub(in crate::construction) span: Span,
+}
+
+pub(in crate::construction) struct ModelEventTensorAssignment<'flat> {
+    pub(in crate::construction) target: VarName,
+    pub(in crate::construction) component: &'flat rumoca_core::ComponentReference,
+    pub(in crate::construction) value: &'flat Expression,
+    pub(in crate::construction) span: Span,
+}
+
+pub(super) fn analyze_model_algorithm<'flat>(
+    flat: &'flat flat::Model,
+    algorithm: &'flat flat::Algorithm,
     roles: &HashMap<VarName, PlannedRole>,
     shapes: &FunctionShapeAnalysis,
-) -> Result<ModelAlgorithmPlan, ToDaeError> {
+    constants: &EvalContext,
+    sample_aliases: &HashMap<VarName, PeriodicClockSchedule>,
+) -> Result<ModelAlgorithmPlan<'flat>, ToDaeError> {
     let model_values = shapes.model_values();
     if contains_event_control(&algorithm.statements) {
         let targets = model_algorithm_targets(flat, algorithm);
@@ -49,20 +258,20 @@ pub(super) fn analyze_model_algorithm(
                 algorithm.span,
             ));
         }
-        let mut tensor_loops = HashMap::new();
-        analyze_event_tensor_loops(flat, &algorithm.statements, model_values, &mut tensor_loops)?;
-        let mut function_calls = HashMap::new();
-        analyze_event_function_calls(
-            flat,
+        let calls = ModelEventCallAnalysis::new(flat, roles, shapes);
+        return issue_event_lowering_product(
             &algorithm.statements,
-            roles,
-            shapes,
-            &mut function_calls,
-        )?;
-        return Ok(ModelAlgorithmPlan::Event {
-            tensor_loops,
-            function_calls,
-        });
+            targets,
+            EventAnalysisContext {
+                flat,
+                roles,
+                model_values,
+                calls: &calls,
+                constants,
+                sample_aliases,
+            },
+        )
+        .map(ModelAlgorithmPlan::Event);
     }
     let targets = model_algorithm_targets(flat, algorithm);
     if let Some(plan) = analyze_separated_array_sum(flat, algorithm, &targets, roles, model_values)?
@@ -103,59 +312,176 @@ pub(super) fn analyze_model_algorithm(
     })
 }
 
-fn analyze_event_tensor_loops(
-    flat: &flat::Model,
-    statements: &[rumoca_core::Statement],
-    model_values: &ShapeEnvironment,
-    plans: &mut HashMap<Span, ModelEventTensorLoopPlan>,
-) -> Result<(), ToDaeError> {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::For { span, .. } => {
-                let plan = analyze_event_tensor_loop(flat, statement, model_values)?;
-                if plans.insert(*span, plan).is_some() {
+#[derive(Clone, Copy)]
+struct EventAnalysisContext<'flat, 'analysis> {
+    flat: &'flat flat::Model,
+    roles: &'analysis HashMap<VarName, PlannedRole>,
+    model_values: &'analysis ShapeEnvironment,
+    calls: &'analysis ModelEventCallAnalysis<'flat, 'analysis>,
+    constants: &'analysis EvalContext,
+    sample_aliases: &'analysis HashMap<VarName, PeriodicClockSchedule>,
+}
+
+fn issue_event_lowering_product<'flat>(
+    statements: &'flat [rumoca_core::Statement],
+    targets: Vec<VarName>,
+    context: EventAnalysisContext<'flat, '_>,
+) -> Result<EventLoweringProduct<'flat>, ToDaeError> {
+    let statements = issue_event_statement_products(statements, context)?;
+    Ok(EventLoweringProduct {
+        statements: statements.into_boxed_slice(),
+        targets: targets.into_boxed_slice(),
+    })
+}
+
+fn issue_event_statement_products<'flat>(
+    statements: &'flat [rumoca_core::Statement],
+    context: EventAnalysisContext<'flat, '_>,
+) -> Result<Vec<EventStatementPlan<'flat>>, ToDaeError> {
+    statements
+        .iter()
+        .map(|statement| issue_event_statement_product(statement, context))
+        .collect()
+}
+
+fn issue_event_statement_product<'flat>(
+    statement: &'flat rumoca_core::Statement,
+    context: EventAnalysisContext<'flat, '_>,
+) -> Result<EventStatementPlan<'flat>, ToDaeError> {
+    match statement {
+        rumoca_core::Statement::Assignment { comp, value, span } => {
+            let function_call = context.calls.analyze_assignment_call(comp, value, *span)?;
+            let structured = structured_assignment_plan(context.flat, comp, value);
+            let route = match (function_call, structured) {
+                (Some(plan), None) => {
+                    let Expression::FunctionCall { name, args, .. } = value else {
+                        return Err(ToDaeError::unsupported_algorithm(
+                            "model",
+                            "event call certificate lost its exact source payload",
+                            *span,
+                        ));
+                    };
+                    EventAssignmentRoute::FunctionCall {
+                        component: name,
+                        arguments: args,
+                        plan,
+                    }
+                }
+                (None, Some(plan)) => EventAssignmentRoute::Structured(plan),
+                (None, None) => EventAssignmentRoute::Coordinate,
+                (Some(_), Some(_)) => {
                     return Err(ToDaeError::unsupported_algorithm(
                         "model",
-                        "event tensor loops require distinct source owners",
+                        "one event assignment cannot own two lowering plans",
                         *span,
                     ));
                 }
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                for block in cond_blocks {
-                    analyze_event_tensor_loops(flat, &block.stmts, model_values, plans)?;
-                }
-                if let Some(fallback) = else_block {
-                    analyze_event_tensor_loops(flat, fallback, model_values, plans)?;
-                }
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
-                for block in blocks {
-                    analyze_event_tensor_loops(flat, &block.stmts, model_values, plans)?;
-                }
-            }
-            _ => {}
+            };
+            Ok(EventStatementPlan::Assignment {
+                component: comp,
+                value,
+                span: *span,
+                route,
+            })
         }
+        rumoca_core::Statement::If {
+            cond_blocks,
+            else_block,
+            span,
+        } => {
+            let blocks = issue_event_block_products(cond_blocks, context)?;
+            let else_product = match else_block {
+                Some(statements) => EventElseProduct::Statements(
+                    issue_event_statement_products(statements, context)?.into_boxed_slice(),
+                ),
+                None => EventElseProduct::Absent,
+            };
+            Ok(EventStatementPlan::If {
+                blocks,
+                else_product,
+                span: *span,
+            })
+        }
+        rumoca_core::Statement::When { blocks, span } => Ok(EventStatementPlan::When {
+            blocks: issue_event_block_products(blocks, context)?,
+            span: *span,
+        }),
+        rumoca_core::Statement::FunctionCall {
+            comp,
+            args,
+            outputs,
+            span,
+        } => {
+            let plan = context.calls.analyze_call(comp, args, outputs, *span)?;
+            Ok(EventStatementPlan::FunctionCall {
+                component: comp,
+                arguments: args,
+                span: *span,
+                plan,
+            })
+        }
+        rumoca_core::Statement::For { .. } => {
+            analyze_event_tensor_loop(context.flat, statement, context.model_values)
+                .map(EventStatementPlan::TensorLoop)
+        }
+        rumoca_core::Statement::Assert {
+            condition,
+            message,
+            level,
+            span,
+        } => Ok(EventStatementPlan::Assert {
+            condition,
+            message,
+            level: level.as_deref(),
+            span: *span,
+        }),
+        _ => Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "event plan received a statement outside the checked grammar",
+            required_statement_span(statement, "event algorithm statement")?,
+        )),
     }
-    Ok(())
 }
 
-fn analyze_event_tensor_loop(
-    flat: &flat::Model,
-    statement: &rumoca_core::Statement,
+fn issue_event_block_products<'flat>(
+    blocks: &'flat [rumoca_core::StatementBlock],
+    context: EventAnalysisContext<'flat, '_>,
+) -> Result<Box<[EventBlockPlan<'flat>]>, ToDaeError> {
+    blocks
+        .iter()
+        .map(|block| -> Result<EventBlockPlan<'flat>, ToDaeError> {
+            Ok(EventBlockPlan {
+                condition: issue_algorithm_condition(
+                    &block.cond,
+                    context.flat,
+                    context.roles,
+                    context.constants,
+                    context.sample_aliases,
+                )?,
+                statements: issue_event_statement_products(&block.stmts, context)?
+                    .into_boxed_slice(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn analyze_event_tensor_loop<'flat>(
+    flat: &'flat flat::Model,
+    statement: &'flat rumoca_core::Statement,
     model_values: &ShapeEnvironment,
-) -> Result<ModelEventTensorLoopPlan, ToDaeError> {
+) -> Result<ModelEventTensorLoopPlan<'flat>, ToDaeError> {
     let rumoca_core::Statement::For {
         indices,
         equations,
         span,
     } = statement
     else {
-        unreachable!("event tensor-loop analysis receives a for statement")
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "event tensor-loop analysis requires one checked for statement",
+            required_statement_span(statement, "event tensor-loop statement")?,
+        ));
     };
     if equations.is_empty() {
         return Err(ToDaeError::unsupported_algorithm(
@@ -164,10 +490,14 @@ fn analyze_event_tensor_loop(
             *span,
         ));
     }
-    let mut targets = Vec::with_capacity(equations.len());
+    let mut assignments = Vec::with_capacity(equations.len());
     let mut dimensions = None;
+    let mut targets = HashSet::with_capacity(equations.len());
     for equation in equations {
-        let rumoca_core::Statement::Assignment { comp, .. } = equation else {
+        let rumoca_core::Statement::Assignment {
+            comp, value, span, ..
+        } = equation
+        else {
             return Err(ToDaeError::unsupported_algorithm(
                 "model",
                 "an event tensor loop requires only total element assignments",
@@ -175,7 +505,7 @@ fn analyze_event_tensor_loop(
             ));
         };
         let target = assignment_target(comp);
-        if targets.contains(&target) {
+        if !targets.insert(target.clone()) {
             return Err(ToDaeError::unsupported_algorithm(
                 "model",
                 format!("event tensor loop assigns `{target}` more than once"),
@@ -195,29 +525,43 @@ fn analyze_event_tensor_loop(
             None => dimensions = Some(target_dimensions.clone()),
             _ => {}
         }
-        targets.push(target);
+        assignments.push(ModelEventTensorAssignment {
+            target,
+            component: comp,
+            value,
+            span: *span,
+        });
     }
-    let dimensions = dimensions.expect("a nonempty event tensor loop has one target shape");
+    let Some(dimensions) = dimensions else {
+        return Err(ToDaeError::unsupported_algorithm(
+            "model",
+            "an event tensor loop requires total element assignments",
+            *span,
+        ));
+    };
     let (domain, binder_spans) = event_tensor_domain(indices, &dimensions, *span)?;
-    let target_set = targets.iter().cloned().collect::<HashSet<_>>();
+    let target_set = assignments
+        .iter()
+        .map(|assignment| assignment.target.clone())
+        .collect::<HashSet<_>>();
     let mut available = HashSet::new();
-    for (target, equation) in targets.iter().zip(equations) {
-        let rumoca_core::Statement::Assignment { comp, value, .. } = equation else {
-            unreachable!("event tensor-loop grammar was checked above")
+    for assignment in &assignments {
+        let Some(last_part) = assignment.component.parts().last() else {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "an event tensor-loop target names no component",
+                *span,
+            ));
         };
-        let subscripts = comp
-            .parts()
-            .last()
-            .expect("event tensor-loop target is nonempty")
-            .subs
-            .as_slice();
-        validate_tensor_target_reads(value, &target_set, &available, subscripts)?;
-        available.insert(target.clone());
+        let subscripts = last_part.subs.as_slice();
+        validate_tensor_target_reads(assignment.value, &target_set, &available, subscripts)?;
+        available.insert(assignment.target.clone());
     }
     Ok(ModelEventTensorLoopPlan {
-        targets,
         domain,
         binder_spans,
+        assignments: assignments.into_boxed_slice(),
+        span: *span,
     })
 }
 
@@ -258,9 +602,9 @@ fn event_tensor_domain(
 ) -> Result<(StructuredIndexDomain, Vec<Span>), ToDaeError> {
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, (index, extent)) in indices.iter().zip(dimensions).enumerate() {
+    for ((index, extent), ordinal) in indices.iter().zip(dimensions).zip(0u32..) {
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.ident.clone(),
             lower: 1,
             upper: *extent,
@@ -349,13 +693,13 @@ fn same_tensor_element(actual: &[Subscript], expected: &[Subscript]) -> bool {
             })
 }
 
-fn analyze_separated_array_sum(
+fn analyze_separated_array_sum<'flat>(
     flat: &flat::Model,
     algorithm: &flat::Algorithm,
     targets: &[VarName],
     roles: &HashMap<VarName, PlannedRole>,
     model_values: &ShapeEnvironment,
-) -> Result<Option<ModelAlgorithmPlan>, ToDaeError> {
+) -> Result<Option<ModelAlgorithmPlan<'flat>>, ToDaeError> {
     let Some((array_target, scalar_target)) =
         separated_array_sum_targets(flat, algorithm, targets, roles)?
     else {
@@ -411,13 +755,13 @@ fn analyze_separated_array_sum(
     }
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, ((index, subscript), extent)) in
-        indices.iter().zip(subscripts).zip(dimensions).enumerate()
+    for (((index, subscript), extent), ordinal) in
+        indices.iter().zip(subscripts).zip(dimensions).zip(0u32..)
     {
         validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.ident.clone(),
             lower: 1,
             upper: *extent,
@@ -545,12 +889,12 @@ fn is_exact_element_reference(
             })
 }
 
-fn analyze_total_array_definition(
+fn analyze_total_array_definition<'flat>(
     algorithm: &flat::Algorithm,
     target: &VarName,
     dimensions: &[i64],
     model_values: &ShapeEnvironment,
-) -> Result<ModelAlgorithmPlan, ToDaeError> {
+) -> Result<ModelAlgorithmPlan<'flat>, ToDaeError> {
     let [
         rumoca_core::Statement::For {
             indices,
@@ -591,16 +935,16 @@ fn analyze_total_array_definition(
     }
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, ((index, subscript), extent)) in indices
+    for (((index, subscript), extent), ordinal) in indices
         .iter()
         .zip(&component.subs)
         .zip(dimensions)
-        .enumerate()
+        .zip(0u32..)
     {
         validate_total_axis(index, subscript, *extent, model_values)?;
         let range_span = expression_span(&index.range)?;
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.ident.clone(),
             lower: 1,
             upper: *extent,

@@ -127,9 +127,9 @@ fn extend_operator_member_dependencies(
 /// than by an ordinary source call. Strict source-closure pruning must keep
 /// that exact child so Instantiate can classify every record occurrence and
 /// later phases can validate the required function prototype. Name and owner
-/// identity establish reachability here. A same-name non-function remains
-/// inert because Instantiate only classifies functions; a function with an
-/// invalid prototype remains visible to Resolve and is rejected with ER117.
+/// identity establish reachability here. A same-name non-function or a
+/// function with an invalid prototype remains visible to Resolve and is
+/// rejected with ER117 at its original declaration span.
 fn extend_overconstrained_equality_dependency(
     dependencies: &mut IndexSet<String>,
     class_index: &ast::ClassDefIndex<'_>,
@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn from_tree_retains_the_exact_owner_of_an_imported_component() {
+    fn from_tree_retains_the_complete_route_to_an_imported_component() {
         let source = r#"
             package P
               package Constants
@@ -567,8 +567,11 @@ mod tests {
 
         assert_eq!(
             cache.class_dependencies().get("P.Root"),
-            Some(&IndexSet::from(["P.Constants".to_string()])),
-            "a component DefId dependency must retain its exact owning class"
+            Some(&IndexSet::from([
+                "P".to_string(),
+                "P.Constants".to_string()
+            ])),
+            "an imported component must retain every Resolve-issued prefix and its exact owner"
         );
 
         let report = session.compile_model_strict_reachable_uncached_with_recovery("P.Root");

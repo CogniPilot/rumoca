@@ -14,8 +14,14 @@ Rows and domains below are normative by reference from SPEC_0038.
 
 ### 1. Bounded ME Verification Profile
 
-The dynamic FMI facade delegates to a private transition aggregate. Ordinary
-transitions follow this table; snapshot restore is the scoped exception:
+The dynamic FMI facade delegates every call through one closed total
+`MeLifecycleOperation × MeState` relation. Each admitted call mints a
+non-`Clone`, operation-specific guard exclusively tied to that lifecycle
+instance; private kernels consume it without another state check. Transitions
+follow this table; snapshot restore is the scoped total-state operation. Per
+FMI 3.0.2 §2.3.4, `terminate` is admitted only from the Model Exchange
+constituents of Initialized (Event, Reconfiguration, and Continuous-Time
+Modes):
 
 | Current state | Command | Next state |
 |---|---|---|
@@ -28,24 +34,32 @@ transitions follow this table; snapshot restore is the scoped exception:
 | Reconfiguration Mode | exit configuration | Event Mode |
 | Event Mode | enter continuous-time mode | Continuous-Time Mode |
 | Continuous-Time Mode | enter event mode | Event Mode |
-| Any non-terminated state | terminate | Terminated |
+| Event Mode | terminate | Terminated |
+| Reconfiguration Mode | terminate | Terminated |
+| Continuous-Time Mode | terminate | Terminated |
 | Any state | restore a component snapshot | state recorded by the snapshot |
 
 Every other transition returns a typed contract failure without mutation.
-Terminated is absorbing except for snapshot restore. Evaluation checks its
-lifecycle capability before mutation. Configuration and Reconfiguration Mode
+Terminated is absorbing except for snapshot restore, while FMI 3.0.2 §2.3.8
+final-value getters remain legal there: typed Float64/output observation,
+continuous states, nominals, derivatives, directional derivatives, and event
+indicators as applicable.
+Every mutator and active-algorithm operation checks lifecycle before mutation.
+Configuration and Reconfiguration Mode
 rows are enabled only for components declaring the corresponding structural
 parameter capability; components without it reject entry without mutation.
 
 | Obligation ID | Obligation | Required evidence |
 |---|---|---|
-| ME-LIFE-001 | Construction starts Instantiated; transition relation equals the guarded table | Exhaustive ordinary test of 7 states × 8 commands with enabled and absent structural-parameter capabilities |
-| ME-LIFE-002 | Rejected transitions preserve lifecycle state | Exhaustive ordinary test of the same finite relation and production façade |
-| ME-LIFE-003 | Terminated is absorbing except for snapshot restore | Exhaustive ordinary test of 8 commands, 17 active operations, and 7 restore targets |
+| ME-LIFE-001 | Construction starts Instantiated; the complete operation relation equals the guarded table and FMI §§2.3.2–2.3.8/3.2.1 permissions | Exhaustive ordinary test of 7 states × 20 operations × enabled/absent structural-parameter capabilities |
+| ME-LIFE-002 | Rejected operations preserve lifecycle, component state, and caller buffers; successful guards are operation-specific, non-`Clone`, and exclusively tied to the lifecycle instance that issued them | Exhaustive pure relation and production-facade matrix; type/privacy evidence rejects broad, foreign, stale, or recombined admissions |
+| ME-LIFE-003 | Terminated is absorbing except for reusable opaque-snapshot restore; §2.3.8 final-value getters remain permitted while every mutator and active-algorithm operation is refused | Exhaustive 20-operation permission matrix, terminal getter/mutator facade witnesses, and all 7 reusable snapshot restore targets |
 | ME-LIFE-004 | Bounded convergent events settle; divergent fixed points return staged non-convergence | Ordinary examples and property tests over finite divergence increments |
+| ME-LIFE-005 | `fmi3UpdateDiscreteStates` and `fmi3CompletedIntegratorStep` evaluate against one construction-reserved detached mutable continuation and publish it once only after every fallible evaluation succeeds; construction reserves the live and staged event-entry, initialization-settle, indicator-domain/crossing, latch, scratch, callback-cache, delay/history, and runtime vectors, and both paths use infallible fixed-size copy/swap rather than first-use allocation; the immutable construction-issued model, linked facts, and indicator plan/table are shared pointer-identically by live and staged continuation; rejection retains the exact continuation for an identical retry | Injected post-evaluation failure/retry ablations for initial and runtime discrete updates, indicator crossing completion, and delay-bearing completion, each compared with the bit-exact component-state oracle; executable model/facts/table and live/staged buffer pointer-identity witness across ordinary completion plus Event Mode and `UpdateDiscreteStates`; source ablation excluding detached construction, plan cloning, and deep step-path allocation |
+| ME-LIFE-006 | `fmi3SetTime` accepts only finite time no earlier than `startTime`, the second-last successful `fmi3CompletedIntegratorStep` time, and the last successful `fmi3EnterEventMode` time; these exact lower-bound facts are component continuation included in FMU state, rejection is atomic, and snapshot restore reinstates the recorded earlier bound | Start-time rejection; successful 0.25/0.5 completed-step sequence followed by atomic 0.1 rejection; Event-Mode-at-0.5 followed by atomic 0.1 rejection; pre-bound snapshot restores that make 0.1 legal again |
 | ME-ERR-001 | Stage annotation is idempotent; innermost stage wins | Exhaustive ordinary test of 6 recorded-stage choices × 5 incoming stages |
 | ME-BUF-001 | Invalid bounded inputs do not partially mutate state or host buffers | Exhaustive ordinary tests of the named invalid-input classes below |
-| ME-BRAND-001 | Foreign value references, observations, and snapshots reject before mutation | Exhaustive ordinary test of the 3 capability classes |
+| ME-BRAND-001 | Foreign value-reference batches and snapshots reject before component or caller-buffer mutation | Exhaustive ordinary tests with a valid leading item and foreign trailing item for reads and writes, plus foreign snapshot refusal |
 | ME-STATE-001 | Snapshot restore re-establishes lifecycle and observable state | Exhaustive ordinary test of all 7 lifecycle states |
 
 The Kani profile contains exactly this symbolic bounded property:
@@ -57,12 +71,16 @@ The Kani profile contains exactly this symbolic bounded property:
 Kani proves only this property over its declared assumptions and unwind bound.
 This is bounded runtime-kernel evidence, not a proof of compiler semantics.
 
-ME-BUF-001 covers NaN and infinities as time, event boundary, or one state;
-length mismatch; non-finite, foreign, and out-of-range value references; and
-nine host-buffer classes: oversized state output, undersized directional seed,
-invalid crossing shape, undeclared state-event index, oversized nominal output,
-oversized state input, oversized sensitivity output, non-finite indicator input,
-and output-series column mismatch.
+ME-BUF-001 covers NaN and infinities as time or one state; exact under- and
+over-width state, nominal, derivative, serialized directional-seed, serialized
+directional-result, and event-indicator buffers; non-finite, foreign, and out-of-range value
+references; Float64 result/value buffers whose length differs from the total
+serialized width of the referenced scalar-or-array variables, including
+array-plus-scalar batches in both reference orders; and evaluation
+failure.
+Every batch is admitted completely before the first component or caller-buffer
+write. No component getter resizes, pads, truncates, or partially repairs a
+slice.
 
 Harnesses call production property functions. Finite exhaustive tests and
 property-test samples are validation, not proof. This profile excludes
@@ -153,6 +171,7 @@ Updating the pin updates schemas, lifecycle tests, and negative controls.
 | ME-AUTO-002 | BDF is eligible only when every initial-state basis direction has a finite FMI ME directional derivative after initialization | A locally undefined algebraic sensitivity rejects BDF eligibility while the finite value path remains executable by the explicit host |
 | ME-AUTO-003 | Only the typed `DirectionalDerivativeUnavailable` capability result selects the explicit host; lifecycle, contract, assertion, allocation, and ordinary evaluation failures remain failures | Negative tests for at least one non-capability failure plus typed dispatch tests |
 | ME-AUTO-004 | Explicit `bdf` and `rk-like` requests are never redirected | Backend-specific tests retain their requested success or failure |
+| ME-AUTO-005 | The capability probe and selected host use one retained FMI instance. Every selected lease restores that instance's pristine snapshot before initialization, including after the probe has entered FMI initialization and evaluated a directional derivative | A compiler-lowered model with a finite value path and singular initial algebraic sensitivity produces a real `DirectionalDerivativeUnavailable` probe result, selects the explicit host, and completes a finite trace from the returned retained instance without re-instantiation |
 
 The initial linearization probe is a capability query over the same initialized
 FMI 3 ME component and the same `fmi3GetDirectionalDerivative` semantics used
@@ -174,6 +193,13 @@ thin-plugin rules:
 |---|---|---|
 | ME-HOST-001 | `MeSimulationSession` alone owns initialization, FMI modes, discrete iteration, time-event caching, timeout, inputs, reset, termination, output roles, and trace construction | One conformance suite over Diffsol, RK45, and time-only plugins; architecture rejection of lifecycle or trace calls in concrete solver crates |
 | ME-HOST-002 | Batch execution supplies an output cursor to the same incremental session and contains no second event/integration loop | Batch/live event and input parity; call-graph architecture test |
+| ME-HOST-003 | A retained component grants one exclusive borrowed lease through `&mut self`, or is consumed into one owned lease; the lease lifetime reaches every derived session and no runtime lease flag exists | Compile-fail evidence keeps both a first borrowed host and a session derived from it live across rejected second leases; consuming-after-probe reset evidence |
+| ME-HOST-004 | `MeSessionOptions` contains no start coordinate. Initial host time and the first output coordinate derive from the retained pristine FMU state. Parameterless reset replays that same component-issued start; a caller-requested replacement coordinate is an explicitly named retime operation that atomically replaces the session start. Scheduled-session traits use only the latter name for a coordinate-taking operation | Compile-fail evidence rejects a start field on the public request; nonzero pristine-start host/grid, consuming-lease, selected-backend, and Wasm reset witnesses; stop-before-component-start rejection; delay-history retiming evidence; zero coordinate-taking `reset` trait methods |
+| ME-HOST-005 | Before any reset or initialization, batch execution constructs one non-cloneable admission product from the immutable retained pristine start, checked options, and complete output grid. The product keeps the exclusive retained borrow and is consumed once into one indivisible host/grid owner; its cursor remains private through execution. There is no fail-open grid builder, post-initialization grid construction, second validation, recomputation, cursor clone, or cursor recombination | Oversized and nonadvancing grids reject with bit-exact lifecycle and observable state unchanged; compile-fail evidence rejects cursor construction, cloning, and admission dissolution; the admitted nonzero-start grid is consumed by one successful batch run; zero references to a fail-open output-grid builder |
+| ME-HOST-006 | Every borrowed host attempt restores pristine before start/options admission. After that restoration, every fallible host initialization or plugin construction restores the captured pristine snapshot before returning failure. If restoration also fails, its typed failure outranks and retains the attempted typed failure. This is failure atomicity only: it never retries construction, selects another plugin, or falls back | An invalid second lease after prior mutation leaves the component pristine; injected FMI-initialization and plugin-initialization failures each audit pristine lifecycle/observable state immediately and then successfully reuse the same retained component; typed dual-failure precedence test |
+| ME-HOST-007 | Active initialization produces one checked outcome whose state and nominal vectors exactly match the component state count. Initialization termination is a distinct outcome carrying the component-issued exact Event-Mode state snapshot captured before `fmi3Terminate`, never an absent or fabricated numerical point. Host construction and restart consume the checked outcome without resizing or padding it | Constructor rejection of short and surplus state vectors; zero initialization-state resize repairs; real nonzero-state initialization termination retains exact-width final getters through host construction, reset, and retime |
+| ME-HOST-008 | Every scheduled-session backend explicitly implements nonoptional batched-value access and its optional maximum schedule advance. Batch admission requires exact requested-name coverage and has no scalar fallback. The trait provides no default body or inferred numeric cap; a facade forwards the exact selected backend policy | Incomplete batch results reject at admission; direct/facade RK and Diffsol policy-equivalence tests; RK and Diffsol each explicitly return no cap; source/type checks reject omitted obligations and coordinate-taking `reset` |
+| ME-HOST-009 | The linked runtime issues a typed continuous-state domain and the checked indicator plan issues its typed published width. The linked kernel alone consumes those facts into one opaque root-scan shape. One private host-component aggregate consumes exactly one kernel and atomically derives its root-search state, fixed scan storage, retained derivative controller, and kernel-branded maximum-step reference; neither the aggregate nor its host exposes parallel fields, a cloneable kernel owner handle, or a mutable component-derived capability that can pair capabilities from different kernels. Initialization and nominal refresh are narrow operations on the indivisible component owner and derive policy state from its own retained domain. Proposal acceptance, interval scanning, and retained-indicator refresh construct their scan target and join policy, workspace, derivative controller, and kernel only inside that same component owner; no sibling-visible policy/workspace/scan-target projection or second call site exists. The plugin's numerical setup is assembled only from that host's already-checked options and nominal vector and has no public or bare-count constructor. Width projection occurs only at allocation, FMI/public-report, and raw plugin-result admission boundaries; exchanging roles at an issuer is a compile error | Syntax-aware architecture and mutation evidence covers typed source capabilities, the kernel issuer, the sole consuming host-component constructor, private correlated fields, absence of cloneable owner-handle and mutable-capability projections, the exact accept/scan/retained-refresh call graph including foreign-call mutations, role-typed buffer issuers, absence of bare-count constructors/parallel fields, and nonconstructible numerical setup; behavioral scan/refinement evidence preserves every buffer's pointer and width, and wrong-width plugin output fails at the single raw-result admission boundary |
 | ME-INT-001 | `MeIntegratorBackend` exposes only initialize, exactly one accepted numerical-step advance over a host-provided derivative callback, that step's native continuous extension plus declared positive local order, and generic truncate/reset | Diffsol, RK45, and time-only implementations plus a compile-only unrelated solver containing no concrete-backend type and manufactured-solution order evidence |
 | ME-INT-002 | No common type contains dense coefficients, RK stages, BDF history, nonlinear-solver state, Solve rows, relation memory, projection artifacts, or backend errors | Public-API and dependency scans |
 | ME-INT-003 | Component, integrator, timeout, allocation, and discard failures remain typed; standard termination is successful `SimTermination` | Exhaustive conversion tests; `sim_timeout` remains a distinct 566-model bucket |
@@ -183,7 +209,7 @@ The public boundary aggregates have private fields and checked constructors:
 
 | Aggregate | Construction contract |
 |---|---|
-| `MeContinuousPoint` | Finite time and values; state width matches the component |
+| `MeContinuousPoint` | Finite time and values; state width matches the component domain carried from its consumed request or host; callers cannot supply a bare component width |
 | `MeAdvanceRequest` | Exactly one accepted internal step from the current point; optional non-crossable FMI hard stop; public yield boundary; optional soft nominal observation; optional positive finite `max_step_duration`; all coordinates are host-issued and ordered, while the duration is not a coordinate |
 | `MeAcceptedStep` | Finite previous/accepted points of exact component width, progress beyond roundoff, positive declared local continuous-extension order, sampling covers the complete interval, and stop/yield/maximum-duration bounds hold under the host roundoff policy |
 | `MeTraceRecorder` | Host-only constructor of evidence satisfying SPEC_0033's trace-producer contract; it emits `SimResult` only after successful construction |
@@ -346,7 +372,7 @@ producer in one change:
 | Backend-owned sessions, recorders, `SimResult` builders, event loops, schedule rebuilders, and horizon extenders | Delete; facade clients wrap `MeSimulationSession` |
 | Frozen compatibility methods, duplicate initialization, component `max_step_size`, private crossing/arming, and component schedule queries | Remove under §8 dispositions |
 | `MeRootProfile::DiffsolFrozen`, `MeNumericsProfile::DiffsolFrozen`, and every kernel or component branch on them | Delete; FMI and Modelica fix component semantics, while numerical choices remain private backend configuration and no common type names a solver |
-| `rumoca-ir-fmi`, `rumoca-phase-fmi`, `FmiComponent::construct(SolveProblem, ...)`, consuming `into_solve`, and the separate `new_owned_with_fmi` artifacts argument | Delete both crates without shims; move the checked aggregate to `rumoca_ir_solve::fmi`, move lowering to the always-available `rumoca_phase_solve::fmi` module used by the common runtime boundary, and apply the sole construction and consuming-view contract in SPEC_0043 §8 |
+| `rumoca-ir-fmi`, `rumoca-phase-fmi`, `FmiComponent::construct(SolveProblem, ...)`, public FMI metadata/wire inputs, consuming `into_solve`, and the separate `new_owned_with_fmi` artifacts argument | Delete without shims; `rumoca_ir_solve::fmi` owns the checked projection, the sole DAE-to-`SolveModel` operation retains its sealed variable catalog, and the always-available `rumoca_phase_solve::fmi` module consumes only that completed root under SPEC_0043 §8 |
 
 Every production consumer of the deleted delay operation has an explicit
 cutover:
@@ -415,18 +441,34 @@ mandatory dispositions:
 | `observe`, recorder, initial-observation queue | Host compositions of legal typed FMI getters; not component calls |
 | `restart_from_fmu_state` | Host composition of advertised standard reset/state operations |
 | `extend_stop_time`, public `ensure_end_time` / `set_end_time` | Remove; defined-stop sessions reset to change stop metadata |
-| Fixed directional-derivative helper | Host prepares value-reference lists for standard `fmi3GetDirectionalDerivative` |
+| State-only directional-derivative helper | Remove; construction issues branded state and state-derivative value references, the host prepares and validates the standard `knowns[]` and `unknowns[]` lists once, and `fmi3GetDirectionalDerivative` checks the serialized `nSeed` and `nSensitivity` widths before evaluation |
 
 The checked `FmiComponent` supplies model identity, variables/value references,
 state/derivative order, event-indicator inventory, clocks, dependencies, units,
-dimensions, causality, variability, starts, and ModelStructure. It obeys the
-sole aggregate and consuming-view construction contract in SPEC_0043 §8. The
-linked runtime receives `rumoca_ir_solve::fmi::FmiComponent` rather than a
-`SolveModel`; concrete solver crates receive only opaque component/evaluation
-handles. The always-available `rumoca-phase-solve::fmi` module is the sole
-DAE+Solve constructor because every in-process simulation crosses the same
-checked FMI ME boundary; the facade's `fmi` feature gates export APIs, not a
-second construction path.
+dimensions, causality, variability, starts, write policy, and ModelStructure.
+Each FMI 3 Float64 variable retains its one exact value reference and checked
+aggregate storage run. `fmi3GetFloat64` and `fmi3SetFloat64` concatenate the
+row-major serialized values of those referenced variables, so
+`nValueReferences` equals `nValues` only when every reference is scalar. The
+linked component admits the complete branded reference batch and its total
+checked serialized width before evaluating, writing component storage, or
+copying a caller result; scalar names are not another FMI 3 value-reference
+ABI. Acceptance includes one width-two array and one scalar in both orders
+(`nValueReferences=2`, `nValues=3`), exact under/over-width rejection, caller
+buffer preservation, and setter rollback.
+For continuous states, construction derives the FMI `reinit` fact from the
+typed source `reinit` owners once: Event-Mode Float64 state writes require the
+issued `reinit=false` write policy, while reinitializable states remain
+writable through the same setter only in Continuous-Time Mode.
+It obeys the sole aggregate and consuming-view construction contract in
+SPEC_0043 §8. The linked runtime receives
+`rumoca_ir_solve::fmi::FmiComponent` rather than a `SolveModel`; concrete solver
+crates receive only opaque component/evaluation handles. The always-available
+`rumoca-phase-solve::fmi` module is the sole checked projection from the sealed
+catalog retained by one completed `SolveModel`. DAE inspection and numeric
+attribute evaluation occur only while that root is constructed; no FMI path
+receives the DAE or repeats evaluation. The facade's `fmi` feature gates export
+APIs, not a second construction path.
 `rumoca-phase-codegen` consumes only the correlated view specified by
 SPEC_0043 §8. The CLI requests this lowering only through the `rumoca-sim` facade
 and has no production dependency on `rumoca-phase-solve`; the existing
@@ -442,6 +484,15 @@ Event Mode, updates it only at a completed integrator step, and includes it in
 FMU state and reset. `fmi3SetTime`, continuous-state setters, and getters MUST
 NOT mutate the cache. An event-bearing Rumoca component declares
 `needsCompletedIntegratorStep="true"` so the standard callback advances it.
+Missing constructed frozen-domain storage is a typed refusal checked before
+the caller's indicator buffer is mutated; the implementation does not
+synthesize a side. A non-finite timestamp returned by an evaluator's `assert`
+or `terminate` event action is likewise a typed refusal and is never replaced
+with the enclosing event time.
+The component also retains FMI 3.0.2 §3.2.1's exact `fmi3SetTime` lower-bound
+continuation: `startTime`, the second-last completed-integrator-step time, and
+the last enter-Event-Mode time. These facts participate in FMU state/reset;
+rejection neither changes time nor any other component continuation.
 The host alone classifies FMI's asymmetric domains (`z > 0` versus `z <= 0`);
 exact-zero tangencies therefore cannot manufacture a no-op event.
 `RootZeroDomain` is not a host crossing override. After Event Mode the component

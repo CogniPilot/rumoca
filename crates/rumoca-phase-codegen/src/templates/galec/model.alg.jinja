@@ -13,11 +13,12 @@
 {%- macro binary_operator(value) -%}
 {%- if value.kind == "pow" -%}^{%- elif value.kind == "mul" -%}*{%- elif value.kind == "div" -%}/{%- elif value.kind == "add" -%}+{%- elif value.kind == "sub" -%}-{%- elif value.kind == "lt" -%}<{%- elif value.kind == "gt" -%}>{%- elif value.kind == "le" -%}<={%- elif value.kind == "ge" -%}>={%- elif value.kind == "eq" -%}=={%- elif value.kind == "ne" -%}<>{%- elif value.kind == "and" -%}and{%- elif value.kind == "or" -%}or{%- else -%}{{ fail_closed_binary_operator }}{%- endif -%}
 {%- endmacro -%}
-{%- macro operand(value, parent_class, parent_associativity, side) -%}
+{# Precedence class and associativity arrive serialized on each operator; the
+   template compares those given values and only spells the parentheses. #}
+{%- macro operand(value, parent_op, side) -%}
 {%- set needs_parens = value.kind == "neg" or value.kind == "not" or value.kind == "integer" and value.value < 0 or value.kind == "real" and value.value < 0 -%}
 {%- if value.kind == "binary" -%}
-{%- set child_class = value.value.precedence_class.kind -%}
-{%- set needs_parens = child_class != parent_class or parent_associativity == "right" and side != "right" or parent_associativity == "left" and side != "left" -%}
+{%- set needs_parens = value.value.op.precedence_class.kind != parent_op.precedence_class.kind or side != parent_op.associativity.kind -%}
 {%- endif -%}
 {%- if needs_parens -%}({{ expr(value) }}){%- else -%}{{ expr(value) }}{%- endif -%}
 {%- endmacro -%}
@@ -33,11 +34,10 @@
 {%- elif value.kind == "call" -%}{{ call(value.value) }}
 {%- elif value.kind == "paren" -%}({{ expr(value.value) }})
 {%- elif value.kind == "if" -%}({% for branch in value.value.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch[0]) }} then {{ expr(branch[1]) }}{% endfor %} else {{ expr(value.value.else_value) }})
-{%- elif value.kind == "bounded_selection" -%}({% for branch in value.value.galec.branches %}{% if loop.first %}if{% else %} elseif{% endif %} {{ expr(branch[0]) }} then {{ expr(branch[1]) }}{% endfor %} else {{ expr(value.value.galec.else_value) }})
 {%- elif value.kind == "array" -%}{% raw %}{{% endraw %}{% for item in value.value %}{{ expr(item) }}{% if not loop.last %}, {% endif %}{% endfor %}{% raw %}}{% endraw %}
 {%- elif value.kind == "neg" -%}-{{ reference(value.value) }}
 {%- elif value.kind == "not" -%}not {% if value.value.kind == "if" or value.value.kind == "paren" %}{{ expr(value.value) }}{% else %}({{ expr(value.value) }}){% endif %}
-{%- elif value.kind == "binary" -%}{{ operand(value.value.lhs, value.value.precedence_class.kind, value.value.associativity.kind, "left") }} {{ binary_operator(value.value.op) }} {{ operand(value.value.rhs, value.value.precedence_class.kind, value.value.associativity.kind, "right") }}
+{%- elif value.kind == "binary" -%}{{ operand(value.value.lhs, value.value.op, "left") }} {{ binary_operator(value.value.op) }} {{ operand(value.value.rhs, value.value.op, "right") }}
 {%- else -%}{{ fail_closed_expression_kind }}{%- endif -%}
 {%- endmacro -%}
 {%- macro declaration(value, prefix) -%}

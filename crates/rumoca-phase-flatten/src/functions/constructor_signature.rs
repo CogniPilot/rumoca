@@ -6,7 +6,6 @@ pub(super) fn inherit_operator_constructor_defaults<'tree>(
     class_index: &ast::ClassDefIndex<'tree>,
     record: &'tree ast::ClassDef,
     constructor: &mut rumoca_core::Function,
-    source_map: &rumoca_core::SourceMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<(), FlattenError> {
@@ -14,9 +13,15 @@ pub(super) fn inherit_operator_constructor_defaults<'tree>(
     else {
         return Ok(());
     };
-    let candidate_name = candidate
-        .def_id
-        .and_then(|def_id| class_index.qualified_name(def_id))
+    let candidate_def_id = candidate.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            candidate.name.text.as_ref(),
+            "operator-record constructor identity",
+            constructor.span,
+        )
+    })?;
+    let candidate_name = class_index
+        .qualified_name(candidate_def_id)
         .ok_or_else(|| {
             FlattenError::missing_resolved_class_metadata(
                 candidate.name.text.as_ref(),
@@ -28,8 +33,8 @@ pub(super) fn inherit_operator_constructor_defaults<'tree>(
         tree,
         class_index,
         candidate,
+        candidate_def_id,
         candidate_name,
-        source_map,
         member_cache,
         type_catalog,
     )?;
@@ -229,6 +234,13 @@ pub(super) fn convert_constructor_signature(
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
     let span = required_location_span(source_map, &class_def.location, "constructor signature")?;
+    let exposure_def_id = class_def.def_id.ok_or_else(|| {
+        FlattenError::missing_resolved_class_metadata(
+            qualified_name,
+            "constructor exposure identity",
+            span,
+        )
+    })?;
     let mut params = Vec::new();
     let mut param_index = HashMap::new();
     let mut visited_classes = HashSet::new();
@@ -245,7 +257,7 @@ pub(super) fn convert_constructor_signature(
         },
     )?;
 
-    let mut func = rumoca_core::Function::new(qualified_name, span);
+    let mut func = rumoca_core::Function::new(qualified_name, exposure_def_id, span);
     func.def_id = class_def.def_id;
     func.is_constructor = true;
     for param in params {

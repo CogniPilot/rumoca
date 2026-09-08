@@ -83,18 +83,13 @@ fn der_targets_in_equations(equations: &[ast::Equation]) -> BTreeSet<String> {
     struct DerTargets(BTreeSet<String>);
 
     impl ast::Visitor for DerTargets {
-        fn visit_expr_function_call(
-            &mut self,
-            comp: &ast::ComponentReference,
-            args: &[ast::Expression],
-        ) -> ControlFlow<()> {
-            if comp.parts.len() == 1
-                && comp.parts[0].ident.text.as_ref() == "der"
+        fn visit_expression(&mut self, expr: &ast::Expression) -> ControlFlow<()> {
+            if let ast::Expression::DerivativeCall { args, .. } = expr
                 && let Some(target) = args.first()
             {
                 self.0.insert(target.to_string());
             }
-            self.visit_each(args, Self::visit_expression)
+            ast::walk_expression_default(self, expr)
         }
     }
 

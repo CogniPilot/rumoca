@@ -51,6 +51,30 @@ fn a_source_without_the_surface_is_returned_unchanged() {
 }
 
 #[test]
+fn derivative_call_arguments_are_not_a_surface_traversal_barrier() {
+    let expanded = expand(
+        r#"
+function f
+  input Real x;
+  output Real y;
+algorithm
+  y := x*x;
+end f;
+model Probe
+  Real x;
+equation
+  der(jacobian(f(x), x)) = 0.0;
+end Probe;
+"#,
+    );
+
+    assert!(
+        expanded.contains("der(f_jacobian_x(x))"),
+        "the nested surface call inside a typed derivative argument must be rewritten:\n{expanded}"
+    );
+}
+
+#[test]
 fn expansion_mints_the_wrapper_and_rewrites_the_call() {
     let expanded = expand_source(SCALED, "Probe.mo").expect("expansion runs");
     assert!(
@@ -71,6 +95,323 @@ fn expansion_mints_the_wrapper_and_rewrites_the_call() {
         !expanded.contains("= jacobian("),
         "surface call survived:\n{expanded}"
     );
+}
+
+#[test]
+fn an_unshadowed_predefined_real_remains_differentiable() {
+    let expanded = expand(SCALED);
+    assert!(expanded.contains("function fscale_ad_tangent"));
+}
+
+#[test]
+fn a_root_within_clause_keeps_predefined_real_available() {
+    let expanded = expand(
+        r#"
+within;
+function f
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end f;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(f(x), x);
+end Probe;
+"#,
+    );
+    assert!(expanded.contains("function f_ad_tangent"));
+}
+
+#[test]
+fn an_unavailable_within_package_cannot_certify_predefined_real() {
+    let refusal = refuse(
+        r#"
+within Outer;
+function f
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end f;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(f(x), x);
+end Probe;
+"#,
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("cannot prove"));
+    assert!(refusal.detail.contains("within"));
+}
+
+#[test]
+fn a_local_type_named_real_cannot_mint_a_real_tangent() {
+    let refusal = refuse(
+        r#"
+function f
+  type Real = Integer;
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end f;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(f(x), x);
+end Probe;
+"#,
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("cannot prove"));
+    assert!(refusal.detail.contains("local class or type"));
+}
+
+#[test]
+fn an_import_named_real_cannot_mint_a_real_tangent() {
+    let refusal = refuse(
+        r#"
+package Types
+  type Real = Integer;
+end Types;
+function f
+  import Types.Real;
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end f;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(f(x), x);
+end Probe;
+"#,
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("cannot prove"));
+    assert!(refusal.detail.contains("import"));
+}
+
+#[test]
+fn an_inherited_type_named_real_cannot_mint_a_real_tangent() {
+    let refusal = refuse(
+        r#"
+package Types
+  type Real = Integer;
+end Types;
+package Host
+  extends Types;
+  function f
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end f;
+end Host;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(Host.f(x), x);
+end Probe;
+"#,
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("cannot prove"));
+    assert!(refusal.detail.contains("extends clause"));
+}
+
+#[test]
+fn unresolved_enclosing_extends_cannot_fall_through_to_predefined_real() {
+    let refusal = refuse(
+        r#"
+package Host
+  extends MissingTypes;
+  function f
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end f;
+end Host;
+model Probe
+  parameter Real x = 1.0;
+  Real J = jacobian(Host.f(x), x);
+end Probe;
+"#,
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("cannot prove"));
+    assert!(refusal.detail.contains("extends clause"));
+}
+
+#[test]
+fn recovery_nodes_refuse_expansion_while_empty_sections_remain_legal() {
+    let mut definition =
+        rumoca_phase_parse::parse_to_ast(SCALED, "Recovery.mo").expect("fixture parses");
+    {
+        let probe = definition
+            .classes
+            .get_mut("Probe")
+            .expect("fixture owns Probe");
+        probe.algorithms.push(Vec::new());
+        probe.equations.clear();
+    }
+
+    crate::plan(&definition, "Recovery.mo").expect("empty section vectors are valid syntax");
+
+    definition
+        .classes
+        .get_mut("Probe")
+        .expect("fixture owns Probe")
+        .algorithms[0]
+        .push(rumoca_ir_ast::Statement::Empty);
+    let statement_refusal = crate::plan(&definition, "Recovery.mo")
+        .expect_err("a recovery statement must not mint an expansion");
+    assert_eq!(statement_refusal.rule, Rule::StatementForm);
+    assert!(statement_refusal.detail.contains("parser recovery"));
+    assert!(
+        statement_refusal.span().is_some(),
+        "the nearest class owner supplies recovery provenance"
+    );
+
+    {
+        let probe = definition
+            .classes
+            .get_mut("Probe")
+            .expect("fixture owns Probe");
+        probe.algorithms[0].clear();
+        probe.equations.push(rumoca_ir_ast::Equation::Empty);
+    }
+    let equation_refusal = crate::plan(&definition, "Recovery.mo")
+        .expect_err("a recovery equation must not mint an expansion");
+    assert_eq!(equation_refusal.rule, Rule::StatementForm);
+    assert!(equation_refusal.detail.contains("parser recovery"));
+    assert!(
+        equation_refusal.span().is_some(),
+        "the nearest class owner supplies recovery provenance"
+    );
+}
+
+#[test]
+fn every_expression_recovery_shape_refuses_before_site_collection() {
+    use rumoca_core::{OpBinary, OpUnary, Span, Token};
+    use rumoca_ir_ast::{
+        ComponentRefPart, ComponentReference, Expression, Subscript, TerminalType,
+    };
+    use std::sync::Arc;
+
+    let literal = || Expression::Terminal {
+        terminal_type: TerminalType::UnsignedInteger,
+        token: Token {
+            text: Arc::from("1"),
+            ..Token::default()
+        },
+        span: Span::DUMMY,
+    };
+    let forms = vec![
+        Expression::Empty { span: Span::DUMMY },
+        Expression::Terminal {
+            terminal_type: TerminalType::Empty,
+            token: Token::default(),
+            span: Span::DUMMY,
+        },
+        Expression::Unary {
+            op: OpUnary::Empty,
+            rhs: Arc::new(literal()),
+            span: Span::DUMMY,
+        },
+        Expression::Binary {
+            op: OpBinary::Empty,
+            lhs: Arc::new(literal()),
+            rhs: Arc::new(literal()),
+            span: Span::DUMMY,
+        },
+        Expression::ComponentReference(ComponentReference {
+            local: false,
+            parts: vec![ComponentRefPart {
+                ident: Token::default(),
+                subs: Some(vec![Subscript::Empty]),
+                def_id: None,
+            }],
+            span: Span::DUMMY,
+            qualified_display_name: None,
+        }),
+        Expression::ArrayIndex {
+            base: Arc::new(literal()),
+            subscripts: vec![Subscript::Expression(Expression::Empty {
+                span: Span::DUMMY,
+            })],
+            span: Span::DUMMY,
+        },
+    ];
+
+    for recovery in forms {
+        let mut definition =
+            rumoca_phase_parse::parse_to_ast(SCALED, "Recovery.mo").expect("fixture parses");
+        definition
+            .classes
+            .get_mut("Probe")
+            .expect("fixture owns Probe")
+            .components
+            .get_mut("x")
+            .expect("fixture owns x")
+            .binding = Some(recovery);
+        let refusal = crate::plan(&definition, "Recovery.mo")
+            .expect_err("required expression recovery must refuse expansion");
+        assert_eq!(refusal.rule, Rule::ExpressionForm);
+        assert!(refusal.detail.contains("parser-recovery"));
+    }
+}
+
+#[test]
+fn recovery_in_statement_control_and_assertion_paths_refuses() {
+    use rumoca_core::{Span, Token};
+    use rumoca_ir_ast::{Expression, ForIndex, Statement, StatementBlock, TerminalType};
+    use std::sync::Arc;
+
+    let recovery = || Expression::Empty { span: Span::DUMMY };
+    let message = || Expression::Terminal {
+        terminal_type: TerminalType::String,
+        token: Token {
+            text: Arc::from("recovery"),
+            ..Token::default()
+        },
+        span: Span::DUMMY,
+    };
+    let statements = vec![
+        Statement::For {
+            indices: vec![ForIndex {
+                ident: Token::default(),
+                range: recovery(),
+            }],
+            equations: Vec::new(),
+        },
+        Statement::If {
+            cond_blocks: vec![StatementBlock {
+                cond: recovery(),
+                stmts: Vec::new(),
+            }],
+            else_block: None,
+        },
+        Statement::Assert {
+            condition: recovery(),
+            message: message(),
+            level: None,
+        },
+    ];
+
+    for statement in statements {
+        let mut definition =
+            rumoca_phase_parse::parse_to_ast(SCALED, "Recovery.mo").expect("fixture parses");
+        definition
+            .classes
+            .get_mut("fscale")
+            .expect("fixture owns fscale")
+            .algorithms = vec![vec![statement]];
+        let refusal = crate::plan(&definition, "Recovery.mo")
+            .expect_err("recovery in a statement-owned expression must refuse");
+        assert_eq!(refusal.rule, Rule::ExpressionForm);
+        assert!(refusal.detail.contains("parser-recovery"));
+    }
 }
 
 #[test]
@@ -119,6 +460,53 @@ end Uses;
         expand_source(source, "Uses.mo").expect("a declared name is left alone"),
         source
     );
+}
+
+#[test]
+fn declared_surface_opt_out_does_not_hide_recovery_nodes() {
+    let source = r"
+function jacobian
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end jacobian;
+
+model Uses
+  Real y = jacobian(1.0);
+end Uses;
+";
+    let mut definition =
+        rumoca_phase_parse::parse_to_ast(source, "Recovery.mo").expect("fixture parses");
+    definition
+        .classes
+        .get_mut("Uses")
+        .expect("fixture owns Uses")
+        .algorithms
+        .push(vec![rumoca_ir_ast::Statement::Empty]);
+
+    let refusal = crate::plan(&definition, "Recovery.mo")
+        .expect_err("declared-name opt-out must still reject recovery syntax");
+    assert_eq!(refusal.rule, Rule::StatementForm);
+    assert!(refusal.detail.contains("parser recovery"));
+
+    {
+        let uses = definition
+            .classes
+            .get_mut("Uses")
+            .expect("fixture owns Uses");
+        uses.algorithms.clear();
+        uses.components
+            .get_mut("y")
+            .expect("fixture owns y")
+            .binding = Some(rumoca_ir_ast::Expression::Empty {
+            span: rumoca_core::Span::DUMMY,
+        });
+    }
+    let refusal = crate::plan(&definition, "Recovery.mo")
+        .expect_err("declared-name opt-out must still reject expression recovery");
+    assert_eq!(refusal.rule, Rule::ExpressionForm);
+    assert!(refusal.detail.contains("parser-recovery"));
 }
 
 #[test]
@@ -303,4 +691,273 @@ end Refused;
 ",
     );
     assert_eq!(refusal.rule, Rule::DifferentiableType);
+}
+
+#[test]
+fn context_only_value_syntax_refuses_jacobian_synthesis() {
+    for make_invalid in [
+        |valid: &rumoca_ir_ast::Expression| rumoca_ir_ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs: std::sync::Arc::new(valid.clone()),
+            rhs: std::sync::Arc::new(valid.clone()),
+            span: valid.span(),
+        },
+        |valid: &rumoca_ir_ast::Expression| rumoca_ir_ast::Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::End,
+            token: rumoca_core::Token::default(),
+            span: valid.span(),
+        },
+    ] {
+        let mut definition =
+            rumoca_phase_parse::parse_to_ast(SCALED, "ContextOnly.mo").expect("fixture parses");
+        let function = definition
+            .classes
+            .get_mut("fscale")
+            .expect("fixture owns fscale");
+        let rumoca_ir_ast::Statement::Assignment { value, .. } = &mut function.algorithms[0][0]
+        else {
+            panic!("fixture starts with an assignment");
+        };
+        let valid = value.clone();
+        let invalid = make_invalid(&valid);
+        *value = rumoca_ir_ast::Expression::If {
+            branches: vec![(invalid, valid.clone())],
+            else_branch: std::sync::Arc::new(valid.clone()),
+            span: valid.span(),
+        };
+        let refusal = crate::plan(&definition, "ContextOnly.mo")
+            .expect_err("context-only value syntax must fail before differentiation");
+        assert_eq!(refusal.rule, Rule::ExpressionForm);
+        assert!(refusal.to_string().contains("JAC-R5"), "{refusal}");
+        assert_eq!(refusal.span(), Some(valid.span()));
+    }
+}
+
+#[test]
+fn end_remains_legal_inside_a_differentiated_array_subscript() {
+    let source = r"
+function last
+  input Real x[2];
+  output Real y;
+algorithm
+  y := x[end];
+end last;
+
+model Probe
+  parameter Real x[2] = {1.0, 2.0};
+  Real J[1, 2] = jacobian(last(x), x);
+end Probe;
+";
+    let expanded = expand(source);
+    assert!(expanded.contains("x_ad[end]"), "{expanded}");
+}
+
+#[test]
+fn surface_calls_in_conditions_and_array_indices_are_not_skipped() {
+    let source = r"
+function identity
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end identity;
+
+model Probe
+  parameter Real x = 1.0;
+  Real table[1] = {2.0};
+  Real y = table[size(jacobian(identity(x), x), 1)];
+  Boolean b;
+algorithm
+  if size(jacobian(identity(x), x), 1) > 0 then
+    b := true;
+  end if;
+end Probe;
+";
+    let expanded = expand(source);
+    assert_eq!(
+        expanded.matches("identity_jacobian_x(x)").count(),
+        2,
+        "both nested surface sites must be rewritten:\n{expanded}"
+    );
+}
+
+#[test]
+fn lexical_imports_shadow_the_surface_only_in_their_reaching_scope() {
+    let source = r"
+package P
+  function ordinary
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end ordinary;
+end P;
+
+model UsesImport
+  import jacobian = P.ordinary;
+  Real y = jacobian(1.0);
+end UsesImport;
+";
+    assert_eq!(
+        expand_source(source, "Imported.mo").expect("an imported name is not stolen"),
+        source
+    );
+}
+
+#[test]
+fn unresolved_extends_lookup_refuses_before_stealing_an_inherited_surface_name() {
+    let refusal = refuse(
+        r"
+model Base
+  function jacobian
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end jacobian;
+end Base;
+
+model UsesInherited
+  extends Base;
+  Real y = jacobian(1.0);
+end UsesInherited;
+",
+    );
+    assert_eq!(refusal.rule, Rule::CalleeLookup);
+    assert!(refusal.detail.contains("extends clause"), "{refusal}");
+}
+
+#[test]
+fn an_extending_scope_without_a_surface_call_remains_unchanged() {
+    let source = r"
+model Base
+end Base;
+
+model NoSurface
+  extends Base;
+  Real y = 1.0;
+end NoSurface;
+";
+    assert_eq!(
+        expand_source(source, "Inherited.mo").expect("no ambiguous surface lookup occurs"),
+        source
+    );
+}
+
+#[test]
+fn an_exact_local_binding_wins_even_when_the_same_scope_extends() {
+    let source = r"
+model Base
+end Base;
+
+model UsesLocal
+  extends Base;
+  function jacobian
+    input Real x;
+    output Real y;
+  algorithm
+    y := x;
+  end jacobian;
+  Real y = jacobian(1.0);
+end UsesLocal;
+";
+    assert_eq!(
+        expand_source(source, "Local.mo").expect("the exact local binding resolves the spelling"),
+        source
+    );
+}
+
+#[test]
+fn malformed_shape_and_binding_aggregate_refuse_before_synthesis() {
+    let mut definition =
+        rumoca_phase_parse::parse_to_ast(SCALED, "Malformed.mo").expect("fixture parses");
+    let x = definition
+        .classes
+        .get_mut("fscale")
+        .expect("fixture owns fscale")
+        .components
+        .get_mut("x")
+        .expect("fixture owns x");
+    x.shape_expr = vec![rumoca_ir_ast::Subscript::Empty];
+    let refusal = crate::plan(&definition, "Malformed.mo")
+        .expect_err("a recovery declaration shape cannot become a deferred dimension");
+    assert_eq!(refusal.rule, Rule::ExpressionForm);
+
+    let mut definition =
+        rumoca_phase_parse::parse_to_ast(SCALED, "Malformed.mo").expect("fixture parses");
+    let x = definition
+        .classes
+        .get_mut("fscale")
+        .expect("fixture owns fscale")
+        .components
+        .get_mut("x")
+        .expect("fixture owns x");
+    x.shape_expr = vec![rumoca_ir_ast::Subscript::Expression(
+        rumoca_ir_ast::Expression::Terminal {
+            terminal_type: rumoca_ir_ast::TerminalType::End,
+            token: rumoca_core::Token::default(),
+            span: x.location.span(),
+        },
+    )];
+    let refusal = crate::plan(&definition, "Malformed.mo")
+        .expect_err("a declaration shape has no indexed array bound for `end` to denote");
+    assert_eq!(refusal.rule, Rule::ExpressionForm);
+
+    let mut definition =
+        rumoca_phase_parse::parse_to_ast(SCALED, "Malformed.mo").expect("fixture parses");
+    let k = definition
+        .classes
+        .get_mut("Probe")
+        .expect("fixture owns Probe")
+        .components
+        .get_mut("k")
+        .expect("fixture owns k");
+    assert!(k.binding.is_some());
+    k.has_explicit_binding = false;
+    let refusal = crate::plan(&definition, "Malformed.mo")
+        .expect_err("binding marker and payload must be one exact aggregate");
+    assert_eq!(refusal.rule, Rule::ExpressionForm);
+}
+
+#[test]
+fn nested_surface_calls_refuse_instead_of_leaving_an_overlapped_rewrite() {
+    let refusal = refuse(
+        r"
+function identity
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end identity;
+
+model Refused
+  parameter Real x = 1.0;
+  Real J[1, 1] = jacobian(identity(jacobian(identity(x), x)), x);
+end Refused;
+",
+    );
+    assert_eq!(refusal.rule, Rule::CallForm);
+    assert!(refusal.detail.contains("nested rewrites"), "{refusal}");
+}
+
+#[test]
+fn a_standalone_surface_call_refuses_instead_of_being_skipped() {
+    let refusal = refuse(
+        r"
+function identity
+  input Real x;
+  output Real y;
+algorithm
+  y := x;
+end identity;
+
+model Refused
+  parameter Real x = 1.0;
+algorithm
+  jacobian(identity(x), x);
+end Refused;
+",
+    );
+    assert_eq!(refusal.rule, Rule::CallForm);
+    assert!(refusal.detail.contains("call statement"), "{refusal}");
 }

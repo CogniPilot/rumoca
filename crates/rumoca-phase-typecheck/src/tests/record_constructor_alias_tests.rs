@@ -240,8 +240,20 @@ fn instance_identity_scope_uses_typed_component_family_domain() {
     let member_def_id = resolved.definitions.classes["Cell"].components["member"]
         .def_id
         .expect("member declaration identity");
-    let instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
-        .expect("instantiate should succeed");
+    let instanced = {
+        let tree = resolved.inner().clone();
+        let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+        {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+        rumoca_ir_ast::InstancedTree::new(tree, overlay)
+    };
     let root_class_id = instanced
         .overlay
         .classes
@@ -313,8 +325,20 @@ fn exact_local_scalar_shape_precedes_same_named_parent_array_domain() {
     let adapter_pin_def_id = resolved.definitions.classes["Adapter"].components["pin"]
         .def_id
         .expect("Adapter.pin declaration identity");
-    let instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
-        .expect("instantiate should succeed");
+    let instanced = {
+        let tree = resolved.inner().clone();
+        let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+        {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+        rumoca_ir_ast::InstancedTree::new(tree, overlay)
+    };
     let owner_class_id = instanced
         .overlay
         .classes
@@ -430,7 +454,7 @@ fn test_type_scope_hint_fallback_keeps_subscript_dot_single_segment() {
         }],
         span: rumoca_core::Span::DUMMY,
     }));
-    let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+    let mut ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::for_pre_identity_structural();
     ctx.add_integer("Medium.nX", 4);
 
     assert_eq!(

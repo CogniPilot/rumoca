@@ -1,6 +1,65 @@
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use super::*;
 
+#[cfg(any(feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn interactive_reset_replays_the_component_issued_nonzero_start() {
+    let _guard = session_test_guard();
+    let source = r#"
+    model NonzeroReset
+      Real x(start = 1.0, fixed = true);
+    equation
+      der(x) = -x;
+      annotation(experiment(StartTime = 0.25, StopTime = 1.0));
+    end NonzeroReset;
+    "#;
+    let mut session = WasmSimulationSession::new(source, "NonzeroReset")
+        .expect("the interactive component uses its experiment start");
+    assert_eq!(session.time().to_bits(), 0.25_f64.to_bits());
+    session
+        .advance_to(0.5)
+        .expect("the session advances away from pristine");
+    session
+        .reset()
+        .expect("parameterless reset replays pristine");
+    assert_eq!(session.time().to_bits(), 0.25_f64.to_bits());
+}
+
+#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
+#[test]
+fn terminal_initialization_remains_observable_and_resettable_through_wasm() {
+    let _guard = session_test_guard();
+    let source = r#"
+    model WasmInitialTermination
+      Real x(start = 3.0, fixed = true);
+    equation
+      der(x) = -x;
+      when initial() then
+        terminate("terminated during initialization");
+      end when;
+      annotation(experiment(StartTime = 0.2, StopTime = 1.0));
+    end WasmInitialTermination;
+    "#;
+    let mut session = WasmSimulationSession::new(source, "WasmInitialTermination")
+        .expect("WASM constructs the real initialization-termination session");
+    assert_eq!(session.time().to_bits(), 0.2_f64.to_bits());
+    assert_eq!(session.get("x").unwrap(), Some(3.0));
+    let state: serde_json::Value = serde_json::from_str(&session.state_json().unwrap()).unwrap();
+    assert_eq!(state["values"]["x"].as_f64(), Some(3.0));
+
+    session
+        .advance_to(0.5)
+        .expect("terminal advancement is idempotent through WASM");
+    assert_eq!(session.time().to_bits(), 0.2_f64.to_bits());
+    assert!(session.set_input("x", 4.0).is_err());
+    assert_eq!(session.get("x").unwrap(), Some(3.0));
+    session
+        .reset()
+        .expect("WASM reset replays the terminal initial event from pristine");
+    assert_eq!(session.time().to_bits(), 0.2_f64.to_bits());
+    assert_eq!(session.get("x").unwrap(), Some(3.0));
+}
+
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 #[test]
 fn test_simulate_model_wrapper_returns_time_series_payload() {
@@ -63,543 +122,6 @@ fn test_simulate_model_wrapper_returns_time_series_payload() {
     );
 
     clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-// SPEC_0021: Exception - native kernel schedule exposure is validated through
-// the full wasm preparation payload in one regression.
-// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-#[allow(clippy::too_many_lines)]
-fn test_prepare_gpu_simulation_exposes_native_kernel_schedules() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuExplicitMap
-      Real x[3](each start = 1.0, each fixed = true);
-    equation
-      for i in 1:3 loop
-        der(x[i]) = -x[i];
-      end for;
-    end GpuExplicitMap;
-    "#;
-
-    let json = prepare_gpu_simulation(source, "GpuExplicitMap")
-        .expect("prepare_gpu_simulation should render wgsl-ode payload");
-    let payload: serde_json::Value =
-        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-    let wgsl = payload
-        .get("wgsl")
-        .and_then(serde_json::Value::as_str)
-        .expect("GPU payload should include WGSL source");
-    let derivative_kernels = payload
-        .pointer("/layout/kernels")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include derivative RHS kernel schedule");
-    let derivative_native_families = payload
-        .pointer("/layout/native_families")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include derivative RHS native family metadata");
-    assert!(
-        wgsl.contains("fn derivative_rhs_map0"),
-        "GPU payload should preserve the derivative Map family: {payload:?}"
-    );
-    let workgroup_size = payload
-        .pointer("/layout/workgroup_size")
-        .and_then(serde_json::Value::as_u64)
-        .expect("GPU layout should expose workgroup_size");
-    let chunk_size = payload
-        .pointer("/layout/chunk_size")
-        .and_then(serde_json::Value::as_u64)
-        .expect("GPU layout should expose chunk_size");
-    assert_eq!(
-        wgsl.matches(&format!("// workgroup_size={workgroup_size}"))
-            .count(),
-        1,
-        "GPU WGSL inventory should report the derivative workgroup size"
-    );
-    assert_eq!(
-        wgsl.matches(&format!("// chunk_size={chunk_size}")).count(),
-        1,
-        "GPU WGSL inventory should report the derivative scalar chunk size"
-    );
-    assert_eq!(
-        payload.get("n_states").and_then(serde_json::Value::as_u64),
-        Some(3)
-    );
-    assert_eq!(
-        payload
-            .pointer("/state_names/0")
-            .and_then(serde_json::Value::as_str),
-        Some("x[1]")
-    );
-    assert!(
-        payload.pointer("/layout/bindings").is_none(),
-        "GPU layout should not carry per-scalar name bindings: {payload:?}"
-    );
-    assert!(
-        payload.pointer("/layout/kernel_prefix").is_none(),
-        "GPU layout should not expose stale kernel_prefix metadata: {payload:?}"
-    );
-    assert_gpu_entry_prefixes(
-        &payload,
-        "/layout",
-        &["derivative_rhs_map", "derivative_rhs_stencil"],
-        "derivative_rhs_chunk",
-        "derivative RHS",
-    );
-    assert_eq!(
-        payload.pointer("/layout/chunks"),
-        Some(&serde_json::Value::from(0))
-    );
-    assert!(payload.pointer("/layout/implicit_rhs").is_none());
-    assert!(
-        has_native_map_kernel(derivative_kernels, "derivative_rhs_map", 0, 1),
-        "GPU layout should schedule native derivative RHS kernels with output offsets: {payload:?}"
-    );
-    assert_gpu_kernel_entry_kinds(
-        derivative_kernels,
-        "derivative_rhs",
-        GpuKernelOutputKind::Native,
-    );
-    assert!(
-        has_native_map_family(derivative_native_families, 0, 1, 3),
-        "GPU layout should expose derivative family shape and output offset metadata: {payload:?}"
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_prepare_gpu_simulation_rejects_algebraic_projection() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuImplicit
-      Real x(start = 1.0, fixed = true);
-      Real a;
-    equation
-      der(x) = a;
-      a * a = x;
-    end GpuImplicit;
-    "#;
-
-    let error = prepare_gpu_simulation(source, "GpuImplicit")
-        .expect_err("wgsl-ode must reject algebraic projection");
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported-feature:residual_equations"),
-        "unexpected algebraic-projection refusal: {error}"
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_prepare_gpu_simulation_rejects_events() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuEvent
-      Real x(start = 1.0, fixed = true);
-    equation
-      der(x) = -x;
-      when x < 0.5 then
-        reinit(x, 1.0);
-      end when;
-    end GpuEvent;
-    "#;
-
-    let error = prepare_gpu_simulation(source, "GpuEvent")
-        .expect_err("wgsl-ode must reject eventful models");
-    assert!(
-        error.to_string().contains("unsupported-feature:events"),
-        "unexpected event refusal: {error}"
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_prepare_gpu_simulation_separates_output_and_fixed_step_intervals() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuFixedStep
-      Real x(start = 1.0, fixed = true);
-    equation
-      der(x) = -x;
-      annotation(__rumoca(Solver(FixedStep = 0.0125)), experiment(StopTime = 1.0, Interval = 0.1, Solver = "rk-like"));
-    end GpuFixedStep;
-    "#;
-
-    let json = prepare_gpu_simulation(source, "GpuFixedStep")
-        .expect("prepare_gpu_simulation should render wgsl-ode payload");
-    let payload: serde_json::Value =
-        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-
-    assert_eq!(payload["dt"].as_f64(), Some(0.1));
-    assert_eq!(payload["internal_dt"].as_f64(), Some(0.0125));
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-/// MLS §8.6: The initialization problem contains all initial equations and solves the
-/// variables they determine before integration starts.
-fn test_prepare_gpu_simulation_refuses_unowned_structured_initial_equations() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuWaveInitial
-      parameter Integer N = 5;
-      parameter Real L = 1.0;
-      parameter Real dx = L / (N - 1);
-      Real u[N, N];
-      Real w[N, N];
-    initial equation
-      for i in 1:N loop
-        for j in 1:N loop
-          u[i, j] = exp(-200.0 * (((i - 1) * dx - 0.5 * L) ^ 2
-                                + ((j - 1) * dx - 0.5 * L) ^ 2));
-          w[i, j] = 0.0;
-        end for;
-      end for;
-    equation
-      for i in 1:N loop
-        for j in 1:N loop
-          der(u[i, j]) = w[i, j];
-          der(w[i, j]) = 0.0;
-        end for;
-      end for;
-    end GpuWaveInitial;
-    "#;
-
-    let error = prepare_gpu_simulation(source, "GpuWaveInitial")
-        .expect_err("an unowned structured initialization row must fail closed");
-    assert!(
-        error
-            .to_string()
-            .contains("outside the planned initialization unknown space"),
-        "unexpected structured-initialization refusal: {error}"
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_prepare_gpu_simulation_exposes_input_slots() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuInputCommand
-      parameter Real u0 = 2.0;
-      input Real u_cmd(start = u0);
-      Real x(start = u0, fixed = true);
-    equation
-      der(x) = u_cmd - x;
-    end GpuInputCommand;
-    "#;
-
-    let json = prepare_gpu_simulation(source, "GpuInputCommand")
-        .expect("prepare_gpu_simulation should expose named input slots");
-    let payload: serde_json::Value =
-        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-    assert_eq!(
-        payload
-            .get("input_names")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|names| names.first())
-            .and_then(serde_json::Value::as_str),
-        Some("u_cmd")
-    );
-    let input_index = payload
-        .pointer("/var_layout/bindings/u_cmd/P/index")
-        .and_then(serde_json::Value::as_u64)
-        .expect("GPU prep should expose input P-slot index") as usize;
-    assert_eq!(
-        payload
-            .get("p0")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|values| values.get(input_index))
-            .and_then(serde_json::Value::as_f64),
-        Some(2.0)
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_update_gpu_parameters_refreshes_parameter_bound_arrays() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuParameterMask
-      parameter Real a = 2.0;
-      parameter Real mask[2] = {a * i for i in 1:2};
-      Real x(start = 1.0, fixed = true);
-    equation
-      der(x) = -mask[2] * x;
-    end GpuParameterMask;
-    "#;
-
-    let json = prepare_gpu_simulation(source, "GpuParameterMask")
-        .expect("prepare_gpu_simulation should cache the prepared GPU model");
-    let payload: serde_json::Value =
-        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-    let mask_index = payload
-        .pointer("/var_layout/bindings/mask[2]/P/index")
-        .and_then(serde_json::Value::as_u64)
-        .expect("parameter-bound array member should be a P slot") as usize;
-    assert_eq!(
-        payload
-            .get("p0")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|values| values.get(mask_index))
-            .and_then(serde_json::Value::as_f64),
-        Some(4.0)
-    );
-
-    let updated_json = update_gpu_parameters(source, "GpuParameterMask", r#"{"a":3.0}"#)
-        .expect("parameter update should refresh derived parameter arrays");
-    let updated: serde_json::Value =
-        serde_json::from_str(&updated_json).expect("parameter update payload should be JSON");
-    assert_eq!(
-        updated
-            .get("p0")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|values| values.get(mask_index))
-            .and_then(serde_json::Value::as_f64),
-        Some(6.0)
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[test]
-fn test_prepare_gpu_simulation_exposes_scalar_chunk_output_indices() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model GpuScalarChunk
-      Real x(start = 1.0, fixed = true);
-    equation
-      der(x) = -x;
-    end GpuScalarChunk;
-    "#;
-
-    let json = prepare_gpu_simulation(source, "GpuScalarChunk")
-        .expect("prepare_gpu_simulation should render scalar chunk payload");
-    let payload: serde_json::Value =
-        serde_json::from_str(&json).expect("GPU preparation payload should be valid JSON");
-    let derivative_kernels = payload
-        .pointer("/layout/kernels")
-        .and_then(serde_json::Value::as_array)
-        .expect("GPU layout should include derivative RHS kernel schedule");
-    assert!(
-        payload.pointer("/layout/kernel_prefix").is_none(),
-        "GPU layout should not expose stale kernel_prefix metadata: {payload:?}"
-    );
-    assert_gpu_entry_prefixes(
-        &payload,
-        "/layout",
-        &["derivative_rhs_map", "derivative_rhs_stencil"],
-        "derivative_rhs_chunk",
-        "derivative RHS",
-    );
-    assert!(
-        has_scalar_chunk_output_indices(derivative_kernels, "derivative_rhs_chunk", &[0]),
-        "GPU layout should expose derivative scalar chunk output slots: {payload:?}"
-    );
-    assert_gpu_kernel_entry_kinds(
-        derivative_kernels,
-        "derivative_rhs",
-        GpuKernelOutputKind::ScalarChunk,
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-#[derive(Clone, Copy)]
-enum GpuKernelOutputKind {
-    Native,
-    ScalarChunk,
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn assert_gpu_entry_prefixes(
-    payload: &serde_json::Value,
-    layout_pointer: &str,
-    native: &[&str],
-    scalar: &str,
-    block_name: &str,
-) {
-    let prefixes = payload
-        .pointer(&format!("{layout_pointer}/entry_prefixes"))
-        .unwrap_or_else(|| panic!("GPU layout should expose {block_name} entry_prefixes"));
-    let expected_native = native
-        .iter()
-        .map(|prefix| serde_json::Value::from(*prefix))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        prefixes.get("native").and_then(serde_json::Value::as_array),
-        Some(&expected_native),
-        "GPU layout should expose {block_name} native entry prefixes: {payload:?}"
-    );
-    assert_eq!(
-        prefixes.get("scalar").and_then(serde_json::Value::as_str),
-        Some(scalar),
-        "GPU layout should expose {block_name} scalar entry prefix: {payload:?}"
-    );
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn assert_gpu_kernel_entry_kinds(
-    kernels: &[serde_json::Value],
-    entry_prefix: &str,
-    output_kind: GpuKernelOutputKind,
-) {
-    for kernel in kernels {
-        let entry = kernel
-            .get("entry")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("GPU kernel should expose an entry: {kernel:?}"));
-        match output_kind {
-            GpuKernelOutputKind::Native => {
-                assert!(
-                    entry.starts_with(&format!("{entry_prefix}_map"))
-                        || entry.starts_with(&format!("{entry_prefix}_stencil")),
-                    "GPU native kernel entry should be map/stencil, got {entry}"
-                );
-                assert!(
-                    kernel.get("output_map").is_some(),
-                    "GPU native kernel {entry} should expose tensor output_map metadata"
-                );
-                assert!(
-                    kernel.get("start_slot").is_none(),
-                    "GPU native kernel {entry} should not expose scalar start_slot metadata"
-                );
-                assert!(
-                    kernel.get("output_indices").is_none(),
-                    "GPU native kernel {entry} should not expose scalar output_indices metadata"
-                );
-            }
-            GpuKernelOutputKind::ScalarChunk => {
-                assert!(
-                    entry.starts_with(&format!("{entry_prefix}_chunk")),
-                    "GPU scalar kernel entry should be chunk, got {entry}"
-                );
-                assert!(
-                    kernel.get("output_map").is_none(),
-                    "GPU scalar kernel {entry} should not expose tensor output_map metadata"
-                );
-                assert!(
-                    kernel.get("start_slot").is_some(),
-                    "GPU scalar kernel {entry} should expose scalar start_slot metadata"
-                );
-                assert!(
-                    kernel.get("output_indices").is_some(),
-                    "GPU scalar kernel {entry} should expose scalar output_indices metadata"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn has_native_map_kernel(
-    kernels: &[serde_json::Value],
-    entry_prefix: &str,
-    offset: u64,
-    stride: i64,
-) -> bool {
-    kernels.iter().any(|kernel| {
-        kernel
-            .get("entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|entry| entry.starts_with(entry_prefix))
-            && kernel
-                .pointer("/output_map/start")
-                .and_then(serde_json::Value::as_u64)
-                == Some(offset)
-            && has_dense_output_stride(kernel, stride)
-    })
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn has_scalar_chunk_output_indices(
-    kernels: &[serde_json::Value],
-    entry_prefix: &str,
-    output_indices: &[u64],
-) -> bool {
-    kernels.iter().any(|kernel| {
-        kernel
-            .get("entry")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|entry| entry.starts_with(entry_prefix))
-            && kernel
-                .get("output_indices")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|slots| {
-                    slots
-                        .iter()
-                        .map(serde_json::Value::as_u64)
-                        .eq(output_indices.iter().copied().map(Some))
-                })
-    })
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn has_native_map_family(
-    families: &[serde_json::Value],
-    output_start: u64,
-    output_stride: i64,
-    first_domain_dim: u64,
-) -> bool {
-    families.iter().any(|family| {
-        family.get("kind").and_then(serde_json::Value::as_str) == Some("map")
-            && family
-                .pointer("/output_map/start")
-                .and_then(serde_json::Value::as_u64)
-                == Some(output_start)
-            && has_dense_output_stride(family, output_stride)
-            && family
-                .pointer("/domain_shape/0")
-                .and_then(serde_json::Value::as_u64)
-                == Some(first_domain_dim)
-    })
-}
-
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-fn has_dense_output_stride(value: &serde_json::Value, stride: i64) -> bool {
-    value
-        .pointer("/output_map/strides")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|strides| {
-            matches!(
-                strides.as_slice(),
-                [term]
-                    if term.get("dimension").and_then(serde_json::Value::as_u64) == Some(0)
-                        && term.get("stride").and_then(serde_json::Value::as_i64) == Some(stride)
-            )
-        })
 }
 
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]

@@ -90,7 +90,7 @@ fn sibling_loops_in_one_enclosing_loop() -> Dae {
 fn scope_range(name: &str, upper: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: name.to_string(),
             lower: 1,
             upper,

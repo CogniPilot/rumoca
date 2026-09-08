@@ -30,7 +30,7 @@ impl SolveStopSchedule {
     pub fn new(problem: &solve::SolveProblem, t_start: f64, t_end: f64) -> Self {
         let mut schedule = Self {
             events: collect_static_ode_events(problem, t_start, t_end),
-            periodic_schedules: problem.clocks.periodic_event_schedules.clone(),
+            periodic_schedules: problem.clocks().periodic_event_schedules.clone(),
             next_idx: 0,
             last_consumed_scheduled_time: None,
         };
@@ -257,15 +257,15 @@ pub fn initial_static_event_pre_mode(
     t_start: f64,
 ) -> Option<EventPreMode> {
     let mut mode = problem
-        .solve_layout
+        .solve_layout()
         .initial_event_parameter_index
         .map(|_| EventPreMode::FollowCurrent);
-    for event_t in &problem.events.scheduled_time_events {
+    for event_t in &problem.events().scheduled_time_events {
         if sample_time_match_with_tol(*event_t, t_start) {
             merge_initial_event_mode(&mut mode, EventPreMode::FollowCurrent);
         }
     }
-    for schedule in &problem.clocks.periodic_event_schedules {
+    for schedule in &problem.clocks().periodic_event_schedules {
         if periodic_schedule_matches_time(schedule, t_start) {
             merge_initial_event_mode(&mut mode, EventPreMode::EventEntry);
         }
@@ -290,12 +290,12 @@ pub fn coincident_scheduled_event(
     t: f64,
 ) -> Option<CoincidentScheduledEvent> {
     let mut found: Option<CoincidentScheduledEvent> = None;
-    for event_t in &problem.events.scheduled_time_events {
+    for event_t in &problem.events().scheduled_time_events {
         if sample_time_match_with_tol(*event_t, t) {
             merge_coincident_event(&mut found, *event_t, EventPreMode::FollowCurrent);
         }
     }
-    for schedule in &problem.clocks.periodic_event_schedules {
+    for schedule in &problem.clocks().periodic_event_schedules {
         if let Some(tick_time) = periodic_tick_time_at(schedule, t) {
             merge_coincident_event(&mut found, tick_time, EventPreMode::EventEntry);
         }
@@ -367,7 +367,7 @@ fn collect_static_ode_events(
     t_end: f64,
 ) -> Vec<StopEvent> {
     let mut events: Vec<StopEvent> = problem
-        .events
+        .events()
         .scheduled_time_events
         .iter()
         .copied()
@@ -378,7 +378,7 @@ fn collect_static_ode_events(
             terminal: false,
         })
         .collect();
-    if problem.events.has_terminal_event && scheduled_time_in_horizon(t_end, t_start, t_end) {
+    if problem.events().has_terminal_event && scheduled_time_in_horizon(t_end, t_start, t_end) {
         events.push(StopEvent {
             time: t_end,
             pre_mode: EventPreMode::EventEntry,
@@ -454,8 +454,21 @@ mod tests {
 
     #[test]
     fn checked_initial_flag_schedules_the_initial_event() {
-        let mut problem = solve::SolveProblem::default();
-        problem.solve_layout.initial_event_parameter_index = Some(0);
+        let solve_layout = solve::SolveLayout {
+            compiled_parameter_len: 1,
+            initial_event_parameter_index: Some(0),
+            ..Default::default()
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve_layout,
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            solve::SolveClockPartition::default(),
+        )
+        .expect("initial-event fixture satisfies the checked root contract");
 
         assert_eq!(
             initial_static_event_pre_mode(&problem, 0.0),
@@ -471,11 +484,23 @@ mod tests {
 
     #[test]
     fn periodic_clock_stops_use_event_entry_pre_mode() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.1, 0.0));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.1, 0.0)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("periodic-clock fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 0.3);
 
         let (stop, mode) = schedule.next_stop(0.0, 0.2);
@@ -489,11 +514,23 @@ mod tests {
 
     #[test]
     fn solve_stop_schedule_includes_clock_event_at_horizon() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.05, 0.0));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.05, 0.0)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("horizon-clock fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
 
         let (first_stop, first_mode) = schedule.next_stop(0.0, 0.05);
@@ -513,8 +550,20 @@ mod tests {
 
     #[test]
     fn inspecting_near_future_static_stop_does_not_consume_it() {
-        let mut problem = solve::SolveProblem::default();
-        problem.events.scheduled_time_events.push(2.5e-9);
+        let events = solve::SolveEventPartition {
+            scheduled_time_events: vec![2.5e-9],
+            ..Default::default()
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::default(),
+            solve::SolveLayout::default(),
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            events,
+            solve::SolveClockPartition::default(),
+        )
+        .expect("static-stop fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 2.0e-8);
 
         let (preview_stop, preview_event) = schedule.next_stop(1.6e-9, 1.7e-9);
@@ -531,11 +580,23 @@ mod tests {
 
     #[test]
     fn solve_stop_schedule_keeps_ticks_after_former_materialization_cap() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(1.0e-4, 0.0));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(1.0e-4, 0.0)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("long-horizon clock fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 100.0);
 
         let (stop, mode) = schedule.next_stop(20.000_05, 100.0);
@@ -549,12 +610,27 @@ mod tests {
 
     #[test]
     fn coincident_static_and_periodic_stops_merge_pre_modes() {
-        let mut problem = solve::SolveProblem::default();
-        problem.events.scheduled_time_events.push(0.1);
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.1, 0.0));
+        let events = solve::SolveEventPartition {
+            scheduled_time_events: vec![0.1],
+            ..Default::default()
+        };
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.1, 0.0)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            events,
+            clocks,
+        )
+        .expect("coincident-stop fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
 
         let (stop, mode) = schedule.next_stop(0.0, 1.0);
@@ -573,11 +649,23 @@ mod tests {
     /// recognised as the scheduled one (MLS 3.7 §8.5).
     #[test]
     fn root_just_short_of_a_periodic_tick_is_the_scheduled_instant() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.01, 0.01));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.01, 0.01)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("near-tick fixture satisfies the checked root contract");
 
         let found = coincident_scheduled_event(&problem, 0.009_999_999_999_642_817)
             .expect("root at the sample instant is a scheduled event");
@@ -588,11 +676,23 @@ mod tests {
 
     #[test]
     fn unconsumed_coincident_tick_is_available_exactly_once() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.01, 0.01));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.01, 0.01)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("single-consumption fixture satisfies the checked root contract");
         let mut schedule = SolveStopSchedule::new(&problem, 0.0, 0.1);
         let located_root = 0.009_999_999_999_642_817;
 
@@ -626,11 +726,23 @@ mod tests {
 
     #[test]
     fn time_between_periodic_ticks_is_not_a_scheduled_instant() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.01, 0.01));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.01, 0.01)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("between-ticks fixture satisfies the checked root contract");
 
         assert!(coincident_scheduled_event(&problem, 0.010_002).is_none());
         assert!(coincident_scheduled_event(&problem, 0.015).is_none());
@@ -640,19 +752,43 @@ mod tests {
     /// not be mistaken for one.
     #[test]
     fn root_before_the_first_periodic_tick_is_not_a_scheduled_instant() {
-        let mut problem = solve::SolveProblem::default();
-        problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(0.01, 0.01));
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(0.01, 0.01)],
+            activation_parameter_indices: vec![0],
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            solve::SolveEventPartition::default(),
+            clocks,
+        )
+        .expect("pre-phase fixture satisfies the checked root contract");
 
         assert!(coincident_scheduled_event(&problem, 0.0).is_none());
     }
 
     #[test]
     fn root_at_a_static_scheduled_time_event_is_the_scheduled_instant() {
-        let mut problem = solve::SolveProblem::default();
-        problem.events.scheduled_time_events.push(0.17);
+        let events = solve::SolveEventPartition {
+            scheduled_time_events: vec![0.17],
+            ..Default::default()
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::default(),
+            solve::SolveLayout::default(),
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            events,
+            solve::SolveClockPartition::default(),
+        )
+        .expect("scheduled-time fixture satisfies the checked root contract");
 
         let found = coincident_scheduled_event(&problem, 0.17)
             .expect("root at a static time event is a scheduled event");
@@ -663,8 +799,24 @@ mod tests {
 
     #[test]
     fn terminal_operator_schedules_terminal_event_at_horizon() {
-        let mut problem = solve::SolveProblem::default();
-        problem.events.has_terminal_event = true;
+        let events = solve::SolveEventPartition {
+            has_terminal_event: true,
+            ..Default::default()
+        };
+        let problem = crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve::SolveLayout {
+                compiled_parameter_len: 1,
+                terminal_event_parameter_index: Some(0),
+                ..Default::default()
+            },
+            crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem::default(),
+            events,
+            solve::SolveClockPartition::default(),
+        )
+        .expect("terminal-event fixture satisfies the checked root contract");
         let schedule = SolveStopSchedule::new(&problem, 0.0, 1.0);
 
         let (stop, event) = schedule.next_stop(0.0, 1.0);

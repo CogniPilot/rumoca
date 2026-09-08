@@ -66,10 +66,21 @@ end Test;
 "#;
     let diagnostics =
         resolve_parsed_tree_source(source).expect_err("missing package member must fail resolve");
-    let diagnostic = diagnostics
+    let matching = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code.as_deref() == Some("ER002"))
-        .expect("missing function must produce ER002");
+        .filter(|diagnostic| {
+            diagnostic.code.as_deref() == Some("ER002")
+                && diagnostic
+                    .message
+                    .contains("unresolved function call: 'Known.missing'")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "the call-target lookup producer must emit exactly once: {diagnostics:?}"
+    );
+    let diagnostic = matching[0];
     let span = diagnostic
         .labels
         .first()
@@ -99,7 +110,7 @@ model Test
   Real y = Known.present(1.0);
 end Test;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let binding = tree.definitions.classes["Test"].components["y"]
         .binding
         .as_ref()
@@ -148,7 +159,7 @@ equation
   y = Medium.f(1.0);
 end UsesMediumAlias;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -211,7 +222,7 @@ equation
   d = Medium.density_pTX(1.0, 2.0);
 end Derived;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -270,7 +281,7 @@ model UsesTableBasedState
   Real state = Medium.f(1.0);
 end UsesTableBasedState;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -350,7 +361,7 @@ model UsesTableBasedState
   Medium.ThermodynamicState state = Medium.setState_pTX(1, 2);
 end UsesTableBasedState;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -394,7 +405,7 @@ equation
   end when;
 end Test;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree.definitions.classes.get("Test").expect("model Test");
     let component = model
         .components

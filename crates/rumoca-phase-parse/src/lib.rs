@@ -469,6 +469,14 @@ fn map_parse_error_to_original(error: &ParseError, inserted_positions: &[usize])
             unexpected: unexpected.clone(),
             span: map_span_to_original(*span, inserted_positions),
         },
+        // Semicolon recovery can shift a later pass's offsets, so the iterator
+        // token span is remapped exactly like a syntax-error span.
+        ParseError::UnsupportedImplicitIterationRange { iterator, span } => {
+            ParseError::UnsupportedImplicitIterationRange {
+                iterator: iterator.clone(),
+                span: map_span_to_original(*span, inserted_positions),
+            }
+        }
         ParseError::NoAstProduced { span } => ParseError::NoAstProduced { span: *span },
         ParseError::IoError {
             path,
@@ -589,6 +597,10 @@ fn parse_error_key(error: &ParseError) -> String {
         } => format!(
             "syntax:{}:{}:{}:{:?}:{:?}",
             span.start.0, span.end.0, message, expected, unexpected
+        ),
+        ParseError::UnsupportedImplicitIterationRange { iterator, span } => format!(
+            "implicit-range:{}:{}:{}",
+            span.start.0, span.end.0, iterator
         ),
         ParseError::NoAstProduced { span } => format!("no-ast:{}", span.source.0),
         ParseError::IoError {
@@ -732,6 +744,88 @@ end Ball;
         let source = "model M end M;\nmodel M end M;";
         let error = parse_string(source, "test.mo").expect_err("duplicate class must fail");
         assert!(error.to_string().contains("Duplicate top-level class"));
+    }
+
+    #[test]
+    fn duplicate_nested_class_names_are_rejected() {
+        let source = r#"
+model M
+  model Child
+    Real first;
+  end Child;
+  model Child
+    Real second;
+  end Child;
+end M;
+"#;
+        let error = parse_string(source, "test.mo").expect_err("duplicate class must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Duplicate declaration of class 'Child'")
+        );
+    }
+
+    #[test]
+    fn duplicate_nested_class_names_across_visibility_sections_are_rejected() {
+        let source = r#"
+model M
+  model Child
+    Real first;
+  end Child;
+protected
+  model Child
+    Real second;
+  end Child;
+end M;
+"#;
+        let error = parse_string(source, "test.mo").expect_err("duplicate class must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("Duplicate declaration of class 'Child'")
+        );
+    }
+
+    #[test]
+    fn nested_class_and_component_names_across_visibility_sections_conflict() {
+        let source = r#"
+model M
+  model Child
+  end Child;
+protected
+  Real Child;
+end M;
+"#;
+        let error = parse_string(source, "test.mo").expect_err("duplicate element name must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("Component 'Child'") && message.contains("conflicts with class"),
+            "unexpected diagnostic: {message}"
+        );
+    }
+
+    #[test]
+    fn replaceable_nested_classes_use_the_same_name_conflict_checks() {
+        for source in [
+            r#"
+model M
+  model Child
+  end Child;
+  replaceable model Child
+  end Child;
+end M;
+"#,
+            r#"
+model M
+  Real Child;
+  replaceable model Child
+  end Child;
+end M;
+"#,
+        ] {
+            parse_string(source, "test.mo").expect_err("duplicate element name must fail");
+        }
     }
 
     #[test]
@@ -1292,7 +1386,14 @@ end Test;
         let ast = parse_to_ast(source, "test.mo").expect("Parse should succeed");
 
         let model = ast.classes.get("Test").expect("Test should exist");
-        assert!(!model.equations.is_empty(), "Should have equations");
+        let [ast::Equation::Simple { lhs, .. }] = model.equations.as_slice() else {
+            panic!("expected one simple derivative equation");
+        };
+        assert!(matches!(
+            lhs,
+            ast::Expression::DerivativeCall { args, .. }
+                if matches!(args.as_slice(), [ast::Expression::ComponentReference(reference)] if reference.to_string() == "v")
+        ));
     }
 
     #[test]
@@ -1726,5 +1827,66 @@ end Real;
             "expected redeclared type span to point at class name, got {:?}",
             highlighted
         );
+    }
+
+    #[test]
+    fn test_bare_name_annotation_modifier_has_no_value_and_round_trips() {
+        let source = r#"
+model M
+  Real re annotation(Dialog);
+  parameter Real k = 1 annotation(Evaluate = true);
+end M;
+"#;
+        fn assert_annotation_shapes(source: &str, ast: &rumoca_ir_ast::StoredDefinition) {
+            let model = ast.classes.get("M").expect("M should exist");
+            let [
+                ast::Expression::Modification {
+                    target,
+                    value: None,
+                    span,
+                },
+            ] = model.components["re"].annotation.as_slice()
+            else {
+                panic!("a bare-name annotation is a modification without a value");
+            };
+            assert_eq!(target.to_string(), "Dialog");
+            assert_eq!(source_slice(source, *span), "Dialog");
+
+            let [
+                ast::Expression::Modification {
+                    target,
+                    value: Some(value),
+                    ..
+                },
+            ] = model.components["k"].annotation.as_slice()
+            else {
+                panic!("a name-value annotation is a modification with a value");
+            };
+            assert_eq!(target.to_string(), "Evaluate");
+            assert!(matches!(
+                value.as_ref(),
+                ast::Expression::Terminal {
+                    terminal_type: TerminalType::Bool,
+                    token,
+                    ..
+                } if token.text.as_ref() == "true"
+            ));
+        }
+
+        let ast = parse_to_ast(source, "test.mo").expect("initial parse should succeed");
+        assert_annotation_shapes(source, &ast);
+
+        let rendered = ast.to_modelica();
+        assert!(
+            rendered.contains("annotation(Dialog)"),
+            "the absent value prints as the bare name: {rendered}"
+        );
+        assert!(
+            rendered.contains("annotation(Evaluate = true)"),
+            "the present value prints as name = value: {rendered}"
+        );
+        let reparsed =
+            parse_to_ast(&rendered, "roundtrip.mo").expect("round-trip parse should succeed");
+        assert_annotation_shapes(&rendered, &reparsed);
     }
 }

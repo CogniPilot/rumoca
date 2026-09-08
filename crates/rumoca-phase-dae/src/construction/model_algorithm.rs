@@ -64,6 +64,7 @@ pub(super) fn lower_total_array_model_algorithm<'dae>(
         lowering.construction,
         LoweringSymbols {
             coordinates: lowering.coordinates,
+            record_staging: None,
             functions: lowering.functions,
             shapes: lowering.functions.shapes.model_values(),
             function_body: None,
@@ -119,6 +120,7 @@ pub(super) fn lower_separated_array_sum_model_algorithm<'dae>(
     )?;
     let symbols = LoweringSymbols {
         coordinates: lowering.coordinates,
+        record_staging: None,
         functions: lowering.functions,
         shapes: lowering.functions.shapes.model_values(),
         function_body: None,

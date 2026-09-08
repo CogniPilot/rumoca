@@ -88,17 +88,8 @@ pub(super) const WASM_SURFACE_SPECS: &[SurfaceCoverageSpec] = &[
         source_path: "crates/rumoca-bind-wasm/src/lib.rs",
         source_pattern: "pub fn compile(",
         proof_path: "crates/rumoca-bind-wasm/src/tests.rs",
-        proof_pattern: "fn test_compile_to_json_matches_compile_wrapper_output()",
+        proof_pattern: "fn test_compile_qualifies_unqualified_within_model_name()",
         proof_label: "bind-wasm:compile",
-    },
-    SurfaceCoverageSpec {
-        surface: "compile_to_json",
-        kind: "build",
-        source_path: "crates/rumoca-bind-wasm/src/lib.rs",
-        source_pattern: "pub fn compile_to_json(",
-        proof_path: "crates/rumoca-bind-wasm/src/tests.rs",
-        proof_pattern: "fn test_compile_to_json_matches_compile_wrapper_output()",
-        proof_label: "bind-wasm:compile_json",
     },
     SurfaceCoverageSpec {
         surface: "compile_with_source_roots",

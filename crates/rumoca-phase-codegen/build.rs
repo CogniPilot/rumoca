@@ -1,29 +1,14 @@
 //! Build-time discovery of the built-in code-gen target bundles.
 //!
-//! # Shared render-environment templates (support partials and shared bases)
+//! # Artifact templates
 //!
-//! A target directory holds two kinds of `.jinja` file, and this build script
-//! is the authority that classifies every one of them:
-//!
-//! * an **artifact template**, declared by a `[[files]]` entry, whose render
-//!   produces exactly one product file; and
-//! * a **support partial**, declared by a `[[partials]]` entry, which produces
-//!   no product file at all and exists only to be `import`ed, `include`d, or
-//!   `extends`ed by artifact templates.
-//!
-//! Both kinds may additionally be published to the shared render environment
-//! under a globally unique name — `[[partials]].name` for a support partial,
-//! `[[files]].shared_as` for an artifact template other targets extend. That
-//! declaration is what makes the name resolvable from a template; there is no
-//! second, Rust-side registration list to keep in step (see
-//! `codegen::create_environment`, which registers exactly the names generated
-//! here).
-//!
-//! Every `.jinja` file in a target directory must be declared exactly once,
-//! as one kind or the other. An undeclared template, a template declared as
-//! both, a partial that also has a `[[files]]` entry, or a duplicated shared
-//! name fails the build — not a test — so a target bundle cannot reach the
-//! renderer in an ambiguous shape.
+//! Every `.jinja` file in a target directory is an artifact template declared
+//! by exactly one `[[files]]` entry. A declaration may instead borrow that one
+//! complete template from an explicitly named built-in owner with the same
+//! artifact kind and semantic context; the borrower then has no local copy.
+//! Global partials, aliases, composition, and fallback lookup are rejected
+//! because they can bridge semantic contexts. A syntax helper uniquely owned
+//! by one artifact stays local to that template.
 //!
 //! Note that the `__` prefix of `__content.xml.jinja` carries no meaning for
 //! this classification: `__content.xml` is the eFMI container registry file
@@ -38,10 +23,9 @@
 //! borrowed files enter the borrower's bundle under the identical relative
 //! paths, so nothing downstream can tell a borrowed bundle from an owned one,
 //! and they enter it through the owner's `include_bytes!` constants, so the
-//! bytes are embedded once however many targets ship them. This is the asset
-//! counterpart of `[[files]].shared_as`, and it exists for the same reason:
-//! two vendored copies of one upstream tree drift, and a drifted copy is a
-//! non-conformant container.
+//! bytes are embedded once however many targets ship them. Two vendored copies
+//! of one upstream tree drift, and a drifted copy is a non-conformant
+//! container.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -56,6 +40,7 @@ struct TargetDir {
     manifest_path: PathBuf,
     readme_path: PathBuf,
     templates: Vec<TemplateFile>,
+    template_declarations: BTreeMap<String, TemplateDeclaration>,
     assets: Vec<AssetFile>,
     /// `[[assets]]` bundles this target borrows from another target, as
     /// (`source`, owning target name). Resolved once every target directory
@@ -68,28 +53,13 @@ struct TemplateFile {
     path: String,
     const_name: String,
     source_path: PathBuf,
-    /// Shared render-environment name, when the manifest publishes this
-    /// template under one (`[[partials]].name` / `[[files]].shared_as`).
-    shared_name: Option<String>,
-    role: TemplateRole,
 }
 
-/// Which manifest declaration owns a template file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateRole {
-    /// Declared by `[[files]]`: renders one product file.
-    Artifact,
-    /// Declared by `[[partials]]`: renders no product file.
-    SupportPartial,
-}
-
-impl TemplateRole {
-    fn generated_variant(self) -> &'static str {
-        match self {
-            Self::Artifact => "BuiltinTemplateRole::Artifact",
-            Self::SupportPartial => "BuiltinTemplateRole::SupportPartial",
-        }
-    }
+#[derive(Debug, Clone)]
+struct TemplateDeclaration {
+    shared_from: Option<String>,
+    artifact_kind: String,
+    semantic_context: String,
 }
 
 #[derive(Debug, Clone)]
@@ -104,130 +74,15 @@ struct AssetFile {
     owner: String,
 }
 
-/// Target names that are PERMANENTLY RETIRED, with the message resolution
-/// reports. A directory reappearing under one of these names fails the build
-/// here, so the retirement cannot be undone by re-adding files: removing a
-/// name from this list is an explicit reviewed decision, and these
-/// identities never return.
-///
-/// `c-ode` and `embedded-c-galec` are retired because the C export surface is
-/// the combined FMI 3 ME+CS product plus the Solve-rendered embedded target,
-/// and because GALEC never emits C: all Production/Embedded C renders from
-/// the refined Solve product.
-const RETIRED_TARGETS: &[(&str, &str)] = &[
-    (
-        "c-ode",
-        "target 'c-ode' is retired: use the 'fmi3' target (FMI 3.0 ME+CS); Model Exchange serves host-owned integration and Co-Simulation serves the built-in solver",
-    ),
-    (
-        "embedded-c-galec",
-        "target 'embedded-c-galec' is retired: GALEC never emits C; it is superseded by the Solve-rendered embedded C target",
-    ),
-];
-
-/// Target names that are SUSPENDED, with the message resolution reports.
-/// Distinct from retirement: a suspended product's identity is valid
-/// architecture and RETURNS when the checked roots its message names have
-/// landed; removal from this list is that re-registration act, reviewed
-/// against those roots. A directory reappearing while the name is listed
-/// fails the build with the suspension message.
-///
-/// `galec-production` (the eFMU container) is suspended pending its
-/// Solve-rendered Production Code leaf: it returns with two checked per-file
-/// roots, the Algorithm Code leaf from GALEC and the Production Code C/H
-/// leaf from the refined `SolveAlgorithmBlock`. Only its invalid
-/// AC-to-C implementation was deleted.
-const SUSPENDED_TARGETS: &[(&str, &str)] = &[(
-    "galec-production",
-    "target 'galec-production' is suspended pending its Solve-rendered Production Code leaf: the eFMU container returns when both checked per-file roots land (Algorithm Code from GALEC, Production Code C from the refined SolveAlgorithmBlock); the Algorithm Code representation is available today via the 'galec' target",
-)];
-
 fn main() -> BuildResult<()> {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let templates_dir = manifest_dir.join("src/templates");
     println!("cargo:rerun-if-changed={}", templates_dir.display());
 
     let targets = discover_targets(&templates_dir)?;
-    reject_retired_target_dirs(&targets)?;
-    reject_algorithm_code_c_templates(&targets)?;
-    validate_unique_shared_names(&targets)?;
     let generated = render_generated_templates_module(&manifest_dir, &targets);
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     fs::write(out_dir.join("templates_generated.rs"), generated)?;
-    Ok(())
-}
-
-/// Fail the build when a retired or suspended target directory reappears.
-/// Both lists are authoritative over the filesystem, so creep-back is a
-/// compile error carrying the retirement or suspension message rather than a
-/// silently revived product. The two states stay distinct: retired
-/// identities never return; a suspended identity returns by removing its
-/// list entry once the checked roots its message names have landed.
-fn reject_retired_target_dirs(targets: &[TargetDir]) -> BuildResult<()> {
-    for target in targets {
-        if let Some((_, message)) = RETIRED_TARGETS
-            .iter()
-            .find(|(name, _)| *name == target.name)
-        {
-            return Err(build_error(format!(
-                "retired target directory reappeared at {}: {message}",
-                target.manifest_path.display()
-            ))
-            .into());
-        }
-        if let Some((_, message)) = SUSPENDED_TARGETS
-            .iter()
-            .find(|(name, _)| *name == target.name)
-        {
-            return Err(build_error(format!(
-                "suspended target directory reappeared at {}: {message}",
-                target.manifest_path.display()
-            ))
-            .into());
-        }
-    }
-    Ok(())
-}
-
-/// Fail the build when any Algorithm Code target bundles a C/H template or
-/// declares a C/H product file. GALEC never emits C: every Production or
-/// Embedded C artifact renders from the refined Solve product.
-///
-/// This line/extension scan is a CREEP-BACK TRIPWIRE, not the construction
-/// proof: the authoritative gate is the mandatory closed per-file
-/// kind/context schema and compatibility table (SPEC_0034 GAL-043).
-fn reject_algorithm_code_c_templates(targets: &[TargetDir]) -> BuildResult<()> {
-    for target in targets {
-        let manifest = fs::read_to_string(&target.manifest_path)?;
-        let is_algorithm_code = manifest
-            .lines()
-            .any(|line| line.trim_start().starts_with("ir") && line.contains("\"algorithm-code\""));
-        if !is_algorithm_code {
-            continue;
-        }
-        for template in &target.templates {
-            let stem = template.path.trim_end_matches(".jinja");
-            if stem.ends_with(".c") || stem.ends_with(".h") {
-                return Err(build_error(format!(
-                    "Algorithm Code target '{}' bundles C/H template '{}': GALEC never emits C; render C from the refined Solve product instead",
-                    target.name, template.path
-                ))
-                .into());
-            }
-        }
-        for line in manifest.lines() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("path") && (trimmed.contains(".c\"") || trimmed.contains(".h\""))
-            {
-                return Err(build_error(format!(
-                    "Algorithm Code target '{}' declares C/H product '{}': GALEC never emits C; render C from the refined Solve product instead",
-                    target.name,
-                    trimmed
-                ))
-                .into());
-            }
-        }
-    }
     Ok(())
 }
 
@@ -255,8 +110,70 @@ fn discover_targets(templates_dir: &Path) -> BuildResult<Vec<TargetDir>> {
         }
     }
     targets.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name));
+    validate_borrowed_templates(&targets)?;
     resolve_borrowed_assets(&mut targets)?;
     Ok(targets)
+}
+
+/// Prove every per-file template borrowing edge against the closed built-in
+/// target registry before generated constants exist. Borrowing lends one
+/// complete artifact template; it never performs a fallback lookup and never
+/// forms a chain through another borrower.
+fn validate_borrowed_templates(targets: &[TargetDir]) -> BuildResult<()> {
+    for borrower in targets {
+        for (path, declaration) in &borrower.template_declarations {
+            let Some(owner_name) = declaration.shared_from.as_deref() else {
+                continue;
+            };
+            if owner_name == borrower.name {
+                return Err(build_error(format!(
+                    "{}: template {path} cannot borrow from its declaring target {owner_name}",
+                    borrower.manifest_path.display()
+                ))
+                .into());
+            }
+            let Some(owner) = targets.iter().find(|target| target.name == owner_name) else {
+                return Err(build_error(format!(
+                    "{}: template {path} borrows from unknown built-in target {owner_name}",
+                    borrower.manifest_path.display()
+                ))
+                .into());
+            };
+            let Some(owner_declaration) = owner.template_declarations.get(path) else {
+                return Err(build_error(format!(
+                    "{}: target {owner_name} owns no declared template {path}",
+                    borrower.manifest_path.display()
+                ))
+                .into());
+            };
+            if owner_declaration.shared_from.is_some()
+                || !owner
+                    .templates
+                    .iter()
+                    .any(|template| template.path == *path)
+            {
+                return Err(build_error(format!(
+                    "{}: template {path} must name its canonical byte owner, not borrowing target {owner_name}",
+                    borrower.manifest_path.display()
+                ))
+                .into());
+            }
+            if (
+                declaration.artifact_kind.as_str(),
+                declaration.semantic_context.as_str(),
+            ) != (
+                owner_declaration.artifact_kind.as_str(),
+                owner_declaration.semantic_context.as_str(),
+            ) {
+                return Err(build_error(format!(
+                    "{}: borrowed template {path} changes artifact kind or semantic context from owner {owner_name}",
+                    borrower.manifest_path.display()
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Copy every `shared_from` bundle's file list from its owning target into the
@@ -356,13 +273,11 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| build_error("template file must have a UTF-8 name"))?
                 .to_string();
-            let (role, shared_name) = declarations.classify(&manifest_path, &path)?;
+            declarations.require_artifact(&manifest_path, &path)?;
             templates.push(TemplateFile {
                 const_name: generated_template_const_name(&name, &path),
                 path,
                 source_path,
-                shared_name,
-                role,
             });
         }
     }
@@ -388,6 +303,7 @@ fn discover_target_dir(dir: &Path) -> BuildResult<TargetDir> {
         manifest_path,
         readme_path,
         templates,
+        template_declarations: declarations.files,
         assets,
         borrowed_assets,
     })
@@ -550,22 +466,19 @@ fn build_error(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
 
-/// The template declarations a `target.toml` makes: one row per `[[files]]`
-/// entry and one per `[[partials]]` entry.
+/// The artifact-template declarations a `target.toml` makes.
 ///
 /// The semantic manifest parser lives in `rumoca-compile`
-/// (`codegen_target::parse_target_manifest`, which owns the typed
-/// `TargetPartial`/`TargetFile::shared_as` shape). This build script only
-/// needs the template/name pairs, so it reads them with the narrow scanner
+/// (`codegen_target::parse_target_manifest_construction`, which owns the typed
+/// `TargetFile` shape). This build script only needs template paths, so it reads them with the narrow scanner
 /// below rather than taking a TOML build-dependency; disagreement between the
 /// two readers cannot go unnoticed, because a template this scanner fails to
 /// see is reported as an undeclared file and fails the build.
 #[derive(Debug, Default)]
 struct ManifestDeclarations {
-    /// `[[files]].template` -> `[[files]].shared_as`.
-    files: BTreeMap<String, Option<String>>,
-    /// `[[partials]].template` -> `[[partials]].name`.
-    partials: BTreeMap<String, String>,
+    /// Exact `[[files]].template` declarations and optional single-owner
+    /// borrowing edges. Global aliases and fallback lookup remain forbidden.
+    files: BTreeMap<String, TemplateDeclaration>,
 }
 
 impl ManifestDeclarations {
@@ -576,19 +489,14 @@ impl ManifestDeclarations {
         for (table, row) in scan_manifest_tables(&manifest) {
             match table.as_str() {
                 "files" => declarations.add_file(manifest_path, &row)?,
-                "partials" => declarations.add_partial(manifest_path, &row)?,
+                "partials" => {
+                    return Err(build_error(format!(
+                        "{}: [[partials]] is forbidden; keep presentation helpers local to their sole artifact template",
+                        manifest_path.display()
+                    ))
+                    .into());
+                }
                 _ => {}
-            }
-        }
-        for template in declarations.partials.keys() {
-            if declarations.files.contains_key(template) {
-                return Err(build_error(format!(
-                    "{}: {template} is declared both as a [[files]] artifact and as a \
-                     [[partials]] support partial; a support partial renders no product \
-                     file, so the two declarations are mutually exclusive",
-                    manifest_path.display()
-                ))
-                .into());
             }
         }
         Ok(declarations)
@@ -602,8 +510,35 @@ impl ManifestDeclarations {
             ))
             .into());
         };
-        let shared_as = row_value(row, "shared_as").map(ToOwned::to_owned);
-        if self.files.insert(template.to_owned(), shared_as).is_some() {
+        if row_value(row, "shared_as").is_some() {
+            return Err(build_error(format!(
+                "{}: [[files]].shared_as is forbidden; global aliases can bridge semantic contexts",
+                manifest_path.display()
+            ))
+            .into());
+        }
+        let artifact_kind = row_value(row, "artifact_kind").ok_or_else(|| {
+            build_error(format!(
+                "{}: [[files]] template {template} must declare artifact_kind",
+                manifest_path.display()
+            ))
+        })?;
+        let semantic_context = row_value(row, "semantic_context").ok_or_else(|| {
+            build_error(format!(
+                "{}: [[files]] template {template} must declare semantic_context",
+                manifest_path.display()
+            ))
+        })?;
+        let declaration = TemplateDeclaration {
+            shared_from: row_value(row, "template_shared_from").map(str::to_owned),
+            artifact_kind: artifact_kind.to_owned(),
+            semantic_context: semantic_context.to_owned(),
+        };
+        if self
+            .files
+            .insert(template.to_owned(), declaration)
+            .is_some()
+        {
             return Err(build_error(format!(
                 "{}: template {template} has more than one [[files]] entry",
                 manifest_path.display()
@@ -613,53 +548,24 @@ impl ManifestDeclarations {
         Ok(())
     }
 
-    fn add_partial(&mut self, manifest_path: &Path, row: &[(String, String)]) -> BuildResult<()> {
-        let (Some(template), Some(name)) = (row_value(row, "template"), row_value(row, "name"))
-        else {
+    /// Require one discovered `.jinja` file to be an artifact declared by a
+    /// `[[files]]` row.
+    fn require_artifact(&self, manifest_path: &Path, path: &str) -> BuildResult<()> {
+        let Some(declaration) = self.files.get(path) else {
             return Err(build_error(format!(
-                "{}: every [[partials]] entry must declare both `template` (the file in \
-                 this target directory) and `name` (the shared render-environment name \
-                 templates import it under)",
+                "{}: template {path} is bundled but undeclared; every template must have one [[files]] artifact entry",
                 manifest_path.display()
             ))
             .into());
         };
-        if self
-            .partials
-            .insert(template.to_owned(), name.to_owned())
-            .is_some()
-        {
+        if let Some(owner) = declaration.shared_from.as_deref() {
             return Err(build_error(format!(
-                "{}: template {template} has more than one [[partials]] entry",
+                "{}: borrowed template {path} from {owner} also exists locally; one target must own the bytes",
                 manifest_path.display()
             ))
             .into());
         }
         Ok(())
-    }
-
-    /// Classify one discovered `.jinja` file against the manifest. An
-    /// undeclared template fails the build: silently bundling it would leave
-    /// the renderer unable to say whether it is an artifact or a partial.
-    fn classify(
-        &self,
-        manifest_path: &Path,
-        path: &str,
-    ) -> BuildResult<(TemplateRole, Option<String>)> {
-        if let Some(shared_as) = self.files.get(path) {
-            return Ok((TemplateRole::Artifact, shared_as.clone()));
-        }
-        if let Some(name) = self.partials.get(path) {
-            return Ok((TemplateRole::SupportPartial, Some(name.clone())));
-        }
-        Err(build_error(format!(
-            "{}: template {path} is bundled but undeclared. Declare it as a [[files]] \
-             entry if rendering it produces a product file, or as a [[partials]] entry \
-             (`template = \"{path}\"`, `name = \"<shared render-environment name>\"`) \
-             if it is a support partial that other templates import, include, or extend",
-            manifest_path.display()
-        ))
-        .into())
     }
 
     fn validate_every_declaration_has_a_file(
@@ -667,28 +573,18 @@ impl ManifestDeclarations {
         manifest_path: &Path,
         templates: &[TemplateFile],
     ) -> BuildResult<()> {
-        for declared in self.files.keys().chain(self.partials.keys()) {
-            if !templates.iter().any(|template| &template.path == declared) {
+        for (declared, declaration) in &self.files {
+            let local = templates.iter().any(|template| &template.path == declared);
+            if declaration.shared_from.is_none() && !local {
                 return Err(build_error(format!(
                     "{} references missing template {declared}",
                     manifest_path.display()
                 ))
                 .into());
             }
-        }
-        for (template, shared_as) in &self.files {
-            if shared_as.as_deref().is_some_and(str::is_empty) {
+            if declaration.shared_from.is_some() && local {
                 return Err(build_error(format!(
-                    "{}: [[files]] entry {template} declares an empty shared_as name",
-                    manifest_path.display()
-                ))
-                .into());
-            }
-        }
-        for (template, name) in &self.partials {
-            if name.is_empty() {
-                return Err(build_error(format!(
-                    "{}: [[partials]] entry {template} declares an empty name",
+                    "{} borrowed template {declared} must not have a local copy",
                     manifest_path.display()
                 ))
                 .into());
@@ -696,30 +592,6 @@ impl ManifestDeclarations {
         }
         Ok(())
     }
-}
-
-/// Every shared render-environment name is global: one `import "name"` in any
-/// target's template must resolve to exactly one file. Two targets publishing
-/// the same name would make the winner depend on registration order, so the
-/// collision fails the build.
-fn validate_unique_shared_names(targets: &[TargetDir]) -> BuildResult<()> {
-    let mut owners = BTreeMap::<&str, String>::new();
-    for target in targets {
-        for template in &target.templates {
-            let Some(shared_name) = template.shared_name.as_deref() else {
-                continue;
-            };
-            let owner = format!("{}/{}", target.name, template.path);
-            if let Some(previous) = owners.insert(shared_name, owner.clone()) {
-                return Err(build_error(format!(
-                    "shared render-environment name {shared_name} is declared by both \
-                     {previous} and {owner}; shared names are global and must be unique"
-                ))
-                .into());
-            }
-        }
-    }
-    Ok(())
 }
 
 fn row_value<'a>(row: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -807,26 +679,7 @@ fn render_generated_templates_module(manifest_dir: &Path, targets: &[TargetDir])
         render_target_asset_array(&mut out, target);
     }
     render_builtin_targets(&mut out, targets);
-    render_shared_templates(&mut out, targets);
-    render_retired_targets(&mut out);
     out
-}
-
-fn render_retired_targets(out: &mut String) {
-    out.push_str("\npub const RETIRED_TARGETS: &[RetiredTarget] = &[\n");
-    for (name, message) in RETIRED_TARGETS {
-        out.push_str(&format!(
-            "    RetiredTarget {{ name: \"{name}\", message: \"{message}\" }},\n"
-        ));
-    }
-    out.push_str("];\n");
-    out.push_str("\npub const SUSPENDED_TARGETS: &[SuspendedTarget] = &[\n");
-    for (name, message) in SUSPENDED_TARGETS {
-        out.push_str(&format!(
-            "    SuspendedTarget {{ name: \"{name}\", message: \"{message}\" }},\n"
-        ));
-    }
-    out.push_str("];\n");
 }
 
 fn render_target_constants(out: &mut String, manifest_dir: &Path, target: &TargetDir) {
@@ -870,49 +723,11 @@ fn render_target_template_array(out: &mut String, target: &TargetDir) {
     ));
     for template in &target.templates {
         out.push_str(&format!(
-            "    BuiltinTargetTemplate {{ path: \"{}\", source: {}, shared_name: {}, role: {} }},\n",
-            template.path,
-            template.const_name,
-            generated_option_str(template.shared_name.as_deref()),
-            template.role.generated_variant()
+            "    BuiltinTargetTemplate {{ path: \"{}\", source: {} }},\n",
+            template.path, template.const_name
         ));
     }
     out.push_str("];\n\n");
-}
-
-/// The flat, name-sorted registry of every shared render-environment template.
-/// `codegen::create_environment` registers exactly this list, so a template's
-/// availability under a shared name is decided by the owning target manifest
-/// and nowhere else.
-fn render_shared_templates(out: &mut String, targets: &[TargetDir]) {
-    let mut shared = Vec::new();
-    for target in targets {
-        for template in &target.templates {
-            if let Some(shared_name) = template.shared_name.as_deref() {
-                shared.push((shared_name, target.name.as_str(), template));
-            }
-        }
-    }
-    shared.sort_by(|lhs, rhs| lhs.0.cmp(rhs.0));
-    out.push_str("pub const SHARED_TEMPLATES: &[BuiltinSharedTemplate] = &[\n");
-    for (shared_name, target_name, template) in shared {
-        out.push_str(&format!(
-            "    BuiltinSharedTemplate {{ name: \"{}\", target: \"{}\", path: \"{}\", source: {}, role: {} }},\n",
-            shared_name,
-            target_name,
-            template.path,
-            template.const_name,
-            template.role.generated_variant()
-        ));
-    }
-    out.push_str("];\n");
-}
-
-fn generated_option_str(value: Option<&str>) -> String {
-    match value {
-        Some(value) => format!("Some(\"{value}\")"),
-        None => "None".to_string(),
-    }
 }
 
 fn render_target_asset_array(out: &mut String, target: &TargetDir) {

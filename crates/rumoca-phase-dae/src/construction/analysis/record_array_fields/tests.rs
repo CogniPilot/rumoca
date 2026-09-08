@@ -289,9 +289,8 @@ fn dynamic_projection_subscript_fails_at_its_exact_occurrence() {
     let (expression, plans) = projection(field_span, base_span, subscript);
     let roles = HashMap::from([(VarName::new("pin[1].v"), PlannedRole::Algebraic)]);
 
-    let error =
-        validate_expression_with_record_array_fields(&expression, &roles, &HashSet::new(), &plans)
-            .expect_err("an undefined dynamic subscript must fail before DAE construction");
+    let error = validate_expression_with_record_array_fields(&expression, &roles, &plans)
+        .expect_err("an undefined dynamic subscript must fail before DAE construction");
 
     assert!(matches!(
         error,
@@ -705,7 +704,7 @@ fn function_specialization_reads_symbolic_record_member_projection_shape() {
         },
     ));
 
-    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the typed record-member projection proves the call signature");
     let [certificate] = shapes.certificates() else {
         panic!("one call must own one specialization certificate");
@@ -780,7 +779,6 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
             (VarName::new("a"), PlannedRole::Algebraic),
             (VarName::new("b"), PlannedRole::Algebraic),
         ]),
-        &HashSet::new(),
         &plans,
     )
     .expect("validation accepts only the occurrence-scoped structural certificate");
@@ -815,7 +813,7 @@ fn function_specialization_reads_declared_shape_of_structural_record_field() {
         },
     ));
 
-    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let shapes = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the field DefId and retained record layout prove the call signature");
     let [certificate] = shapes.certificates() else {
         panic!("one call must own one specialization certificate");
@@ -864,7 +862,7 @@ fn a_function_result_label_is_not_misclassified_as_a_record_field() {
         .expect("the result-label occurrence has an exact function owner");
     assert_eq!(plan.function, function_id);
     assert_eq!(plan.result, result_id);
-    validate_expression_with_record_array_fields(&field, &HashMap::new(), &HashSet::new(), &plans)
+    validate_expression_with_record_array_fields(&field, &HashMap::new(), &plans)
         .expect("the result label validates as an identity over its call");
 }
 
@@ -1353,13 +1351,8 @@ fn unproven_empty_slice_cannot_fabricate_scalar_elements() {
 
     let plans = analyze_record_array_fields(&model, [&expression])
         .expect("absence of elements cannot create a projection proof");
-    let error = validate_expression_with_record_array_fields(
-        &expression,
-        &HashMap::new(),
-        &HashSet::new(),
-        &plans,
-    )
-    .expect_err("an untyped empty slice must fail rather than inventing a value");
+    let error = validate_expression_with_record_array_fields(&expression, &HashMap::new(), &plans)
+        .expect_err("an untyped empty slice must fail rather than inventing a value");
 
     assert!(matches!(
         error,

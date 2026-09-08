@@ -1,6 +1,6 @@
 use crate::{
-    BuiltinFunction, ComprehensionIndex, DefId, Expression, Literal, OpBinary, Reference, Span,
-    StringConversionFormat, Subscript,
+    BuiltinFunction, ComprehensionIndex, DefId, Expression, FunctionCallKind, Literal, OpBinary,
+    Reference, Span, StringConversionFormat, Subscript,
 };
 
 pub trait ExpressionRewriter {
@@ -28,8 +28,9 @@ pub trait ExpressionRewriter {
                 name,
                 args,
                 is_constructor,
+                call_kind,
                 span,
-            } => self.walk_function_call_expression(name, args, *is_constructor, *span),
+            } => self.walk_function_call_expression(name, args, *is_constructor, *call_kind, *span),
             Expression::StringConversion {
                 declaration,
                 value,
@@ -143,12 +144,14 @@ pub trait ExpressionRewriter {
         name: &Reference,
         args: &[Expression],
         is_constructor: bool,
+        call_kind: FunctionCallKind,
         span: Span,
     ) -> Expression {
         Expression::FunctionCall {
             name: name.clone(),
             args: self.rewrite_expressions(args),
             is_constructor,
+            call_kind,
             span,
         }
     }
@@ -369,8 +372,9 @@ pub trait FallibleExpressionRewriter {
                 name,
                 args,
                 is_constructor,
+                call_kind,
                 span,
-            } => self.walk_function_call_expression(name, args, *is_constructor, *span),
+            } => self.walk_function_call_expression(name, args, *is_constructor, *call_kind, *span),
             Expression::StringConversion {
                 declaration,
                 value,
@@ -484,12 +488,14 @@ pub trait FallibleExpressionRewriter {
         name: &Reference,
         args: &[Expression],
         is_constructor: bool,
+        call_kind: FunctionCallKind,
         span: Span,
     ) -> Result<Expression, Self::Error> {
         Ok(Expression::FunctionCall {
             name: name.clone(),
             args: self.rewrite_expressions(args)?,
             is_constructor,
+            call_kind,
             span,
         })
     }

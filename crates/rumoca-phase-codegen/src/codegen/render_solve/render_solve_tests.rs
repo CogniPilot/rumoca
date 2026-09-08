@@ -3,7 +3,7 @@ use super::*;
 fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: count as i64,
@@ -362,7 +362,7 @@ fn kernel_workgroup_count_rejects_overflow() {
 #[test]
 fn structured_binder_value_count_accepts_descending_domain() {
     let binder = rumoca_core::StructuredIndexBinder {
-        id: 0,
+        id: rumoca_core::StructuredIndexBinderId::new(0),
         display_name: "i".to_string(),
         lower: 5,
         upper: 1,
@@ -375,7 +375,7 @@ fn structured_binder_value_count_accepts_descending_domain() {
 #[test]
 fn structured_binder_value_count_rejects_extent_overflow() {
     let binder = rumoca_core::StructuredIndexBinder {
-        id: 0,
+        id: rumoca_core::StructuredIndexBinderId::new(0),
         display_name: "i".to_string(),
         lower: i64::MIN,
         upper: i64::MAX,
@@ -393,7 +393,7 @@ fn structured_binder_value_count_rejects_extent_overflow() {
 #[test]
 fn structured_binder_value_count_rejects_step_magnitude_overflow() {
     let binder = rumoca_core::StructuredIndexBinder {
-        id: 0,
+        id: rumoca_core::StructuredIndexBinderId::new(0),
         display_name: "i".to_string(),
         lower: 1,
         upper: 1,
@@ -573,26 +573,4 @@ fn native_family_override_error_reports_op_kind() {
 
     assert!(err.contains("native family override targets a non-load/non-const op: Binary"));
     assert!(!err.contains("Binary {"));
-}
-
-#[test]
-fn unsupported_typed_op_error_reports_op_kind() {
-    let cfg = SolveRowCConfig::from_value(&Value::from_serialize(()));
-    let ops = vec![solve::LinearOp::TableNextEvent {
-        dst: 0,
-        table_id: 0,
-        time: 1,
-    }];
-
-    let err = render_solve_row_typed_with_overrides(
-        &ops,
-        &std::collections::HashMap::new(),
-        &cfg,
-        SolveRowDialect::Wgsl,
-    )
-    .expect_err("unsupported typed op should fail rendering")
-    .to_string();
-
-    assert!(err.contains("unsupported solve LinearOp: TableNextEvent"));
-    assert!(!err.contains("TableNextEvent {"));
 }

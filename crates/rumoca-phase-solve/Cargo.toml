@@ -13,6 +13,7 @@ default = []
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-ir-dae = { workspace = true }
+rumoca-ir-galec = { workspace = true }
 rumoca-ir-solve = { workspace = true }
 rumoca-eval-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
@@ -21,6 +22,9 @@ serde = { workspace = true }
 indexmap = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

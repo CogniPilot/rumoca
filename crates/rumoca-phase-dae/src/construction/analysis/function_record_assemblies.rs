@@ -1,6 +1,9 @@
 use super::*;
 use rumoca_core::{ExpressionVisitor, Reference, row_major_coordinates};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn plan_staged_record_assemblies(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,
@@ -11,15 +14,7 @@ pub(super) fn plan_staged_record_assemblies(
     ),
     ToDaeError,
 > {
-    let mut assignments: HashMap<VarName, Vec<usize>> = HashMap::new();
-    for (index, statement) in statements.iter().enumerate() {
-        if let Some((target, _)) = record_assignment_target(statement, context.function) {
-            assignments
-                .entry(VarName::new(&target.name))
-                .or_default()
-                .push(index);
-        }
-    }
+    let assignments = staged_record_assignment_groups(statements, context.function)?;
     let mut plans = HashMap::new();
     let mut members = HashSet::new();
     for (target, indices) in assignments {
@@ -29,7 +24,7 @@ pub(super) fn plan_staged_record_assemblies(
         plan_staged_record(
             statements,
             context,
-            &target,
+            target,
             &indices,
             &mut plans,
             &mut members,
@@ -38,41 +33,60 @@ pub(super) fn plan_staged_record_assemblies(
     Ok((plans, members))
 }
 
+/// Group staged record writes by resolved function-value identity while
+/// retaining the first source occurrence of each target.
+///
+/// The `Vec` is intentional: a hash-map iteration would make the order in
+/// which competing target defects are reported depend on the randomized hash
+/// seed, while display spelling cannot distinguish two exact declarations.
+fn staged_record_assignment_groups<'scope>(
+    statements: &'scope [rumoca_core::Statement],
+    function: &'scope rumoca_core::Function,
+) -> Result<Vec<(&'scope rumoca_core::FunctionParam, Vec<usize>)>, ToDaeError> {
+    let mut assignments: Vec<(&rumoca_core::FunctionParam, Vec<usize>)> = Vec::new();
+    for (index, statement) in statements.iter().enumerate() {
+        if let Some((target, _)) = record_assignment_target(statement, function)? {
+            if let Some((_, indices)) = assignments
+                .iter_mut()
+                .find(|(candidate, _)| candidate.def_id == target.def_id)
+            {
+                indices.push(index);
+            } else {
+                assignments.push((target, vec![index]));
+            }
+        }
+    }
+    Ok(assignments)
+}
+
 fn plan_staged_record(
     statements: &[rumoca_core::Statement],
     context: FunctionValidationContext<'_>,
-    target: &VarName,
+    target: &rumoca_core::FunctionParam,
     indices: &[usize],
     plans: &mut HashMap<usize, FunctionRecordFieldAssemblyPlan>,
     members: &mut HashSet<usize>,
 ) -> Result<(), ToDaeError> {
-    let declaration = context
-        .function
-        .outputs
-        .iter()
-        .chain(&context.function.locals)
-        .find(|value| value.name == target.as_str())
-        .expect("record assignment target resolves its declaration");
-    let constructor = record_constructor(declaration, context)?;
-    let field_names = constructor
-        .inputs
-        .iter()
-        .map(|field| VarName::new(&field.name))
-        .collect::<Vec<_>>();
+    let constructor = record_constructor(target, context)?;
+    let fields = resolved_constructor_fields(&target.name, constructor)?;
+    let target_def_id = function_value_def_id(target, context.function)?;
+    require_group_constructor_fields(statements, indices, context.function, &fields)?;
     let final_index = *indices.last().expect("staged record has assignments");
-    for field in &constructor.inputs {
-        let field_indices = indices
-            .iter()
-            .copied()
-            .filter(|index| {
-                record_assignment_target(&statements[*index], context.function)
-                    .is_some_and(|(_, part)| part.ident == field.name)
-            })
-            .collect::<Vec<_>>();
+    for (field, resolved_field) in constructor.inputs.iter().zip(&fields) {
+        let mut field_indices = Vec::new();
+        for index in indices.iter().copied() {
+            let Some((_, part)) = record_assignment_target(&statements[index], context.function)?
+            else {
+                continue;
+            };
+            if assignment_part_matches_field(part, resolved_field)? {
+                field_indices.push(index);
+            }
+        }
         let first = *field_indices.first().ok_or_else(|| {
             ToDaeError::unsupported_flat(
                 "record output assembly",
-                format!("`{target}.{}` is left undefined", field.name),
+                format!("`{}.{}` is left undefined", target.name, field.name),
                 field.span,
             )
         })?;
@@ -80,8 +94,8 @@ fn plan_staged_record(
             return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
                 format!(
-                    "`{target}.{}` has non-contiguous partial writes whose statement-time values cannot yet be staged",
-                    field.name
+                    "`{}.{}` has non-contiguous partial writes whose statement-time values cannot yet be staged",
+                    target.name, field.name
                 ),
                 field.span,
             ));
@@ -90,34 +104,40 @@ fn plan_staged_record(
             .iter()
             .map(|index| statements[*index].clone())
             .collect::<Vec<_>>();
-        let available_fields = constructor
-            .inputs
-            .iter()
-            .filter(|candidate| {
+        let mut available_fields = Vec::new();
+        for resolved_candidate in &fields {
+            let last = last_matching_field_assignment(
                 indices
                     .iter()
                     .copied()
-                    .filter(|index| {
-                        record_assignment_target(&statements[*index], context.function)
-                            .is_some_and(|(_, part)| part.ident == candidate.name)
-                    })
-                    .max()
-                    .is_some_and(|last| last < first)
-            })
-            .map(|candidate| VarName::new(&candidate.name))
-            .collect::<Vec<_>>();
-        let field_plan =
-            validate_field_assembly(&group, target.as_str(), field, context, &available_fields)?;
+                    .map(|index| (index, &statements[index])),
+                context.function,
+                resolved_candidate,
+            )?;
+            if last.is_some_and(|last| last < first) {
+                available_fields.push(resolved_candidate.clone());
+            }
+        }
+        let field_plan = validate_field_assembly(
+            &group,
+            &target.name,
+            target_def_id,
+            field,
+            resolved_field.def_id,
+            context,
+            &available_fields,
+        )?;
         members.extend(field_indices.iter().copied().skip(1));
         plans.insert(
             first,
             FunctionRecordFieldAssemblyPlan {
-                target: target.clone(),
+                target: VarName::new(&target.name),
+                target_def_id,
                 statement_count: field_indices.len(),
                 field: field_plan,
                 available_fields,
                 finalize_fields: (field_indices.last() == Some(&final_index))
-                    .then(|| field_names.clone()),
+                    .then(|| fields.clone()),
             },
         );
     }
@@ -129,57 +149,67 @@ pub(super) fn validate_record_output_assembly(
     start: usize,
     context: FunctionValidationContext<'_>,
 ) -> Result<Option<(FunctionRecordAssemblyPlan, usize)>, ToDaeError> {
-    let Some((target, field)) = record_assignment_target(&statements[start], context.function)
+    let Some((target, field)) = record_assignment_target(&statements[start], context.function)?
     else {
         return Ok(None);
     };
-    let staged_field = FunctionRecordFieldCoordinate {
-        target: VarName::new(&target.name),
-        field: VarName::new(&field.ident),
+    let target_def_id = function_value_def_id(target, context.function)?;
+    let staged_field = FunctionRecordFieldIdentity {
+        target: target_def_id,
+        field: field.def_id,
     };
     if context.staged_record_fields.contains(&staged_field) {
         return Ok(None);
     }
-    let count = statements[start..]
-        .iter()
-        .take_while(|statement| {
-            record_assignment_target(statement, context.function)
-                .is_some_and(|(candidate, _)| candidate.name == target.name)
-        })
-        .count();
+    let mut count = 0;
+    for statement in &statements[start..] {
+        let Some((candidate, _)) = record_assignment_target(statement, context.function)? else {
+            break;
+        };
+        if function_value_def_id(candidate, context.function)? != target_def_id {
+            break;
+        }
+        count += 1;
+    }
     let group = &statements[start..start + count];
     let constructor = record_constructor(target, context)?;
+    let resolved_fields = resolved_constructor_fields(&target.name, constructor)?;
+    let group_indices = (start..start + count).collect::<Vec<_>>();
+    require_group_constructor_fields(
+        statements,
+        &group_indices,
+        context.function,
+        &resolved_fields,
+    )?;
     let mut fields = Vec::with_capacity(constructor.inputs.len());
-    for field in &constructor.inputs {
-        let first = group
-            .iter()
-            .position(|statement| {
-                record_assignment_target(statement, context.function)
-                    .is_some_and(|(_, part)| part_matches_record_field(part, &field.name))
-            })
-            .unwrap_or(group.len());
-        let available_fields = constructor
-            .inputs
-            .iter()
-            .filter(|candidate| {
-                group
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, statement)| {
-                        record_assignment_target(statement, context.function).is_some_and(
-                            |(_, part)| part_matches_record_field(part, &candidate.name),
-                        )
-                    })
-                    .map(|(index, _)| index)
-                    .max()
-                    .is_some_and(|last| last < first)
-            })
-            .map(|candidate| VarName::new(&candidate.name))
-            .collect::<Vec<_>>();
+    for (field, resolved_field) in constructor.inputs.iter().zip(&resolved_fields) {
+        let mut first = group.len();
+        for (index, statement) in group.iter().enumerate() {
+            let Some((_, part)) = record_assignment_target(statement, context.function)? else {
+                continue;
+            };
+            if assignment_part_matches_field(part, resolved_field)? {
+                first = index;
+                break;
+            }
+        }
+        let mut available_fields = Vec::new();
+        for resolved_candidate in &resolved_fields {
+            let last = last_matching_field_assignment(
+                group.iter().enumerate(),
+                context.function,
+                resolved_candidate,
+            )?;
+            if last.is_some_and(|last| last < first) {
+                available_fields.push(resolved_candidate.clone());
+            }
+        }
         fields.push(validate_field_assembly(
             group,
             &target.name,
+            target_def_id,
             field,
+            resolved_field.def_id,
             context,
             &available_fields,
         )?);
@@ -187,6 +217,7 @@ pub(super) fn validate_record_output_assembly(
     Ok(Some((
         FunctionRecordAssemblyPlan {
             target: VarName::new(&target.name),
+            target_def_id,
             statement_count: count,
             fields,
             seed: None,
@@ -195,38 +226,252 @@ pub(super) fn validate_record_output_assembly(
     )))
 }
 
-fn part_matches_record_field(part: &rumoca_core::ComponentRefPart, field: &str) -> bool {
-    part.ident == field
-        || field
-            .strip_prefix(part.ident.as_str())
-            .is_some_and(|suffix| suffix.starts_with('_'))
+fn last_matching_field_assignment<'statement>(
+    assignments: impl IntoIterator<Item = (usize, &'statement rumoca_core::Statement)>,
+    function: &rumoca_core::Function,
+    field: &ResolvedFunctionRecordField,
+) -> Result<Option<usize>, ToDaeError> {
+    let mut last = None;
+    for (index, statement) in assignments {
+        let Some((_, part)) = record_assignment_target(statement, function)? else {
+            continue;
+        };
+        if assignment_part_matches_field(part, field)? {
+            last = Some(index);
+        }
+    }
+    Ok(last)
 }
 
 fn record_assignment_target<'scope>(
     statement: &'scope rumoca_core::Statement,
     function: &'scope rumoca_core::Function,
-) -> Option<(
-    &'scope rumoca_core::FunctionParam,
-    &'scope rumoca_core::ComponentRefPart,
-)> {
+) -> Result<
+    Option<(
+        &'scope rumoca_core::FunctionParam,
+        &'scope rumoca_core::ComponentRefPart,
+    )>,
+    ToDaeError,
+> {
     let rumoca_core::Statement::Assignment { comp, .. } = statement else {
-        return None;
+        return Ok(None);
     };
     let [root, field] = comp.parts() else {
-        return None;
+        return Ok(None);
     };
     // MLS §12.2 gives protected locals the same declaration status as results,
     // so a record local is assembled from its field assignments exactly like a
     // record result: neither can be updated field-by-field in the checked DAE,
     // because a partial update would have to read the value's undefined fields.
-    let value = function
+    let Some(value) = resolved_record_value(root, function)? else {
+        return Ok(None);
+    };
+    if value.type_class != Some(rumoca_core::ClassType::Record) {
+        return Ok(None);
+    }
+    Ok(Some((value, field)))
+}
+
+pub(super) fn resolved_record_value<'scope>(
+    root: &rumoca_core::ComponentRefPart,
+    function: &'scope rumoca_core::Function,
+) -> Result<Option<&'scope rumoca_core::FunctionParam>, ToDaeError> {
+    let mut resolved_values = function
         .outputs
         .iter()
         .chain(&function.locals)
-        .find(|value| {
-            value.name == root.ident && value.type_class == Some(rumoca_core::ClassType::Record)
+        .filter(|value| value.def_id == Some(root.def_id));
+    let Some(value) = resolved_values.next() else {
+        if let Some(candidate) = function
+            .outputs
+            .iter()
+            .chain(&function.locals)
+            .find(|value| {
+                value.name == root.ident && value.type_class == Some(rumoca_core::ClassType::Record)
+            })
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{}.{}` retains field syntax but its root identity {} does not match declaration {}",
+                    function.name,
+                    root.ident,
+                    root.def_id.index(),
+                    candidate
+                        .def_id
+                        .map_or_else(|| "<missing>".to_string(), |id| id.index().to_string())
+                ),
+                root.span,
+            ));
+        }
+        return Ok(None);
+    };
+    if resolved_values.next().is_some() {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "function `{}` repeats resolved value identity {}",
+                function.name,
+                root.def_id.index()
+            ),
+            root.span,
+        ));
+    }
+    if value.name != root.ident {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "resolved function value identity {} is spelled `{}` in the declaration but `{}` at the assignment",
+                root.def_id.index(),
+                value.name,
+                root.ident
+            ),
+            root.span,
+        ));
+    }
+    Ok(Some(value))
+}
+
+pub(super) fn function_value_def_id(
+    value: &rumoca_core::FunctionParam,
+    function: &rumoca_core::Function,
+) -> Result<rumoca_core::DefId, ToDaeError> {
+    value
+        .def_id
+        .filter(|identity| identity.index() != 0)
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!(
+                    "`{}.{}` has no resolved function-value identity",
+                    function.name, value.name
+                ),
+                value.span,
+            )
+        })
+}
+
+fn resolved_record_field(
+    output: &str,
+    field: &rumoca_core::FunctionParam,
+) -> Result<ResolvedFunctionRecordField, ToDaeError> {
+    let def_id = field
+        .def_id
+        .filter(|identity| identity.index() != 0)
+        .ok_or_else(|| {
+            ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!("`{output}.{}` has no resolved field identity", field.name),
+                field.span,
+            )
         })?;
-    Some((value, field))
+    Ok(ResolvedFunctionRecordField {
+        name: VarName::new(&field.name),
+        def_id,
+    })
+}
+
+pub(super) fn resolved_constructor_fields(
+    output: &str,
+    constructor: &rumoca_core::Function,
+) -> Result<Vec<ResolvedFunctionRecordField>, ToDaeError> {
+    let mut identities = HashSet::new();
+    let mut names = HashSet::new();
+    constructor
+        .inputs
+        .iter()
+        .map(|field| {
+            let resolved = resolved_record_field(output, field)?;
+            if !identities.insert(resolved.def_id) {
+                return Err(ToDaeError::unsupported_flat(
+                    "record output assembly",
+                    format!(
+                        "`{output}` constructor repeats resolved field identity {}",
+                        resolved.def_id.index()
+                    ),
+                    field.span,
+                ));
+            }
+            if !names.insert(resolved.name.clone()) {
+                return Err(ToDaeError::unsupported_flat(
+                    "record output assembly",
+                    format!("`{output}` constructor repeats field `{}`", resolved.name),
+                    field.span,
+                ));
+            }
+            Ok(resolved)
+        })
+        .collect()
+}
+
+fn assignment_part_matches_field(
+    part: &rumoca_core::ComponentRefPart,
+    field: &ResolvedFunctionRecordField,
+) -> Result<bool, ToDaeError> {
+    if part.def_id == field.def_id {
+        if part.ident == field.name.as_str() {
+            return Ok(true);
+        }
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "resolved record field identity {} is spelled `{}` in the constructor but `{}` at the assignment",
+                field.def_id.index(),
+                field.name,
+                part.ident
+            ),
+            part.span,
+        ));
+    }
+    if part.ident == field.name.as_str() {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "record field `{}` has constructor identity {} but assignment identity {}",
+                field.name,
+                field.def_id.index(),
+                part.def_id.index()
+            ),
+            part.span,
+        ));
+    }
+    Ok(false)
+}
+
+fn require_group_constructor_fields(
+    statements: &[rumoca_core::Statement],
+    indices: &[usize],
+    function: &rumoca_core::Function,
+    fields: &[ResolvedFunctionRecordField],
+) -> Result<(), ToDaeError> {
+    for index in indices.iter().copied() {
+        let Some((target, part)) = record_assignment_target(&statements[index], function)? else {
+            unreachable!("record assembly indices retain exact two-part record targets")
+        };
+        require_constructor_field(&target.name, part, fields)?;
+    }
+    Ok(())
+}
+
+pub(super) fn require_constructor_field<'fields>(
+    output: &str,
+    part: &rumoca_core::ComponentRefPart,
+    fields: &'fields [ResolvedFunctionRecordField],
+) -> Result<&'fields ResolvedFunctionRecordField, ToDaeError> {
+    for field in fields {
+        if assignment_part_matches_field(part, field)? {
+            return Ok(field);
+        }
+    }
+    Err(ToDaeError::unsupported_flat(
+        "record output assembly",
+        format!(
+            "`{output}.{}` carries identity {} but resolves to no constructor field",
+            part.ident,
+            part.def_id.index()
+        ),
+        part.span,
+    ))
 }
 
 pub(super) fn record_constructor<'scope>(
@@ -297,15 +542,19 @@ fn field_scalar_layout(
 fn validate_field_assembly(
     statements: &[rumoca_core::Statement],
     output: &str,
+    output_def_id: rumoca_core::DefId,
     field: &rumoca_core::FunctionParam,
+    field_def_id: rumoca_core::DefId,
     context: FunctionValidationContext<'_>,
-    available_fields: &[VarName],
+    available_fields: &[ResolvedFunctionRecordField],
 ) -> Result<FunctionRecordFieldAssembly, ToDaeError> {
     if field.type_class == Some(rumoca_core::ClassType::Record) {
         return validate_aggregate_field_assembly(
             statements,
             output,
+            output_def_id,
             field,
+            field_def_id,
             context,
             available_fields,
         );
@@ -313,16 +562,21 @@ fn validate_field_assembly(
     let (dimensions, scalar_count) = field_scalar_layout(output, field)?;
     let scalars = collect_field_scalar_sources(
         statements,
-        output,
-        field,
-        context,
-        &dimensions,
-        scalar_count,
-        available_fields,
+        FieldScalarCollection {
+            output,
+            output_def_id,
+            field,
+            field_def_id,
+            context,
+            dimensions: &dimensions,
+            scalar_count,
+            available_fields,
+        },
     )?;
     let scalars = require_total_field_scalars(scalars, output, field)?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
+        def_id: field_def_id,
         scalar_type: Some(
             effective_function_scalar_type(context.flat, field).ok_or_else(|| {
                 ToDaeError::unsupported_flat(
@@ -341,35 +595,46 @@ fn validate_field_assembly(
     })
 }
 
+struct FieldScalarCollection<'scope> {
+    output: &'scope str,
+    output_def_id: rumoca_core::DefId,
+    field: &'scope rumoca_core::FunctionParam,
+    field_def_id: rumoca_core::DefId,
+    context: FunctionValidationContext<'scope>,
+    dimensions: &'scope [u32],
+    scalar_count: usize,
+    available_fields: &'scope [ResolvedFunctionRecordField],
+}
+
 fn collect_field_scalar_sources(
     statements: &[rumoca_core::Statement],
-    output: &str,
-    field: &rumoca_core::FunctionParam,
-    context: FunctionValidationContext<'_>,
-    dimensions: &[u32],
-    scalar_count: usize,
-    available_fields: &[VarName],
+    input: FieldScalarCollection<'_>,
 ) -> Result<Vec<Option<FunctionRecordScalarSource>>, ToDaeError> {
+    let FieldScalarCollection {
+        output,
+        output_def_id,
+        field,
+        field_def_id,
+        context,
+        dimensions,
+        scalar_count,
+        available_fields,
+    } = input;
     let mut scalars = vec![None; scalar_count];
     for (statement_offset, statement) in statements.iter().enumerate() {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
             unreachable!("record assembly group contains assignments")
         };
-        let Some((_, target)) = record_assignment_target(statement, context.function) else {
+        let Some((_, target)) = record_assignment_target(statement, context.function)? else {
             unreachable!("record assembly group has validated two-part record targets")
         };
-        let value_field = if target.ident == field.name {
-            None
-        } else if let Some(nested) = field
-            .name
-            .strip_prefix(target.ident.as_str())
-            .and_then(|suffix| suffix.strip_prefix('_'))
-            .filter(|suffix| !suffix.is_empty())
-        {
-            Some(VarName::new(nested))
-        } else {
-            continue;
+        let resolved_field = ResolvedFunctionRecordField {
+            name: VarName::new(&field.name),
+            def_id: field_def_id,
         };
+        if !assignment_part_matches_field(target, &resolved_field)? {
+            continue;
+        }
         require_span(*span, "record field assignment")?;
         validate_function_subscripts(&target.subs, context)?;
         validate_function_expression_with_roles(
@@ -378,29 +643,11 @@ fn collect_field_scalar_sources(
             context.flat,
             context.shapes,
         )?;
-        reject_record_self_reference(value, output, available_fields, *span)?;
+        reject_record_self_reference(value, output, output_def_id, available_fields, *span)?;
         let selection = field_selection(dimensions, &target.subs, *span)?;
-        let found_shape = if let Some(value_field) = &value_field {
-            let projected = Expression::FieldAccess {
-                base: Box::new(value.clone()),
-                field: value_field.as_str().to_string(),
-                field_def_id: field.def_id.ok_or_else(|| {
-                    ToDaeError::unsupported_flat(
-                        "record output assembly",
-                        format!("`{output}.{}` has no exact field identity", field.name),
-                        field.span,
-                    )
-                })?,
-                span: *span,
-            };
-            context
-                .shape_analysis
-                .expression_shape(&projected, context.shapes)?
-        } else {
-            context
-                .shape_analysis
-                .expression_shape(value, context.shapes)?
-        };
+        let found_shape = context
+            .shape_analysis
+            .expression_shape(value, context.shapes)?;
         if found_shape != selection.value_dimensions {
             return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
@@ -421,7 +668,6 @@ fn collect_field_scalar_sources(
             if scalar_source
                 .replace(FunctionRecordScalarSource {
                     statement_offset,
-                    value_field: value_field.clone(),
                     value_coordinates,
                 })
                 .is_some()
@@ -464,19 +710,25 @@ fn require_total_field_scalars(
 fn validate_aggregate_field_assembly(
     statements: &[rumoca_core::Statement],
     output: &str,
+    output_def_id: rumoca_core::DefId,
     field: &rumoca_core::FunctionParam,
+    field_def_id: rumoca_core::DefId,
     context: FunctionValidationContext<'_>,
-    available_fields: &[VarName],
+    available_fields: &[ResolvedFunctionRecordField],
 ) -> Result<FunctionRecordFieldAssembly, ToDaeError> {
     let mut source = None;
     for (statement_offset, statement) in statements.iter().enumerate() {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
             unreachable!("record assembly group contains assignments")
         };
-        let Some((_, target)) = record_assignment_target(statement, context.function) else {
+        let Some((_, target)) = record_assignment_target(statement, context.function)? else {
             unreachable!("record assembly group has validated two-part record targets")
         };
-        if target.ident != field.name {
+        let resolved_field = ResolvedFunctionRecordField {
+            name: VarName::new(&field.name),
+            def_id: field_def_id,
+        };
+        if !assignment_part_matches_field(target, &resolved_field)? {
             continue;
         }
         require_span(*span, "record aggregate field assignment")?;
@@ -496,7 +748,7 @@ fn validate_aggregate_field_assembly(
             context.flat,
             context.shapes,
         )?;
-        reject_record_self_reference(value, output, available_fields, *span)?;
+        reject_record_self_reference(value, output, output_def_id, available_fields, *span)?;
         if source.replace(statement_offset).is_some() {
             return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
@@ -514,6 +766,7 @@ fn validate_aggregate_field_assembly(
     })?;
     Ok(FunctionRecordFieldAssembly {
         name: VarName::new(&field.name),
+        def_id: field_def_id,
         scalar_type: None,
         dimensions: Vec::new(),
         scalars: Vec::new(),
@@ -602,20 +855,30 @@ fn field_selection(
 fn reject_record_self_reference(
     value: &Expression,
     output: &str,
-    available_fields: &[VarName],
+    output_def_id: rumoca_core::DefId,
+    available_fields: &[ResolvedFunctionRecordField],
     span: Span,
 ) -> Result<(), ToDaeError> {
-    let available = available_fields.iter().cloned().collect::<HashSet<_>>();
     let mut checker = RecordSelfReadChecker {
         output,
-        available: &available,
+        output_def_id,
+        available: available_fields,
         unavailable: None,
+        identity_error: None,
+        fallback_span: span,
     };
     checker.visit_expression(value);
-    if let Some(reference) = checker.unavailable {
+    if let Some((error, error_span)) = checker.identity_error {
+        return Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            error,
+            error_span,
+        ));
+    }
+    if let Some((reference, reference_span)) = checker.unavailable {
         let available = available_fields
             .iter()
-            .map(VarName::as_str)
+            .map(|field| field.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(ToDaeError::unsupported_flat(
@@ -623,7 +886,7 @@ fn reject_record_self_reference(
             format!(
                 "`{reference}` is read before that record field is constructed; fields proven available here: [{available}]"
             ),
-            span,
+            reference_span,
         ));
     }
     Ok(())
@@ -631,48 +894,194 @@ fn reject_record_self_reference(
 
 struct RecordSelfReadChecker<'scope> {
     output: &'scope str,
-    available: &'scope HashSet<VarName>,
-    unavailable: Option<String>,
+    output_def_id: rumoca_core::DefId,
+    available: &'scope [ResolvedFunctionRecordField],
+    unavailable: Option<(String, Span)>,
+    identity_error: Option<(String, Span)>,
+    fallback_span: Span,
 }
 
 impl ExpressionVisitor for RecordSelfReadChecker<'_> {
+    fn visit_expression(&mut self, expression: &Expression) {
+        if let Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } = expression
+        {
+            let Some(name) = expression_root_reference(base) else {
+                self.walk_expression(expression);
+                return;
+            };
+            if !self.reference_is_output_candidate(name) {
+                self.walk_expression(expression);
+                return;
+            }
+            if !self.require_output_root_identity(name, *span) {
+                return;
+            }
+            let Expression::VarRef { subscripts, .. } = base.as_ref() else {
+                self.refuse_nested_self_read(expression, *span);
+                return;
+            };
+            for subscript in subscripts {
+                self.visit_subscript(subscript);
+            }
+            self.check_field(field, *field_def_id, expression, *span);
+            return;
+        }
+        self.walk_expression(expression);
+    }
+
     fn visit_var_ref(&mut self, name: &Reference, subscripts: &[Subscript]) {
         for subscript in subscripts {
             self.visit_subscript(subscript);
         }
-        self.check_reference(name.as_str());
-    }
-
-    fn visit_field_access(&mut self, base: &Expression, field: &str) {
-        if let Some(base_path) = rumoca_core::flat_expression_component_path(base)
-            && (base_path.as_str() == self.output
-                || base_path.as_str().starts_with(&format!("{}.", self.output))
-                || base_path.as_str().starts_with(&format!("{}[", self.output)))
+        let reference_span = name.span().unwrap_or(self.fallback_span);
+        if !self.reference_is_output_candidate(name)
+            || !self.require_output_root_identity(name, reference_span)
         {
-            self.check_reference(&format!("{base_path}.{field}"));
             return;
         }
-        self.visit_expression(base);
+        let parts = name.parts();
+        if parts.len() == 1 {
+            self.unavailable
+                .get_or_insert_with(|| (name.as_str().to_string(), reference_span));
+            return;
+        }
+        if parts.len() > 2 {
+            self.identity_error.get_or_insert_with(|| {
+                (
+                    format!(
+                        "nested self-read `{}` is not yet represented by a complete staged record-field identity path",
+                        name.as_str()
+                    ),
+                    reference_span,
+                )
+            });
+            return;
+        }
+        self.check_field(&parts[1].ident, parts[1].def_id, name, reference_span);
     }
 }
 
 impl RecordSelfReadChecker<'_> {
-    fn check_reference(&mut self, reference: &str) {
-        if reference == self.output || reference.starts_with(&format!("{}[", self.output)) {
-            self.unavailable
-                .get_or_insert_with(|| reference.to_string());
+    fn refuse_nested_self_read(&mut self, expression: &Expression, span: Span) {
+        if self.identity_error.is_some() {
             return;
         }
-        let Some(field) = reference
-            .strip_prefix(self.output)
-            .and_then(|suffix| suffix.strip_prefix('.'))
-            .and_then(|suffix| suffix.split(['.', '[']).next())
-        else {
-            return;
+        let reference = rumoca_core::flat_expression_component_path(expression).map_or_else(
+            || format!("{}.<nested>", self.output),
+            |path| path.to_string(),
+        );
+        self.identity_error = Some((
+            format!(
+                "nested self-read `{reference}` is not yet represented by a complete staged record-field identity path"
+            ),
+            span,
+        ));
+    }
+}
+
+impl RecordSelfReadChecker<'_> {
+    fn reference_has_output_spelling(&self, reference: &Reference) -> bool {
+        reference.as_str() == self.output
+            || reference.as_str().starts_with(&format!("{}.", self.output))
+            || reference.as_str().starts_with(&format!("{}[", self.output))
+    }
+
+    fn reference_is_output_candidate(&self, reference: &Reference) -> bool {
+        self.reference_has_output_spelling(reference)
+            || reference.root_def_id() == Some(self.output_def_id)
+    }
+
+    fn require_output_root_identity(&mut self, reference: &Reference, span: Span) -> bool {
+        let Some(root) = reference.parts().first() else {
+            self.identity_error.get_or_insert_with(|| {
+                (
+                    format!(
+                        "`{}` has record-output spelling but no structured resolved identity",
+                        reference.as_str()
+                    ),
+                    span,
+                )
+            });
+            return false;
         };
-        if !self.available.contains(&VarName::new(field)) {
-            self.unavailable
-                .get_or_insert_with(|| reference.to_string());
+        if root.ident == self.output
+            && root.def_id == self.output_def_id
+            && self.reference_has_output_spelling(reference)
+        {
+            return true;
         }
+        self.identity_error.get_or_insert_with(|| {
+            (
+                format!(
+                    "`{}` has record-output spelling but root `{}` identity {} does not match `{}` identity {}",
+                    reference.as_str(),
+                    root.ident,
+                    root.def_id.index(),
+                    self.output,
+                    self.output_def_id.index()
+                ),
+                span,
+            )
+        });
+        false
+    }
+
+    fn check_field(
+        &mut self,
+        spelling: &str,
+        identity: rumoca_core::DefId,
+        reference: &impl std::fmt::Debug,
+        span: Span,
+    ) {
+        if let Some(field) = self.available.iter().find(|field| field.def_id == identity) {
+            if field.name.as_str() == spelling {
+                return;
+            }
+            self.identity_error.get_or_insert_with(|| {
+                (
+                    format!(
+                        "record field identity {} is retained as `{}` but read as `{spelling}` in {reference:?}",
+                        identity.index(),
+                        field.name
+                    ),
+                    span,
+                )
+            });
+            return;
+        }
+        if let Some(field) = self
+            .available
+            .iter()
+            .find(|field| field.name.as_str() == spelling)
+        {
+            self.identity_error.get_or_insert_with(|| {
+                (
+                    format!(
+                        "record field `{spelling}` has identity {} but the read carries identity {} in {reference:?}",
+                        field.def_id.index(),
+                        identity.index()
+                    ),
+                    span,
+                )
+            });
+            return;
+        }
+        self.unavailable
+            .get_or_insert_with(|| (format!("{}.{spelling}", self.output), span));
+    }
+}
+
+fn expression_root_reference(expression: &Expression) -> Option<&Reference> {
+    match expression {
+        Expression::VarRef { name, .. } => Some(name),
+        Expression::Index { base, .. } | Expression::FieldAccess { base, .. } => {
+            expression_root_reference(base)
+        }
+        _ => None,
     }
 }

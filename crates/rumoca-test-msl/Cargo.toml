@@ -17,10 +17,6 @@ msl-full-test = []
 msl-profile-bin = []
 tensor-scaling-bin = []
 
-[[bin]]
-name = "rumoca-sim-worker"
-path = "src/bin/rumoca-sim-worker.rs"
-
 # MSL/OMC reference, parity, and profiling tooling (moved out of the `xtask`
 # crate so xtask carries no compiler deps). These bins link the compiler stack
 # this crate already depends on.

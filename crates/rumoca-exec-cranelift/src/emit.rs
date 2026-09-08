@@ -11,14 +11,9 @@ use cranelift_codegen::verify_function;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-use rumoca_core::ExternalTableData;
-use rumoca_eval_solve::{
-    eval_table_bound_value_in, eval_table_lookup_slope_value_in, eval_table_lookup_value_in,
-    eval_time_table_next_event_value_in,
-};
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, ScalarProgramBlock,
-    UnaryOp,
+    ScalarProgramExecution, UnaryOp,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -32,12 +27,11 @@ mod interpreter;
 mod owned_jit_module;
 pub(crate) mod typed_program;
 
-use host_runtime::{register_math_symbols, with_active_external_tables};
+use host_runtime::register_math_symbols;
 pub(crate) use input_validation::InputRequirements as EmitInputRequirements;
 use input_validation::{
     InputRequirements, input_compile_error, input_requirements_for_linear_ops,
-    input_requirements_for_plans, row_input_requirements, validate_input_requirements,
-    validate_output_len,
+    row_input_requirements, validate_input_requirements, validate_output_len,
 };
 use interpreter::execute_row;
 use owned_jit_module::{OwnedJitModule, declare_far_call_in_func};
@@ -57,7 +51,6 @@ enum RowPlan {
 
 struct CompiledResidualRow {
     plan: RowPlan,
-    validate_with_interpreter: bool,
     interpreter_supported: bool,
 }
 
@@ -86,7 +79,6 @@ enum LoweredConditionalOutput {
 struct CompiledJacobianRow {
     plan: RowPlan,
     jit: JacobianRowFn,
-    validate_with_interpreter: bool,
     interpreter_supported: bool,
 }
 
@@ -95,20 +87,17 @@ struct JacobianCallContext<'a> {
     p: &'a [f64],
     t: f64,
     v: &'a [f64],
-    external_tables: &'a [ExternalTableData],
 }
 
 /// The runtime inputs read while interpreting one row: state `y`, parameters
 /// `p`, time `t`, the optional directional `seed` (present for Jacobian rows),
-/// and the active external tables. Grouped so the interpreter entry points take
-/// one input bundle instead of five separate arguments.
+/// Grouped so the interpreter entry points take one input bundle.
 #[derive(Clone, Copy)]
 struct RowInputs<'a> {
     y: &'a [f64],
     p: &'a [f64],
     t: f64,
     seed: Option<&'a [f64]>,
-    external_tables: &'a [ExternalTableData],
 }
 
 #[derive(Clone)]
@@ -186,6 +175,465 @@ enum SimpleOp {
     },
 }
 
+macro_rules! define_admitted_linear_ops {
+    ($( $variant:ident { $( $field:ident: $field_type:ty ),* $(,)? } ),* $(,)?) => {
+        #[derive(Clone)]
+        enum AdmittedLinearOp {
+            $(
+                $variant {
+                    $( $field: $field_type, )*
+                },
+            )*
+            FunctionFold {
+                dst_start: u32,
+                initial_start: u32,
+                capture_start: u32,
+                program: Arc<AdmittedFunctionFoldProgram>,
+            },
+            GuardedFunctionFold {
+                dst_start: u32,
+                initial_start: u32,
+                capture_start: u32,
+                activation: u32,
+                program: Arc<AdmittedFunctionFoldProgram>,
+            },
+            FunctionConditional {
+                dst_start: u32,
+                capture_start: u32,
+                program: Arc<AdmittedFunctionConditionalProgram>,
+            },
+            StoreOutputFunctionFold {
+                initial: Box<[rumoca_ir_solve::FoldInitialSource]>,
+                capture_start: u32,
+                program: Arc<AdmittedFunctionFoldProgram>,
+                result_base: usize,
+                count: usize,
+                condition: Option<u32>,
+                nested_when_true: bool,
+            },
+        }
+
+        impl AdmittedLinearOp {
+            fn issue(operation: &LinearOp, kind: RowKind) -> Result<Self, CompileError> {
+                match operation.clone() {
+                    $(
+                        LinearOp::$variant { $( $field, )* } => Ok(Self::$variant {
+                            $( $field, )*
+                        }),
+                    )*
+                    LinearOp::FunctionFold {
+                        dst_start,
+                        initial_start,
+                        capture_start,
+                        program,
+                    } => Ok(Self::FunctionFold {
+                        dst_start,
+                        initial_start,
+                        capture_start,
+                        program: Arc::new(AdmittedFunctionFoldProgram::issue(program, kind)?),
+                    }),
+                    LinearOp::GuardedFunctionFold {
+                        dst_start,
+                        initial_start,
+                        capture_start,
+                        activation,
+                        program,
+                    } => Ok(Self::GuardedFunctionFold {
+                        dst_start,
+                        initial_start,
+                        capture_start,
+                        activation,
+                        program: Arc::new(AdmittedFunctionFoldProgram::issue(program, kind)?),
+                    }),
+                    LinearOp::FunctionConditional {
+                        dst_start,
+                        capture_start,
+                        program,
+                    } => Ok(Self::FunctionConditional {
+                        dst_start,
+                        capture_start,
+                        program: Arc::new(AdmittedFunctionConditionalProgram::issue(program, kind)?),
+                    }),
+                    LinearOp::StoreOutputFunctionFold {
+                        initial,
+                        capture_start,
+                        program,
+                        result_base,
+                        count,
+                        condition,
+                        nested_when_true,
+                    } => Ok(Self::StoreOutputFunctionFold {
+                        initial,
+                        capture_start,
+                        program: Arc::new(AdmittedFunctionFoldProgram::issue(program, kind)?),
+                        result_base,
+                        count,
+                        condition,
+                        nested_when_true,
+                    }),
+                    LinearOp::RandomInitialState { .. }
+                    | LinearOp::RandomResult { .. }
+                    | LinearOp::RandomState { .. }
+                    | LinearOp::ImpureRandomInit { .. }
+                    | LinearOp::ImpureRandom { .. }
+                    | LinearOp::ImpureRandomInteger { .. } => Err(CompileError::Backend(
+                        "cranelift row compiler does not support discrete random solve-IR ops"
+                            .to_string(),
+                    )),
+                }
+            }
+        }
+    };
+}
+
+define_admitted_linear_ops! {
+    Const { dst: u32, value: f64 },
+    LoadTime { dst: u32 },
+    LoadY { dst: u32, index: usize },
+    LoadP { dst: u32, index: usize },
+    LoadIndexedRegister {
+        dst: u32,
+        base: u32,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>
+    },
+    LoadIndexedFoldCarried {
+        dst: u32,
+        base: usize,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>
+    },
+    LoadIndexedFoldCapture {
+        dst: u32,
+        base: usize,
+        stride: usize,
+        dimensions: Box<[u32]>,
+        indices: Box<[rumoca_ir_solve::TensorIndex]>
+    },
+    LoadSeed { dst: u32, index: usize },
+    LoadFoldCarried { dst: u32, index: usize },
+    LoadFoldIndex { dst: u32, dimension: usize },
+    LoadFoldCapture { dst: u32, index: usize },
+    LoadFunctionConditionalCapture { dst: u32, index: usize },
+    LoadFunctionConditionalCaptureRange {
+        dst_start: u32,
+        index_start: usize,
+        count: usize
+    },
+    Move { dst: u32, src: u32 },
+    LinearSolveComponent {
+        dst: u32,
+        matrix_start: u32,
+        rhs_start: u32,
+        n: usize,
+        component: usize
+    },
+    DotProduct {
+        dst: u32,
+        lhs_start: u32,
+        rhs_start: u32,
+        count: usize,
+        lhs_stride: usize,
+        rhs_stride: usize
+    },
+    MatrixMultiply {
+        dst_start: u32,
+        lhs_start: u32,
+        rhs_start: u32,
+        rows: usize,
+        inner: usize,
+        columns: usize,
+        lanes: usize
+    },
+    TensorBinary {
+        dst_start: u32,
+        op: BinaryOp,
+        lhs_start: u32,
+        rhs_start: u32,
+        count: usize,
+        lhs_stride: usize,
+        rhs_stride: usize,
+        lanes: usize
+    },
+    TensorCross { dst_start: u32, lhs_start: u32, rhs_start: u32, lanes: usize },
+    TensorTranspose {
+        dst_start: u32,
+        src_start: u32,
+        rows: usize,
+        columns: usize,
+        element_width: usize,
+        lanes: usize
+    },
+    TensorConcatenate {
+        dst_start: u32,
+        sources: Box<[rumoca_ir_solve::TensorConcatenateSource]>,
+        dimensions: Box<[u32]>,
+        axis: usize,
+        lanes: usize
+    },
+    TensorUpdate {
+        dst_start: u32,
+        base_start: u32,
+        value_start: u32,
+        dimensions: Box<[u32]>,
+        subscripts: Box<[rumoca_ir_solve::TensorUpdateSubscript]>,
+        lanes: usize
+    },
+    TensorFill { dst_start: u32, value_start: u32, count: usize, lanes: usize },
+    TensorIdentity { dst_start: u32, size: usize, lanes: usize },
+    TensorLoad {
+        dst_start: u32,
+        input: rumoca_ir_solve::TensorInputKind,
+        input_start: usize,
+        count: usize,
+        seed_start: Option<usize>,
+        lanes: usize
+    },
+    Unary { dst: u32, op: UnaryOp, arg: u32 },
+    Binary { dst: u32, op: BinaryOp, lhs: u32, rhs: u32 },
+    Compare { dst: u32, op: CompareOp, lhs: u32, rhs: u32 },
+    Select { dst: u32, cond: u32, if_true: u32, if_false: u32 },
+    PureCall {
+        dst_start: u32,
+        input_starts: Box<[u32]>,
+        site: rumoca_ir_solve::SolvePureCallSite
+    },
+    PureCallDirectional {
+        dst_start: u32,
+        input_starts: Box<[u32]>,
+        site: rumoca_ir_solve::SolvePureCallDirectionalSite
+    },
+    StoreOutputFoldTensorUpdate {
+        source_base: usize,
+        source_stride: usize,
+        dimensions: Box<[u32]>,
+        updates: Box<[rumoca_ir_solve::FoldTensorUpdate]>,
+        nodes: Box<[rumoca_ir_solve::FoldTensorNode]>,
+        result: u32,
+        lanes: usize
+    },
+    StoreOutputRange { start: u32, count: usize, stride: usize },
+    StoreOutput { src: u32 },
+}
+
+#[derive(Clone)]
+struct AdmittedProgram {
+    operations: Box<[AdmittedLinearOp]>,
+    needs_register_tape: bool,
+    needs_fold_register_tape: bool,
+    chunkable: bool,
+}
+
+impl AdmittedProgram {
+    fn issue(operations: &[LinearOp], kind: RowKind) -> Result<Self, CompileError> {
+        if operations
+            .iter()
+            .any(|operation| matches!(operation, LinearOp::LoadSeed { .. }))
+            && !kind.has_seed()
+        {
+            return Err(CompileError::Backend(
+                "LoadSeed in residual row without seed input".to_string(),
+            ));
+        }
+        let admitted = operations
+            .iter()
+            .map(|operation| AdmittedLinearOp::issue(operation, kind))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            needs_register_tape: admitted.iter().any(AdmittedLinearOp::needs_register_tape),
+            needs_fold_register_tape: admitted.iter().any(|operation| {
+                matches!(
+                    operation,
+                    AdmittedLinearOp::TensorUpdate { subscripts, .. }
+                        if subscripts.iter().any(|subscript| matches!(
+                            subscript,
+                            rumoca_ir_solve::TensorUpdateSubscript::Slice { .. }
+                        ))
+                )
+            }),
+            chunkable: operations.iter().cloned().all(chunkable_op),
+            operations: admitted.into_boxed_slice(),
+        })
+    }
+
+    fn has_owned_conditional(&self) -> bool {
+        self.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                AdmittedLinearOp::FunctionConditional { program, .. } if program.owner.is_some()
+            )
+        })
+    }
+
+    fn interpreter_supported(&self) -> bool {
+        self.operations
+            .iter()
+            .all(AdmittedLinearOp::interpreter_supported)
+    }
+}
+
+impl AdmittedLinearOp {
+    fn interpreter_supported(&self) -> bool {
+        match self {
+            Self::Const { .. }
+            | Self::LoadTime { .. }
+            | Self::LoadY { .. }
+            | Self::LoadP { .. }
+            | Self::LoadIndexedRegister { .. }
+            | Self::LoadIndexedFoldCarried { .. }
+            | Self::LoadIndexedFoldCapture { .. }
+            | Self::LoadSeed { .. }
+            | Self::LoadFoldCarried { .. }
+            | Self::LoadFoldIndex { .. }
+            | Self::LoadFoldCapture { .. }
+            | Self::LoadFunctionConditionalCapture { .. }
+            | Self::LoadFunctionConditionalCaptureRange { .. }
+            | Self::Move { .. }
+            | Self::LinearSolveComponent { .. }
+            | Self::DotProduct { .. }
+            | Self::MatrixMultiply { .. }
+            | Self::TensorBinary { .. }
+            | Self::TensorCross { .. }
+            | Self::TensorTranspose { .. }
+            | Self::TensorConcatenate { .. }
+            | Self::TensorUpdate { .. }
+            | Self::TensorFill { .. }
+            | Self::TensorIdentity { .. }
+            | Self::TensorLoad { .. }
+            | Self::Unary { .. }
+            | Self::Binary { .. }
+            | Self::Compare { .. }
+            | Self::Select { .. }
+            | Self::StoreOutputFoldTensorUpdate { .. }
+            | Self::StoreOutputRange { .. }
+            | Self::StoreOutput { .. } => true,
+            Self::PureCall { .. } | Self::PureCallDirectional { .. } => false,
+            Self::FunctionFold { program, .. }
+            | Self::GuardedFunctionFold { program, .. }
+            | Self::StoreOutputFunctionFold { program, .. } => {
+                program.update.interpreter_supported()
+            }
+            Self::FunctionConditional { program, .. } => {
+                program.arms.iter().all(|arm| {
+                    arm.condition.interpreter_supported() && arm.result.interpreter_supported()
+                }) && program.fallback.interpreter_supported()
+            }
+        }
+    }
+
+    fn needs_register_tape(&self) -> bool {
+        matches!(
+            self,
+            Self::DotProduct { .. }
+                | Self::MatrixMultiply { .. }
+                | Self::TensorBinary { .. }
+                | Self::TensorTranspose { .. }
+                | Self::TensorConcatenate { .. }
+                | Self::TensorUpdate { .. }
+                | Self::TensorFill { .. }
+                | Self::TensorIdentity { .. }
+                | Self::TensorLoad { .. }
+        )
+    }
+}
+
+#[derive(Clone)]
+struct AdmittedFunctionFoldProgram {
+    source_key: usize,
+    domain: rumoca_core::StructuredIndexDomain,
+    domain_scalar_count: usize,
+    carried_count: usize,
+    capture_count: usize,
+    register_count: usize,
+    update: AdmittedProgram,
+}
+
+impl AdmittedFunctionFoldProgram {
+    fn issue(
+        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        kind: RowKind,
+    ) -> Result<Self, CompileError> {
+        Ok(Self {
+            source_key: Arc::as_ptr(&program) as usize,
+            domain: program.domain().clone(),
+            domain_scalar_count: program.domain_scalar_count(),
+            carried_count: program.carried_count(),
+            capture_count: program.capture_count(),
+            register_count: program.register_count(),
+            update: AdmittedProgram::issue(program.update(), kind)?,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct AdmittedFunctionConditionalArmProgram {
+    condition_register_count: usize,
+    result_register_count: usize,
+    condition: AdmittedProgram,
+    result: AdmittedProgram,
+}
+
+#[derive(Clone)]
+struct AdmittedFunctionConditionalProgram {
+    owner: Option<rumoca_ir_solve::FunctionConditionalOwnerId>,
+    capture_count: usize,
+    result_count: usize,
+    arms: Box<[AdmittedFunctionConditionalArmProgram]>,
+    fallback_register_count: usize,
+    fallback: AdmittedProgram,
+}
+
+impl AdmittedFunctionConditionalProgram {
+    fn issue(
+        program: Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+        kind: RowKind,
+    ) -> Result<Self, CompileError> {
+        let arms = program
+            .arms()
+            .iter()
+            .map(|arm| {
+                Ok(AdmittedFunctionConditionalArmProgram {
+                    condition_register_count: arm.condition_register_count(),
+                    result_register_count: arm.result_register_count(),
+                    condition: AdmittedProgram::issue(arm.condition(), kind)?,
+                    result: AdmittedProgram::issue(arm.result(), kind)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CompileError>>()?;
+        Ok(Self {
+            owner: program.owner(),
+            capture_count: program.capture_count(),
+            result_count: program.result_count(),
+            arms: arms.into_boxed_slice(),
+            fallback_register_count: program.fallback_register_count(),
+            fallback: AdmittedProgram::issue(program.fallback(), kind)?,
+        })
+    }
+}
+
+struct AdmittedExecutionProgram {
+    program: AdmittedProgram,
+    plan: RowPlan,
+    operation_cost: usize,
+    interpreter_supported: bool,
+}
+
+impl AdmittedExecutionProgram {
+    fn issue(execution: ScalarProgramExecution<'_>, kind: RowKind) -> Result<Self, CompileError> {
+        let operations = execution.operations();
+        let program = AdmittedProgram::issue(operations, kind)?;
+        let interpreter_supported = program.interpreter_supported();
+        Ok(Self {
+            program,
+            plan: plan_scalar_program(execution)?,
+            operation_cost: residual_program_cost(operations),
+            interpreter_supported,
+        })
+    }
+}
+
 pub(crate) struct CompiledResidualRows {
     _pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
     rows: Vec<CompiledResidualRow>,
@@ -207,16 +655,6 @@ pub(crate) struct CompiledAssignmentSchedule {
 
 impl CompiledAssignmentSchedule {
     pub(crate) fn call(&self, y: &mut [f64], p: &[f64], t: f64) -> Result<(), CompileError> {
-        self.call_with_external_tables(y, p, t, &[])
-    }
-
-    pub(crate) fn call_with_external_tables(
-        &self,
-        y: &mut [f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[ExternalTableData],
-    ) -> Result<(), CompileError> {
         validate_input_requirements(self.input_requirements, y, p, None)?;
         if y.len() < self.required_y_len {
             return Err(CompileError::Input(format!(
@@ -225,11 +663,9 @@ impl CompiledAssignmentSchedule {
                 y.len()
             )));
         }
-        with_active_external_tables(external_tables, || {
-            // SAFETY: compilation validates every input load and target offset;
-            // the checks above establish both against these exact slices.
-            unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) };
-        });
+        // SAFETY: compilation validates every input load and target offset;
+        // the checks above establish both against these exact slices.
+        unsafe { (self.jit)(y.as_mut_ptr(), p.as_ptr(), t) };
         Ok(())
     }
 
@@ -239,23 +675,11 @@ impl CompiledAssignmentSchedule {
 }
 
 impl CompiledResidualRows {
-    #[cfg(test)]
     pub(crate) fn call(
         &self,
         y: &[f64],
         p: &[f64],
         t: f64,
-        out: &mut [f64],
-    ) -> Result<(), CompileError> {
-        self.call_with_external_tables(y, p, t, &[], out)
-    }
-
-    pub(crate) fn call_with_external_tables(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        external_tables: &[ExternalTableData],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
         let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
@@ -266,11 +690,8 @@ impl CompiledResidualRows {
             p,
             t,
             seed: None,
-            external_tables,
         };
-        with_active_external_tables(external_tables, || {
-            self.call_active(inputs, output_count, out)
-        })
+        self.call_active(inputs, output_count, out)
     }
 
     pub(crate) fn rows(&self) -> usize {
@@ -322,11 +743,7 @@ impl CompiledResidualRows {
         inputs: RowInputs<'_>,
         output_count: usize,
     ) -> Result<Option<Vec<f64>>, CompileError> {
-        let validate = self.rows.iter().all(|row| row.interpreter_supported)
-            && self
-                .rows
-                .iter()
-                .any(|row| should_validate_jit_row(row.validate_with_interpreter));
+        let validate = cfg!(test) && self.rows.iter().all(|row| row.interpreter_supported);
         if !validate {
             return Ok(None);
         }
@@ -368,7 +785,6 @@ pub(crate) struct CompiledJacobianRows {
 }
 
 impl CompiledJacobianRows {
-    #[cfg(test)]
     pub(crate) fn call(
         &self,
         y: &[f64],
@@ -377,38 +793,18 @@ impl CompiledJacobianRows {
         v: &[f64],
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        self.call_with_external_tables(y, p, t, v, &[], out)
-    }
-
-    pub(crate) fn call_with_external_tables(
-        &self,
-        y: &[f64],
-        p: &[f64],
-        t: f64,
-        v: &[f64],
-        external_tables: &[ExternalTableData],
-        out: &mut [f64],
-    ) -> Result<(), CompileError> {
         let output_count: usize = self.rows.iter().map(|row| row.plan.output_count()).sum();
         validate_output_len(out, output_count)?;
         validate_input_requirements(self.input_requirements, y, p, Some(v))?;
-        with_active_external_tables(external_tables, || {
-            let mut regs_scratch = self.regs_scratch.borrow_mut();
-            let ctx = JacobianCallContext {
-                y,
-                p,
-                t,
-                v,
-                external_tables,
-            };
-            let mut base = 0;
-            for row in self.rows.iter() {
-                let k = row.plan.output_count();
-                self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
-                base += k;
-            }
-            Ok(())
-        })
+        let mut regs_scratch = self.regs_scratch.borrow_mut();
+        let ctx = JacobianCallContext { y, p, t, v };
+        let mut base = 0;
+        for row in self.rows.iter() {
+            let k = row.plan.output_count();
+            self.call_jacobian_row(row, &mut regs_scratch, &ctx, &mut out[base..base + k])?;
+            base += k;
+        }
+        Ok(())
     }
 
     fn call_jacobian_row(
@@ -418,14 +814,13 @@ impl CompiledJacobianRows {
         ctx: &JacobianCallContext<'_>,
         out: &mut [f64],
     ) -> Result<(), CompileError> {
-        if row.interpreter_supported && should_validate_jit_row(row.validate_with_interpreter) {
+        if row.interpreter_supported && cfg!(test) {
             let mut expected = vec![0.0; out.len()];
             let inputs = RowInputs {
                 y: ctx.y,
                 p: ctx.p,
                 t: ctx.t,
                 seed: Some(ctx.v),
-                external_tables: ctx.external_tables,
             };
             execute_row(&row.plan, regs_scratch, inputs, &mut expected)?;
             unsafe { call_jacobian_jit(row.jit, ctx.y, ctx.p, ctx.t, ctx.v, out) };
@@ -503,31 +898,31 @@ fn fold_signature(
 }
 
 pub(crate) fn compile_residual_rows(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
 ) -> Result<CompiledResidualRows, CompileError> {
-    compile_residual_rows_attached(rows, None)
+    compile_residual_rows_attached(block, None)
 }
 
 pub(crate) fn compile_residual_rows_with_pure_calls(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
     pure_calls: Rc<typed_program::CompiledPureCallTable>,
 ) -> Result<CompiledResidualRows, CompileError> {
-    compile_residual_rows_attached(rows, Some(pure_calls))
+    compile_residual_rows_attached(block, Some(pure_calls))
 }
 
 fn compile_residual_rows_attached(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
 ) -> Result<CompiledResidualRows, CompileError> {
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
-    let plans = plan_rows(rows)?;
-    for row in rows {
-        validate_row_supported_by_jit(row, RowKind::Residual)?;
-    }
-    let pending = compile_residual_functions(&mut emitter, rows, &plans)?;
+    let admitted = block
+        .execution_programs()
+        .map(|execution| AdmittedExecutionProgram::issue(execution, RowKind::Residual))
+        .collect::<Result<Vec<_>, _>>()?;
+    let pending = compile_residual_functions(&mut emitter, &admitted)?;
     finalize_jit_module(&mut emitter.module)?;
-    let input_requirements = input_requirements_for_plans(&plans);
-    let compiled_rows = build_compiled_residual_rows(rows, plans)?;
+    let input_requirements = input_requirements_for_admitted_programs(&admitted);
+    let compiled_rows = build_compiled_residual_rows(admitted)?;
     let jits = finalize_residual_jits(&emitter.module, pending)?;
     Ok(CompiledResidualRows {
         _pure_calls: pure_calls,
@@ -544,35 +939,34 @@ type PendingResidual = (ResidualFuncIds, usize, usize, usize);
 
 fn compile_residual_functions(
     emitter: &mut CraneliftEmitter,
-    rows: &[Vec<LinearOp>],
-    plans: &[RowPlan],
+    admitted: &[AdmittedExecutionProgram],
 ) -> Result<Vec<PendingResidual>, CompileError> {
     let mut pending = Vec::new();
     let mut row_start = 0usize;
     let mut output_start = 0usize;
-    if rows.iter().flatten().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::FunctionConditional { program, .. } if program.owner().is_some()
-        )
-    }) {
-        let output_count = plans.iter().map(RowPlan::output_count).sum();
-        let func_id = emitter.compile_residual_batch(rows)?;
+    if admitted
+        .iter()
+        .any(|row| row.program.has_owned_conditional())
+    {
+        let output_count = admitted.iter().map(|row| row.plan.output_count()).sum();
+        let func_id = emitter.compile_residual_batch(admitted)?;
         pending.push((
             ResidualFuncIds::Whole(func_id),
             0,
             output_start,
             output_count,
         ));
-        output_start = output_start.saturating_add(output_count);
-        row_start = rows.len();
+        output_start = output_start.checked_add(output_count).ok_or_else(|| {
+            CompileError::Backend("residual output placement exceeds host range".to_string())
+        })?;
+        row_start = admitted.len();
     }
-    while row_start < rows.len() {
-        if residual_program_cost(&rows[row_start]) > RESIDUAL_CHUNK_THRESHOLD {
-            let output_count = plans[row_start].output_count();
+    while row_start < admitted.len() {
+        if admitted[row_start].operation_cost > RESIDUAL_CHUNK_THRESHOLD {
+            let output_count = admitted[row_start].plan.output_count();
             pending.push((
-                emitter.compile_residual_program(&rows[row_start], row_start)?,
-                plans[row_start].register_count(),
+                emitter.compile_residual_program(&admitted[row_start], row_start)?,
+                admitted[row_start].plan.register_count(),
                 output_start,
                 output_count,
             ));
@@ -582,21 +976,21 @@ fn compile_residual_functions(
         }
         let mut row_end = row_start;
         let mut operation_count = 0usize;
-        while row_end < rows.len()
-            && residual_program_cost(&rows[row_end]) <= RESIDUAL_CHUNK_THRESHOLD
+        while row_end < admitted.len()
+            && admitted[row_end].operation_cost <= RESIDUAL_CHUNK_THRESHOLD
         {
-            let next = operation_count.saturating_add(residual_program_cost(&rows[row_end]));
+            let next = operation_count.saturating_add(admitted[row_end].operation_cost);
             if row_end > row_start && next > RESIDUAL_BATCH_OPS {
                 break;
             }
             operation_count = next;
             row_end += 1;
         }
-        let output_count = plans[row_start..row_end]
+        let output_count = admitted[row_start..row_end]
             .iter()
-            .map(RowPlan::output_count)
+            .map(|row| row.plan.output_count())
             .sum();
-        let func_id = emitter.compile_residual_batch(&rows[row_start..row_end])?;
+        let func_id = emitter.compile_residual_batch(&admitted[row_start..row_end])?;
         pending.push((
             ResidualFuncIds::Whole(func_id),
             0,
@@ -610,15 +1004,13 @@ fn compile_residual_functions(
 }
 
 fn build_compiled_residual_rows(
-    rows: &[Vec<LinearOp>],
-    plans: Vec<RowPlan>,
+    admitted: Vec<AdmittedExecutionProgram>,
 ) -> Result<Vec<CompiledResidualRow>, CompileError> {
-    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled residual rows")?;
-    for (index, plan) in plans.into_iter().enumerate() {
+    let mut compiled_rows = checked_vec_with_capacity(admitted.len(), "compiled residual rows")?;
+    for row in admitted {
         compiled_rows.push(CompiledResidualRow {
-            plan,
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            plan: row.plan,
+            interpreter_supported: row.interpreter_supported,
         });
     }
     Ok(compiled_rows)
@@ -674,151 +1066,202 @@ fn residual_program_cost(program: &[LinearOp]) -> usize {
     })
 }
 
-pub(crate) fn compile_assignment_schedule(
-    rows: &[Vec<LinearOp>],
+#[cfg(test)]
+pub(crate) fn compile_assignment_fixture(
+    rows: &ScalarProgramBlock,
     target_y_indices: &[usize],
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
-    compile_assignment_schedule_attached(rows, target_y_indices, None)
+    let product = CheckedAssignmentProduct::fixture(rows, target_y_indices)?;
+    compile_checked_assignment_product(&product, None)
 }
 
-pub(crate) fn compile_assignment_schedule_with_pure_calls(
-    rows: &[Vec<LinearOp>],
-    target_y_indices: &[usize],
-    pure_calls: Rc<typed_program::CompiledPureCallTable>,
+pub(crate) fn compile_exact_refresh_assignment(
+    execution: &rumoca_ir_solve::ExactRefreshAssignmentExecution<'_>,
 ) -> Result<CompiledAssignmentSchedule, CompileError> {
-    compile_assignment_schedule_attached(rows, target_y_indices, Some(pure_calls))
+    let product = CheckedAssignmentProduct::from_execution(execution)?;
+    let pure_calls = Rc::new(typed_program::CompiledPureCallTable::compile(
+        execution.pure_calls(),
+    )?);
+    compile_checked_assignment_product(&product, Some(pure_calls))
 }
 
-fn compile_assignment_schedule_attached(
-    rows: &[Vec<LinearOp>],
-    target_y_indices: &[usize],
-    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
-) -> Result<CompiledAssignmentSchedule, CompileError> {
-    let row_refs = rows.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    compile_assignment_schedule_slices(&row_refs, target_y_indices, pure_calls)
+struct CheckedAssignmentProgram<'a> {
+    operations: &'a [LinearOp],
+    register_count: usize,
+    output_sources: &'a [usize],
+    targets: &'a [usize],
 }
 
-pub(crate) fn compile_exact_assignment_schedule(
-    source: &rumoca_ir_solve::ComputeBlock,
-    owners: &rumoca_ir_solve::ContinuousRefreshOwners,
-    schedule: &rumoca_ir_solve::ExactRefreshAssignmentSchedule,
-    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
-) -> Result<CompiledAssignmentSchedule, CompileError> {
-    let mut blocks =
-        checked_vec_with_capacity(schedule.program_ids().len(), "exact assignment rows")?;
-    let mut targets = Vec::new();
-    for id in schedule.program_ids() {
-        let program = owners.exact_assignment_program(*id).ok_or_else(|| {
-            CompileError::Input(
-                "exact assignment schedule refers to a missing constructed program".to_string(),
-            )
-        })?;
-        let block = program.final_scalar_program(source).map_err(|error| {
-            CompileError::Input(format!("exact assignment final projection failed: {error}"))
-        })?;
-        let [_] = block.programs() else {
-            return Err(CompileError::Input(
-                "exact assignment owner must contain one program".to_string(),
-            ));
-        };
-        blocks.push(block);
-        targets
-            .try_reserve_exact(program.target_indices().len())
-            .map_err(|_| {
-                CompileError::Input("exact assignment targets exceed memory".to_string())
-            })?;
-        targets.extend_from_slice(program.target_indices());
+struct CheckedAssignmentProduct<'a> {
+    programs: Vec<CheckedAssignmentProgram<'a>>,
+    input_requirements: InputRequirements,
+    required_y_len: usize,
+}
+
+struct AdmittedAssignmentProgram<'a> {
+    operations: AdmittedProgram,
+    register_count: usize,
+    output_sources: &'a [usize],
+    targets: &'a [usize],
+}
+
+impl<'a> AdmittedAssignmentProgram<'a> {
+    fn issue_all(product: &CheckedAssignmentProduct<'a>) -> Result<Vec<Self>, CompileError> {
+        product
+            .programs
+            .iter()
+            .map(|program| {
+                Ok(Self {
+                    operations: AdmittedProgram::issue(program.operations, RowKind::Residual)?,
+                    register_count: program.register_count,
+                    output_sources: program.output_sources,
+                    targets: program.targets,
+                })
+            })
+            .collect()
     }
-    let rows = blocks
-        .iter()
-        .map(|block| block.programs()[0].as_slice())
-        .collect::<Vec<_>>();
-    compile_assignment_schedule_slices(&rows, &targets, pure_calls)
 }
 
-fn compile_assignment_schedule_slices(
-    rows: &[&[LinearOp]],
-    target_y_indices: &[usize],
-    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
-) -> Result<CompiledAssignmentSchedule, CompileError> {
-    let output_count = rows.iter().try_fold(0usize, |count, row| {
-        count.checked_add(ScalarProgramBlock::program_output_count(row))
-    });
-    if output_count != Some(target_y_indices.len()) {
-        return Err(CompileError::Input(format!(
-            "assignment schedule has {} outputs but {} targets",
-            output_count.map_or(usize::MAX, |count| count),
-            target_y_indices.len()
-        )));
-    }
-    let plans = plan_rows(rows)?;
-    for (row, plan) in rows.iter().zip(&plans) {
-        validate_row_supported_by_jit(row, RowKind::Residual)?;
-        if plan.output_count() == 0 {
-            return Err(CompileError::Input(
-                "assignment schedule programs must have at least one output".to_string(),
-            ));
+impl<'a> CheckedAssignmentProduct<'a> {
+    fn from_execution(
+        execution: &'a rumoca_ir_solve::ExactRefreshAssignmentExecution<'a>,
+    ) -> Result<Self, CompileError> {
+        let mut programs =
+            checked_vec_with_capacity(execution.programs().len(), "exact assignment programs")?;
+        for program in execution.programs() {
+            programs.push(CheckedAssignmentProgram {
+                operations: program.operations(),
+                register_count: program.register_count(),
+                output_sources: program.output_sources(),
+                targets: program.targets(),
+            });
         }
+        Ok(Self {
+            programs,
+            input_requirements: InputRequirements {
+                y_len: execution.y_extent(),
+                p_len: execution.p_extent(),
+                seed_len: 0,
+            },
+            required_y_len: execution.y_extent(),
+        })
     }
-    let input_requirements = input_requirements_for_plans(&plans);
-    let required_y_len = target_y_indices
-        .iter()
-        .copied()
-        .max()
-        .map_or(0, |index| index.saturating_add(1));
+
+    #[cfg(test)]
+    fn fixture(block: &'a ScalarProgramBlock, targets: &'a [usize]) -> Result<Self, CompileError> {
+        let mut programs =
+            checked_vec_with_capacity(block.programs().len(), "fixture assignment programs")?;
+        let mut target_offset = 0usize;
+        for execution in block.execution_programs() {
+            let count = execution.output_sources().len();
+            let end = target_offset.checked_add(count).ok_or(CompileError::Input(
+                "fixture assignment target count exceeds host range".to_string(),
+            ))?;
+            let program_targets = targets.get(target_offset..end).ok_or_else(|| {
+                CompileError::Input(format!(
+                    "assignment schedule has {} outputs but {} targets",
+                    block.stored_output_count(),
+                    targets.len()
+                ))
+            })?;
+            programs.push(CheckedAssignmentProgram {
+                operations: execution.operations(),
+                register_count: execution.register_count(),
+                output_sources: execution.output_sources(),
+                targets: program_targets,
+            });
+            target_offset = end;
+        }
+        if target_offset != targets.len() {
+            return Err(CompileError::Input(format!(
+                "assignment schedule has {} outputs but {} targets",
+                block.stored_output_count(),
+                targets.len()
+            )));
+        }
+        let input_requirements =
+            programs
+                .iter()
+                .try_fold(InputRequirements::default(), |requirements, program| {
+                    let row = input_requirements_for_linear_ops(program.operations)?;
+                    Ok::<_, CompileError>(InputRequirements {
+                        y_len: requirements.y_len.max(row.y_len),
+                        p_len: requirements.p_len.max(row.p_len),
+                        seed_len: requirements.seed_len.max(row.seed_len),
+                    })
+                })?;
+        Ok(Self {
+            input_requirements,
+            required_y_len: targets
+                .iter()
+                .copied()
+                .try_fold(0usize, |extent, index| {
+                    index.checked_add(1).map(|end| extent.max(end))
+                })
+                .ok_or_else(|| {
+                    CompileError::Input(
+                        "fixture assignment target extent exceeds host range".to_string(),
+                    )
+                })?,
+            programs,
+        })
+    }
+}
+
+fn compile_checked_assignment_product(
+    product: &CheckedAssignmentProduct<'_>,
+    pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
+) -> Result<CompiledAssignmentSchedule, CompileError> {
+    let admitted = AdmittedAssignmentProgram::issue_all(product)?;
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
-    let func_id = emitter.compile_assignment_schedule(rows, target_y_indices)?;
+    let func_id = emitter.compile_assignment_schedule(&admitted)?;
     finalize_jit_module(&mut emitter.module)?;
     let jit = finalized_assignment_schedule_fn(&emitter.module, func_id)?;
     Ok(CompiledAssignmentSchedule {
         _pure_calls: pure_calls,
         jit,
-        input_requirements,
-        required_y_len,
-        rows: rows.len(),
+        input_requirements: product.input_requirements,
+        required_y_len: product.required_y_len,
+        rows: product.programs.len(),
         _module: emitter.module,
     })
 }
 
 pub(crate) fn compile_jacobian_rows(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
 ) -> Result<CompiledJacobianRows, CompileError> {
-    compile_jacobian_rows_attached(rows, None)
+    compile_jacobian_rows_attached(block, None)
 }
 
 pub(crate) fn compile_jacobian_rows_with_pure_calls(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
     pure_calls: Rc<typed_program::CompiledPureCallTable>,
 ) -> Result<CompiledJacobianRows, CompileError> {
-    compile_jacobian_rows_attached(rows, Some(pure_calls))
+    compile_jacobian_rows_attached(block, Some(pure_calls))
 }
 
 fn compile_jacobian_rows_attached(
-    rows: &[Vec<LinearOp>],
+    block: &ScalarProgramBlock,
     pure_calls: Option<Rc<typed_program::CompiledPureCallTable>>,
 ) -> Result<CompiledJacobianRows, CompileError> {
     let mut emitter = CraneliftEmitter::new(pure_calls.as_deref())?;
-    let plans = plan_rows(rows)?;
-    let mut func_ids = checked_vec_with_capacity(rows.len(), "Jacobian row function ids")?;
-    for (index, row) in rows.iter().enumerate() {
-        validate_row_supported_by_jit(row, RowKind::JacobianV)?;
-        let func_id = emitter.compile_row(
-            row,
-            RowKind::JacobianV,
-            &format!("rumoca_jacobian_row_{index}"),
-        )?;
-        func_ids.push(func_id);
+    let admitted = block
+        .execution_programs()
+        .map(|execution| AdmittedExecutionProgram::issue(execution, RowKind::JacobianV))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut func_ids = checked_vec_with_capacity(admitted.len(), "Jacobian row function ids")?;
+    for (index, row) in admitted.iter().enumerate() {
+        func_ids.push(emitter.compile_jacobian_program(row, index)?);
     }
     finalize_jit_module(&mut emitter.module)?;
-    let input_requirements = input_requirements_for_plans(&plans);
-    let mut compiled_rows = checked_vec_with_capacity(rows.len(), "compiled Jacobian rows")?;
-    for (index, (plan, func_id)) in plans.into_iter().zip(func_ids).enumerate() {
+    let input_requirements = input_requirements_for_admitted_programs(&admitted);
+    let mut compiled_rows = checked_vec_with_capacity(admitted.len(), "compiled Jacobian rows")?;
+    for (row, func_id) in admitted.into_iter().zip(func_ids) {
         let jit = finalized_jacobian_fn(&emitter.module, func_id)?;
         compiled_rows.push(CompiledJacobianRow {
-            plan,
+            plan: row.plan,
             jit,
-            validate_with_interpreter: row_uses_table_ops(&rows[index]),
-            interpreter_supported: !row_uses_pure_calls(&rows[index]),
+            interpreter_supported: row.interpreter_supported,
         });
     }
     Ok(CompiledJacobianRows {
@@ -831,12 +1274,19 @@ fn compile_jacobian_rows_attached(
     })
 }
 
-fn plan_rows<R: AsRef<[LinearOp]>>(rows: &[R]) -> Result<Vec<RowPlan>, CompileError> {
-    let mut plans = checked_vec_with_capacity(rows.len(), "row plans")?;
-    for row in rows {
-        plans.push(plan_row(row.as_ref())?);
-    }
-    Ok(plans)
+fn input_requirements_for_admitted_programs(
+    programs: &[AdmittedExecutionProgram],
+) -> InputRequirements {
+    programs
+        .iter()
+        .fold(InputRequirements::default(), |requirements, program| {
+            let row = row_input_requirements(&program.plan);
+            InputRequirements {
+                y_len: requirements.y_len.max(row.y_len),
+                p_len: requirements.p_len.max(row.p_len),
+                seed_len: requirements.seed_len.max(row.seed_len),
+            }
+        })
 }
 
 fn checked_vec_with_capacity<T>(
@@ -978,60 +1428,10 @@ fn validate_jit_matches_interpreter(
     )))
 }
 
-fn should_validate_jit_row(row_requires_validation: bool) -> bool {
-    cfg!(test) || row_requires_validation
-}
-
-fn validate_row_supported_by_jit(row: &[LinearOp], kind: RowKind) -> Result<(), CompileError> {
-    for op in row {
-        if matches!(
-            op,
-            LinearOp::RandomInitialState { .. }
-                | LinearOp::RandomResult { .. }
-                | LinearOp::RandomState { .. }
-                | LinearOp::ImpureRandomInit { .. }
-                | LinearOp::ImpureRandom { .. }
-                | LinearOp::ImpureRandomInteger { .. }
-        ) {
-            return Err(CompileError::Backend(
-                "cranelift row compiler does not support discrete random solve-IR ops".to_string(),
-            ));
-        }
-        if matches!(op, LinearOp::LoadSeed { .. }) && !kind.has_seed() {
-            return Err(CompileError::Backend(
-                "LoadSeed in residual row without seed input".to_string(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn row_uses_table_ops(row: &[LinearOp]) -> bool {
-    row.iter().any(|op| {
-        matches!(
-            op,
-            LinearOp::TableBounds { .. }
-                | LinearOp::TableLookup { .. }
-                | LinearOp::TableLookupSlope { .. }
-                | LinearOp::TableNextEvent { .. }
-        )
-    })
-}
-
-fn row_uses_pure_calls(row: &[LinearOp]) -> bool {
-    row.iter().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::PureCall { .. } | LinearOp::PureCallDirectional { .. }
-        )
-    })
-}
-
 struct CraneliftEmitter {
     module: OwnedJitModule,
     math: MathImports,
     fold_functions: HashMap<usize, FuncId>,
-    canonical_fold_functions: Vec<(Arc<rumoca_ir_solve::FunctionFoldProgram>, FuncId)>,
     conditional_functions: HashMap<rumoca_ir_solve::FunctionConditionalOwnerId, FuncId>,
     pure_call_functions:
         HashMap<rumoca_ir_solve::SolvePureCallOwnerId, typed_program::PureCallImport>,
@@ -1059,7 +1459,6 @@ impl CraneliftEmitter {
             module,
             math: MathImports::default(),
             fold_functions: HashMap::new(),
-            canonical_fold_functions: Vec::new(),
             conditional_functions: HashMap::new(),
             pure_call_functions,
         })
@@ -1067,18 +1466,18 @@ impl CraneliftEmitter {
 
     fn ensure_fold_programs(
         &mut self,
-        operations: &[LinearOp],
+        operations: &[AdmittedLinearOp],
         kind: RowKind,
     ) -> Result<(), CompileError> {
         let mut programs = Vec::new();
         for operation in operations {
             match operation {
-                LinearOp::FunctionFold { program, .. }
-                | LinearOp::GuardedFunctionFold { program, .. }
-                | LinearOp::StoreOutputFunctionFold { program, .. } => {
+                AdmittedLinearOp::FunctionFold { program, .. }
+                | AdmittedLinearOp::GuardedFunctionFold { program, .. }
+                | AdmittedLinearOp::StoreOutputFunctionFold { program, .. } => {
                     programs.push(program.clone());
                 }
-                LinearOp::FunctionConditional { program, .. } => {
+                AdmittedLinearOp::FunctionConditional { program, .. } => {
                     self.ensure_conditional_fold_programs(program, kind)?;
                 }
                 _ => {}
@@ -1092,29 +1491,29 @@ impl CraneliftEmitter {
 
     fn ensure_conditional_fold_programs(
         &mut self,
-        program: &rumoca_ir_solve::FunctionConditionalProgram,
+        program: &AdmittedFunctionConditionalProgram,
         kind: RowKind,
     ) -> Result<(), CompileError> {
-        for arm in program.arms() {
-            self.ensure_fold_programs(arm.condition(), kind)?;
-            self.ensure_fold_programs(arm.result(), kind)?;
+        for arm in &program.arms {
+            self.ensure_fold_programs(&arm.condition.operations, kind)?;
+            self.ensure_fold_programs(&arm.result.operations, kind)?;
         }
-        self.ensure_fold_programs(program.fallback(), kind)
+        self.ensure_fold_programs(&program.fallback.operations, kind)
     }
 
     fn ensure_conditional_programs(
         &mut self,
-        operations: &[LinearOp],
+        operations: &[AdmittedLinearOp],
         kind: RowKind,
     ) -> Result<(), CompileError> {
         for operation in operations {
             match operation {
-                LinearOp::FunctionFold { program, .. }
-                | LinearOp::GuardedFunctionFold { program, .. }
-                | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    self.ensure_conditional_programs(program.update(), kind)?;
+                AdmittedLinearOp::FunctionFold { program, .. }
+                | AdmittedLinearOp::GuardedFunctionFold { program, .. }
+                | AdmittedLinearOp::StoreOutputFunctionFold { program, .. } => {
+                    self.ensure_conditional_programs(&program.update.operations, kind)?;
                 }
-                LinearOp::FunctionConditional { program, .. } => {
+                AdmittedLinearOp::FunctionConditional { program, .. } => {
                     self.ensure_nested_conditional_program(program, kind)?;
                 }
                 _ => {}
@@ -1125,26 +1524,26 @@ impl CraneliftEmitter {
 
     fn ensure_nested_conditional_program(
         &mut self,
-        program: &Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+        program: &Arc<AdmittedFunctionConditionalProgram>,
         kind: RowKind,
     ) -> Result<(), CompileError> {
-        if program.owner().is_some() {
+        if program.owner.is_some() {
             self.ensure_conditional_program(program.clone(), kind)?;
             return Ok(());
         }
-        for arm in program.arms() {
-            self.ensure_conditional_programs(arm.condition(), kind)?;
-            self.ensure_conditional_programs(arm.result(), kind)?;
+        for arm in &program.arms {
+            self.ensure_conditional_programs(&arm.condition.operations, kind)?;
+            self.ensure_conditional_programs(&arm.result.operations, kind)?;
         }
-        self.ensure_conditional_programs(program.fallback(), kind)
+        self.ensure_conditional_programs(&program.fallback.operations, kind)
     }
 
     fn ensure_conditional_program(
         &mut self,
-        program: Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+        program: Arc<AdmittedFunctionConditionalProgram>,
         kind: RowKind,
     ) -> Result<FuncId, CompileError> {
-        let owner = program.owner().ok_or_else(|| {
+        let owner = program.owner.ok_or_else(|| {
             CompileError::Backend(
                 "unowned function conditional cannot define a native helper".to_string(),
             )
@@ -1172,14 +1571,14 @@ impl CraneliftEmitter {
             .map_err(to_backend_err)?;
         self.conditional_functions.insert(owner, function);
 
-        for arm in program.arms() {
-            self.ensure_fold_programs(arm.condition(), kind)?;
-            self.ensure_fold_programs(arm.result(), kind)?;
-            self.ensure_conditional_programs(arm.condition(), kind)?;
-            self.ensure_conditional_programs(arm.result(), kind)?;
+        for arm in &program.arms {
+            self.ensure_fold_programs(&arm.condition.operations, kind)?;
+            self.ensure_fold_programs(&arm.result.operations, kind)?;
+            self.ensure_conditional_programs(&arm.condition.operations, kind)?;
+            self.ensure_conditional_programs(&arm.result.operations, kind)?;
         }
-        self.ensure_fold_programs(program.fallback(), kind)?;
-        self.ensure_conditional_programs(program.fallback(), kind)?;
+        self.ensure_fold_programs(&program.fallback.operations, kind)?;
+        self.ensure_conditional_programs(&program.fallback.operations, kind)?;
 
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -1230,7 +1629,7 @@ impl CraneliftEmitter {
                 known_constants: HashMap::new(),
             };
             let result = lower.lower_function_conditional_inline(0, &program)?;
-            lower.copy_stack_to_pointer(result, results_ptr, program.result_count())?;
+            lower.copy_stack_to_pointer(result, results_ptr, program.result_count)?;
             lower.fb.ins().return_(&[]);
             drop(lower);
             fb.finalize();
@@ -1246,11 +1645,11 @@ impl CraneliftEmitter {
 
     fn ensure_fold_program(
         &mut self,
-        program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: Arc<AdmittedFunctionFoldProgram>,
         kind: RowKind,
     ) -> Result<FuncId, CompileError> {
-        let key = Arc::as_ptr(&program) as usize;
-        if let Some(function) = self.existing_fold_function(key, &program) {
+        let key = program.source_key;
+        if let Some(function) = self.existing_fold_function(key) {
             return Ok(function);
         }
         let profile_id = NEXT_FOLD_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
@@ -1265,10 +1664,8 @@ impl CraneliftEmitter {
             )
             .map_err(to_backend_err)?;
         self.fold_functions.insert(key, function);
-        self.canonical_fold_functions
-            .push((program.clone(), function));
-        self.ensure_fold_programs(program.update(), kind)?;
-        self.ensure_conditional_programs(program.update(), kind)?;
+        self.ensure_fold_programs(&program.update.operations, kind)?;
+        self.ensure_conditional_programs(&program.update.operations, kind)?;
 
         let mut context = self.module.make_context();
         context.func.signature = signature;
@@ -1290,22 +1687,14 @@ impl CraneliftEmitter {
             };
             let mut regs = HashMap::new();
             let flags = MemFlags::new();
-            let captures =
-                load_fold_captures(&mut fb, flags, captures_ptr, program.capture_count())?;
-            let bytes = program
-                .carried_count()
-                .checked_mul(std::mem::size_of::<f64>())
-                .and_then(|bytes| u32::try_from(bytes).ok())
-                .ok_or_else(|| {
-                    CompileError::Backend("fold kernel carried size overflow".to_string())
-                })?;
-            let carried = fb.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                bytes,
-                3,
-            ));
-            let backing_regs_ptr =
-                create_fold_register_tape(&mut fb, pointer_type, program.update())?;
+            let captures = load_fold_captures(&mut fb, flags, captures_ptr, program.capture_count)?;
+            let carried = create_fold_carried_slot(&mut fb, program.carried_count)?;
+            let backing_regs_ptr = create_fold_register_tape(
+                &mut fb,
+                pointer_type,
+                &program.update,
+                program.register_count,
+            )?;
             let mut lower = RowLowerCtx {
                 fb: &mut fb,
                 module: &mut self.module,
@@ -1335,9 +1724,9 @@ impl CraneliftEmitter {
                 fold_carried_versions: Vec::new(),
                 known_constants: HashMap::new(),
             };
-            lower.copy_pointer_to_stack(carried_ptr, carried, program.carried_count())?;
+            lower.copy_pointer_to_stack(carried_ptr, carried, program.carried_count)?;
             lower.lower_function_fold_on_stack(carried, &captures, Some(captures_ptr), &program)?;
-            lower.copy_stack_to_pointer(carried, carried_ptr, program.carried_count())?;
+            lower.copy_stack_to_pointer(carried, carried_ptr, program.carried_count)?;
             lower.fb.ins().return_(&[]);
             drop(lower);
             fb.finalize();
@@ -1351,32 +1740,22 @@ impl CraneliftEmitter {
         Ok(function)
     }
 
-    fn existing_fold_function(
-        &mut self,
-        key: usize,
-        program: &rumoca_ir_solve::FunctionFoldProgram,
-    ) -> Option<FuncId> {
+    fn existing_fold_function(&mut self, key: usize) -> Option<FuncId> {
         if let Some(&function) = self.fold_functions.get(&key) {
             return Some(function);
         }
-        let function = self
-            .canonical_fold_functions
-            .iter()
-            .find_map(|(canonical, function)| {
-                (canonical.as_ref() == program).then_some(*function)
-            })?;
-        self.fold_functions.insert(key, function);
-        Some(function)
+        None
     }
 
     fn compile_row(
         &mut self,
-        row: &[LinearOp],
+        row: &AdmittedProgram,
         kind: RowKind,
+        register_count: usize,
         name: &str,
     ) -> Result<FuncId, CompileError> {
-        self.ensure_fold_programs(row, kind)?;
-        self.ensure_conditional_programs(row, kind)?;
+        self.ensure_fold_programs(&row.operations, kind)?;
+        self.ensure_conditional_programs(&row.operations, kind)?;
         let pointer_type = self.module.target_config().pointer_type();
 
         let mut signature = self.module.make_signature();
@@ -1417,7 +1796,12 @@ impl CraneliftEmitter {
             let mut loaded_y = HashMap::new();
             let mut loaded_p = HashMap::new();
             let flags = MemFlags::new();
-            let backing_regs_ptr = create_row_register_tape(&mut fb, pointer_type, row)?;
+            let backing_regs_ptr = create_register_tape_for_admitted_program(
+                &mut fb,
+                pointer_type,
+                row,
+                register_count,
+            )?;
             let mut row_lower = RowLowerCtx {
                 fb: &mut fb,
                 module: &mut self.module,
@@ -1462,27 +1846,46 @@ impl CraneliftEmitter {
         Ok(func_id)
     }
 
+    fn compile_jacobian_program(
+        &mut self,
+        row: &AdmittedExecutionProgram,
+        row_index: usize,
+    ) -> Result<FuncId, CompileError> {
+        self.compile_row(
+            &row.program,
+            RowKind::JacobianV,
+            row.plan.register_count(),
+            &format!("rumoca_jacobian_row_{row_index}"),
+        )
+    }
+
     fn compile_residual_program(
         &mut self,
-        row: &[LinearOp],
+        row: &AdmittedExecutionProgram,
         row_index: usize,
     ) -> Result<ResidualFuncIds, CompileError> {
         let profile_id = NEXT_RESIDUAL_KERNEL_ID.fetch_add(1, Ordering::Relaxed);
-        if row.len() <= RESIDUAL_CHUNK_THRESHOLD || !row.iter().cloned().all(chunkable_op) {
+        if row.program.operations.len() <= RESIDUAL_CHUNK_THRESHOLD || !row.program.chunkable {
             return self
                 .compile_row(
-                    row,
+                    &row.program,
                     RowKind::Residual,
+                    row.plan.register_count(),
                     &format!("rumoca_residual_program_{profile_id}_row_{row_index}"),
                 )
                 .map(ResidualFuncIds::Whole);
         }
         let mut output_base = 0usize;
         let mut ids = checked_vec_with_capacity(
-            row.len().div_ceil(RESIDUAL_CHUNK_OPS),
+            row.program.operations.len().div_ceil(RESIDUAL_CHUNK_OPS),
             "residual chunk function ids",
         )?;
-        for (chunk_index, chunk) in row.chunks(RESIDUAL_CHUNK_OPS).enumerate() {
+        for (chunk_index, chunk) in row
+            .program
+            .operations
+            .chunks(RESIDUAL_CHUNK_OPS)
+            .enumerate()
+        {
             ids.push(self.compile_residual_chunk(
                 chunk,
                 output_base,
@@ -1490,20 +1893,29 @@ impl CraneliftEmitter {
                     "rumoca_residual_program_{profile_id}_row_{row_index}_chunk_{chunk_index}"
                 ),
             )?);
-            output_base = output_base.saturating_add(
-                chunk
-                    .iter()
-                    .filter(|op| matches!(op, LinearOp::StoreOutput { .. }))
-                    .count(),
-            );
+            output_base = output_base
+                .checked_add(
+                    chunk
+                        .iter()
+                        .filter(|op| matches!(op, AdmittedLinearOp::StoreOutput { .. }))
+                        .count(),
+                )
+                .ok_or_else(|| {
+                    CompileError::Backend(
+                        "residual chunk output base exceeds host range".to_string(),
+                    )
+                })?;
         }
         Ok(ResidualFuncIds::Chunked(ids))
     }
 
-    fn compile_residual_batch(&mut self, rows: &[Vec<LinearOp>]) -> Result<FuncId, CompileError> {
+    fn compile_residual_batch(
+        &mut self,
+        rows: &[AdmittedExecutionProgram],
+    ) -> Result<FuncId, CompileError> {
         for row in rows {
-            self.ensure_fold_programs(row, RowKind::Residual)?;
-            self.ensure_conditional_programs(row, RowKind::Residual)?;
+            self.ensure_fold_programs(&row.program.operations, RowKind::Residual)?;
+            self.ensure_conditional_programs(&row.program.operations, RowKind::Residual)?;
         }
         let pointer_type = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
@@ -1537,7 +1949,12 @@ impl CraneliftEmitter {
             let mut output_base = 0usize;
             for row in rows {
                 let mut regs = HashMap::new();
-                let backing_regs_ptr = create_row_register_tape(&mut fb, pointer_type, row)?;
+                let backing_regs_ptr = create_register_tape_for_admitted_program(
+                    &mut fb,
+                    pointer_type,
+                    &row.program,
+                    row.plan.register_count(),
+                )?;
                 let mut row_lower = RowLowerCtx {
                     fb: &mut fb,
                     module: &mut self.module,
@@ -1567,9 +1984,13 @@ impl CraneliftEmitter {
                     fold_carried_versions: Vec::new(),
                     known_constants: HashMap::new(),
                 };
-                row_lower.lower_row_outputs_from(row, out_ptr, output_base)?;
+                row_lower.lower_row_outputs_from(&row.program.operations, out_ptr, output_base)?;
                 conditional_results = std::mem::take(&mut row_lower.conditional_results);
-                output_base += ScalarProgramBlock::program_output_count(row);
+                output_base = checked_usize_add(
+                    output_base,
+                    row.plan.output_count(),
+                    "output base overflows host range",
+                )?;
             }
             fb.ins().return_(&[]);
             fb.finalize();
@@ -1585,7 +2006,7 @@ impl CraneliftEmitter {
 
     fn compile_residual_chunk(
         &mut self,
-        chunk: &[LinearOp],
+        chunk: &[AdmittedLinearOp],
         output_base: usize,
         name: &str,
     ) -> Result<FuncId, CompileError> {
@@ -1655,14 +2076,13 @@ impl CraneliftEmitter {
         Ok(func_id)
     }
 
-    fn compile_assignment_schedule<R: AsRef<[LinearOp]>>(
+    fn compile_assignment_schedule(
         &mut self,
-        rows: &[R],
-        target_y_indices: &[usize],
+        programs: &[AdmittedAssignmentProgram<'_>],
     ) -> Result<FuncId, CompileError> {
-        for row in rows {
-            self.ensure_fold_programs(row.as_ref(), RowKind::Residual)?;
-            self.ensure_conditional_programs(row.as_ref(), RowKind::Residual)?;
+        for program in programs {
+            self.ensure_fold_programs(&program.operations.operations, RowKind::Residual)?;
+            self.ensure_conditional_programs(&program.operations.operations, RowKind::Residual)?;
         }
         let pointer_type = self.module.target_config().pointer_type();
         let mut signature = self.module.make_signature();
@@ -1690,9 +2110,8 @@ impl CraneliftEmitter {
             let params = fb.block_params(entry).to_vec();
             let (y_ptr, p_ptr, t_value) = (params[0], params[1], params[2]);
             let flags = MemFlags::new();
-            let mut target_offset = 0usize;
-            for row in rows {
-                let row = row.as_ref();
+            for program in programs {
+                let row = &program.operations;
                 // Assignment programs execute sequentially and may overwrite
                 // solver-Y slots read by later programs. Keep load CSE local
                 // to one program: cross-program SSA values become stale after
@@ -1700,10 +2119,13 @@ impl CraneliftEmitter {
                 // lived values also increase register-allocation pressure.
                 let mut loaded_y = HashMap::new();
                 let mut loaded_p = HashMap::new();
-                let output_count = ScalarProgramBlock::program_output_count(row);
-                let targets = &target_y_indices[target_offset..target_offset + output_count];
                 let mut regs = HashMap::new();
-                let backing_regs_ptr = create_row_register_tape(&mut fb, pointer_type, row)?;
+                let backing_regs_ptr = create_register_tape_for_admitted_program(
+                    &mut fb,
+                    pointer_type,
+                    row,
+                    program.register_count,
+                )?;
                 let mut row_lower = RowLowerCtx {
                     fb: &mut fb,
                     module: &mut self.module,
@@ -1733,8 +2155,7 @@ impl CraneliftEmitter {
                     fold_carried_versions: Vec::new(),
                     known_constants: HashMap::new(),
                 };
-                row_lower.lower_assignments(row, targets)?;
-                target_offset += output_count;
+                row_lower.lower_assignments(row, program.output_sources, program.targets)?;
             }
             fb.ins().return_(&[]);
             fb.finalize();
@@ -1749,34 +2170,34 @@ impl CraneliftEmitter {
     }
 }
 
-fn create_row_register_tape(
+fn create_register_tape_for_admitted_program(
     fb: &mut FunctionBuilder<'_>,
     pointer_type: cranelift_codegen::ir::Type,
-    row: &[LinearOp],
+    program: &AdmittedProgram,
+    register_count: usize,
 ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-    if !row.iter().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::DotProduct { .. }
-                | LinearOp::MatrixMultiply { .. }
-                | LinearOp::TensorBinary { .. }
-                | LinearOp::TensorTranspose { .. }
-                | LinearOp::TensorConcatenate { .. }
-                | LinearOp::TensorUpdate { .. }
-                | LinearOp::TensorFill { .. }
-                | LinearOp::TensorIdentity { .. }
-                | LinearOp::TensorLoad { .. }
-        )
-    }) {
+    if !program.needs_register_tape {
         return Ok(None);
     }
-    create_register_tape(fb, pointer_type, row)
+    create_register_tape_for_count(fb, pointer_type, register_count)
+}
+
+fn create_fold_carried_slot(
+    fb: &mut FunctionBuilder<'_>,
+    carried_count: usize,
+) -> Result<StackSlot, CompileError> {
+    let bytes = carried_count
+        .checked_mul(std::mem::size_of::<f64>())
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| CompileError::Backend("fold kernel carried size overflow".to_string()))?;
+    Ok(fb.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 3)))
 }
 
 fn create_fold_register_tape(
     fb: &mut FunctionBuilder<'_>,
     pointer_type: cranelift_codegen::ir::Type,
-    row: &[LinearOp],
+    program: &AdmittedProgram,
+    register_count: usize,
 ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
     // Fixed-shape tensor operations lower directly to scalar SSA here, at the
     // final machine-code boundary.  A register tape is only required when an
@@ -1785,35 +2206,17 @@ fn create_fold_register_tape(
     // just the indexed source run in a local stack slot.  Tensor-update slices
     // are the sole operation whose compact scan currently addresses the row's
     // register namespace dynamically.
-    if !row.iter().any(|operation| {
-        matches!(
-            operation,
-            LinearOp::TensorUpdate { subscripts, .. }
-                if subscripts.iter().any(|subscript| matches!(
-                    subscript,
-                    rumoca_ir_solve::TensorUpdateSubscript::Slice { .. }
-                ))
-        )
-    }) {
+    if !program.needs_fold_register_tape {
         return Ok(None);
     }
-    create_register_tape(fb, pointer_type, row)
+    create_register_tape_for_count(fb, pointer_type, register_count)
 }
 
-fn create_register_tape(
+fn create_register_tape_for_count(
     fb: &mut FunctionBuilder<'_>,
     pointer_type: cranelift_codegen::ir::Type,
-    row: &[LinearOp],
+    register_count: usize,
 ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-    let register_count =
-        row.iter().try_fold(0usize, |count, operation| {
-            Ok::<_, CompileError>(match max_reg_index(operation.clone())? {
-                Some(index) => count.max(index.checked_add(1).ok_or_else(|| {
-                    CompileError::Backend("row register tape count overflow".into())
-                })?),
-                None => count,
-            })
-        })?;
     let bytes = register_count
         .max(1)
         .checked_mul(std::mem::size_of::<f64>())
@@ -1973,7 +2376,7 @@ struct NestedFoldOutput<'a> {
     output_base: usize,
     initial: &'a [rumoca_ir_solve::FoldInitialSource],
     capture_start: u32,
-    program: &'a Arc<rumoca_ir_solve::FunctionFoldProgram>,
+    program: &'a Arc<AdmittedFunctionFoldProgram>,
     result_base: usize,
     result_count: usize,
     condition: Option<u32>,
@@ -2001,6 +2404,15 @@ struct StaticMatrixMultiply {
     inner: usize,
     columns: usize,
     lanes: usize,
+}
+
+fn checked_dynamic_matrix_output_count(
+    request: StaticMatrixMultiply,
+) -> Result<usize, CompileError> {
+    request
+        .rows
+        .checked_mul(request.columns)
+        .ok_or_else(|| CompileError::Backend("matrix multiply output extent overflow".to_string()))
 }
 
 struct TensorCrossComponent<'a> {
@@ -2081,21 +2493,24 @@ struct TensorConcatenateCopy<'a> {
 impl<'a, 'b> RowLowerCtx<'a, 'b> {
     fn lower_assignments(
         &mut self,
-        row: &[LinearOp],
+        row: &AdmittedProgram,
+        output_sources: &[usize],
         targets: &[usize],
     ) -> Result<(), CompileError> {
-        let mut outputs = Vec::with_capacity(targets.len());
-        for op in row.iter().cloned() {
-            self.lower_assignment_output(op, &mut outputs)?;
+        use AdmittedLinearOp as LinearOp;
+        for op in row.operations.iter().cloned() {
+            if !matches!(
+                op,
+                LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
+            ) {
+                let _ = self.lower_op(op)?;
+            }
         }
-        if outputs.len() != targets.len() {
-            return Err(CompileError::Input(format!(
-                "assignment schedule program has {} outputs but {} targets",
-                outputs.len(),
-                targets.len()
-            )));
-        }
-        for (value, &target) in outputs.into_iter().zip(targets) {
+        for (&source, &target) in output_sources.iter().zip(targets) {
+            let source = u32::try_from(source).map_err(|_| {
+                CompileError::Backend("checked assignment output register exceeds u32".to_string())
+            })?;
+            let value = self.lookup(source)?;
             let offset = target
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|value| i32::try_from(value).ok())
@@ -2110,43 +2525,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(())
     }
 
-    fn lower_assignment_output(
-        &mut self,
-        operation: LinearOp,
-        outputs: &mut Vec<cranelift_codegen::ir::Value>,
-    ) -> Result<(), CompileError> {
-        if let LinearOp::StoreOutputRange {
-            start,
-            count,
-            stride,
-        } = operation
-        {
-            outputs.extend(self.lower_output_range(start, count, stride)?);
-            return Ok(());
-        }
-        if let Some(value) = self.lower_op(operation)? {
-            outputs.push(value);
-        }
-        Ok(())
-    }
-
     /// Lower every op in `row`, writing each `StoreOutput` result to the next
     /// consecutive `out[k]` slot so a multi-output program fills consecutive
     /// output slots. (`lower_op` returns `Some(value)` exactly for StoreOutput.)
     fn lower_row_outputs(
         &mut self,
-        row: &[LinearOp],
+        row: &AdmittedProgram,
         out_ptr: cranelift_codegen::ir::Value,
     ) -> Result<(), CompileError> {
-        self.lower_row_outputs_from(row, out_ptr, 0)
+        self.lower_row_outputs_from(&row.operations, out_ptr, 0)
     }
 
     fn lower_row_outputs_from(
         &mut self,
-        row: &[LinearOp],
+        row: &[AdmittedLinearOp],
         out_ptr: cranelift_codegen::ir::Value,
         output_base: usize,
     ) -> Result<(), CompileError> {
+        use AdmittedLinearOp as LinearOp;
         let mut out_idx = i32::try_from(output_base)
             .map_err(|_| CompileError::Backend("residual output index exceeds i32".to_string()))?;
         for op in row.iter().cloned() {
@@ -2184,7 +2580,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         Ok(values)
     }
 
-    // SPEC_0021: exhaustive dispatch over every LinearOp native lowering contract.
+    // SPEC_0021: exhaustive dispatch over the admitted native vocabulary.
     #[expect(
         clippy::too_many_lines,
         clippy::excessive_nesting,
@@ -2192,8 +2588,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     )]
     fn lower_op(
         &mut self,
-        op: LinearOp,
+        op: AdmittedLinearOp,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
+        use AdmittedLinearOp as LinearOp;
         match op {
             LinearOp::Const { dst, value } => {
                 self.known_constants.insert(dst, value);
@@ -2438,34 +2835,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 seed_start,
                 lanes,
             }),
-            LinearOp::TableBounds { dst, table_id, max } => {
-                self.lower_table_bounds(dst, table_id, max)
-            }
-            LinearOp::TableLookup {
-                dst,
-                table_id,
-                column,
-                input,
-            } => self.lower_table_lookup(dst, table_id, column, input, TableHostFn::Lookup),
-            LinearOp::TableLookupSlope {
-                dst,
-                table_id,
-                column,
-                input,
-            } => self.lower_table_lookup(dst, table_id, column, input, TableHostFn::LookupSlope),
-            LinearOp::TableNextEvent {
-                dst,
-                table_id,
-                time,
-            } => self.lower_table_next_event(dst, table_id, time),
-            LinearOp::RandomInitialState { .. }
-            | LinearOp::RandomResult { .. }
-            | LinearOp::RandomState { .. }
-            | LinearOp::ImpureRandomInit { .. }
-            | LinearOp::ImpureRandom { .. }
-            | LinearOp::ImpureRandomInteger { .. } => Err(CompileError::Backend(
-                "cranelift row compiler does not support discrete random solve-IR ops".to_string(),
-            )),
             LinearOp::Unary { dst, op, arg } => {
                 let x = self.lookup(arg)?;
                 let value = emit_unary_op(self.fb, self.module, self.math, op, x)?;
@@ -2560,15 +2929,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         dst_start: u32,
         initial_start: u32,
         capture_start: u32,
-        program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: &Arc<AdmittedFunctionFoldProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let carried = (0..program.carried_count())
+        let carried = (0..program.carried_count)
             .map(|offset| {
                 checked_reg_offset(initial_start, offset, "function fold initial")
                     .and_then(|register| self.lookup(register))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let captures = (0..program.capture_count())
+        let captures = (0..program.capture_count)
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -2576,7 +2945,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .collect::<Result<Vec<_>, _>>()?;
         let program_key = self
             .fold_functions
-            .get(&(Arc::as_ptr(program) as usize))
+            .get(&program.source_key)
             .copied()
             .ok_or_else(|| {
                 CompileError::Backend("function-fold kernel was not precompiled".to_string())
@@ -2594,7 +2963,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             cached
         } else {
             let carried_bytes = program
-                .carried_count()
+                .carried_count
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|bytes| u32::try_from(bytes).ok())
                 .ok_or_else(|| {
@@ -2616,7 +2985,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.nested_fold_results.insert(call_key, carried_slot);
             carried_slot
         };
-        for offset in 0..program.carried_count() {
+        for offset in 0..program.carried_count {
             let value = self.fb.ins().stack_load(
                 types::F64,
                 carried_slot,
@@ -2798,15 +3167,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         dst_start: u32,
         capture_start: u32,
-        program: &Arc<rumoca_ir_solve::FunctionConditionalProgram>,
+        program: &Arc<AdmittedFunctionConditionalProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        if let Some(owner) = program.owner()
+        if let Some(owner) = program.owner
             && let Some(result_slot) = self.conditional_results.get(&owner).copied()
         {
-            self.load_function_conditional_results(dst_start, result_slot, program.result_count())?;
+            self.load_function_conditional_results(dst_start, result_slot, program.result_count)?;
             return Ok(None);
         }
-        let result_slot = if let Some(owner) = program.owner() {
+        let result_slot = if let Some(owner) = program.owner {
             let function = self
                 .conditional_functions
                 .get(&owner)
@@ -2821,20 +3190,20 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         } else {
             self.lower_function_conditional_inline(capture_start, program)?
         };
-        if let Some(owner) = program.owner() {
+        if let Some(owner) = program.owner {
             self.conditional_results.insert(owner, result_slot);
         }
-        self.load_function_conditional_results(dst_start, result_slot, program.result_count())?;
+        self.load_function_conditional_results(dst_start, result_slot, program.result_count)?;
         Ok(None)
     }
 
     fn lower_function_conditional_inline(
         &mut self,
         capture_start: u32,
-        program: &rumoca_ir_solve::FunctionConditionalProgram,
+        program: &AdmittedFunctionConditionalProgram,
     ) -> Result<StackSlot, CompileError> {
         let result_bytes = program
-            .result_count()
+            .result_count
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -2848,11 +3217,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             3,
         ));
         let continuation = self.fb.create_block();
-        for arm in program.arms() {
+        for arm in &program.arms {
             let condition = self.lower_function_conditional_condition(
-                arm.condition(),
+                &arm.condition,
+                arm.condition_register_count,
                 capture_start,
-                program.capture_count(),
+                program.capture_count,
             )?;
             let selected = self.fb.create_block();
             let next = self.fb.create_block();
@@ -2863,22 +3233,24 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.switch_to_block(selected);
             self.fb.seal_block(selected);
             let values = self.lower_function_conditional_region(
-                arm.result(),
+                &arm.result,
+                arm.result_register_count,
                 capture_start,
-                program.capture_count(),
+                program.capture_count,
             )?;
-            self.store_function_conditional_results(result_slot, &values, program.result_count())?;
+            self.store_function_conditional_results(result_slot, &values, program.result_count)?;
             self.fb.ins().jump(continuation, &[]);
 
             self.fb.switch_to_block(next);
             self.fb.seal_block(next);
         }
         let fallback = self.lower_function_conditional_region(
-            program.fallback(),
+            &program.fallback,
+            program.fallback_register_count,
             capture_start,
-            program.capture_count(),
+            program.capture_count,
         )?;
-        self.store_function_conditional_results(result_slot, &fallback, program.result_count())?;
+        self.store_function_conditional_results(result_slot, &fallback, program.result_count)?;
         self.fb.ins().jump(continuation, &[]);
 
         self.fb.switch_to_block(continuation);
@@ -2890,14 +3262,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         function: FuncId,
         capture_start: u32,
-        program: &rumoca_ir_solve::FunctionConditionalProgram,
+        program: &AdmittedFunctionConditionalProgram,
     ) -> Result<StackSlot, CompileError> {
         let captures_ptr = if let Some(registers) = self.backing_regs_ptr {
             let offset = i64::from(register_byte_offset(capture_start)?);
             self.fb.ins().iadd_imm(registers, offset)
         } else {
             let capture_bytes = program
-                .capture_count()
+                .capture_count
                 .max(1)
                 .checked_mul(std::mem::size_of::<f64>())
                 .and_then(|bytes| u32::try_from(bytes).ok())
@@ -2911,7 +3283,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
                 capture_bytes,
                 3,
             ));
-            for offset in 0..program.capture_count() {
+            for offset in 0..program.capture_count {
                 let value = self.lookup(checked_reg_offset(
                     capture_start,
                     offset,
@@ -2926,7 +3298,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             self.fb.ins().stack_addr(types::I64, captures, 0)
         };
         let result_bytes = program
-            .result_count()
+            .result_count
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -2978,7 +3350,8 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn lower_function_conditional_region(
         &mut self,
-        region: &[LinearOp],
+        region: &AdmittedProgram,
+        register_count: usize,
         capture_start: u32,
         capture_count: usize,
     ) -> Result<Vec<LoweredConditionalOutput>, CompileError> {
@@ -2993,7 +3366,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         // region-local registers can write beyond the stack slot.  Allocate a
         // region tape only when this exact region's final lowering needs one.
         let pointer_type = self.module.target_config().pointer_type();
-        let backing_regs_ptr = create_row_register_tape(self.fb, pointer_type, region)?;
+        let backing_regs_ptr = create_register_tape_for_admitted_program(
+            self.fb,
+            pointer_type,
+            region,
+            register_count,
+        )?;
         let mut nested = RowLowerCtx {
             fb: self.fb,
             module: self.module,
@@ -3030,12 +3408,12 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn load_function_conditional_captures(
         &mut self,
-        region: &[LinearOp],
+        region: &AdmittedProgram,
         capture_start: u32,
         capture_count: usize,
     ) -> Result<HashMap<usize, cranelift_codegen::ir::Value>, CompileError> {
         let mut captures = HashMap::new();
-        for operation in region {
+        for operation in &region.operations {
             let Some((start, count)) = conditional_capture_range(operation) else {
                 continue;
             };
@@ -3082,10 +3460,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn lower_conditional_region_outputs(
         &mut self,
-        region: &[LinearOp],
+        region: &AdmittedProgram,
     ) -> Result<Vec<LoweredConditionalOutput>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in region.iter().cloned() {
+        for operation in region.operations.iter().cloned() {
             self.lower_conditional_region_output(operation, &mut outputs)?;
         }
         Ok(outputs)
@@ -3093,9 +3471,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn lower_conditional_region_output(
         &mut self,
-        operation: LinearOp,
+        operation: AdmittedLinearOp,
         outputs: &mut Vec<LoweredConditionalOutput>,
     ) -> Result<(), CompileError> {
+        use AdmittedLinearOp as LinearOp;
         let LinearOp::StoreOutputRange {
             start,
             count,
@@ -3126,12 +3505,17 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn lower_function_conditional_condition(
         &mut self,
-        region: &[LinearOp],
+        region: &AdmittedProgram,
+        register_count: usize,
         capture_start: u32,
         capture_count: usize,
     ) -> Result<cranelift_codegen::ir::Value, CompileError> {
-        let outputs =
-            self.lower_function_conditional_region(region, capture_start, capture_count)?;
+        let outputs = self.lower_function_conditional_region(
+            region,
+            register_count,
+            capture_start,
+            capture_count,
+        )?;
         let [output] = outputs.as_slice() else {
             return Err(CompileError::Backend(
                 "function-conditional condition output count mismatch".to_string(),
@@ -3248,15 +3632,15 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         initial_start: u32,
         capture_start: u32,
         activation: u32,
-        program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: &Arc<AdmittedFunctionFoldProgram>,
     ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let carried = (0..program.carried_count())
+        let carried = (0..program.carried_count)
             .map(|offset| {
                 checked_reg_offset(initial_start, offset, "guarded function fold initial")
                     .and_then(|register| self.lookup(register))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let captures = (0..program.capture_count())
+        let captures = (0..program.capture_count)
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "guarded function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -3264,7 +3648,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .collect::<Result<Vec<_>, _>>()?;
         let activation = self.lookup(activation)?;
         let carried_bytes = program
-            .carried_count()
+            .carried_count
             .checked_mul(std::mem::size_of::<f64>())
             .and_then(|bytes| u32::try_from(bytes).ok())
             .ok_or_else(|| {
@@ -3302,7 +3686,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(continuation);
         self.fb.seal_block(continuation);
-        for offset in 0..program.carried_count() {
+        for offset in 0..program.carried_count {
             let value = self.fb.ins().stack_load(
                 types::F64,
                 carried_slot,
@@ -3321,10 +3705,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried_slot: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
         captures_ptr: Option<cranelift_codegen::ir::Value>,
-        program: &rumoca_ir_solve::FunctionFoldProgram,
+        program: &AdmittedFunctionFoldProgram,
     ) -> Result<(), CompileError> {
-        let count = program.domain_scalar_count();
-        let domain = program.domain().validated().map_err(|error| {
+        let count = program.domain_scalar_count;
+        let domain = program.domain.validated().map_err(|error| {
             CompileError::Backend(format!("invalid function-fold domain: {error}"))
         })?;
         // Shape is still compact in Solve IR; this is the final native-code
@@ -3332,7 +3716,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         // code even when runtime indexing requires a register tape: the tape
         // remains addressable, while we eliminate loop control and integer
         // div/rem from every estimator matrix reduction.
-        if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update().len() <= 128 {
+        if count <= INLINE_FIXED_FOLD_POINT_LIMIT && program.update.operations.len() <= 128 {
             for tuple in domain.index_tuple_iter() {
                 let constants = tuple
                     .into_iter()
@@ -3416,7 +3800,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         carried_slot: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
         captures_ptr: Option<cranelift_codegen::ir::Value>,
-        program: &rumoca_ir_solve::FunctionFoldProgram,
+        program: &AdmittedFunctionFoldProgram,
         indices: &[cranelift_codegen::ir::Value],
         index_constants: Option<&[f64]>,
     ) -> Result<(), CompileError> {
@@ -3447,10 +3831,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             pure_call_results: HashMap::new(),
             nested_fold_results: HashMap::new(),
             conditional_results: HashMap::new(),
-            fold_carried_versions: vec![0; program.carried_count()],
+            fold_carried_versions: vec![0; program.carried_count],
             known_constants: HashMap::new(),
         };
-        let output_ops = update.lower_fold_update_body(program.update())?;
+        let output_ops = update.lower_fold_update_body(&program.update)?;
         let mut output_cursor = 0usize;
         for operation in output_ops {
             let output_start = output_cursor;
@@ -3460,7 +3844,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             }
         }
         drop(update);
-        if output_cursor != program.carried_count() {
+        if output_cursor != program.carried_count {
             return Err(CompileError::Backend(
                 "function-fold update output count mismatch".to_string(),
             ));
@@ -3470,10 +3854,10 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn lower_fold_update_body(
         &mut self,
-        operations: &[LinearOp],
-    ) -> Result<Vec<LinearOp>, CompileError> {
+        program: &AdmittedProgram,
+    ) -> Result<Vec<AdmittedLinearOp>, CompileError> {
         let mut outputs = Vec::new();
-        for operation in operations.iter().cloned() {
+        for operation in program.operations.iter().cloned() {
             if is_fold_output(&operation) {
                 outputs.push(operation);
             } else {
@@ -3487,8 +3871,9 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         &mut self,
         carried: StackSlot,
         cursor: usize,
-        operation: LinearOp,
+        operation: AdmittedLinearOp,
     ) -> Result<usize, CompileError> {
+        use AdmittedLinearOp as LinearOp;
         match operation {
             LinearOp::StoreOutput { src } => {
                 let value = self.lookup(src)?;
@@ -3567,11 +3952,11 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn call_fold_kernel(
         &mut self,
-        program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: &Arc<AdmittedFunctionFoldProgram>,
         carried: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
     ) -> Result<(), CompileError> {
-        let key = Arc::as_ptr(program) as usize;
+        let key = program.source_key;
         let function = self.fold_functions.get(&key).copied().ok_or_else(|| {
             CompileError::Backend(format!(
                 "function-fold kernel {key:#x} was not precompiled ({} kernels available)",
@@ -3624,7 +4009,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             nested_when_true,
         } = request;
         let initial_key = self.nested_fold_initial_key(initial)?;
-        let captures = (0..program.capture_count())
+        let captures = (0..program.capture_count)
             .map(|offset| {
                 checked_reg_offset(capture_start, offset, "nested function fold capture")
                     .and_then(|register| self.lookup(register))
@@ -3632,7 +4017,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             .collect::<Result<Vec<_>, _>>()?;
         let program_key = self
             .fold_functions
-            .get(&(Arc::as_ptr(program) as usize))
+            .get(&program.source_key)
             .copied()
             .ok_or_else(|| {
                 CompileError::Backend("nested function-fold kernel was not precompiled".to_string())
@@ -3743,7 +4128,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
     fn cached_nested_fold_carried(
         &mut self,
         parent_carried: StackSlot,
-        program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: &Arc<AdmittedFunctionFoldProgram>,
         captures: &[cranelift_codegen::ir::Value],
         call_key: NestedFoldCallKey,
     ) -> Result<StackSlot, CompileError> {
@@ -3751,7 +4136,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(cached);
         }
         let carried_bytes = checked_f64_stack_bytes(
-            program.carried_count(),
+            program.carried_count,
             "nested function-fold storage size overflow",
         )?;
         let nested_carried = self.fb.create_sized_stack_slot(StackSlotData::new(
@@ -3761,7 +4146,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         ));
         let count =
             self.initialize_nested_fold_carried(parent_carried, nested_carried, &call_key.initial)?;
-        if count != program.carried_count() {
+        if count != program.carried_count {
             return Err(CompileError::Backend(
                 "nested function-fold initial count mismatch".into(),
             ));
@@ -3823,14 +4208,14 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
     fn execute_nested_fold(
         &mut self,
-        program: &Arc<rumoca_ir_solve::FunctionFoldProgram>,
+        program: &Arc<AdmittedFunctionFoldProgram>,
         carried: StackSlot,
         captures: &[cranelift_codegen::ir::Value],
     ) -> Result<(), CompileError> {
-        let point_count = program.domain_scalar_count();
+        let point_count = program.domain_scalar_count;
         let inline = point_count <= INLINE_FIXED_FOLD_POINT_LIMIT
-            && program.carried_count() <= 2
-            && program.update().len() <= 24
+            && program.carried_count <= 2
+            && program.update.operations.len() <= 24
             && self.backing_regs_ptr.is_none();
         if !inline {
             return self.call_fold_kernel(program, carried, captures);
@@ -4053,10 +4438,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.insert(dst, value)
     }
 
-    // The loop headers, bodies, and exits emitted below are one control flow
-    // that cannot be split across functions.
-    // SPEC_0021: Exception - one Cranelift block graph emits a whole matrix product.
-    #[allow(clippy::too_many_lines)]
     fn lower_matrix_multiply(
         &mut self,
         dst_start: u32,
@@ -4070,27 +4451,30 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             columns,
             lanes,
         } = shape;
+        let request = StaticMatrixMultiply {
+            dst_start,
+            lhs_start,
+            rhs_start,
+            rows,
+            inner,
+            columns,
+            lanes,
+        };
         let static_work = rows
             .checked_mul(columns)
             .and_then(|outputs| outputs.checked_mul(inner))
             .and_then(|work| work.checked_mul(lanes));
         if self.backing_regs_ptr.is_none() || static_work.is_some_and(|work| work <= 64) {
-            self.lower_static_matrix_multiply(StaticMatrixMultiply {
-                dst_start,
-                lhs_start,
-                rhs_start,
-                rows,
-                inner,
-                columns,
-                lanes,
-            })?;
+            self.lower_static_matrix_multiply(request)?;
             return Ok(None);
         }
-        let regs_ptr = self.backing_regs_ptr.expect("checked above");
+        let Some(regs_ptr) = self.backing_regs_ptr else {
+            return Err(CompileError::Backend(
+                "dynamic matrix lowering has no checked register tape".to_string(),
+            ));
+        };
 
-        let output_count = rows.checked_mul(columns).ok_or_else(|| {
-            CompileError::Backend("matrix multiply output extent overflow".to_string())
-        })?;
+        let output_count = checked_dynamic_matrix_output_count(request)?;
         let outer_header = self.fb.create_block();
         let outer_body = self.fb.create_block();
         let outer_exit = self.fb.create_block();
@@ -4145,14 +4529,87 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 
         self.fb.switch_to_block(term_body);
         self.fb.seal_block(term_body);
-        let lhs_element = self.fb.ins().imul_imm(row, inner as i64);
+        self.lower_dynamic_matrix_term(
+            request,
+            regs_ptr,
+            (row, column, term),
+            (accumulated_re, accumulated_du),
+            term_header,
+        );
+        self.fb.seal_block(term_header);
+
+        self.fb.switch_to_block(term_exit);
+        self.fb.seal_block(term_exit);
+        self.store_dynamic_matrix_output(
+            request,
+            regs_ptr,
+            output,
+            (accumulated_re, accumulated_du),
+            outer_header,
+        );
+        self.fb.seal_block(outer_header);
+
+        self.fb.switch_to_block(outer_exit);
+        self.fb.seal_block(outer_exit);
+        Ok(None)
+    }
+
+    fn store_dynamic_matrix_output(
+        &mut self,
+        request: StaticMatrixMultiply,
+        regs_ptr: cranelift_codegen::ir::Value,
+        output: cranelift_codegen::ir::Value,
+        accumulated: (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+        outer_header: cranelift_codegen::ir::Block,
+    ) {
+        let (accumulated_re, accumulated_du) = accumulated;
+        let output_element = self.fb.ins().imul_imm(output, request.lanes as i64);
+        let output_register = self
+            .fb
+            .ins()
+            .iadd_imm(output_element, i64::from(request.dst_start));
+        let output_offset = self.fb.ins().imul_imm(output_register, 8);
+        let output_address = self.fb.ins().iadd(regs_ptr, output_offset);
+        self.fb
+            .ins()
+            .store(self.flags, accumulated_re, output_address, 0);
+        if request.lanes == 2 {
+            self.fb
+                .ins()
+                .store(self.flags, accumulated_du, output_address, 8);
+        }
+        let next_output = self.fb.ins().iadd_imm(output, 1);
+        self.fb.ins().jump(outer_header, &[next_output.into()]);
+    }
+
+    fn lower_dynamic_matrix_term(
+        &mut self,
+        request: StaticMatrixMultiply,
+        regs_ptr: cranelift_codegen::ir::Value,
+        position: (
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+            cranelift_codegen::ir::Value,
+        ),
+        accumulated: (cranelift_codegen::ir::Value, cranelift_codegen::ir::Value),
+        term_header: cranelift_codegen::ir::Block,
+    ) {
+        let (row, column, term) = position;
+        let (accumulated_re, accumulated_du) = accumulated;
+        let lhs_element = self.fb.ins().imul_imm(row, request.inner as i64);
         let lhs_element = self.fb.ins().iadd(lhs_element, term);
-        let lhs_element = self.fb.ins().imul_imm(lhs_element, lanes as i64);
-        let rhs_element = self.fb.ins().imul_imm(term, columns as i64);
+        let lhs_element = self.fb.ins().imul_imm(lhs_element, request.lanes as i64);
+        let rhs_element = self.fb.ins().imul_imm(term, request.columns as i64);
         let rhs_element = self.fb.ins().iadd(rhs_element, column);
-        let rhs_element = self.fb.ins().imul_imm(rhs_element, lanes as i64);
-        let lhs_register = self.fb.ins().iadd_imm(lhs_element, i64::from(lhs_start));
-        let rhs_register = self.fb.ins().iadd_imm(rhs_element, i64::from(rhs_start));
+        let rhs_element = self.fb.ins().imul_imm(rhs_element, request.lanes as i64);
+        let lhs_register = self
+            .fb
+            .ins()
+            .iadd_imm(lhs_element, i64::from(request.lhs_start));
+        let rhs_register = self
+            .fb
+            .ins()
+            .iadd_imm(rhs_element, i64::from(request.rhs_start));
         let lhs_offset = self.fb.ins().imul_imm(lhs_register, 8);
         let rhs_offset = self.fb.ins().imul_imm(rhs_register, 8);
         let lhs_address = self.fb.ins().iadd(regs_ptr, lhs_offset);
@@ -4161,7 +4618,7 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         let rhs_re = self.fb.ins().load(types::F64, self.flags, rhs_address, 0);
         let product = self.fb.ins().fmul(lhs_re, rhs_re);
         let next_re = self.fb.ins().fadd(accumulated_re, product);
-        let next_du = if lanes == 2 {
+        let next_du = if request.lanes == 2 {
             let lhs_du = self.fb.ins().load(types::F64, self.flags, lhs_address, 8);
             let rhs_du = self.fb.ins().load(types::F64, self.flags, rhs_address, 8);
             let lhs_term = self.fb.ins().fmul(lhs_du, rhs_re);
@@ -4176,29 +4633,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             term_header,
             &[next_term.into(), next_re.into(), next_du.into()],
         );
-        self.fb.seal_block(term_header);
-
-        self.fb.switch_to_block(term_exit);
-        self.fb.seal_block(term_exit);
-        let output_element = self.fb.ins().imul_imm(output, lanes as i64);
-        let output_register = self.fb.ins().iadd_imm(output_element, i64::from(dst_start));
-        let output_offset = self.fb.ins().imul_imm(output_register, 8);
-        let output_address = self.fb.ins().iadd(regs_ptr, output_offset);
-        self.fb
-            .ins()
-            .store(self.flags, accumulated_re, output_address, 0);
-        if lanes == 2 {
-            self.fb
-                .ins()
-                .store(self.flags, accumulated_du, output_address, 8);
-        }
-        let next_output = self.fb.ins().iadd_imm(output, 1);
-        self.fb.ins().jump(outer_header, &[next_output.into()]);
-        self.fb.seal_block(outer_header);
-
-        self.fb.switch_to_block(outer_exit);
-        self.fb.seal_block(outer_exit);
-        Ok(None)
     }
 
     fn lower_static_matrix_multiply(
@@ -4295,10 +4729,20 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
             return Ok(None);
         };
 
-        let lhs_step = i64::try_from(lhs_stride.saturating_mul(lanes)).map_err(|_| {
+        let lhs_step = checked_usize_mul(
+            lhs_stride,
+            lanes,
+            "tensor binary lhs stride exceeds host range",
+        )?;
+        let lhs_step = i64::try_from(lhs_step).map_err(|_| {
             CompileError::Backend("tensor binary lhs stride exceeds i64".to_string())
         })?;
-        let rhs_step = i64::try_from(rhs_stride.saturating_mul(lanes)).map_err(|_| {
+        let rhs_step = checked_usize_mul(
+            rhs_stride,
+            lanes,
+            "tensor binary rhs stride exceeds host range",
+        )?;
+        let rhs_step = i64::try_from(rhs_step).map_err(|_| {
             CompileError::Backend("tensor binary rhs stride exceeds i64".to_string())
         })?;
         let dst_step = i64::try_from(lanes).map_err(|_| {
@@ -4356,25 +4800,32 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         request: TensorBinaryRequest,
     ) -> Result<(), CompileError> {
         for element in 0..request.count {
-            let lhs = checked_reg_offset(
-                request.lhs_start,
-                element
-                    .saturating_mul(request.lhs_stride)
-                    .saturating_mul(request.lanes),
-                "tensor binary lhs",
+            let lhs_offset = checked_usize_mul(
+                checked_usize_mul(
+                    element,
+                    request.lhs_stride,
+                    "tensor binary lhs element offset overflow",
+                )?,
+                request.lanes,
+                "tensor binary lhs lane offset overflow",
             )?;
-            let rhs = checked_reg_offset(
-                request.rhs_start,
-                element
-                    .saturating_mul(request.rhs_stride)
-                    .saturating_mul(request.lanes),
-                "tensor binary rhs",
+            let lhs = checked_reg_offset(request.lhs_start, lhs_offset, "tensor binary lhs")?;
+            let rhs_offset = checked_usize_mul(
+                checked_usize_mul(
+                    element,
+                    request.rhs_stride,
+                    "tensor binary rhs element offset overflow",
+                )?,
+                request.lanes,
+                "tensor binary rhs lane offset overflow",
             )?;
-            let dst = checked_reg_offset(
-                request.dst_start,
-                element.saturating_mul(request.lanes),
-                "tensor binary output",
+            let rhs = checked_reg_offset(request.rhs_start, rhs_offset, "tensor binary rhs")?;
+            let dst_offset = checked_usize_mul(
+                element,
+                request.lanes,
+                "tensor binary output lane offset overflow",
             )?;
+            let dst = checked_reg_offset(request.dst_start, dst_offset, "tensor binary output")?;
             let lhs_re = self.lookup(lhs)?;
             let rhs_re = self.lookup(rhs)?;
             let primal = emit_tensor_binary_primal(
@@ -5932,61 +6383,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
         self.lower_loaded_reg(dst, base, index)
     }
 
-    fn lower_table_bounds(
-        &mut self,
-        dst: u32,
-        table_id: u32,
-        max: bool,
-    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let table_id = self.lookup(table_id)?;
-        let kind = if max {
-            TableHostFn::BoundsMax
-        } else {
-            TableHostFn::BoundsMin
-        };
-        let value = call_table_host(self.fb, self.module, self.math, kind, &[table_id])?;
-        self.insert(dst, value)
-    }
-
-    fn lower_table_lookup(
-        &mut self,
-        dst: u32,
-        table_id: u32,
-        column: u32,
-        input: u32,
-        kind: TableHostFn,
-    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let table_id = self.lookup(table_id)?;
-        let column = self.lookup(column)?;
-        let input = self.lookup(input)?;
-        let value = call_table_host(
-            self.fb,
-            self.module,
-            self.math,
-            kind,
-            &[table_id, column, input],
-        )?;
-        self.insert(dst, value)
-    }
-
-    fn lower_table_next_event(
-        &mut self,
-        dst: u32,
-        table_id: u32,
-        time: u32,
-    ) -> Result<Option<cranelift_codegen::ir::Value>, CompileError> {
-        let table_id = self.lookup(table_id)?;
-        let time = self.lookup(time)?;
-        let value = call_table_host(
-            self.fb,
-            self.module,
-            self.math,
-            TableHostFn::NextEvent,
-            &[table_id, time],
-        )?;
-        self.insert(dst, value)
-    }
-
     fn lower_linear_solve_component(
         &mut self,
         dst: u32,
@@ -6055,7 +6451,6 @@ impl<'a, 'b> RowLowerCtx<'a, 'b> {
 struct MathImports {
     unary: HashMap<UnaryMathFn, FuncId>,
     binary: HashMap<BinaryMathFn, FuncId>,
-    table: HashMap<TableHostFn, FuncId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -6110,35 +6505,6 @@ impl BinaryMathFn {
         match self {
             Self::Pow => "rumoca_host_powf",
             Self::Atan2 => "rumoca_host_atan2",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum TableHostFn {
-    BoundsMin,
-    BoundsMax,
-    Lookup,
-    LookupSlope,
-    NextEvent,
-}
-
-impl TableHostFn {
-    fn symbol(self) -> &'static str {
-        match self {
-            Self::BoundsMin => "rumoca_host_table_bounds_min",
-            Self::BoundsMax => "rumoca_host_table_bounds_max",
-            Self::Lookup => "rumoca_host_table_lookup",
-            Self::LookupSlope => "rumoca_host_table_lookup_slope",
-            Self::NextEvent => "rumoca_host_table_next_event",
-        }
-    }
-
-    fn arity(self) -> usize {
-        match self {
-            Self::BoundsMin | Self::BoundsMax => 1,
-            Self::Lookup | Self::LookupSlope => 3,
-            Self::NextEvent => 2,
         }
     }
 }
@@ -6498,36 +6864,6 @@ fn call_binary_math(
         .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
 }
 
-fn call_table_host(
-    fb: &mut FunctionBuilder<'_>,
-    module: &mut JITModule,
-    math: &mut MathImports,
-    function: TableHostFn,
-    args: &[cranelift_codegen::ir::Value],
-) -> Result<cranelift_codegen::ir::Value, CompileError> {
-    let func_id = if let Some(existing) = math.table.get(&function).copied() {
-        existing
-    } else {
-        let mut sig = module.make_signature();
-        for _ in 0..function.arity() {
-            sig.params.push(AbiParam::new(types::F64));
-        }
-        sig.returns.push(AbiParam::new(types::F64));
-        let func_id = module
-            .declare_function(function.symbol(), Linkage::Import, &sig)
-            .map_err(to_backend_err)?;
-        math.table.insert(function, func_id);
-        func_id
-    };
-    let callee = declare_far_call_in_func(module, func_id, fb.func);
-    let call = fb.ins().call(callee, args);
-    let values = fb.inst_results(call);
-    values
-        .first()
-        .copied()
-        .ok_or_else(|| CompileError::Backend(format!("no return value for {}", function.symbol())))
-}
-
 fn checked_reg_offset(base: u32, offset: usize, kind: &str) -> Result<u32, CompileError> {
     let offset = u32::try_from(offset)
         .map_err(|_| CompileError::Backend(format!("linear solve {kind} register overflow")))?;
@@ -6549,7 +6885,8 @@ fn checked_f64_stack_bytes(count: usize, message: &str) -> Result<u32, CompileEr
         .ok_or_else(|| CompileError::Backend(message.to_string()))
 }
 
-fn conditional_capture_range(operation: &LinearOp) -> Option<(usize, usize)> {
+fn conditional_capture_range(operation: &AdmittedLinearOp) -> Option<(usize, usize)> {
+    use AdmittedLinearOp as LinearOp;
     match operation {
         LinearOp::LoadFunctionConditionalCapture { index, .. } => Some((*index, 1)),
         LinearOp::LoadFunctionConditionalCaptureRange {
@@ -6559,7 +6896,8 @@ fn conditional_capture_range(operation: &LinearOp) -> Option<(usize, usize)> {
     }
 }
 
-fn is_fold_output(operation: &LinearOp) -> bool {
+fn is_fold_output(operation: &AdmittedLinearOp) -> bool {
+    use AdmittedLinearOp as LinearOp;
     matches!(
         operation,
         LinearOp::StoreOutput { .. }
@@ -6578,6 +6916,16 @@ fn checked_usize_add(lhs: usize, rhs: usize, message: &str) -> Result<usize, Com
         .ok_or_else(|| CompileError::Backend(message.to_string()))
 }
 
+fn checked_usize_mul(lhs: usize, rhs: usize, message: &str) -> Result<usize, CompileError> {
+    lhs.checked_mul(rhs)
+        .ok_or_else(|| CompileError::Backend(message.to_string()))
+}
+
+fn checked_square_len(n: usize, kind: &str) -> Result<usize, CompileError> {
+    n.checked_mul(n)
+        .ok_or_else(|| CompileError::Backend(format!("{kind} size overflow")))
+}
+
 fn tensor_output_count(dimensions: &[u32], lanes: usize) -> Result<usize, CompileError> {
     dimensions
         .iter()
@@ -6588,115 +6936,18 @@ fn tensor_output_count(dimensions: &[u32], lanes: usize) -> Result<usize, Compil
         })
 }
 
-// SPEC_0021: exhaustive classification of the complete LinearOp row vocabulary.
-#[expect(
-    clippy::too_many_lines,
-    clippy::excessive_nesting,
-    reason = "row planning must classify every LinearOp variant in one dispatch"
-)]
-fn plan_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
-    let mut reg_count = 0usize;
+fn plan_scalar_program(execution: ScalarProgramExecution<'_>) -> Result<RowPlan, CompileError> {
+    let row = execution.operations();
     let input_requirements = input_requirements_for_linear_ops(row)?;
-    for op in row {
-        if let Some(index) = max_reg_index(op.clone())? {
-            reg_count = reg_count.max(index.checked_add(1).ok_or_else(|| {
-                CompileError::Backend("compiled row register count overflow".to_string())
-            })?);
-        }
-    }
-    let mut defined = checked_vec_with_capacity(reg_count, "defined register flags")?;
-    defined.resize(reg_count, false);
-    for op in row {
-        validate_row_sources(&defined, op.clone())?;
-        if let Some(dst) = dst_reg(op.clone()) {
-            let count = match op {
-                LinearOp::FunctionFold { program, .. }
-                | LinearOp::GuardedFunctionFold { program, .. } => program.carried_count(),
-                LinearOp::FunctionConditional { program, .. } => program.result_count(),
-                LinearOp::PureCall { site, .. } => site.output_scalar_count().ok_or_else(|| {
-                    CompileError::Backend("typed pure-call output width overflows".to_string())
-                })?,
-                LinearOp::PureCallDirectional { site, .. } => {
-                    site.output_scalar_count().ok_or_else(|| {
-                        CompileError::Backend(
-                            "typed directional output width overflows".to_string(),
-                        )
-                    })?
-                }
-                LinearOp::MatrixMultiply {
-                    rows,
-                    columns,
-                    lanes,
-                    ..
-                } => rows.saturating_mul(*columns).saturating_mul(*lanes),
-                LinearOp::TensorBinary { count, lanes, .. } => count.saturating_mul(*lanes),
-                LinearOp::TensorCross { lanes, .. } => 3usize.saturating_mul(*lanes),
-                LinearOp::TensorTranspose {
-                    rows,
-                    columns,
-                    element_width,
-                    lanes,
-                    ..
-                } => rows
-                    .saturating_mul(*columns)
-                    .saturating_mul(*element_width)
-                    .saturating_mul(*lanes),
-                LinearOp::TensorConcatenate {
-                    dimensions, lanes, ..
-                } => dimensions.iter().fold(*lanes, |count, extent| {
-                    count.saturating_mul(*extent as usize)
-                }),
-                LinearOp::TensorUpdate {
-                    dimensions, lanes, ..
-                } => dimensions.iter().fold(*lanes, |count, extent| {
-                    count.saturating_mul(*extent as usize)
-                }),
-                LinearOp::TensorFill { count, lanes, .. } => count.saturating_mul(*lanes),
-                LinearOp::TensorIdentity { size, lanes, .. } => {
-                    size.saturating_mul(*size).saturating_mul(*lanes)
-                }
-                LinearOp::TensorLoad { count, lanes, .. } => count.saturating_mul(*lanes),
-                _ => 1,
-            };
-            defined[dst..dst + count].fill(true);
-        }
-    }
-    // Collect every checked output projection in order and keep compute ops as
-    // the body. Compact ranges remain one Solve op until this final native
-    // row-plan boundary, where target output slots become explicit.
-    let mut output_srcs = Vec::new();
-    let mut body: Vec<LinearOp> = Vec::with_capacity(row.len());
+    let mut body = checked_vec_with_capacity(row.len(), "runtime row operations")?;
     for op in row {
         match op {
-            LinearOp::StoreOutput { src } => output_srcs.push(*src as usize),
-            LinearOp::StoreOutputRange {
-                start,
-                count,
-                stride,
-            } => {
-                if *count == 0 {
-                    return Err(CompileError::Backend(
-                        "compiled row has an empty StoreOutputRange".to_string(),
-                    ));
-                }
-                for ordinal in 0..*count {
-                    output_srcs.push(checked_strided_register(
-                        *start,
-                        ordinal,
-                        *stride,
-                        "output range",
-                    )? as usize);
-                }
-            }
+            LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. } => {}
             _ => body.push(op.clone()),
         }
     }
-    if output_srcs.is_empty() {
-        return Err(CompileError::Backend(
-            "compiled row is missing an output projection".to_string(),
-        ));
-    }
-    let output_srcs = output_srcs.into_boxed_slice();
+    let output_srcs = execution.output_sources().to_vec().into_boxed_slice();
+    let reg_count = execution.register_count();
 
     if body.iter().cloned().all(is_simple_linear_op) {
         let mut ops = checked_vec_with_capacity(body.len(), "simple runtime ops")?;
@@ -6765,10 +7016,6 @@ fn is_simple_linear_op(op: LinearOp) -> bool {
             | LinearOp::TensorFill { .. }
             | LinearOp::TensorIdentity { .. }
             | LinearOp::TensorLoad { .. }
-            | LinearOp::TableBounds { .. }
-            | LinearOp::TableLookup { .. }
-            | LinearOp::TableLookupSlope { .. }
-            | LinearOp::TableNextEvent { .. }
             | LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
             | LinearOp::RandomState { .. }
@@ -6834,10 +7081,6 @@ fn lower_simple_op(op: LinearOp) -> Result<SimpleOp, CompileError> {
         | LinearOp::TensorFill { .. }
         | LinearOp::TensorIdentity { .. }
         | LinearOp::TensorLoad { .. }
-        | LinearOp::TableBounds { .. }
-        | LinearOp::TableLookup { .. }
-        | LinearOp::TableLookupSlope { .. }
-        | LinearOp::TableNextEvent { .. }
         | LinearOp::RandomInitialState { .. }
         | LinearOp::RandomResult { .. }
         | LinearOp::RandomState { .. }
@@ -6871,1120 +7114,6 @@ fn checked_strided_register(
     start
         .checked_add(offset)
         .ok_or_else(|| CompileError::Backend(format!("{kind} register index overflows u32")))
-}
-
-// SPEC_0021: exhaustive register-footprint dispatch over every LinearOp variant.
-#[expect(
-    clippy::too_many_lines,
-    clippy::excessive_nesting,
-    reason = "one exhaustive dispatch proves the register footprint of every LinearOp"
-)]
-fn max_reg_index(op: LinearOp) -> Result<Option<usize>, CompileError> {
-    match op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::LoadFoldCarried { dst, .. }
-        | LinearOp::LoadFoldIndex { dst, .. }
-        | LinearOp::LoadFoldCapture { dst, .. }
-        | LinearOp::LoadFunctionConditionalCapture { dst, .. }
-        | LinearOp::TableBounds { dst, .. }
-        | LinearOp::TableLookup { dst, .. }
-        | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. } => Ok(Some(dst as usize)),
-        LinearOp::LoadFunctionConditionalCaptureRange {
-            dst_start, count, ..
-        } => Ok(Some(checked_range_last_reg(
-            dst_start,
-            count,
-            "function conditional capture range destination",
-        )? as usize)),
-        LinearOp::LoadIndexedRegister {
-            dst,
-            base,
-            stride,
-            dimensions,
-            indices,
-        } => {
-            let count = dimensions
-                .iter()
-                .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
-                .ok_or_else(|| {
-                    CompileError::Backend("runtime tensor projection extent overflow".to_string())
-                })?;
-            let mut last = dst.max(checked_strided_register(
-                base,
-                count.saturating_sub(1),
-                stride,
-                "runtime tensor projection source",
-            )?);
-            for index in indices {
-                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
-                    last = last.max(register);
-                }
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::LoadIndexedFoldCarried { dst, indices, .. }
-        | LinearOp::LoadIndexedFoldCapture { dst, indices, .. } => {
-            let mut last = dst;
-            for index in indices {
-                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
-                    last = last.max(register);
-                }
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::RandomInitialState {
-            dst,
-            local_seed,
-            global_seed,
-            ..
-        } => Ok(Some(dst.max(local_seed).max(global_seed) as usize)),
-        LinearOp::RandomResult {
-            dst,
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            dst,
-            state_start,
-            state_len,
-            ..
-        } => Ok(Some(dst.max(checked_range_last_reg(
-            state_start,
-            state_len,
-            "random state",
-        )?) as usize)),
-        LinearOp::ImpureRandomInit { dst, seed } => Ok(Some(dst.max(seed) as usize)),
-        LinearOp::ImpureRandom { dst, id, .. } => Ok(Some(dst.max(id) as usize)),
-        LinearOp::ImpureRandomInteger {
-            dst,
-            id,
-            imin,
-            imax,
-            ..
-        } => Ok(Some(dst.max(id).max(imin).max(imax) as usize)),
-        LinearOp::Move { dst, src } => Ok(Some(dst.max(src) as usize)),
-        LinearOp::LinearSolveComponent {
-            dst,
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => Ok(Some(
-            dst.max(checked_range_last_reg(
-                matrix_start,
-                checked_square_len(n, "linear solve matrix")?,
-                "linear solve matrix",
-            )?)
-            .max(checked_range_last_reg(rhs_start, n, "linear solve rhs")?) as usize,
-        )),
-        LinearOp::DotProduct {
-            dst,
-            lhs_start,
-            rhs_start,
-            count,
-            lhs_stride,
-            rhs_stride,
-        } => {
-            let last = count.saturating_sub(1);
-            let lhs = checked_strided_register(lhs_start, last, lhs_stride, "dot lhs")?;
-            let rhs = checked_strided_register(rhs_start, last, rhs_stride, "dot rhs")?;
-            Ok(Some(dst.max(lhs).max(rhs) as usize))
-        }
-        LinearOp::MatrixMultiply {
-            dst_start,
-            lhs_start,
-            rhs_start,
-            rows,
-            inner,
-            columns,
-            lanes,
-        } => {
-            let output = rows
-                .checked_mul(columns)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("matrix multiply output range overflow".to_string())
-                })?;
-            let lhs = rows
-                .checked_mul(inner)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("matrix multiply lhs range overflow".to_string())
-                })?;
-            let rhs = inner
-                .checked_mul(columns)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("matrix multiply rhs range overflow".to_string())
-                })?;
-            Ok(Some(
-                checked_range_last_reg(dst_start, output, "matrix multiply output")?
-                    .max(checked_range_last_reg(
-                        lhs_start,
-                        lhs,
-                        "matrix multiply lhs",
-                    )?)
-                    .max(checked_range_last_reg(
-                        rhs_start,
-                        rhs,
-                        "matrix multiply rhs",
-                    )?) as usize,
-            ))
-        }
-        LinearOp::TensorBinary {
-            dst_start,
-            lhs_start,
-            rhs_start,
-            count,
-            lhs_stride,
-            rhs_stride,
-            lanes,
-            ..
-        } => {
-            let output_count = count.checked_mul(lanes).ok_or_else(|| {
-                CompileError::Backend("tensor binary output range overflow".to_string())
-            })?;
-            let source_last = |start, stride, kind| {
-                let element_offset = count
-                    .saturating_sub(1)
-                    .checked_mul(stride)
-                    .and_then(|offset| offset.checked_mul(lanes))
-                    .and_then(|offset| offset.checked_add(lanes.saturating_sub(1)))
-                    .ok_or_else(|| CompileError::Backend(format!("{kind} range overflow")))?;
-                checked_reg_offset(start, element_offset, kind)
-            };
-            Ok(Some(
-                checked_range_last_reg(dst_start, output_count, "tensor binary output")?
-                    .max(source_last(lhs_start, lhs_stride, "tensor binary lhs")?)
-                    .max(source_last(rhs_start, rhs_stride, "tensor binary rhs")?)
-                    as usize,
-            ))
-        }
-        LinearOp::TensorCross {
-            dst_start,
-            lhs_start,
-            rhs_start,
-            lanes,
-        } => {
-            let count = 3usize.checked_mul(lanes).ok_or_else(|| {
-                CompileError::Backend("tensor cross product range overflow".to_string())
-            })?;
-            Ok(Some(
-                checked_range_last_reg(dst_start, count, "tensor cross product output")?
-                    .max(checked_range_last_reg(
-                        lhs_start,
-                        count,
-                        "tensor cross product lhs",
-                    )?)
-                    .max(checked_range_last_reg(
-                        rhs_start,
-                        count,
-                        "tensor cross product rhs",
-                    )?) as usize,
-            ))
-        }
-        LinearOp::TensorTranspose {
-            dst_start,
-            src_start,
-            rows,
-            columns,
-            element_width,
-            lanes,
-        } => {
-            let count = rows
-                .checked_mul(columns)
-                .and_then(|count| count.checked_mul(element_width))
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("tensor transpose range overflow".to_string())
-                })?;
-            Ok(Some(
-                checked_range_last_reg(dst_start, count, "tensor transpose output")?.max(
-                    checked_range_last_reg(src_start, count, "tensor transpose source")?,
-                ) as usize,
-            ))
-        }
-        LinearOp::TensorConcatenate {
-            dst_start,
-            sources,
-            dimensions,
-            lanes,
-            ..
-        } => {
-            let output_count = dimensions
-                .iter()
-                .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-                .ok_or_else(|| {
-                    CompileError::Backend("tensor concatenate output overflow".to_string())
-                })?;
-            let mut last =
-                checked_range_last_reg(dst_start, output_count, "tensor concatenate output")?;
-            for source in sources {
-                let count = source
-                    .dimensions
-                    .iter()
-                    .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor concatenate source overflow".to_string())
-                    })?;
-                last = last.max(checked_range_last_reg(
-                    source.start,
-                    count,
-                    "tensor concatenate source",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::TensorUpdate {
-            dst_start,
-            base_start,
-            value_start,
-            dimensions,
-            subscripts,
-            lanes,
-        } => {
-            let output_count = dimensions
-                .iter()
-                .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-                .ok_or_else(|| CompileError::Backend("tensor update output overflow".into()))?;
-            let mut last =
-                checked_range_last_reg(dst_start, output_count, "tensor update output")?.max(
-                    checked_range_last_reg(base_start, output_count, "tensor update base")?,
-                );
-            let mut value_count = lanes;
-            for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-                match subscript {
-                    rumoca_ir_solve::TensorUpdateSubscript::Whole => {
-                        value_count =
-                            value_count.checked_mul(extent as usize).ok_or_else(|| {
-                                CompileError::Backend("tensor update value overflow".into())
-                            })?;
-                    }
-                    rumoca_ir_solve::TensorUpdateSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) => last = last.max(*register),
-                    rumoca_ir_solve::TensorUpdateSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Constant(_),
-                    ) => {}
-                    rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                        let count = dimensions
-                            .iter()
-                            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-                            .ok_or_else(|| {
-                                CompileError::Backend("tensor update slice overflow".into())
-                            })?;
-                        last = last.max(checked_range_last_reg(
-                            *start,
-                            count,
-                            "tensor update slice",
-                        )?);
-                        value_count = value_count.checked_mul(count).ok_or_else(|| {
-                            CompileError::Backend("tensor update sliced value overflow".into())
-                        })?;
-                    }
-                }
-            }
-            last = last.max(checked_range_last_reg(
-                value_start,
-                value_count,
-                "tensor update value",
-            )?);
-            Ok(Some(last as usize))
-        }
-        LinearOp::TensorFill {
-            dst_start,
-            value_start,
-            count,
-            lanes,
-        } => Ok(Some(
-            checked_range_last_reg(
-                dst_start,
-                count
-                    .checked_mul(lanes)
-                    .ok_or_else(|| CompileError::Backend("tensor fill overflow".into()))?,
-                "tensor fill output",
-            )?
-            .max(checked_range_last_reg(
-                value_start,
-                lanes,
-                "tensor fill value",
-            )?) as usize,
-        )),
-        LinearOp::TensorIdentity {
-            dst_start,
-            size,
-            lanes,
-        } => Ok(Some(checked_range_last_reg(
-            dst_start,
-            size.checked_mul(size)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| CompileError::Backend("tensor identity overflow".into()))?,
-            "tensor identity output",
-        )? as usize)),
-        LinearOp::TensorLoad {
-            dst_start,
-            count,
-            lanes,
-            ..
-        } => Ok(Some(checked_range_last_reg(
-            dst_start,
-            count
-                .checked_mul(lanes)
-                .ok_or_else(|| CompileError::Backend("tensor load overflow".into()))?,
-            "tensor load output",
-        )? as usize)),
-        LinearOp::Unary { dst, arg, .. } => Ok(Some((dst.max(arg)) as usize)),
-        LinearOp::Binary { dst, lhs, rhs, .. } | LinearOp::Compare { dst, lhs, rhs, .. } => {
-            Ok(Some(dst.max(lhs).max(rhs) as usize))
-        }
-        LinearOp::Select {
-            dst,
-            cond,
-            if_true,
-            if_false,
-        } => Ok(Some(dst.max(cond).max(if_true).max(if_false) as usize)),
-        LinearOp::FunctionFold {
-            dst_start,
-            initial_start,
-            capture_start,
-            program,
-        } => {
-            let output =
-                checked_range_last_reg(dst_start, program.carried_count(), "function fold output")?;
-            let initial = checked_range_last_reg(
-                initial_start,
-                program.carried_count(),
-                "function fold initial",
-            )?;
-            let mut last = output.max(initial);
-            if program.capture_count() != 0 {
-                last = last.max(checked_range_last_reg(
-                    capture_start,
-                    program.capture_count(),
-                    "function fold capture",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::GuardedFunctionFold {
-            dst_start,
-            initial_start,
-            capture_start,
-            activation,
-            program,
-        } => {
-            let output = checked_range_last_reg(
-                dst_start,
-                program.carried_count(),
-                "guarded function fold output",
-            )?;
-            let initial = checked_range_last_reg(
-                initial_start,
-                program.carried_count(),
-                "guarded function fold initial",
-            )?;
-            let mut last = output.max(initial).max(activation);
-            if program.capture_count() != 0 {
-                last = last.max(checked_range_last_reg(
-                    capture_start,
-                    program.capture_count(),
-                    "guarded function fold capture",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::FunctionConditional {
-            dst_start,
-            capture_start,
-            program,
-        } => {
-            let mut last = checked_range_last_reg(
-                dst_start,
-                program.result_count(),
-                "function conditional output",
-            )?;
-            if program.capture_count() != 0 {
-                last = last.max(checked_range_last_reg(
-                    capture_start,
-                    program.capture_count(),
-                    "function conditional capture",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::StoreOutputFoldTensorUpdate {
-            dimensions,
-            updates,
-            nodes,
-            lanes,
-            ..
-        } => {
-            let mut last = 0;
-            for update in updates {
-                let value_count = dimensions
-                    .iter()
-                    .zip(update.subscripts.iter())
-                    .try_fold(1usize, |count, (&extent, subscript)| {
-                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                            count.checked_mul(extent as usize)
-                        } else {
-                            Some(count)
-                        }
-                    })
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor update value extent overflow".to_string())
-                    })?;
-                let value_last = checked_strided_register(
-                    update.value_start,
-                    value_count.saturating_sub(1),
-                    update.value_stride,
-                    "tensor update value",
-                )?
-                .checked_add(u32::try_from(lanes.saturating_sub(1)).map_err(|_| {
-                    CompileError::Backend("tensor update lane exceeds u32".to_string())
-                })?)
-                .ok_or_else(|| {
-                    CompileError::Backend("tensor update value register overflow".to_string())
-                })?;
-                last = last.max(value_last);
-                for subscript in update.subscripts {
-                    if let rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) = subscript
-                    {
-                        last = last.max(register);
-                    }
-                }
-                if let Some(condition) = update.condition {
-                    last = last.max(condition);
-                }
-            }
-            for node in nodes {
-                if let rumoca_ir_solve::FoldTensorNode::Select { condition, .. } = node {
-                    last = last.max(condition);
-                }
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::StoreOutputFunctionFold {
-            initial,
-            capture_start,
-            program,
-            condition,
-            ..
-        } => {
-            let mut last = 0;
-            for source in initial {
-                if let rumoca_ir_solve::FoldInitialSource::Registers { start, count } = source
-                    && count != 0
-                {
-                    last = last.max(checked_range_last_reg(
-                        start,
-                        count,
-                        "nested function fold initial",
-                    )?);
-                }
-            }
-            if program.capture_count() != 0 {
-                last = last.max(checked_range_last_reg(
-                    capture_start,
-                    program.capture_count(),
-                    "nested function fold capture",
-                )?);
-            }
-            if let Some(condition) = condition {
-                last = last.max(condition);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::StoreOutputRange {
-            start,
-            count,
-            stride,
-        } => Ok(Some(checked_strided_register(
-            start,
-            count.saturating_sub(1),
-            stride,
-            "output range",
-        )? as usize)),
-        LinearOp::PureCall {
-            dst_start,
-            input_starts,
-            site,
-        } => {
-            let output_count = site.output_scalar_count().ok_or_else(|| {
-                CompileError::Backend("typed pure-call output width overflows".to_string())
-            })?;
-            let mut last = checked_range_last_reg(dst_start, output_count, "pure call output")?;
-            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
-                last = last.max(checked_range_last_reg(
-                    *start,
-                    value_type.scalar_count() as usize,
-                    "pure call input",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::PureCallDirectional {
-            dst_start,
-            input_starts,
-            site,
-        } => {
-            let output_count = site.output_scalar_count().ok_or_else(|| {
-                CompileError::Backend(
-                    "typed directional pure-call output width overflows".to_string(),
-                )
-            })?;
-            let mut last =
-                checked_range_last_reg(dst_start, output_count, "directional pure call output")?;
-            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
-                last = last.max(checked_range_last_reg(
-                    *start,
-                    value_type.scalar_count() as usize,
-                    "directional pure call input",
-                )?);
-            }
-            Ok(Some(last as usize))
-        }
-        LinearOp::StoreOutput { src } => Ok(Some(src as usize)),
-    }
-}
-
-fn checked_square_len(n: usize, kind: &str) -> Result<usize, CompileError> {
-    n.checked_mul(n)
-        .ok_or_else(|| CompileError::Backend(format!("{kind} size overflow")))
-}
-
-fn checked_range_last_reg(base: u32, count: usize, kind: &str) -> Result<u32, CompileError> {
-    let Some(offset) = count.checked_sub(1) else {
-        return Ok(base);
-    };
-    checked_reg_offset(base, offset, kind)
-}
-
-fn dst_reg(op: LinearOp) -> Option<usize> {
-    match op {
-        LinearOp::Const { dst, .. }
-        | LinearOp::LoadTime { dst }
-        | LinearOp::LoadY { dst, .. }
-        | LinearOp::LoadP { dst, .. }
-        | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::LoadFoldCarried { dst, .. }
-        | LinearOp::LoadFoldIndex { dst, .. }
-        | LinearOp::LoadFoldCapture { dst, .. }
-        | LinearOp::LoadFunctionConditionalCapture { dst, .. }
-        | LinearOp::TableBounds { dst, .. }
-        | LinearOp::TableLookup { dst, .. }
-        | LinearOp::TableLookupSlope { dst, .. }
-        | LinearOp::TableNextEvent { dst, .. }
-        | LinearOp::RandomInitialState { dst, .. }
-        | LinearOp::RandomResult { dst, .. }
-        | LinearOp::RandomState { dst, .. }
-        | LinearOp::ImpureRandomInit { dst, .. }
-        | LinearOp::ImpureRandom { dst, .. }
-        | LinearOp::ImpureRandomInteger { dst, .. }
-        | LinearOp::Move { dst, .. }
-        | LinearOp::LinearSolveComponent { dst, .. }
-        | LinearOp::DotProduct { dst, .. }
-        | LinearOp::Unary { dst, .. }
-        | LinearOp::Binary { dst, .. }
-        | LinearOp::Compare { dst, .. }
-        | LinearOp::LoadIndexedRegister { dst, .. }
-        | LinearOp::LoadIndexedFoldCarried { dst, .. }
-        | LinearOp::LoadIndexedFoldCapture { dst, .. }
-        | LinearOp::Select { dst, .. } => Some(dst as usize),
-        LinearOp::LoadFunctionConditionalCaptureRange { dst_start, .. } => Some(dst_start as usize),
-        LinearOp::FunctionFold { dst_start, .. }
-        | LinearOp::GuardedFunctionFold { dst_start, .. }
-        | LinearOp::FunctionConditional { dst_start, .. }
-        | LinearOp::PureCall { dst_start, .. }
-        | LinearOp::PureCallDirectional { dst_start, .. }
-        | LinearOp::MatrixMultiply { dst_start, .. }
-        | LinearOp::TensorBinary { dst_start, .. }
-        | LinearOp::TensorCross { dst_start, .. } => Some(dst_start as usize),
-        LinearOp::TensorTranspose { dst_start, .. } => Some(dst_start as usize),
-        LinearOp::TensorConcatenate { dst_start, .. }
-        | LinearOp::TensorUpdate { dst_start, .. }
-        | LinearOp::TensorFill { dst_start, .. }
-        | LinearOp::TensorIdentity { dst_start, .. }
-        | LinearOp::TensorLoad { dst_start, .. } => Some(dst_start as usize),
-        LinearOp::StoreOutputFoldTensorUpdate { .. }
-        | LinearOp::StoreOutputFunctionFold { .. }
-        | LinearOp::StoreOutputRange { .. }
-        | LinearOp::StoreOutput { .. } => None,
-    }
-}
-
-// SPEC_0021: exhaustive source-validation dispatch over every LinearOp variant.
-#[expect(
-    clippy::too_many_lines,
-    clippy::excessive_nesting,
-    reason = "one exhaustive dispatch validates every LinearOp source contract"
-)]
-fn validate_row_sources(defined: &[bool], op: LinearOp) -> Result<(), CompileError> {
-    match op {
-        LinearOp::PureCall {
-            input_starts, site, ..
-        } => {
-            if input_starts.len() != site.inputs().len() {
-                return Err(CompileError::Backend(
-                    "typed pure-call input ABI mismatch".to_string(),
-                ));
-            }
-            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
-                validate_reg_range_defined(defined, *start, value_type.scalar_count() as usize)?;
-            }
-            Ok(())
-        }
-        LinearOp::PureCallDirectional {
-            input_starts, site, ..
-        } => {
-            if input_starts.len() != site.inputs().len() {
-                return Err(CompileError::Backend(
-                    "typed directional pure-call input ABI mismatch".to_string(),
-                ));
-            }
-            for (start, value_type) in input_starts.iter().zip(site.inputs()) {
-                validate_reg_range_defined(defined, *start, value_type.scalar_count() as usize)?;
-            }
-            Ok(())
-        }
-        LinearOp::LoadIndexedRegister {
-            base,
-            stride,
-            dimensions,
-            indices,
-            ..
-        } => {
-            let count = dimensions
-                .iter()
-                .try_fold(1usize, |count, &extent| count.checked_mul(extent as usize))
-                .ok_or_else(|| {
-                    CompileError::Backend("runtime tensor projection extent overflow".to_string())
-                })?;
-            for offset in 0..count {
-                validate_reg_defined(
-                    defined,
-                    checked_strided_register(
-                        base,
-                        offset,
-                        stride,
-                        "runtime tensor projection source",
-                    )?,
-                )?;
-            }
-            for index in indices {
-                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
-                    validate_reg_defined(defined, register)?;
-                }
-            }
-            Ok(())
-        }
-        LinearOp::LoadIndexedFoldCarried { indices, .. }
-        | LinearOp::LoadIndexedFoldCapture { indices, .. } => {
-            for index in indices {
-                if let rumoca_ir_solve::TensorIndex::Runtime(register) = index {
-                    validate_reg_defined(defined, register)?;
-                }
-            }
-            Ok(())
-        }
-        LinearOp::StoreOutputFoldTensorUpdate {
-            dimensions,
-            updates,
-            nodes,
-            lanes,
-            ..
-        } => {
-            for update in updates {
-                if let Some(condition) = update.condition {
-                    validate_reg_defined(defined, condition)?;
-                }
-                let value_count = dimensions
-                    .iter()
-                    .zip(update.subscripts.iter())
-                    .try_fold(1usize, |count, (&extent, subscript)| {
-                        if matches!(subscript, rumoca_ir_solve::TensorSubscript::Whole) {
-                            count.checked_mul(extent as usize)
-                        } else {
-                            Some(count)
-                        }
-                    })
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor update value extent overflow".to_string())
-                    })?;
-                for element in 0..value_count {
-                    let base = checked_strided_register(
-                        update.value_start,
-                        element,
-                        update.value_stride,
-                        "tensor update value",
-                    )?;
-                    for lane in 0..lanes {
-                        validate_reg_defined(
-                            defined,
-                            base.checked_add(u32::try_from(lane).map_err(|_| {
-                                CompileError::Backend("tensor update lane exceeds u32".to_string())
-                            })?)
-                            .ok_or_else(|| {
-                                CompileError::Backend(
-                                    "tensor update value register overflow".to_string(),
-                                )
-                            })?,
-                        )?;
-                    }
-                }
-                for subscript in update.subscripts {
-                    if let rumoca_ir_solve::TensorSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) = subscript
-                    {
-                        validate_reg_defined(defined, register)?;
-                    }
-                }
-            }
-            for node in nodes {
-                if let rumoca_ir_solve::FoldTensorNode::Select { condition, .. } = node {
-                    validate_reg_defined(defined, condition)?;
-                }
-            }
-            Ok(())
-        }
-        LinearOp::TableBounds { table_id, .. } => validate_reg_defined(defined, table_id),
-        LinearOp::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        } => {
-            validate_reg_defined(defined, table_id)?;
-            validate_reg_defined(defined, column)?;
-            validate_reg_defined(defined, input)
-        }
-        LinearOp::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => {
-            validate_reg_defined(defined, table_id)?;
-            validate_reg_defined(defined, column)?;
-            validate_reg_defined(defined, input)
-        }
-        LinearOp::TableNextEvent { table_id, time, .. } => {
-            validate_reg_defined(defined, table_id)?;
-            validate_reg_defined(defined, time)
-        }
-        LinearOp::RandomInitialState {
-            local_seed,
-            global_seed,
-            ..
-        } => {
-            validate_reg_defined(defined, local_seed)?;
-            validate_reg_defined(defined, global_seed)
-        }
-        LinearOp::RandomResult {
-            state_start,
-            state_len,
-            ..
-        }
-        | LinearOp::RandomState {
-            state_start,
-            state_len,
-            ..
-        } => validate_reg_range_defined(defined, state_start, state_len),
-        LinearOp::ImpureRandomInit { seed, .. } => validate_reg_defined(defined, seed),
-        LinearOp::ImpureRandom { id, .. } => validate_reg_defined(defined, id),
-        LinearOp::ImpureRandomInteger { id, imin, imax, .. } => {
-            validate_reg_defined(defined, id)?;
-            validate_reg_defined(defined, imin)?;
-            validate_reg_defined(defined, imax)
-        }
-        LinearOp::Move { src, .. } => validate_reg_defined(defined, src),
-        LinearOp::LinearSolveComponent {
-            matrix_start,
-            rhs_start,
-            n,
-            ..
-        } => {
-            validate_reg_range_defined(
-                defined,
-                matrix_start,
-                checked_square_len(n, "linear solve matrix")?,
-            )?;
-            validate_reg_range_defined(defined, rhs_start, n)
-        }
-        LinearOp::DotProduct {
-            lhs_start,
-            rhs_start,
-            count,
-            lhs_stride,
-            rhs_stride,
-            ..
-        } => {
-            for term in 0..count {
-                validate_reg_defined(
-                    defined,
-                    checked_strided_register(lhs_start, term, lhs_stride, "dot lhs")?,
-                )?;
-                validate_reg_defined(
-                    defined,
-                    checked_strided_register(rhs_start, term, rhs_stride, "dot rhs")?,
-                )?;
-            }
-            Ok(())
-        }
-        LinearOp::MatrixMultiply {
-            lhs_start,
-            rhs_start,
-            rows,
-            inner,
-            columns,
-            lanes,
-            ..
-        } => {
-            let lhs_count = rows
-                .checked_mul(inner)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("matrix multiply lhs range overflow".to_string())
-                })?;
-            let rhs_count = inner
-                .checked_mul(columns)
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("matrix multiply rhs range overflow".to_string())
-                })?;
-            validate_reg_range_defined(defined, lhs_start, lhs_count)?;
-            validate_reg_range_defined(defined, rhs_start, rhs_count)
-        }
-        LinearOp::TensorBinary {
-            lhs_start,
-            rhs_start,
-            count,
-            lhs_stride,
-            rhs_stride,
-            lanes,
-            ..
-        } => {
-            for element in 0..count {
-                let lhs = checked_strided_register(
-                    lhs_start,
-                    element,
-                    lhs_stride.saturating_mul(lanes),
-                    "tensor binary lhs",
-                )?;
-                let rhs = checked_strided_register(
-                    rhs_start,
-                    element,
-                    rhs_stride.saturating_mul(lanes),
-                    "tensor binary rhs",
-                )?;
-                validate_reg_range_defined(defined, lhs, lanes)?;
-                validate_reg_range_defined(defined, rhs, lanes)?;
-            }
-            Ok(())
-        }
-        LinearOp::TensorCross {
-            lhs_start,
-            rhs_start,
-            lanes,
-            ..
-        } => {
-            let count = 3usize.checked_mul(lanes).ok_or_else(|| {
-                CompileError::Backend("tensor cross product range overflow".to_string())
-            })?;
-            validate_reg_range_defined(defined, lhs_start, count)?;
-            validate_reg_range_defined(defined, rhs_start, count)
-        }
-        LinearOp::TensorTranspose {
-            src_start,
-            rows,
-            columns,
-            element_width,
-            lanes,
-            ..
-        } => {
-            let count = rows
-                .checked_mul(columns)
-                .and_then(|count| count.checked_mul(element_width))
-                .and_then(|count| count.checked_mul(lanes))
-                .ok_or_else(|| {
-                    CompileError::Backend("tensor transpose range overflow".to_string())
-                })?;
-            validate_reg_range_defined(defined, src_start, count)
-        }
-        LinearOp::TensorConcatenate { sources, lanes, .. } => {
-            for source in sources {
-                let count = source
-                    .dimensions
-                    .iter()
-                    .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-                    .ok_or_else(|| {
-                        CompileError::Backend("tensor concatenate source overflow".to_string())
-                    })?;
-                validate_reg_range_defined(defined, source.start, count)?;
-            }
-            Ok(())
-        }
-        LinearOp::TensorUpdate {
-            base_start,
-            value_start,
-            dimensions,
-            subscripts,
-            lanes,
-            ..
-        } => {
-            let output_count = dimensions
-                .iter()
-                .try_fold(lanes, |count, extent| count.checked_mul(*extent as usize))
-                .ok_or_else(|| CompileError::Backend("tensor update output overflow".into()))?;
-            validate_reg_range_defined(defined, base_start, output_count)?;
-            let mut value_count = lanes;
-            for (&extent, subscript) in dimensions.iter().zip(subscripts.iter()) {
-                match subscript {
-                    rumoca_ir_solve::TensorUpdateSubscript::Whole => {
-                        value_count =
-                            value_count.checked_mul(extent as usize).ok_or_else(|| {
-                                CompileError::Backend("tensor update value overflow".into())
-                            })?;
-                    }
-                    rumoca_ir_solve::TensorUpdateSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Runtime(register),
-                    ) => validate_reg_defined(defined, *register)?,
-                    rumoca_ir_solve::TensorUpdateSubscript::Index(
-                        rumoca_ir_solve::TensorIndex::Constant(_),
-                    ) => {}
-                    rumoca_ir_solve::TensorUpdateSubscript::Slice { start, dimensions } => {
-                        let count = dimensions
-                            .iter()
-                            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-                            .ok_or_else(|| {
-                                CompileError::Backend("tensor update slice overflow".into())
-                            })?;
-                        validate_reg_range_defined(defined, *start, count)?;
-                        value_count = value_count.checked_mul(count).ok_or_else(|| {
-                            CompileError::Backend("tensor update sliced value overflow".into())
-                        })?;
-                    }
-                }
-            }
-            validate_reg_range_defined(defined, value_start, value_count)
-        }
-        LinearOp::TensorFill {
-            value_start, lanes, ..
-        } => validate_reg_range_defined(defined, value_start, lanes),
-        LinearOp::Unary { arg, .. } => validate_reg_defined(defined, arg),
-        LinearOp::Binary { lhs, rhs, .. } | LinearOp::Compare { lhs, rhs, .. } => {
-            validate_reg_defined(defined, lhs)?;
-            validate_reg_defined(defined, rhs)
-        }
-        LinearOp::Select {
-            cond,
-            if_true,
-            if_false,
-            ..
-        } => {
-            validate_reg_defined(defined, cond)?;
-            validate_reg_defined(defined, if_true)?;
-            validate_reg_defined(defined, if_false)
-        }
-        LinearOp::StoreOutput { src } => validate_reg_defined(defined, src),
-        LinearOp::FunctionFold {
-            initial_start,
-            capture_start,
-            program,
-            ..
-        } => {
-            validate_reg_range_defined(defined, initial_start, program.carried_count())?;
-            validate_reg_range_defined(defined, capture_start, program.capture_count())
-        }
-        LinearOp::GuardedFunctionFold {
-            initial_start,
-            capture_start,
-            activation,
-            program,
-            ..
-        } => {
-            validate_reg_defined(defined, activation)?;
-            validate_reg_range_defined(defined, initial_start, program.carried_count())?;
-            validate_reg_range_defined(defined, capture_start, program.capture_count())
-        }
-        LinearOp::FunctionConditional {
-            capture_start,
-            program,
-            ..
-        } => validate_reg_range_defined(defined, capture_start, program.capture_count()),
-        LinearOp::StoreOutputFunctionFold {
-            initial,
-            capture_start,
-            program,
-            condition,
-            ..
-        } => {
-            for source in initial {
-                if let rumoca_ir_solve::FoldInitialSource::Registers { start, count } = source {
-                    validate_reg_range_defined(defined, start, count)?;
-                }
-            }
-            validate_reg_range_defined(defined, capture_start, program.capture_count())?;
-            if let Some(condition) = condition {
-                validate_reg_defined(defined, condition)?;
-            }
-            Ok(())
-        }
-        LinearOp::Const { .. }
-        | LinearOp::LoadTime { .. }
-        | LinearOp::LoadY { .. }
-        | LinearOp::LoadP { .. }
-        | LinearOp::LoadSeed { .. }
-        | LinearOp::LoadFoldCarried { .. }
-        | LinearOp::LoadFoldIndex { .. }
-        | LinearOp::LoadFoldCapture { .. }
-        | LinearOp::LoadFunctionConditionalCapture { .. }
-        | LinearOp::LoadFunctionConditionalCaptureRange { .. }
-        | LinearOp::TensorIdentity { .. }
-        | LinearOp::TensorLoad { .. } => Ok(()),
-        LinearOp::StoreOutputRange {
-            start,
-            count,
-            stride,
-        } => {
-            for ordinal in 0..count {
-                validate_reg_defined(
-                    defined,
-                    checked_strided_register(start, ordinal, stride, "output range")?,
-                )?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn validate_reg_defined(defined: &[bool], reg: u32) -> Result<(), CompileError> {
-    if defined.get(reg as usize).copied().unwrap_or(false) {
-        return Ok(());
-    }
-    Err(CompileError::Backend(format!(
-        "compiled row references undefined register r{reg}"
-    )))
-}
-
-fn validate_reg_range_defined(
-    defined: &[bool],
-    start: u32,
-    count: usize,
-) -> Result<(), CompileError> {
-    for offset in 0..count {
-        validate_reg_defined(defined, checked_reg_offset(start, offset, "source range")?)?;
-    }
-    Ok(())
 }
 
 fn to_backend_err<E: std::fmt::Display>(err: E) -> CompileError {

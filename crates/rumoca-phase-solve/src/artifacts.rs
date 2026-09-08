@@ -9,16 +9,16 @@ use crate::ad::{
 pub(crate) fn lower_solve_artifacts(
     problem: &solve::SolveProblem,
     mass_matrix: solve::MassMatrix,
-) -> Result<solve::SolveArtifacts, LowerError> {
+) -> Result<solve::SolveArtifactInputs, LowerError> {
     let implicit_rhs =
-        rumoca_eval_solve::to_scalar_program_block(&problem.continuous.implicit_rhs)?;
+        rumoca_eval_solve::to_scalar_program_block(problem.continuous().implicit_rhs())?;
     let derivative_rhs =
-        rumoca_eval_solve::to_scalar_program_block(&problem.continuous.derivative_rhs)?;
+        rumoca_eval_solve::to_scalar_program_block(problem.continuous().derivative_rhs())?;
     let implicit_jacobian_v_scalar = solve::ScalarProgramBlock::with_output_indices(
         lower_scalar_program_block_full_ad_with_spans(
             implicit_rhs.programs(),
             implicit_rhs.program_spans(),
-            &problem.layout,
+            problem.layout(),
         )?,
         implicit_rhs.program_spans().to_vec(),
         implicit_rhs.output_indices().to_vec(),
@@ -27,18 +27,18 @@ pub(crate) fn lower_solve_artifacts(
         lower_scalar_program_block_full_ad_with_spans(
             derivative_rhs.programs(),
             derivative_rhs.program_spans(),
-            &problem.layout,
+            problem.layout(),
         )?,
         derivative_rhs.program_spans().to_vec(),
         derivative_rhs.output_indices().to_vec(),
     )?;
-    let implicit_jacobian_v = lower_compute_block_jvp(&problem.continuous.implicit_rhs)?;
-    let manifold_jacobian_v = lower_compute_block_jvp(&problem.continuous.manifold_residual)?;
+    let implicit_jacobian_v = lower_compute_block_jvp(problem.continuous().implicit_rhs())?;
+    let manifold_jacobian_v = lower_compute_block_jvp(problem.continuous().manifold_residual())?;
     let initialization_jacobian_v = lower_compute_block_full_jvp(
-        &problem.initialization.residual,
-        problem.solve_layout.solver_scalar_count(),
+        problem.initialization().residual(),
+        problem.solve_layout().solver_scalar_count(),
     )?;
-    let mut artifacts = solve::SolveArtifacts {
+    let mut artifacts = solve::SolveArtifactInputs {
         continuous: solve::ContinuousSolveArtifacts {
             structural: solve::ContinuousStructuralArtifacts::default(),
             mass_matrix,

@@ -70,16 +70,76 @@ fn declare_offset_variables<'dae>(
     model.variables(|variables| {
         let attributes = dae::VariableAttributes::default();
         Ok(OffsetVariables {
-            x: variables.state(VarName::new("x"), real, at, attributes.clone())?,
-            w: variables.state(VarName::new("w"), real, at, attributes.clone())?,
-            y: variables.state(VarName::new("y"), real, at, attributes.clone())?,
-            v: variables.state(VarName::new("v"), real, at, attributes.clone())?,
-            port_x: variables.algebraic(VarName::new("port_x"), real, at, attributes.clone())?,
-            port_y: variables.algebraic(VarName::new("port_y"), real, at, attributes.clone())?,
-            support: variables.algebraic(VarName::new("support"), real, at, attributes.clone())?,
-            shifted: variables.algebraic(VarName::new("shifted"), real, at, attributes.clone())?,
-            acc_x: variables.algebraic(VarName::new("acc_x"), real, at, attributes.clone())?,
-            acc_y: variables.algebraic(VarName::new("acc_y"), real, at, attributes)?,
+            x: variables.state(
+                VarName::new("x"),
+                InstanceId::new(1),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            w: variables.state(
+                VarName::new("w"),
+                InstanceId::new(2),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            y: variables.state(
+                VarName::new("y"),
+                InstanceId::new(3),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            v: variables.state(
+                VarName::new("v"),
+                InstanceId::new(4),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            port_x: variables.algebraic(
+                VarName::new("port_x"),
+                InstanceId::new(5),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            port_y: variables.algebraic(
+                VarName::new("port_y"),
+                InstanceId::new(6),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            support: variables.algebraic(
+                VarName::new("support"),
+                InstanceId::new(7),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            shifted: variables.algebraic(
+                VarName::new("shifted"),
+                InstanceId::new(8),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            acc_x: variables.algebraic(
+                VarName::new("acc_x"),
+                InstanceId::new(9),
+                real,
+                at,
+                attributes.clone(),
+            )?,
+            acc_y: variables.algebraic(
+                VarName::new("acc_y"),
+                InstanceId::new(10),
+                real,
+                at,
+                attributes,
+            )?,
         })
     })
 }
@@ -325,23 +385,83 @@ fn declare_parameter_support_variables<'dae>(
     model.variables(|variables| {
         let attributes = dae::VariableAttributes::default;
         let (phi0, phi0_reservation) =
-            variables.reserve_parameter(VarName::new("phi0"), real, at)?;
+            variables.reserve_parameter(VarName::new("phi0"), InstanceId::new(1), real, at)?;
         Ok(ParameterSupportVariables {
             phi0,
             phi0_reservation,
             states: [
-                variables.state(VarName::new("x"), real, at, attributes())?,
-                variables.state(VarName::new("w"), real, at, attributes())?,
-                variables.state(VarName::new("y"), real, at, attributes())?,
-                variables.state(VarName::new("v"), real, at, attributes())?,
+                variables.state(
+                    VarName::new("x"),
+                    InstanceId::new(2),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.state(
+                    VarName::new("w"),
+                    InstanceId::new(3),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.state(
+                    VarName::new("y"),
+                    InstanceId::new(4),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.state(
+                    VarName::new("v"),
+                    InstanceId::new(5),
+                    real,
+                    at,
+                    attributes(),
+                )?,
             ],
             algebraics: [
-                variables.algebraic(VarName::new("port_x"), real, at, attributes())?,
-                variables.algebraic(VarName::new("port_y"), real, at, attributes())?,
-                variables.algebraic(VarName::new("support"), real, at, attributes())?,
-                variables.algebraic(VarName::new("mount"), real, at, attributes())?,
-                variables.algebraic(VarName::new("shifted"), real, at, attributes())?,
-                variables.algebraic(VarName::new("acc_y"), real, at, attributes())?,
+                variables.algebraic(
+                    VarName::new("port_x"),
+                    InstanceId::new(6),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("port_y"),
+                    InstanceId::new(7),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("support"),
+                    InstanceId::new(8),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("mount"),
+                    InstanceId::new(9),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("shifted"),
+                    InstanceId::new(10),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("acc_y"),
+                    InstanceId::new(11),
+                    real,
+                    at,
+                    attributes(),
+                )?,
             ],
         })
     })
@@ -562,10 +682,34 @@ fn anchorless_cycle_model() -> dae::Dae {
         let variables = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default();
             Ok([
-                variables.algebraic(VarName::new("a"), real, declaration, attributes.clone())?,
-                variables.algebraic(VarName::new("b"), real, declaration, attributes.clone())?,
-                variables.algebraic(VarName::new("c"), real, declaration, attributes.clone())?,
-                variables.algebraic(VarName::new("d"), real, declaration, attributes)?,
+                variables.algebraic(
+                    VarName::new("a"),
+                    InstanceId::new(1),
+                    real,
+                    declaration,
+                    attributes.clone(),
+                )?,
+                variables.algebraic(
+                    VarName::new("b"),
+                    InstanceId::new(2),
+                    real,
+                    declaration,
+                    attributes.clone(),
+                )?,
+                variables.algebraic(
+                    VarName::new("c"),
+                    InstanceId::new(3),
+                    real,
+                    declaration,
+                    attributes.clone(),
+                )?,
+                variables.algebraic(
+                    VarName::new("d"),
+                    InstanceId::new(4),
+                    real,
+                    declaration,
+                    attributes,
+                )?,
             ])
         })?;
         let spans = EQUATIONS.map(|equation| source_provenance(source, TEXT, equation));
@@ -611,27 +755,42 @@ fn odd_invariant_parity_model() -> dae::Dae {
         let (x, [port, b, a, shifted]) = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default();
             Ok((
-                variables.state(VarName::new("x"), real, declaration, attributes.clone())?,
+                variables.state(
+                    VarName::new("x"),
+                    InstanceId::new(1),
+                    real,
+                    declaration,
+                    attributes.clone(),
+                )?,
                 [
                     variables.algebraic(
                         VarName::new("port"),
+                        InstanceId::new(2),
                         real,
                         declaration,
                         attributes.clone(),
                     )?,
                     variables.algebraic(
                         VarName::new("b"),
+                        InstanceId::new(3),
                         real,
                         declaration,
                         attributes.clone(),
                     )?,
                     variables.algebraic(
                         VarName::new("a"),
+                        InstanceId::new(4),
                         real,
                         declaration,
                         attributes.clone(),
                     )?,
-                    variables.algebraic(VarName::new("shifted"), real, declaration, attributes)?,
+                    variables.algebraic(
+                        VarName::new("shifted"),
+                        InstanceId::new(5),
+                        real,
+                        declaration,
+                        attributes,
+                    )?,
                 ],
             ))
         })?;

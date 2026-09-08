@@ -17,6 +17,8 @@ members = [
     # Executable reference semantics (SPEC_0037 verification track)
     "crates/rumoca-reference",
     "crates/rumoca-ir-dae",
+    "crates/rumoca-plan-callable",
+    "crates/rumoca-phase-callable",
     "crates/rumoca-ir-solve",
     "crates/rumoca-eval-ast",
     "crates/rumoca-eval-flat",
@@ -95,6 +97,8 @@ rumoca-core = { path = "crates/rumoca-core" }
 rumoca-contracts = { path = "crates/rumoca-contracts" }
 rumoca-reference = { path = "crates/rumoca-reference" }
 rumoca-ir-dae = { path = "crates/rumoca-ir-dae" }
+rumoca-plan-callable = { path = "crates/rumoca-plan-callable" }
+rumoca-phase-callable = { path = "crates/rumoca-phase-callable" }
 rumoca-ir-solve = { path = "crates/rumoca-ir-solve" }
 rumoca-eval-ast = { path = "crates/rumoca-eval-ast" }
 rumoca-eval-flat = { path = "crates/rumoca-eval-flat" }
@@ -152,10 +156,23 @@ clap_complete = "4.5"
 core_affinity = "0.8"
 crossterm = "0.28"
 flate2 = "1.0"
+getrandom = "0.4"
 faer = { version = "0.24.4", default-features = false, features = ["std", "sparse-linalg"] }
 indexmap = { version = "2.7", features = ["serde"] }
 miette = { version = "7.4", features = ["fancy"] }
-minijinja = { version = "2.5", features = ["debug", "preserve_order"] }
+# Target identity closure and the exact production-global witness are reviewed
+# against these MiniJinja parser/runtime bytes.
+minijinja = { version = "=2.21.0", default-features = false, features = [
+    "builtins",
+    "debug",
+    "deserialization",
+    "macros",
+    "adjacent_loop_items",
+    "std_collections",
+    "serde",
+    "json",
+    "preserve_order",
+] }
 parol = "=4.2.2"
 parol_runtime = "=4.2.0"
 # Property-based testing (dev-dependency only)
@@ -164,14 +181,16 @@ quick-xml = "0.37"
 rayon = "1.10"
 rustc-hash = "2.0"
 sha1 = "0.10"
+sha2 = "0.10"
 scnr2 = "0.3.3"
 sigpipe = "0.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
 self_cell = "1.2.2"
 bincode = "1.3"
 syn = { version = "2.0", features = ["full", "visit"] }
 proc-macro2 = "1.0"
+quote = "1.0"
 futures-util = "0.3"
 tar = "0.4"
 thiserror = "2.0"
@@ -182,7 +201,7 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = "2.9"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v5"] }
 walkdir = "2.5"
 zip = "2.4"
 # LSP types (usable from WASM and native, must match tower-lsp's version)
@@ -204,8 +223,16 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 # (see CONTRIBUTING.md). Declaring it here keeps the bounded-verification
 # harnesses warning-free without a blanket `allow`, so a *typo* in any other
 # cfg name still warns.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(coverage)',
+    'cfg(coverage_nightly)',
+    'cfg(kani)',
+] }
 unsafe_code = "deny"
+# These lints are compile-time mistake detectors for dropped construction
+# obligations. `forbid` prevents a nested module from weakening the policy;
+# it is not a proof that a value is consumed exactly once.
+unused_must_use = "forbid"
 unreachable_pub = "deny"
 unnameable_types = "deny"
 private_interfaces = "deny"
@@ -218,6 +245,7 @@ dead_code = "deny"
 [workspace.lints.clippy]
 # Enable lint groups - deny to make warnings into compile errors
 all = { level = "deny", priority = -1 }
+let_underscore_must_use = "deny"
 # Intentionally not enabling `cargo`/`pedantic` as workspace-wide lint groups.
 # They produce high-noise warnings under our `-D warnings` CI mode; we prefer
 # targeted deny rules and incremental lint hardening.

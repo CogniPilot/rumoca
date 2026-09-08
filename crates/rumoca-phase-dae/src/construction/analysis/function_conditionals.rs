@@ -145,7 +145,7 @@ pub(super) fn resolve_function_conditional(
     span: Span,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
-) -> Result<Vec<VarName>, ToDaeError> {
+) -> Result<Vec<FunctionConditionalTarget>, ToDaeError> {
     if let Some(selected) = statically_selected_branch(blocks, fallback_statements, context)? {
         return resolve_static_loop_branch(
             StaticLoopBranch {
@@ -230,7 +230,7 @@ fn resolve_static_loop_branch(
     input: StaticLoopBranch<'_, '_>,
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
-) -> Result<Vec<VarName>, ToDaeError> {
+) -> Result<Vec<FunctionConditionalTarget>, ToDaeError> {
     let StaticLoopBranch {
         blocks,
         fallback_statements,
@@ -447,23 +447,60 @@ fn validate_conditional_branch_shape(
     Ok(())
 }
 
-fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<VarName>) {
+fn collect_branch_targets(
+    plans: &[FunctionStatementPlan],
+    ordered: &mut Vec<FunctionConditionalTarget>,
+) {
     for plan in plans {
         match plan {
             FunctionStatementPlan::Assignment(assignment) => {
-                collect_branch_target(assignment.target(), ordered);
+                collect_branch_target(
+                    FunctionConditionalTarget {
+                        name: assignment.target().clone(),
+                        target_def_id: assignment.target_def_id(),
+                        record_field: assignment.record_field(),
+                    },
+                    ordered,
+                );
             }
             FunctionStatementPlan::RecordAssembly(assembly) => {
-                collect_branch_target(&assembly.target, ordered);
+                collect_branch_target(
+                    FunctionConditionalTarget {
+                        name: assembly.target.clone(),
+                        target_def_id: assembly.target_def_id,
+                        record_field: None,
+                    },
+                    ordered,
+                );
+            }
+            FunctionStatementPlan::RecordFieldAssembly(assembly) => {
+                collect_branch_target(
+                    FunctionConditionalTarget {
+                        name: function_record_field_name(&assembly.target, &assembly.field.name),
+                        target_def_id: assembly.target_def_id,
+                        record_field: Some(FunctionRecordFieldIdentity {
+                            target: assembly.target_def_id,
+                            field: assembly.field.def_id,
+                        }),
+                    },
+                    ordered,
+                );
             }
             FunctionStatementPlan::MultiOutputCall { outputs } => {
                 for output in outputs.iter().flatten() {
-                    collect_branch_target(output.target(), ordered);
+                    collect_branch_target(
+                        FunctionConditionalTarget {
+                            name: output.target().clone(),
+                            target_def_id: output.target_def_id(),
+                            record_field: output.record_field(),
+                        },
+                        ordered,
+                    );
                 }
             }
             FunctionStatementPlan::If { targets, .. } => {
                 for target in targets {
-                    collect_branch_target(target, ordered);
+                    collect_branch_target(target.clone(), ordered);
                 }
             }
             FunctionStatementPlan::ProvenBranch { statements, .. } => {
@@ -474,8 +511,11 @@ fn collect_branch_targets(plans: &[FunctionStatementPlan], ordered: &mut Vec<Var
     }
 }
 
-fn collect_branch_target(target: &VarName, ordered: &mut Vec<VarName>) {
-    if !ordered.contains(target) {
-        ordered.push(target.clone());
+fn collect_branch_target(
+    target: FunctionConditionalTarget,
+    ordered: &mut Vec<FunctionConditionalTarget>,
+) {
+    if !ordered.contains(&target) {
+        ordered.push(target);
     }
 }

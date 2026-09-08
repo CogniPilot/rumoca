@@ -141,16 +141,18 @@ model call the same functions, so the generated code does not maintain a
 second copy of the control equations.
 
 The export model is fixed-sample and discrete, which makes it admissible for
-Rumoca's `galec-production` target. Select **Generate .alg** below to inspect
-the eFMI Algorithm Code, then **Generate C/H** to inspect the corresponding C99
-Production Code.
+Rumoca's `galec` target. Select **Generate .alg** below to inspect the eFMI
+Algorithm Code. GALEC never emits C; the eventual `efmu` target is one
+`SolveAlgorithmProduct` retaining this checked `AlgorithmCodePackage` and its
+correlated `SolveAlgorithmBlock`. Each output file borrows the appropriate
+view, and Production Code C renders only from the Solve block.
 
 ```modelica,codegen
-// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.controller-galec-production.toml
+// rumoca-live-scenario: ../repo-examples/interactive/reusable_booster/rumoca-scenario.controller-galec.toml
 ```
 
 The native packaging command emits both a directory-form eFMU and a matching
-`.efmu` archive with Algorithm Code and Production Code representations:
+`.efmu` archive containing the Algorithm Code representation:
 
 ```bash
 cargo xtask repo modelica-deps ensure
@@ -158,8 +160,8 @@ cargo run -p rumoca -- \
   compile examples/interactive/reusable_booster/ReusableBoosterLanding.mo \
   --model ReusableBoosterEmbeddedControlLaw \
   --source-root target/cmm/CMM-a642c381 \
-  --target galec-production \
-  --output examples/interactive/reusable_booster/gen/control_law_efmu
+  --target galec \
+  --output examples/interactive/reusable_booster/gen/control_law_alg
 ```
 
 This exported seam starts after the geometric adapter has computed the

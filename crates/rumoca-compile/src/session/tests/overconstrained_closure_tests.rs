@@ -83,12 +83,8 @@ fn strict_closure_keeps_implicit_equality_constraint_for_vcg_classification() {
 }
 
 #[test]
-fn strict_closure_retains_non_function_equality_constraint_without_vcg_classification() {
-    let mut session = Session::default();
-    session
-        .add_document(
-            "non_function_equality_constraint.mo",
-            r#"
+fn strict_closure_retains_non_function_equality_constraint_diagnostic() {
+    const SOURCE: &str = r#"
 package P
   record Reference
     Real gamma;
@@ -110,40 +106,35 @@ package P
     connect(left, right);
   end Probe;
 end P;
-"#,
-        )
+"#;
+    let mut session = Session::default();
+    session
+        .add_document("non_function_equality_constraint.mo", SOURCE)
         .expect("non-function equalityConstraint fixture parses");
 
-    let target = session
+    let failure = session
         .resolve_strict_target("P.Probe")
-        .unwrap_or_else(|failure| {
-            panic!(
-                "a same-name non-function is retained but is not an overconstrained prototype: {:?}",
-                failure.failures
-            )
-        });
-    let index = rumoca_ir_ast::ClassDefIndex::from_tree(target.resolved.inner());
-    let retained = index
-        .get_by_qualified_name("P.Reference.equalityConstraint")
-        .expect("strict pruning conservatively retains the exact same-name child");
-
-    assert_eq!(retained.class_type, rumoca_core::ClassType::Model);
-    assert!(
-        target
-            .diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.code.as_deref() != Some("ER117")),
-        "a non-function does not claim the equalityConstraint prototype"
+        .expect_err("a reserved equalityConstraint child of the wrong class kind is ER117");
+    let diagnostics = failure
+        .failures
+        .iter()
+        .filter(|diagnostic| diagnostic.error_code.as_deref() == Some("ER117"))
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1, "strict closure must retain one ER117");
+    let equality_constraint_start = SOURCE
+        .find("equalityConstraint")
+        .expect("reserved child declaration token exists");
+    let expected_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("non_function_equality_constraint.mo"),
+        equality_constraint_start,
+        equality_constraint_start + "equalityConstraint".len(),
     );
-
-    let flat = session
-        .compile_model_flat_strict_reachable_uncached_with_recovery("P.Probe")
-        .expect("the inert same-name child must not create a virtual connection graph");
-    assert!(flat.optional_edges.is_empty());
-    assert!(
-        flat.variables
-            .values()
-            .all(|variable| !variable.is_overconstrained && variable.oc_record_path.is_none()),
-        "a non-function same-name child must never classify connector fields as overconstrained"
+    assert_eq!(
+        diagnostics[0]
+            .primary_label
+            .as_ref()
+            .map(|label| label.span),
+        Some(expected_span),
+        "strict pruning must preserve the original ER117 anchor"
     );
 }

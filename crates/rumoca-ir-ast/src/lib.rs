@@ -62,15 +62,20 @@ use std::sync::Arc;
 use std::{fmt::Debug, fmt::Display};
 
 pub use visitor::{
-    ComponentReferenceContext, ExpressionContext, ExpressionTransformer, FunctionCallContext,
-    NameContext, RequiredValueViolation, RequiredValueViolationKind, SubscriptContext,
-    TypeNameContext, VisitScope, Visitor, collect_component_refs, contains_component_ref,
-    contains_function_call, declaration_subscript_required_value_violation,
-    equation_contains_required_recovery, equation_required_value_violation,
-    expression_component_path, expression_contains_required_recovery,
-    expression_required_value_violation, is_invocation_tuple_equation,
-    modifier_required_value_violation, statement_contains_required_recovery,
-    statement_required_value_violation, subscript_required_value_violation, walk_class_def_default,
+    CalleeSite, ComponentReferenceContext, ComponentReferencePartView, ComponentReferenceSite,
+    ComponentReferenceView, ExpressionContext, ExpressionTransformer, FunctionCallContext,
+    IteratorStep, NameContext, PartIdentitySlot, RequiredValueViolation,
+    RequiredValueViolationKind, SemanticReferenceEditor, SubscriptContext, TypeNameContext,
+    VisitScope, Visitor, collect_component_refs, contains_component_ref, contains_function_call,
+    declaration_subscript_required_value_violation, equation_contains_required_recovery,
+    equation_required_value_violation, expression_component_path,
+    expression_contains_required_recovery, expression_required_value_violation,
+    is_invocation_tuple_equation, modifier_required_value_violation,
+    schedule_comprehension_iterators_mut, schedule_loop_iterators_mut,
+    statement_contains_required_recovery, statement_required_value_violation,
+    subscript_required_value_violation, substitute_integer_loop_index, transform_callee_in_place,
+    transform_component_reference_in_place, transform_expression_in_place,
+    transform_for_index_in_place, transform_subscripts_in_place, walk_class_def_default,
     walk_component_default, walk_component_reference_default, walk_equation_default,
     walk_expression_default, walk_extend_default, walk_statement_default,
 };
@@ -533,6 +538,7 @@ impl ClassTree {
 /// carry resolved `DefId`s and need repeated class-body access.
 pub struct ClassDefIndex<'tree> {
     classes: FxHashMap<DefId, &'tree ClassDef>,
+    components: FxHashMap<DefId, &'tree Component>,
     qualified_name_def_ids: FxHashMap<String, DefId>,
     qualified_names: FxHashMap<DefId, String>,
     parent_classes: FxHashMap<DefId, DefId>,
@@ -555,6 +561,7 @@ impl<'tree> ClassDefIndex<'tree> {
             .collect::<FxHashMap<_, _>>();
         let mut index = Self {
             classes: FxHashMap::default(),
+            components: FxHashMap::default(),
             qualified_name_def_ids: FxHashMap::default(),
             qualified_names: FxHashMap::default(),
             parent_classes: FxHashMap::default(),
@@ -596,6 +603,11 @@ impl<'tree> ClassDefIndex<'tree> {
 
     pub fn get(&self, def_id: DefId) -> Option<&'tree ClassDef> {
         self.classes.get(&def_id).copied()
+    }
+
+    /// Return the component declaration carrying this resolved identity.
+    pub fn component(&self, def_id: DefId) -> Option<&'tree Component> {
+        self.components.get(&def_id).copied()
     }
 
     pub fn def_ids(&self) -> impl Iterator<Item = DefId> + '_ {
@@ -703,6 +715,7 @@ impl<'tree> ClassDefIndex<'tree> {
         for (name, component) in &class_def.components {
             if let Some(component_def_id) = component.def_id {
                 self.local_names.insert(component_def_id, name.as_str());
+                self.components.insert(component_def_id, component);
             }
         }
         for nested in class_def.classes.values() {
@@ -1941,48 +1954,6 @@ impl std::ops::Deref for ParsedTree {
 }
 
 impl std::ops::DerefMut for ParsedTree {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// A ClassTree that has completed type checking.
-///
-/// At this stage:
-/// - All `def_id` fields are populated
-/// - All `scope_id` fields are populated
-/// - All `type_id` fields are populated
-/// - The `type_table` contains all types
-/// - Type constraints have been validated
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TypedTree(pub ClassTree);
-
-impl TypedTree {
-    /// Create a new TypedTree from a ClassTree.
-    /// This should only be called by the typecheck phase.
-    pub fn new(tree: ClassTree) -> Self {
-        Self(tree)
-    }
-
-    /// Get a reference to the inner ClassTree.
-    pub fn inner(&self) -> &ClassTree {
-        &self.0
-    }
-
-    /// Consume and return the inner ClassTree.
-    pub fn into_inner(self) -> ClassTree {
-        self.0
-    }
-}
-
-impl std::ops::Deref for TypedTree {
-    type Target = ClassTree;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for TypedTree {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }

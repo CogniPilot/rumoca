@@ -3,8 +3,6 @@ use rumoca_core::{ComponentReference, Span, Subscript, VarName};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
-const F64_BYTES: usize = std::mem::size_of::<f64>();
-
 fn intern_key_map<T>(values: IndexMap<String, T>) -> IndexMap<VarName, T> {
     values
         .into_iter()
@@ -12,12 +10,78 @@ fn intern_key_map<T>(values: IndexMap<String, T>) -> IndexMap<VarName, T> {
         .collect()
 }
 
+/// A scalar operand stores logical indices, not a second byte-address authority.
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::ScalarSlot;
+/// let _ = ScalarSlot::Y { index: 0, byte_offset: 0 };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ScalarSlot {
     Time,
-    Y { index: usize, byte_offset: usize },
-    P { index: usize, byte_offset: usize },
+    Y { index: usize },
+    P { index: usize },
     Constant(f64),
+}
+
+/// One logical storage column, independent of its concrete address format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolveStorageColumn {
+    Y,
+    P,
+}
+
+/// A writable logical coordinate; its containing owner establishes membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SolveStorageCoordinate {
+    Y(usize),
+    P(usize),
+}
+
+impl SolveStorageCoordinate {
+    #[must_use]
+    pub const fn new(column: SolveStorageColumn, index: usize) -> Self {
+        match column {
+            SolveStorageColumn::Y => Self::Y(index),
+            SolveStorageColumn::P => Self::P(index),
+        }
+    }
+
+    #[must_use]
+    pub const fn column(self) -> SolveStorageColumn {
+        match self {
+            Self::Y(_) => SolveStorageColumn::Y,
+            Self::P(_) => SolveStorageColumn::P,
+        }
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Y(index) | Self::P(index) => index,
+        }
+    }
+
+    #[must_use]
+    pub const fn scalar_slot(self) -> ScalarSlot {
+        match self {
+            Self::Y(index) => scalar_slot_y(index),
+            Self::P(index) => scalar_slot_p(index),
+        }
+    }
+}
+
+impl ScalarSlot {
+    #[must_use]
+    pub const fn storage_coordinate(self) -> Option<SolveStorageCoordinate> {
+        match self {
+            Self::Y { index } => Some(SolveStorageCoordinate::Y(index)),
+            Self::P { index } => Some(SolveStorageCoordinate::P(index)),
+            Self::Time | Self::Constant(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -58,7 +122,6 @@ pub enum ComponentReferenceKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ComponentReferenceKeyPart {
     pub ident: VarName,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscripts: Vec<ComponentReferenceSubscriptKey>,
 }
 
@@ -458,8 +521,8 @@ fn validate_shape_contract(
             });
         };
         let (start, available) = match slot {
-            ScalarSlot::Y { index, .. } => (index, y_scalars),
-            ScalarSlot::P { index, .. } => (index, p_scalars),
+            ScalarSlot::Y { index } => (index, y_scalars),
+            ScalarSlot::P { index } => (index, p_scalars),
             ScalarSlot::Constant(_) => {
                 validate_indexed_constant_shape(
                     name,
@@ -659,13 +722,14 @@ fn indexed_bindings_from_shapes(
                     variable: name.to_string(),
                     start,
                     count,
-                    available: start,
+                    available,
                     span,
                 }
             })?;
-            let Some(slot) = slot_with_checked_index(slot, offset, name.as_str(), span)? else {
+            let Some(coordinate) = slot.storage_coordinate() else {
                 continue;
             };
+            let slot = SolveStorageCoordinate::new(coordinate.column(), offset).scalar_slot();
             entries.push(IndexedScalarSlot { indices, slot });
         }
         if !entries.is_empty() {
@@ -707,36 +771,14 @@ fn shape_vec_with_capacity<T>(
     Ok(values)
 }
 
-fn slot_with_checked_index(
-    slot: ScalarSlot,
-    index: usize,
-    name: &str,
-    span: Option<Span>,
-) -> Result<Option<ScalarSlot>, VarLayoutShapeContractError> {
-    let byte_offset = index.checked_mul(F64_BYTES).ok_or_else(|| {
-        VarLayoutShapeContractError::ShapeOutOfBounds {
-            variable: name.to_string(),
-            start: index,
-            count: 1,
-            available: usize::MAX / F64_BYTES,
-            span,
-        }
-    })?;
-    Ok(match slot {
-        ScalarSlot::Y { .. } => Some(ScalarSlot::Y { index, byte_offset }),
-        ScalarSlot::P { .. } => Some(ScalarSlot::P { index, byte_offset }),
-        ScalarSlot::Time | ScalarSlot::Constant(_) => None,
-    })
-}
-
 fn slot_start_and_available(
     slot: ScalarSlot,
     y_scalars: usize,
     p_scalars: usize,
 ) -> Option<(usize, usize)> {
     match slot {
-        ScalarSlot::Y { index, .. } => Some((index, y_scalars)),
-        ScalarSlot::P { index, .. } => Some((index, p_scalars)),
+        ScalarSlot::Y { index } => Some((index, y_scalars)),
+        ScalarSlot::P { index } => Some((index, p_scalars)),
         ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
@@ -787,29 +829,76 @@ fn row_major_flat_index(indices: &[i64], dims: &[usize]) -> Option<usize> {
 /// `Constant`, whose array elements are not a contiguous offset of the base.
 fn offset_contiguous_slot(root: ScalarSlot, flat: usize) -> Option<ScalarSlot> {
     match root {
-        ScalarSlot::Y { index, .. } => Some(scalar_slot_y(index.checked_add(flat)?)),
-        ScalarSlot::P { index, .. } => Some(scalar_slot_p(index.checked_add(flat)?)),
+        ScalarSlot::Y { index } => Some(scalar_slot_y(index.checked_add(flat)?)),
+        ScalarSlot::P { index } => Some(scalar_slot_p(index.checked_add(flat)?)),
         ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
 
-pub fn scalar_slot_y(index: usize) -> ScalarSlot {
-    ScalarSlot::Y {
-        index,
-        byte_offset: index.saturating_mul(F64_BYTES),
-    }
+pub const fn scalar_slot_y(index: usize) -> ScalarSlot {
+    ScalarSlot::Y { index }
 }
 
-pub fn scalar_slot_p(index: usize) -> ScalarSlot {
-    ScalarSlot::P {
-        index,
-        byte_offset: index.saturating_mul(F64_BYTES),
-    }
+pub const fn scalar_slot_p(index: usize) -> ScalarSlot {
+    ScalarSlot::P { index }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logical_storage_coordinates_preserve_column_and_index() {
+        for index in [0, 1, usize::MAX] {
+            for (column, coordinate, operand) in [
+                (
+                    SolveStorageColumn::Y,
+                    SolveStorageCoordinate::Y(index),
+                    ScalarSlot::Y { index },
+                ),
+                (
+                    SolveStorageColumn::P,
+                    SolveStorageCoordinate::P(index),
+                    ScalarSlot::P { index },
+                ),
+            ] {
+                assert_eq!(SolveStorageCoordinate::new(column, index), coordinate);
+                assert_eq!(coordinate.column(), column);
+                assert_eq!(coordinate.index(), index);
+                assert_eq!(coordinate.scalar_slot(), operand);
+                assert_eq!(operand.storage_coordinate(), Some(coordinate));
+            }
+            assert_ne!(
+                SolveStorageCoordinate::Y(index),
+                SolveStorageCoordinate::P(index)
+            );
+        }
+        assert_eq!(ScalarSlot::Time.storage_coordinate(), None);
+        assert_eq!(ScalarSlot::Constant(0.0).storage_coordinate(), None);
+    }
+
+    #[test]
+    fn scalar_slot_wire_rejects_removed_byte_offset() {
+        for column in ["Y", "P"] {
+            for byte_offset in [0, 16] {
+                let wire =
+                    serde_json::json!({ (column): { "index": 0, "byte_offset": byte_offset } });
+                let error = serde_json::from_value::<ScalarSlot>(wire)
+                    .expect_err("an obsolete offset must not be silently ignored");
+                assert!(error.to_string().contains("byte_offset"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn storage_coordinate_wire_cannot_construct_nonstorage_operands() {
+        for wire in [
+            serde_json::json!("Time"),
+            serde_json::json!({ "Constant": 1.0 }),
+        ] {
+            assert!(serde_json::from_value::<SolveStorageCoordinate>(wire).is_err());
+        }
+    }
 
     fn layout_source_span(source: u64, start: usize, end: usize) -> Span {
         let source_name = format!("ir_solve_layout_source_{source}.mo");
@@ -1025,13 +1114,7 @@ mod tests {
     fn layout_shape_contract_rejects_slot_range_overflow_before_indexing() {
         let span = layout_source_span(9, 4, 11);
         let start = usize::MAX;
-        let bindings = IndexMap::from([(
-            "x".to_string(),
-            ScalarSlot::Y {
-                index: start,
-                byte_offset: start,
-            },
-        )]);
+        let bindings = IndexMap::from([("x".to_string(), ScalarSlot::Y { index: start })]);
         let shapes = IndexMap::from([("x".to_string(), vec![2])]);
         let shape_spans = IndexMap::from([("x".to_string(), span)]);
 
@@ -1051,38 +1134,24 @@ mod tests {
     }
 
     #[test]
-    fn layout_shape_contract_rejects_indexed_slot_byte_offset_overflow_with_span() {
+    fn layout_shape_contract_uses_logical_index_bounds_not_byte_width() {
         let span = layout_source_span(10, 5, 12);
-        let start = usize::MAX / F64_BYTES + 1;
-        let bindings = IndexMap::from([(
-            "x".to_string(),
-            ScalarSlot::Y {
-                index: start,
-                byte_offset: start,
-            },
-        )]);
+        let start = usize::MAX - 1;
+        let bindings = IndexMap::from([("x".to_string(), ScalarSlot::Y { index: start })]);
         let shapes = IndexMap::from([("x".to_string(), vec![1])]);
         let shape_spans = IndexMap::from([("x".to_string(), span)]);
 
-        let err = VarLayout::from_parts_with_shapes_and_spans(
+        let layout = VarLayout::from_parts_with_shapes_and_spans(
             bindings,
             shapes,
             shape_spans,
             usize::MAX,
             0,
         )
-        .expect_err("indexed slot byte offset overflow should fail");
+        .expect("one logical coordinate fits without allocating its column");
 
-        assert_eq!(err.source_span(), Some(span));
-        assert!(matches!(
-            err,
-            VarLayoutShapeContractError::ShapeOutOfBounds {
-                variable,
-                start: actual_start,
-                count: 1,
-                ..
-            } if variable == "x" && actual_start == start
-        ));
+        assert_eq!(layout.binding("x[1]"), Some(scalar_slot_y(start)));
+        assert_eq!(layout.shape_span("x"), Some(span));
     }
 
     #[test]

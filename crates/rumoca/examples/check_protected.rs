@@ -24,7 +24,7 @@ end ProtectedDemo;
     println!("Protected flags in flat IR:");
     for name in ["public_gain", "protected_gain", "hidden"] {
         if let Some((_, variable)) = result
-            .flat
+            .flat()
             .variables
             .iter()
             .find(|(var_name, _)| var_name.as_str() == name)

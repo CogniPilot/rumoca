@@ -10,7 +10,7 @@ use rumoca_compile::parsing::ast;
 use rumoca_compile::parsing::{ParseError, parse_source_to_ast_with_errors};
 use rumoca_core;
 use rumoca_core::{
-    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, SourceMap,
+    Diagnostic as CommonDiagnostic, DiagnosticSeverity as CommonSeverity, PhaseError, SourceMap,
 };
 use rumoca_tool_lint::{LintLevel, LintMessage, LintOptions, lint};
 use serde_json::json;
@@ -176,6 +176,19 @@ fn parse_error_to_diagnostic(error: &ParseError, source: &str) -> Diagnostic {
             };
             let range = span_to_range(source, span.start.0, span.end.0);
             (range, "EP001".to_string(), msg, true)
+        }
+        ParseError::UnsupportedImplicitIterationRange { span, .. } => {
+            // Code and wording stay owned by the parser diagnostic.
+            let diagnostic = error.to_diagnostic();
+            let Some(code) = diagnostic.code else {
+                panic!("parse diagnostic must carry a code: {error:?}");
+            };
+            (
+                span_to_range(source, span.start.0, span.end.0),
+                code,
+                diagnostic.message,
+                true,
+            )
         }
         ParseError::NoAstProduced { span } => (
             span_to_range(source, span.start.0, span.end.0),

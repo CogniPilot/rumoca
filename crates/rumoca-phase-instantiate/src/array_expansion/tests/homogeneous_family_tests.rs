@@ -5,7 +5,7 @@
 //! element-by-element expansion, because flat variable order and content are
 //! derived from that overlay.
 
-use crate::{InstantiateOptions, instantiate_model_with_options};
+use crate::{InstantiateOptions, InstantiationOutcome, instantiate_model_with_outcome_options};
 use rumoca_ir_ast as ast;
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -31,18 +31,22 @@ const CELL_ARRAY: &str = r"
     end Stack;
 ";
 
-pub(super) fn instantiate(source: &str, model: &str, compact: bool) -> ast::InstanceOverlay {
+pub(super) fn instantiation_outcome(
+    source: &str,
+    model: &str,
+    compact: bool,
+) -> InstantiationOutcome {
     let file_name = "<component_family_test>";
     let stored = parse_to_ast(source, file_name).expect("parse should succeed");
     let mut tree = ast::ClassTree::from_parsed(stored);
     tree.source_map.add(file_name, source);
     let resolved = resolve(ast::ParsedTree::new(tree)).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let options = InstantiateOptions {
         compact_component_families: compact,
         ..InstantiateOptions::default()
     };
-    instantiate_model_with_options(&tree, model, options).expect("instantiation should succeed")
+    instantiate_model_with_outcome_options(&tree, model, options)
 }
 
 fn component_paths(overlay: &ast::InstanceOverlay) -> Vec<String> {
@@ -101,7 +105,13 @@ fn homogeneous_component_array_expands_every_domain_point() {
     // the overlay and must not be asserted on: the declared extents live in
     // `array_parent_dims` (written for every expanded array, compacted or not)
     // and the array's representation is its per-element entries.
-    let overlay = instantiate(CELL_ARRAY, "Stack", true);
+    let overlay = match instantiation_outcome(CELL_ARRAY, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_eq!(
         overlay.array_parent_dims.get(&component_path("c")),
         Some(&vec![3])
@@ -132,8 +142,20 @@ fn family_replication_matches_scalar_expansion() {
     // The differential assertion is what keeps the compact path honest: if the
     // homogeneity gate ever compacted an array whose elements really do differ,
     // the two overlays would stop agreeing here.
-    let compact = instantiate(CELL_ARRAY, "Stack", true);
-    let scalar = instantiate(CELL_ARRAY, "Stack", false);
+    let compact = match instantiation_outcome(CELL_ARRAY, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    let scalar = match instantiation_outcome(CELL_ARRAY, "Stack", false) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_overlays_equivalent(&compact, &scalar);
 }
 
@@ -145,7 +167,13 @@ fn family_replication_allocates_instance_ids_in_scalar_order() {
     // class, then that class's components) rather than emitting all components
     // of a member before all of its classes. Allocation is one-based because
     // `InstanceId::UNSET` reserves zero.
-    let compact = instantiate(CELL_ARRAY, "Stack", true);
+    let compact = match instantiation_outcome(CELL_ARRAY, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let expected: Vec<(u32, &'static str, String)> = [
         (1, "class", ""),
         (2, "component", "c[1]"),
@@ -170,7 +198,12 @@ fn family_replication_allocates_instance_ids_in_scalar_order() {
     assert_eq!(instance_allocation_order(&compact), expected);
     // The same literal order is what element-by-element expansion produces.
     assert_eq!(
-        instance_allocation_order(&instantiate(CELL_ARRAY, "Stack", false)),
+        instance_allocation_order(&match instantiation_outcome(CELL_ARRAY, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } =>
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        }),
         expected
     );
 }
@@ -203,8 +236,20 @@ fn nested_component_array_replication_matches_scalar_expansion() {
             Bank banks[3];
         end Plant;
     ";
-    let compact = instantiate(SOURCE, "Plant", true);
-    let scalar = instantiate(SOURCE, "Plant", false);
+    let compact = match instantiation_outcome(SOURCE, "Plant", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    let scalar = match instantiation_outcome(SOURCE, "Plant", false) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_overlays_equivalent(&compact, &scalar);
 
     // Each replicated element re-roots the path-keyed extents of the arrays
@@ -244,24 +289,23 @@ fn nested_component_array_replication_matches_scalar_expansion() {
             .find(|class| class.qualified_name.to_flat_string() == path)
             .unwrap_or_else(|| panic!("missing class {path}"));
         let family = class.connections[0]
-            .family
-            .as_ref()
+            .as_family()
             .unwrap_or_else(|| panic!("{path} lost its compact connection family"));
         assert_eq!(
-            family.a.parts[0].1[0],
+            family.a().parts()[0].1[0],
             rumoca_core::AffineForm::constant(index, 1)
         );
         assert_eq!(
-            family.b.parts[0].1[0],
+            family.b().parts()[0].1[0],
             rumoca_core::AffineForm::constant(index, 1)
         );
         // The binder-carrying subscript of the inner arrays stays symbolic.
         assert_eq!(
-            family.a.parts[1].1[0],
+            family.a().parts()[1].1[0],
             rumoca_core::AffineForm::unit_binder(0, 1)
         );
         assert_eq!(
-            family.b.parts[1].1[0],
+            family.b().parts()[1].1[0],
             rumoca_core::AffineForm::unit_binder(0, 1)
         );
     }
@@ -278,8 +322,20 @@ fn per_element_modifier_array_falls_back_to_scalar_expansion() {
             Cell c[3](R = {1.0, 2.0, 3.0});
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
-    let scalar = instantiate(SOURCE, "Stack", false);
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    let scalar = match instantiation_outcome(SOURCE, "Stack", false) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_overlays_equivalent(&compact, &scalar);
     // The distributed per-element values must survive.
     for (index, expected) in ["1.0", "2.0", "3.0"].iter().enumerate() {
@@ -308,7 +364,13 @@ fn each_modifier_array_stays_compact() {
             Cell c[3](each R = 5.0);
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_eq!(
         compact.array_parent_dims.get(&component_path("c")),
         Some(&vec![3])
@@ -325,7 +387,16 @@ fn each_modifier_array_stays_compact() {
             "expected {path} to bind 5.0"
         );
     }
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
 }
 
 #[test]
@@ -343,8 +414,20 @@ fn indexed_binding_array_falls_back_to_scalar_expansion() {
             Complex v[3] = s.y;
         end Wrap;
     ";
-    let compact = instantiate(SOURCE, "Wrap", true);
-    let scalar = instantiate(SOURCE, "Wrap", false);
+    let compact = match instantiation_outcome(SOURCE, "Wrap", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    let scalar = match instantiation_outcome(SOURCE, "Wrap", false) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_overlays_equivalent(&compact, &scalar);
     // `v[k] = s.y[k]` is a genuine per-element binding: the differential
     // assertion above is what proves the compact path did not flatten the three
@@ -380,13 +463,28 @@ fn inner_declaration_inside_array_element_falls_back() {
             Node n[3];
         end World;
     ";
-    let compact = instantiate(SOURCE, "World", true);
+    let compact = match instantiation_outcome(SOURCE, "World", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let paths = component_paths(&compact);
     for index in 1..=3 {
         let path = format!("n[{index}].root.g");
         assert!(paths.contains(&path), "missing {path} in {paths:?}");
     }
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "World", false));
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "World", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
 }
 
 #[test]
@@ -399,7 +497,13 @@ fn zero_sized_array_records_its_extents_and_no_members() {
             Cell c[0];
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_eq!(
         compact.array_parent_dims.get(&component_path("c")),
         Some(&vec![0])
@@ -410,7 +514,16 @@ fn zero_sized_array_records_its_extents_and_no_members() {
             .all(|path| !path.starts_with("c[")),
         "an empty domain must produce no member instances"
     );
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
 }
 
 #[test]
@@ -421,7 +534,13 @@ fn zero_sized_primitive_arrays_retain_their_typed_instance_headers() {
             parameter Real p[0];
         end EmptyInterface;
     ";
-    let overlay = instantiate(SOURCE, "EmptyInterface", true);
+    let overlay = match instantiation_outcome(SOURCE, "EmptyInterface", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let u = overlay
         .components
         .values()
@@ -548,14 +667,6 @@ fn assert_component_equivalent(left: &ast::InstanceData, right: &ast::InstanceDa
         "attribute_source_scopes differ for {path}"
     );
     assert_eq!(
-        left.oc_record_path, right.oc_record_path,
-        "oc_record_path differs for {path}"
-    );
-    assert_eq!(
-        left.is_overconstrained, right.is_overconstrained,
-        "is_overconstrained differs for {path}"
-    );
-    assert_eq!(
         left.is_protected, right.is_protected,
         "is_protected differs for {path}"
     );
@@ -595,10 +706,6 @@ fn assert_class_equivalent(left: &ast::ClassInstanceData, right: &ast::ClassInst
         connection_endpoints(right),
         "connections differ for {path}"
     );
-    assert_eq!(
-        left.resolved_imports, right.resolved_imports,
-        "resolved_imports differ for {path}"
-    );
 }
 
 fn equation_origins(equations: &[ast::InstanceEquation]) -> Vec<String> {
@@ -614,13 +721,19 @@ fn connection_endpoints(class: &ast::ClassInstanceData) -> Vec<(String, String, 
     class
         .connections
         .iter()
-        .map(|connection| {
-            (
-                connection.a.to_flat_string(),
-                connection.b.to_flat_string(),
-                connection.scope.clone(),
-                render_connection_family(connection.family.as_ref()),
-            )
+        .map(|connection| match connection {
+            ast::InstanceConnection::Scalar(connection) => (
+                connection.a().to_flat_string(),
+                connection.b().to_flat_string(),
+                connection.scope().to_string(),
+                render_connection_family(None),
+            ),
+            ast::InstanceConnection::Family(family) => (
+                render_endpoint(family.a()),
+                render_endpoint(family.b()),
+                family.scope().to_string(),
+                render_connection_family(Some(family)),
+            ),
         })
         .collect()
 }
@@ -631,15 +744,15 @@ fn render_connection_family(family: Option<&ast::InstanceConnectionFamily>) -> S
     };
     format!(
         "{:?} | {} | {}",
-        family.domain,
-        render_endpoint(&family.a),
-        render_endpoint(&family.b)
+        family.domain(),
+        render_endpoint(family.a()),
+        render_endpoint(family.b())
     )
 }
 
 fn render_endpoint(endpoint: &ast::InstanceConnectionEndpoint) -> String {
     endpoint
-        .parts
+        .parts()
         .iter()
         .map(|(name, subscripts)| format!("{name}{subscripts:?}"))
         .collect::<Vec<_>>()

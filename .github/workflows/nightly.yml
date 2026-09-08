@@ -7,6 +7,7 @@ name: Nightly
 #     than the 10s PR budget (these models time out, they do not fail);
 #   * the cross-backend MSL suites (`msl-external-tests`), which exercise
 #     generated Solve targets outside the pull-request critical path;
+#   * the generated-source Cortex-M7 instruction ratchet against CasADi;
 #   * a real fuzzing budget for the parser.
 #
 # Every job here is diagnostic. None of them gates a merge, and none of them
@@ -39,7 +40,7 @@ jobs:
   # Full MSL/OMC root-example sweep (566 models), sharded.
   #
   # `msl-sweep-build` builds the harness ONCE (Nix `.#msl-artifacts`: the
-  # `msl_tests` libtest binary plus `rumoca-worker`, `rumoca-sim-worker` and
+  # `msl_tests` libtest binary plus `rumoca-worker` and
   # `rumoca-msl-tools`) and republishes it as a Nix closure artifact.
   # `msl-sweep-shards` fans that single build out over N stripes of the
   # slowest-first model order (`verify msl-parity --shard m/n`), so no shard
@@ -378,7 +379,6 @@ jobs:
             --no-remote-quality-baseline \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
             --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
-            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
@@ -856,13 +856,71 @@ jobs:
       # CasADi Python package. Target-list discovery remains a manual maintenance
       # command because it writes proposed fixture files rather than asserting a
       # fixed correctness threshold.
-      - name: C Solve MSL suite
-        continue-on-error: true
-        run: nix develop .#default --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test c_ode_msl_test -- --nocapture
 
       - name: CasADi MSL suite
         continue-on-error: true
         run: nix develop .#python --command cargo test --release -p rumoca-test-msl --features msl-external-tests --test casadi_msl_test -- --nocapture
+
+  embedded-head-to-head:
+    name: Embedded head-to-head instruction ratchet
+    # SUSPENDED with the retirement of the `embedded-c-galec` generation
+    # target: GALEC never emits C. Returns as a NEW comparison identity when
+    # the `efmu` SolveAlgorithmProduct lands.
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      # The named shell owns all external prerequisites. The gate additionally
+      # checks their exact versions and refuses a missing comparator, a missing
+      # trace, or an unmeasured row rather than turning any of those into a skip.
+      - name: Enforce embedded generated-source instruction ratchet
+        shell: bash
+        env:
+          EMBEDDED_BASE_SHA: HEAD^
+        run: |
+          set -euo pipefail
+          nix develop .#embedded-benchmark --command bash -s -- <<'EMBEDDED_GATE'
+            set -euo pipefail
+            arm_gcc="$(command -v arm-none-eabi-gcc)"
+            qemu="$(command -v qemu-system-arm)"
+            python="$(command -v python)"
+            prlimit="$(command -v prlimit)"
+            arm_root="$(dirname "$(dirname "$arm_gcc")")"
+            cargo xtask verify embedded-head-to-head \
+              --arm-toolchain "$arm_root" \
+              --qemu "$qemu" \
+              --python "$python" \
+              --prlimit "$prlimit" \
+              --baseline-git-revision "$EMBEDDED_BASE_SHA"
+          EMBEDDED_GATE
+
+      - name: Require embedded head-to-head evidence on success
+        if: success()
+        run: test -f target/verification/embedded-head-to-head-summary.json
+
+      - name: Upload embedded head-to-head evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: nightly-embedded-head-to-head
+          path: |
+            target/verification/embedded-head-to-head-summary.json
+            target/verification/embedded-head-to-head/evidence-bundle/**
+          if-no-files-found: error
 
   parser-fuzz:
     name: Parser fuzzing

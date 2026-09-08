@@ -47,8 +47,6 @@
     const double __r{{ op.dst }} = batch_y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     const double __r{{ op.dst }} = batch_p[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}
-    const double __r{{ op.dst }} = batch_p[{{ op.base }} + (size_t)fmin(fmax(round(__r{{ op.index_ref }}), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}
     const double __r{{ op.dst }} = __r{{ op.src }};
 {%- elif op.kind == "TensorLoad" %}
@@ -57,15 +55,6 @@
 {%- endif %}
 {%- for offset in range(op.count) %}
     const double __r{{ op.dst + offset }} = {% if op.input == "Y" %}batch_y{% elif op.input == "P" %}batch_p{% else %}{{ fail("unsupported-feature:scalar.op.TensorLoad.input") }}{% endif %}[{{ op.input_start + offset }}];
-{%- endfor %}
-{%- elif op.kind == "MatrixMultiply" %}
-{%- if op.lanes != 1 %}
-{{ fail("unsupported-feature:scalar.op.MatrixMultiply.directional") }}
-{%- endif %}
-{%- for row in range(op.rows) %}
-{%- for column in range(op.columns) %}
-    const double __r{{ op.dst + row * op.columns + column }} = {% if op.inner == 0 %}0.0{% else %}{% for inner in range(op.inner) %}__r{{ op.lhs_start + row * op.inner + inner }} * __r{{ op.rhs_start + inner * op.columns + column }}{{ " + " if not loop.last else "" }}{% endfor %}{% endif %};
-{%- endfor %}
 {%- endfor %}
 {%- elif op.kind == "LinearSolveComponent" %}
 {{ fail("unsupported-feature:tensor.linsolve: cuda-ode has no device linear-solve ABI") }}
@@ -121,9 +110,6 @@ extern "C" __global__ void {{ name }}_derivative_rhs_batch(
     (void)time;
     (void)batch_y;
     (void)batch_p;
-    for (int i = 0; i < {{ derivative.output_count }}; ++i) {
-        batch_out[i] = 0.0;
-    }
 {%- if derivative.scalar_plan.programs | length == 0 %}
     (void)batch_out;
 {%- endif %}

@@ -3,8 +3,11 @@ mod tests;
 
 use std::collections::BTreeSet;
 
+use rumoca_ir_galec::package::AlgorithmCodeIntegerFormat;
+
+use crate::Value;
 use crate::interpreter::{EvaluationError, Evaluator};
-use crate::{IntegerDomain, Value};
+use crate::numeric::{RealArithmetic, RealUnary};
 
 enum Factorization {
     Regular {
@@ -66,10 +69,10 @@ pub(super) fn scalar_builtin(
             scalar_constant_or_conversion(evaluator, name, &arguments)
         }
         "safe_posdiv" | "safe_sqrt" | "safe_ln" | "safe_lg" | "safe_tan" | "safe_asin"
-        | "safe_acos" => scalar_safe_math(name, &arguments),
+        | "safe_acos" => scalar_safe_math(evaluator, name, &arguments),
         "roundDown" | "roundUp" | "roundHalfToEven" | "sign" | "absolute" | "fractional"
         | "sqrt" | "exp" | "ln" | "lg" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
-        | "sinh" | "cosh" | "tanh" => scalar_unary_math(name, &arguments),
+        | "sinh" | "cosh" | "tanh" => scalar_unary_math(evaluator, name, &arguments),
         _ => scalar_binary_or_array(evaluator, name, &arguments),
     }
 }
@@ -80,25 +83,27 @@ fn scalar_constant_or_conversion(
     arguments: &[Value],
 ) -> Result<Value, EvaluationError> {
     Ok(match name {
-        "minInteger" => Value::Integer(evaluator.integer_domain.min()),
-        "maxInteger" => Value::Integer(evaluator.integer_domain.max()),
-        "minReal" => Value::Real(-f64::MAX),
-        "maxReal" => Value::Real(f64::MAX),
-        "posMinReal" => Value::Real(f64::MIN_POSITIVE),
-        "epsReal" => Value::Real(f64::EPSILON),
+        "minInteger" => Value::Integer(evaluator.integer_format().minimum()),
+        "maxInteger" => Value::Integer(evaluator.integer_format().maximum()),
+        "minReal" => Value::Real(-evaluator.real_arithmetic().max_finite()),
+        "maxReal" => Value::Real(evaluator.real_arithmetic().max_finite()),
+        "posMinReal" => Value::Real(evaluator.real_arithmetic().min_positive()),
+        "epsReal" => Value::Real(evaluator.real_arithmetic().epsilon()),
         "nan" => Value::Real(f64::NAN),
         "minusInfinite" => Value::Real(f64::NEG_INFINITY),
         "plusInfinite" => Value::Real(f64::INFINITY),
-        "euler" => Value::Real(std::f64::consts::E),
-        "pi" => Value::Real(std::f64::consts::PI),
+        "euler" => Value::Real(evaluator.real_arithmetic().euler()),
+        "pi" => Value::Real(evaluator.real_arithmetic().pi()),
         "isNaN" => Value::Boolean(builtin_real(arguments, 0)?.is_nan()),
         "isInfinite" => Value::Boolean(builtin_real(arguments, 0)?.is_infinite()),
         "isFinite" => Value::Boolean(builtin_real(arguments, 0)?.is_finite()),
         "real" => Value::Real(
-            arguments
-                .first()
-                .and_then(Value::integer)
-                .ok_or(EvaluationError::Type("real conversion"))? as f64,
+            evaluator.real_arithmetic().convert_integer(
+                arguments
+                    .first()
+                    .and_then(Value::integer)
+                    .ok_or(EvaluationError::Type("real conversion"))?,
+            ),
         ),
         "integer" => {
             let value = builtin_real(arguments, 0)?;
@@ -109,7 +114,7 @@ fn scalar_constant_or_conversion(
                 // NAN or OVERFLOW (SPEC_0034 T8/T14).
                 Value::Integer(0)
             } else {
-                match integer_conversion(value, evaluator.integer_domain) {
+                match integer_conversion(value, evaluator.integer_format()) {
                     Some(value) => Value::Integer(value),
                     None => {
                         evaluator.active_signals.insert("OVERFLOW".to_owned());
@@ -122,17 +127,22 @@ fn scalar_constant_or_conversion(
     })
 }
 
-fn integer_conversion(value: f64, domain: IntegerDomain) -> Option<i64> {
+fn integer_conversion(value: f64, format: AlgorithmCodeIntegerFormat) -> Option<i64> {
     let truncated = value.trunc();
     if truncated < i64::MIN as f64 || truncated >= -(i64::MIN as f64) {
         return None;
     }
     let converted = truncated as i64;
-    domain.contains(converted).then_some(converted)
+    (converted >= format.minimum() && converted <= format.maximum()).then_some(converted)
 }
 
-fn scalar_safe_math(name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
+fn scalar_safe_math(
+    evaluator: &Evaluator<'_>,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, EvaluationError> {
     let value = builtin_real(arguments, 0)?;
+    let arithmetic = evaluator.real_arithmetic();
     Ok(match name {
         "safe_posdiv" => {
             let denominator = builtin_real(arguments, 1)?;
@@ -141,74 +151,90 @@ fn scalar_safe_math(name: &str, arguments: &[Value]) -> Result<Value, Evaluation
                 if value.is_nan() || denominator.is_nan() || epsilon.is_nan() {
                     f64::NAN
                 } else {
-                    value / denominator.max(epsilon.max(f64::MIN_POSITIVE))
+                    arithmetic.div(
+                        value,
+                        denominator.max(epsilon.max(arithmetic.min_positive())),
+                    )
                 },
             )
         }
         "safe_sqrt" => Value::Real(if value.is_nan() {
             f64::NAN
         } else {
-            value.max(0.0).sqrt()
+            arithmetic.unary(RealUnary::Sqrt, value.max(0.0))
         }),
         "safe_ln" => Value::Real(if value.is_nan() {
             f64::NAN
         } else {
-            value.max(0.0).ln()
+            arithmetic.unary(RealUnary::Ln, value.max(0.0))
         }),
         "safe_lg" => Value::Real(if value.is_nan() {
             f64::NAN
         } else {
-            value.max(0.0).log10()
+            arithmetic.unary(RealUnary::Log10, value.max(0.0))
         }),
-        "safe_tan" => Value::Real(if value >= std::f64::consts::FRAC_PI_2 {
+        "safe_tan" => Value::Real(if value >= arithmetic.div(arithmetic.pi(), 2.0) {
             f64::INFINITY
-        } else if value <= -std::f64::consts::FRAC_PI_2 {
+        } else if value <= -arithmetic.div(arithmetic.pi(), 2.0) {
             f64::NEG_INFINITY
         } else {
-            value.tan()
+            arithmetic.unary(RealUnary::Tan, value)
         }),
         "safe_asin" => Value::Real(if value.is_nan() {
             f64::NAN
         } else {
-            value.clamp(-1.0, 1.0).asin()
+            arithmetic.unary(RealUnary::Asin, value.clamp(-1.0, 1.0))
         }),
         "safe_acos" => Value::Real(if value.is_nan() {
             f64::NAN
         } else {
-            value.clamp(-1.0, 1.0).acos()
+            arithmetic.unary(RealUnary::Acos, value.clamp(-1.0, 1.0))
         }),
         _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
     })
 }
 
-fn scalar_unary_math(name: &str, arguments: &[Value]) -> Result<Value, EvaluationError> {
+fn scalar_unary_math(
+    evaluator: &Evaluator<'_>,
+    name: &str,
+    arguments: &[Value],
+) -> Result<Value, EvaluationError> {
     let value = builtin_real(arguments, 0)?;
-    Ok(Value::Real(match name {
-        "roundDown" => value.floor(),
-        "roundUp" => value.ceil(),
-        "roundHalfToEven" => value.round_ties_even(),
+    let operation = match name {
+        "roundDown" => RealUnary::Floor,
+        "roundUp" => RealUnary::Ceil,
+        "roundHalfToEven" => RealUnary::RoundTiesEven,
         // The emitted C helper `rumoca_galec_sign` and this interpreter both
         // follow the single normative `sign`: three-way compare, 0 at ±0 and
         // NaN, owned by rumoca-core (SPEC_0041). `f64::signum` disagrees at
         // all three points (+0.0 -> 1, -0.0 -> -1, NaN -> NaN).
-        "sign" => rumoca_core::modelica_sign(value),
-        "absolute" => value.abs(),
-        "fractional" => value.fract(),
-        "sqrt" => value.sqrt(),
-        "exp" => value.exp(),
-        "ln" => value.ln(),
-        "lg" => value.log10(),
-        "sin" => value.sin(),
-        "cos" => value.cos(),
-        "tan" => value.tan(),
-        "asin" => value.asin(),
-        "acos" => value.acos(),
-        "atan" => value.atan(),
-        "sinh" => value.sinh(),
-        "cosh" => value.cosh(),
-        "tanh" => value.tanh(),
+        "sign" => {
+            return Ok(Value::Real(
+                evaluator
+                    .real_arithmetic()
+                    .round(rumoca_core::modelica_sign(value)),
+            ));
+        }
+        "absolute" => RealUnary::Abs,
+        "fractional" => RealUnary::Fract,
+        "sqrt" => RealUnary::Sqrt,
+        "exp" => RealUnary::Exp,
+        "ln" => RealUnary::Ln,
+        "lg" => RealUnary::Log10,
+        "sin" => RealUnary::Sin,
+        "cos" => RealUnary::Cos,
+        "tan" => RealUnary::Tan,
+        "asin" => RealUnary::Asin,
+        "acos" => RealUnary::Acos,
+        "atan" => RealUnary::Atan,
+        "sinh" => RealUnary::Sinh,
+        "cosh" => RealUnary::Cosh,
+        "tanh" => RealUnary::Tanh,
         _ => return Err(EvaluationError::UnsupportedBuiltin(name.to_owned())),
-    }))
+    };
+    Ok(Value::Real(
+        evaluator.real_arithmetic().unary(operation, value),
+    ))
 }
 
 fn scalar_binary_or_array(
@@ -219,7 +245,7 @@ fn scalar_binary_or_array(
     Ok(match name {
         "atan2" => {
             let (y, x) = builtin_real_pair(arguments)?;
-            Value::Real(y.atan2(x))
+            Value::Real(evaluator.real_arithmetic().atan2(y, x))
         }
         "min" => {
             let (a, b) = builtin_real_pair(arguments)?;
@@ -260,7 +286,7 @@ fn scalar_binary_or_array(
         }
         "realRemainderTowardsZero" => {
             let (a, b) = builtin_real_pair(arguments)?;
-            Value::Real(a % b)
+            Value::Real(evaluator.real_arithmetic().remainder(a, b))
         }
         "hasNaN1D" | "hasNaN2D" => Value::Boolean(has_nan(
             arguments
@@ -288,8 +314,9 @@ pub(super) fn solve_linear_equations(
 ) -> Result<Value, EvaluationError> {
     let matrix = real_matrix(&arguments[0], "solveLinearEquations")?;
     let rhs = real_vector(&arguments[1], "solveLinearEquations")?;
-    let solution = match factorize(matrix)? {
-        Factorization::Regular { matrix, pivots } => solve_lu(&matrix, &pivots, &rhs)?,
+    let arithmetic = evaluator.real_arithmetic();
+    let solution = match factorize(matrix, arithmetic)? {
+        Factorization::Regular { matrix, pivots } => solve_lu(&matrix, &pivots, &rhs, arithmetic)?,
         Factorization::Failed { dimension, .. } => LinearSolution::Failed { dimension },
     };
     Ok(linear_solution_value(evaluator, solution))
@@ -300,7 +327,7 @@ pub(super) fn lu_factorize_builtin(
     arguments: Vec<Value>,
 ) -> Result<Vec<Value>, EvaluationError> {
     let matrix = real_matrix(&arguments[0], "luFactorize")?;
-    let (lu, pivots) = match factorize(matrix)? {
+    let (lu, pivots) = match factorize(matrix, evaluator.real_arithmetic())? {
         Factorization::Regular { matrix, pivots } => (matrix, pivots),
         Factorization::Failed { dimension, pivots } => {
             raise_linear_solve_failure(evaluator);
@@ -314,7 +341,7 @@ pub(super) fn lu_factorize_builtin(
         Value::Array(
             pivots
                 .into_iter()
-                .map(|pivot| pivot_value(pivot, evaluator.integer_domain))
+                .map(|pivot| pivot_value(pivot, evaluator.integer_format()))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     ])
@@ -340,11 +367,14 @@ pub(super) fn lu_solve_builtin(
     let rhs = real_vector(&arguments[2], "luSolve")?;
     Ok(linear_solution_value(
         evaluator,
-        solve_lu(&lu, &pivots, &rhs)?,
+        solve_lu(&lu, &pivots, &rhs, evaluator.real_arithmetic())?,
     ))
 }
 
-fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError> {
+fn factorize(
+    mut matrix: Vec<Vec<f64>>,
+    arithmetic: RealArithmetic,
+) -> Result<Factorization, EvaluationError> {
     let n = matrix.len();
     if n == 0 || matrix.iter().any(|row| row.len() != n) {
         return Err(EvaluationError::InvalidBuiltinArgument {
@@ -365,9 +395,10 @@ fn factorize(mut matrix: Vec<Vec<f64>>) -> Result<Factorization, EvaluationError
             continue;
         }
         for row in column + 1..n {
-            matrix[row][column] /= diagonal;
+            matrix[row][column] = arithmetic.div(matrix[row][column], diagonal);
             for inner in column + 1..n {
-                matrix[row][inner] -= matrix[row][column] * matrix[column][inner];
+                let product = arithmetic.mul(matrix[row][column], matrix[column][inner]);
+                matrix[row][inner] = arithmetic.sub(matrix[row][inner], product);
             }
         }
     }
@@ -395,11 +426,11 @@ fn select_pivot(matrix: &[Vec<f64>], column: usize) -> Result<usize, EvaluationE
         })
 }
 
-fn pivot_value(pivot: usize, domain: IntegerDomain) -> Result<Value, EvaluationError> {
+fn pivot_value(pivot: usize, format: AlgorithmCodeIntegerFormat) -> Result<Value, EvaluationError> {
     let one_based = pivot
         .checked_add(1)
         .and_then(|value| i64::try_from(value).ok())
-        .filter(|value| domain.contains(*value))
+        .filter(|value| *value >= format.minimum() && *value <= format.maximum())
         .ok_or(EvaluationError::IntegerOverflow)?;
     Ok(Value::Integer(one_based))
 }
@@ -408,6 +439,7 @@ fn solve_lu(
     lu: &[Vec<f64>],
     pivots: &[usize],
     rhs: &[f64],
+    arithmetic: RealArithmetic,
 ) -> Result<LinearSolution, EvaluationError> {
     let n = lu.len();
     if n == 0
@@ -421,21 +453,23 @@ fn solve_lu(
             detail: "matrix, pivots, and right-hand side have incompatible shapes",
         });
     }
-    let mut solution = vec![0.0; n];
+    let mut solution = vec![arithmetic.round(0.0); n];
     let mut failed =
         lu.iter().flatten().any(|value| value.is_nan()) || rhs.iter().any(|value| value.is_nan());
     for row in 0..n {
         solution[row] = rhs[pivots[row]];
         for column in 0..row {
-            solution[row] -= lu[row][column] * solution[column];
+            let product = arithmetic.mul(lu[row][column], solution[column]);
+            solution[row] = arithmetic.sub(solution[row], product);
         }
     }
     for row in (0..n).rev() {
         for column in row + 1..n {
-            solution[row] -= lu[row][column] * solution[column];
+            let product = arithmetic.mul(lu[row][column], solution[column]);
+            solution[row] = arithmetic.sub(solution[row], product);
         }
         failed |= lu[row][row] == 0.0 || lu[row][row].is_nan();
-        solution[row] /= lu[row][row];
+        solution[row] = arithmetic.div(solution[row], lu[row][row]);
         failed |= solution[row].is_nan();
     }
     if failed {
@@ -462,7 +496,10 @@ fn raise_linear_solve_failure(evaluator: &mut Evaluator<'_>) {
         .insert("SOLVE_LINEAR_EQUATIONS_FAILED".to_owned());
 }
 
-pub(super) fn interpolation_1d(arguments: Vec<Value>) -> Result<Value, EvaluationError> {
+pub(super) fn interpolation_1d(
+    evaluator: &Evaluator<'_>,
+    arguments: Vec<Value>,
+) -> Result<Value, EvaluationError> {
     let x = arguments[0]
         .real()
         .ok_or(EvaluationError::Type("interpolation1D x"))?;
@@ -474,6 +511,7 @@ pub(super) fn interpolation_1d(arguments: Vec<Value>) -> Result<Value, Evaluatio
     }
     let mode = interpolation_options(&arguments[4..6], "interpolation1D")?;
     Ok(Value::Real(interpolate_axis(
+        evaluator.real_arithmetic(),
         x,
         &axis[..count],
         &values[..count],
@@ -481,7 +519,10 @@ pub(super) fn interpolation_1d(arguments: Vec<Value>) -> Result<Value, Evaluatio
     )?))
 }
 
-pub(super) fn interpolation_2d(arguments: Vec<Value>) -> Result<Value, EvaluationError> {
+pub(super) fn interpolation_2d(
+    evaluator: &Evaluator<'_>,
+    arguments: Vec<Value>,
+) -> Result<Value, EvaluationError> {
     let x1 = arguments[0]
         .real()
         .ok_or(EvaluationError::Type("interpolation2D x1"))?;
@@ -500,9 +541,18 @@ pub(super) fn interpolation_2d(arguments: Vec<Value>) -> Result<Value, Evaluatio
     let along_second = values
         .iter()
         .take(n1)
-        .map(|row| interpolate_axis(x2, &axis2[..n2], &row[..n2], mode))
+        .map(|row| {
+            interpolate_axis(
+                evaluator.real_arithmetic(),
+                x2,
+                &axis2[..n2],
+                &row[..n2],
+                mode,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Value::Real(interpolate_axis(
+        evaluator.real_arithmetic(),
         x1,
         &axis1[..n1],
         &along_second,
@@ -510,7 +560,10 @@ pub(super) fn interpolation_2d(arguments: Vec<Value>) -> Result<Value, Evaluatio
     )?))
 }
 
-pub(super) fn interpolation_3d(arguments: Vec<Value>) -> Result<Value, EvaluationError> {
+pub(super) fn interpolation_3d(
+    evaluator: &Evaluator<'_>,
+    arguments: Vec<Value>,
+) -> Result<Value, EvaluationError> {
     let x1 = real_argument(&arguments[0], "interpolation3D")?;
     let x2 = real_argument(&arguments[1], "interpolation3D")?;
     let x3 = real_argument(&arguments[2], "interpolation3D")?;
@@ -535,11 +588,26 @@ pub(super) fn interpolation_3d(arguments: Vec<Value>) -> Result<Value, Evaluatio
         let along_second = plane
             .iter()
             .take(n2)
-            .map(|row| interpolate_axis(x3, &axis3[..n3], &row[..n3], mode))
+            .map(|row| {
+                interpolate_axis(
+                    evaluator.real_arithmetic(),
+                    x3,
+                    &axis3[..n3],
+                    &row[..n3],
+                    mode,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        along_first.push(interpolate_axis(x2, &axis2[..n2], &along_second, mode)?);
+        along_first.push(interpolate_axis(
+            evaluator.real_arithmetic(),
+            x2,
+            &axis2[..n2],
+            &along_second,
+            mode,
+        )?);
     }
     Ok(Value::Real(interpolate_axis(
+        evaluator.real_arithmetic(),
         x1,
         &axis1[..n1],
         &along_first,
@@ -573,6 +641,7 @@ fn interpolation_options(
 }
 
 fn interpolate_axis(
+    arithmetic: RealArithmetic,
     x: f64,
     axis: &[f64],
     values: &[f64],
@@ -601,8 +670,11 @@ fn interpolate_axis(
     if !mode.linear && x < axis[last] {
         return Ok(values[lower]);
     }
-    let weight = (x - axis[lower]) / (axis[lower + 1] - axis[lower]);
-    Ok(values[lower] + weight * (values[lower + 1] - values[lower]))
+    let numerator = arithmetic.sub(x, axis[lower]);
+    let denominator = arithmetic.sub(axis[lower + 1], axis[lower]);
+    let weight = arithmetic.div(numerator, denominator);
+    let delta = arithmetic.sub(values[lower + 1], values[lower]);
+    Ok(arithmetic.add(values[lower], arithmetic.mul(weight, delta)))
 }
 
 fn interpolation_count(

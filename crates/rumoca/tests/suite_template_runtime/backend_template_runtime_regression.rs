@@ -1,9 +1,12 @@
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use rumoca::Compiler;
-use rumoca_compile::codegen::targets::RenderedTargetFile;
+use rumoca_compile::codegen::targets::CompletedRenderedFile;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::artifact_session::pinned_artifact_input;
 fn checked_decay() -> rumoca::CompilationResult {
     Compiler::new()
         .model("Decay")
@@ -13,22 +16,20 @@ fn checked_decay() -> rumoca::CompilationResult {
         )
         .expect("checked compiler pipeline succeeds")
 }
-
-fn rendered_target(target: &str) -> (tempfile::TempDir, Vec<RenderedTargetFile>) {
+fn rendered_target(target: &str) -> (tempfile::TempDir, Vec<CompletedRenderedFile>) {
     let result = checked_decay();
-    let files = rumoca::render_target_files(&result, "Decay", target, None)
+    let files = rumoca::render_target_files(&result, target, pinned_artifact_input())
         .expect("checked target renders");
     let directory = tempfile::tempdir().expect("temporary target directory");
     for file in &files {
-        let path = directory.path().join(&file.path);
+        let path = directory.path().join(file.path());
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create rendered target directory");
         }
-        fs::write(path, &file.content).expect("write rendered target file");
+        fs::write(path, file.content()).expect("write rendered target file");
     }
     (directory, files)
 }
-
 #[test]
 fn explicit_rhs_targets_reject_implicit_algebraic_models() {
     let compiled = Compiler::new()
@@ -46,9 +47,7 @@ end ImplicitAlgebraic;
             "ImplicitAlgebraic.mo",
         )
         .expect("the compiler accepts the implicit algebraic model");
-
     for target in [
-        "c-ode",
         "rust-ode",
         "rust-fixed-ode",
         "casadi-ode",
@@ -56,7 +55,7 @@ end ImplicitAlgebraic;
         "cuda-ode",
         "wgsl-ode",
     ] {
-        let error = rumoca::render_target_files(&compiled, "ImplicitAlgebraic", target, None)
+        let error = rumoca::render_target_files(&compiled, target, pinned_artifact_input())
             .expect_err("an explicit RHS target cannot omit algebraic projection");
         assert!(
             error
@@ -66,7 +65,6 @@ end ImplicitAlgebraic;
         );
     }
 }
-
 #[test]
 fn only_fmi3_consumes_an_exact_isolable_algebraic_schedule() {
     let compiled = Compiler::new()
@@ -84,29 +82,26 @@ end ExactAlgebraic;
             "ExactAlgebraic.mo",
         )
         .expect("the compiler accepts an exactly isolable algebraic model");
-
-    let fmi3 = rumoca::render_target_files(&compiled, "ExactAlgebraic", "fmi3", None)
+    let fmi3 = rumoca::render_target_files(&compiled, "fmi3", pinned_artifact_input())
         .expect("FMI3 consumes the checked exact-assignment schedule");
     let model_c = fmi3
         .iter()
-        .find(|file| file.path == "sources/model.c")
+        .find(|file| file.path() == "sources/model.c")
         .expect("FMI3 emits its C kernel");
     assert!(
-        model_c.content.contains("refresh_algebraics"),
+        model_c.content().contains("refresh_algebraics"),
         "the FMI3 kernel must emit the exact algebraic refresh"
     );
     assert!(
-        model_c.content.contains("m->y[1] = r["),
+        model_c.content().contains("m->y[1] = r["),
         "the FMI3 kernel must commit the checked algebraic target"
     );
     assert!(
-        model_c.content.contains("if (!isfinite(m->y[1]))"),
+        model_c.content().contains("if (!isfinite(m->y[1]))"),
         "the FMI3 kernel must reject a non-finite refreshed algebraic value"
     );
-    execute_emitted_algebraic_refresh(&model_c.content);
-
+    execute_emitted_algebraic_refresh(model_c.content());
     for target in [
-        "c-ode",
         "rust-ode",
         "rust-fixed-ode",
         "casadi-ode",
@@ -116,7 +111,7 @@ end ExactAlgebraic;
         "fmi2",
         "fmi-ls-wasm",
     ] {
-        let error = rumoca::render_target_files(&compiled, "ExactAlgebraic", target, None)
+        let error = rumoca::render_target_files(&compiled, target, pinned_artifact_input())
             .expect_err("a target without an exact-assignment consumer must fail closed");
         assert!(
             error
@@ -126,7 +121,6 @@ end ExactAlgebraic;
         );
     }
 }
-
 #[test]
 fn fmi3_rejects_a_tunable_algebraic_coefficient() {
     let compiled = Compiler::new()
@@ -145,8 +139,7 @@ end TunableAlgebraicCoefficient;
             "TunableAlgebraicCoefficient.mo",
         )
         .expect("the compiler accepts an algebraic model with a tunable coefficient");
-
-    let error = rumoca::render_target_files(&compiled, "TunableAlgebraicCoefficient", "fmi3", None)
+    let error = rumoca::render_target_files(&compiled, "fmi3", pinned_artifact_input())
         .expect_err("FMI3 must retain a residual solver for a tunable algebraic coefficient");
     assert!(
         error
@@ -155,7 +148,6 @@ end TunableAlgebraicCoefficient;
         "FMI3 returned the wrong diagnostic: {error:#}"
     );
 }
-
 #[test]
 fn fmi3_exact_runtime_refreshes_the_final_rk4_state() {
     let rendered = render_fmi3_model(
@@ -188,7 +180,6 @@ end FinalRk4Algebraic;
 "#,
     );
 }
-
 #[test]
 fn fmi3_exact_runtime_rolls_back_a_nonfinite_final_algebraic() {
     let rendered = render_fmi3_model(
@@ -237,7 +228,6 @@ end NonfiniteFinalAlgebraic;
     );
     execute_emitted_fmi3_kernel(&rendered.model_c, 2, 1, &body);
 }
-
 #[test]
 fn fmi3_exact_runtime_executes_chained_singletons_in_blt_order() {
     let rendered = render_fmi3_model(
@@ -268,54 +258,169 @@ end ChainedSingletons;
 "#,
     );
 }
+#[test]
+fn fmi3_generic_setter_gates_a_state_write_by_lifecycle_mode() {
+    // Witness: the generic `fmi3SetFloat64` route through the emitted FMI 3 C
+    // consults the compiled per-variable write mask at each lifecycle mode. This
+    // is the route `fmi3SetContinuousStates` bypasses, so it is where the mask
+    // and the mode predicate are actually exercised. It witnesses one model's
+    // admission route, not standards conformance.
+    //
+    // `x` is a continuous state with `fixed = true`, so its initialization
+    // strength is `exact` and no event action reinitializes it. That is the
+    // `ContinuousState { initial: Exact, reinit: False }` policy, whose FMI 3
+    // mask from `Fmi3WriteModes::of` is
+    //   Instantiated(1) | InitializationMode(2) | EventMode(4) | ContinuousTimeMode(8) = 15,
+    // admitting the write in the four Model Exchange modes and denying it in
+    // Co-Simulation Step Mode (bit 16). The expectations below are that mask,
+    // not the FMI standard tables; a compiled cell that disagrees with the mask
+    // is a defect this test must surface, not absorb.
+    let rendered = render_fmi3_model(
+        "FixedStateBoundary",
+        r#"
+model FixedStateBoundary
+  Real x(start = 1, fixed = true);
+equation
+  der(x) = -x;
+end FixedStateBoundary;
+"#,
+    );
+    let state_vr = rendered.value_reference("x");
+    // Both polarities appear in this one program: the four Model Exchange modes
+    // admit and Step Mode denies. An all-deny setter (the original defect) fails
+    // the first admitted write; an all-admit setter fails the Step denial. Each
+    // admitted write commits a value distinct from the slot's prior contents and
+    // is read back, so a setter that returned fmi3OK without writing storage
+    // also fails; the denial writes a sentinel first and asserts it survives, so
+    // a setter that wrote despite refusing fails too. No assertion can pass while
+    // the storage is left untouched.
+    let body = format!(
+        r#"
+    ModelInstance model = {{0}};
+    model.y[0] = 1.0;
+    const fmi3ValueReference state_vr = {state_vr};
+    model.type = INTERFACE_ME;
+
+    // Instantiated: mask bit 1 admits; slot moves 1.0 -> 10.0.
+    model.state = MODEL_INSTANTIATED;
+    fmi3Float64 write = 10.0;
+    if (fmi3SetFloat64(&model, &state_vr, 1, &write, 1) != fmi3OK) return 1;
+    if (model.y[0] != 10.0) return 2;
+
+    // Initialization Mode: mask bit 2 admits (exact); slot moves 10.0 -> 11.0.
+    model.state = MODEL_INITIALIZATION;
+    write = 11.0;
+    if (fmi3SetFloat64(&model, &state_vr, 1, &write, 1) != fmi3OK) return 3;
+    if (model.y[0] != 11.0) return 4;
+
+    // Model Exchange Event Mode: mask bit 4 admits (reinit = false); 11.0 -> 12.0.
+    model.state = MODEL_EVENT;
+    write = 12.0;
+    if (fmi3SetFloat64(&model, &state_vr, 1, &write, 1) != fmi3OK) return 5;
+    if (model.y[0] != 12.0) return 6;
+
+    // Model Exchange Continuous-Time Mode: mask bit 8 admits; 12.0 -> 13.0.
+    model.state = MODEL_CONTINUOUS;
+    write = 13.0;
+    if (fmi3SetFloat64(&model, &state_vr, 1, &write, 1) != fmi3OK) return 7;
+    if (model.y[0] != 13.0) return 8;
+
+    // Co-Simulation Step Mode: mask bit 16 is clear, so the write is refused and
+    // the sentinel slot is left intact.
+    model.type = INTERFACE_CS;
+    model.state = MODEL_STEP;
+    model.y[0] = 99.0;
+    fmi3Float64 refused = 42.0;
+    if (fmi3SetFloat64(&model, &state_vr, 1, &refused, 1) != fmi3Error) return 9;
+    if (model.y[0] != 99.0) return 10;
+"#
+    );
+    execute_emitted_fmi3_kernel(&rendered.model_c, 1, 1, &body);
+}
+/// Decode the `name` and `valueReference` attributes of one FMI3 variable
+/// element. Attribute parsing and its error text are unchanged; the caller
+/// keeps the name filter and the declared-once check.
+fn decode_fmi3_variable_attributes(element: &BytesStart<'_>) -> (Option<String>, Option<String>) {
+    let mut candidate_name = None;
+    let mut candidate_reference = None;
+    for attribute in element.attributes() {
+        let attribute = attribute.expect("well-formed FMI3 model attribute");
+        let value = attribute
+            .unescape_value()
+            .expect("unescapable FMI3 model attribute")
+            .into_owned();
+        match attribute.key.as_ref() {
+            b"name" => candidate_name = Some(value),
+            b"valueReference" => candidate_reference = Some(value),
+            _ => {}
+        }
+    }
+    (candidate_name, candidate_reference)
+}
 
 struct RenderedFmi3 {
     model_c: String,
     model_description: String,
 }
-
 impl RenderedFmi3 {
     fn value_reference(&self, name: &str) -> usize {
-        let marker = format!("<Float64 name=\"{name}\" valueReference=\"");
-        let tail = self
-            .model_description
-            .split_once(&marker)
-            .unwrap_or_else(|| panic!("FMI3 model description declares `{name}`"))
-            .1;
-        tail.split_once('"')
-            .expect("FMI3 value reference terminates")
-            .0
-            .parse()
-            .expect("FMI3 value reference is numeric")
+        let mut reader = Reader::from_str(&self.model_description);
+        let mut found = None;
+        loop {
+            let element = match reader.read_event().expect("well-formed FMI3 model XML") {
+                Event::Eof => break,
+                Event::Start(element) | Event::Empty(element)
+                    if element.name().as_ref() == b"Float64" =>
+                {
+                    element
+                }
+                _ => continue,
+            };
+            let (candidate_name, candidate_reference) = decode_fmi3_variable_attributes(&element);
+            if candidate_name.as_deref() != Some(name) {
+                continue;
+            }
+            assert!(
+                found.is_none(),
+                "FMI3 model description declares `{name}` once"
+            );
+            found = Some(
+                candidate_reference
+                    .unwrap_or_else(|| panic!("FMI3 variable `{name}` has a valueReference"))
+                    .parse()
+                    .unwrap_or_else(|_| {
+                        panic!("FMI3 variable `{name}` has a numeric valueReference")
+                    }),
+            );
+        }
+        found.unwrap_or_else(|| panic!("FMI3 model description declares `{name}`"))
     }
 }
-
 fn render_fmi3_model(model: &str, source: &str) -> RenderedFmi3 {
     let compiled = Compiler::new()
         .model(model)
         .compile_str(source, &format!("{model}.mo"))
         .unwrap_or_else(|error| panic!("compile exact FMI3 runtime fixture {model}: {error:#}"));
-    let files = rumoca::render_target_files(&compiled, model, "fmi3", None)
+    let files = rumoca::render_target_files(&compiled, "fmi3", pinned_artifact_input())
         .unwrap_or_else(|error| panic!("render exact FMI3 runtime fixture {model}: {error:#}"));
     let content = |path: &str| {
         files
             .iter()
-            .find(|file| file.path == path)
+            .find(|file| file.path() == path)
             .unwrap_or_else(|| panic!("FMI3 runtime fixture emits {path}"))
-            .content
-            .clone()
+            .content()
+            .to_owned()
     };
     RenderedFmi3 {
         model_c: content("sources/model.c"),
         model_description: files
             .iter()
-            .find(|file| file.path == "modelDescription.xml")
+            .find(|file| file.path() == "modelDescription.xml")
             .expect("FMI3 runtime fixture emits modelDescription.xml")
-            .content
-            .clone(),
+            .content()
+            .to_owned(),
     }
 }
-
 fn execute_emitted_fmi3_kernel(model_c: &str, y_len: usize, state_len: usize, body: &str) {
     let kernel_start = model_c
         .find("static fmi3Status refresh_algebraics")
@@ -376,7 +481,6 @@ int main(void) {{
     );
     compile_and_run_c(&driver, "exact FMI3 runtime kernel");
 }
-
 fn compile_and_run_c(driver: &str, label: &str) {
     let work = tempfile::tempdir().expect("create emitted C test directory");
     let source = work.path().join("driver.c");
@@ -404,7 +508,6 @@ fn compile_and_run_c(driver: &str, label: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
-
 fn execute_emitted_algebraic_refresh(model_c: &str) {
     let start = model_c
         .find("static fmi3Status refresh_algebraics")
@@ -458,7 +561,6 @@ int main(void) {{
         String::from_utf8_lossy(&output.stderr)
     );
 }
-
 fn run_python(module: &Path, script: &str) {
     let output = Command::new("python")
         .args(["-c", script])
@@ -471,7 +573,6 @@ fn run_python(module: &Path, script: &str) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
-
 fn run_checked(command: &mut Command, context: &str) {
     let output = command.output().unwrap_or_else(|error| {
         panic!("failed to start {context}: {error}");
@@ -483,82 +584,36 @@ fn run_checked(command: &mut Command, context: &str) {
         String::from_utf8_lossy(&output.stderr),
     );
 }
-
 #[test]
 fn dae_template_context_exposes_checked_semantic_schema() {
     let result = Compiler::new()
         .model("M")
         .compile_str("model M Real x; equation x=1; end M;", "m.mo")
         .expect("checked compiler pipeline succeeds");
-    let rendered = result
-        .render_template_str("{{ dae.schema.name }}:{{ dae.schema.version }}")
-        .expect("checked DAE template renders");
-
+    let projection = rumoca_compile::codegen::dae_to_template_json(result.dae().as_ref())
+        .expect("checked DAE projection constructs");
     // Pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`: every change to the
     // projected template shape bumps that constant, and this literal must be
     // bumped with it so template consumers see the break loudly. Version 5 is
     // the shape carrying checked function owners, checked discrete ownership,
     // and the proved-projection gate.
-    assert_eq!(rendered, "rumoca.checked-dae-template:5");
+    assert_eq!(projection["schema"]["name"], "rumoca.checked-dae-template");
+    assert_eq!(projection["schema"]["version"], 5);
 }
-
-#[test]
-fn c_ode_checked_target_compiles_and_executes() {
-    let (directory, files) = rendered_target("c-ode");
-    let source = files
-        .iter()
-        .find(|file| file.path.ends_with(".c"))
-        .expect("C ODE target emits a C source");
-    let harness = directory.path().join("main.c");
-    fs::write(
-        &harness,
-        r#"#include "Decay_ode.h"
-#include <math.h>
-
-int main(void) {
-    const double y[1] = {1.0};
-    const double p[1] = {0.0};
-    double out[1] = {123.0};
-    if (Decay_derivative_rhs(0.0, y, p, out) != 0) return 1;
-    return fabs(out[0] + 2.0) < 1e-12 ? 0 : 2;
-}
-"#,
-    )
-    .expect("write C ODE runtime harness");
-    let executable = directory.path().join("c-ode-runtime");
-    run_checked(
-        Command::new("cc")
-            .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
-            .arg(directory.path().join(&source.path))
-            .arg(&harness)
-            .arg("-I")
-            .arg(directory.path())
-            .arg("-lm")
-            .arg("-o")
-            .arg(&executable),
-        "compile checked C ODE target",
-    );
-    run_checked(
-        &mut Command::new(executable),
-        "execute checked C ODE target",
-    );
-}
-
 #[test]
 fn rust_ode_checked_target_compiles_and_executes() {
     let (directory, files) = rendered_target("rust-ode");
     let module = files
         .iter()
-        .find(|file| file.path.ends_with(".rs"))
+        .find(|file| file.path().ends_with(".rs"))
         .expect("Rust ODE target emits a Rust module");
     let generated_module = directory.path().join("generated.rs");
-    fs::copy(directory.path().join(&module.path), &generated_module)
+    fs::copy(directory.path().join(module.path()), &generated_module)
         .expect("copy Rust ODE module beside its normal module root");
     let harness = directory.path().join("main.rs");
     fs::write(
         &harness,
         r#"mod generated;
-
 fn main() {
     let mut out = [123.0];
     generated::derivative_rhs(0.0, &[1.0], &[], &mut out).unwrap();
@@ -582,16 +637,15 @@ fn main() {
         "execute checked Rust ODE target",
     );
 }
-
 #[test]
 fn rust_fixed_ode_checked_target_executes_without_heap_allocation() {
     let (directory, files) = rendered_target("rust-fixed-ode");
     let module = files
         .iter()
-        .find(|file| file.path.ends_with(".rs"))
+        .find(|file| file.path().ends_with(".rs"))
         .expect("fixed Rust ODE target emits a Rust module");
     let generated_module = directory.path().join("generated.rs");
-    fs::copy(directory.path().join(&module.path), &generated_module)
+    fs::copy(directory.path().join(module.path()), &generated_module)
         .expect("copy fixed Rust ODE module beside its normal module root");
     let harness = directory.path().join("main.rs");
     fs::write(
@@ -599,32 +653,29 @@ fn rust_fixed_ode_checked_target_executes_without_heap_allocation() {
         format!(
             r#"use std::alloc::{{GlobalAlloc, Layout, System}};
 use std::sync::atomic::{{AtomicUsize, Ordering}};
-
 struct CountingAllocator;
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 unsafe impl GlobalAlloc for CountingAllocator {{
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {{
         ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
         {unsafe_block} {{ System.alloc(layout) }}
     }}
-
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {{
         {unsafe_block} {{ System.dealloc(pointer, layout) }}
     }}
 }}
-
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
-
 mod generated;
-
 fn main() {{
     let before = ALLOCATIONS.load(Ordering::SeqCst);
     let out = generated::derivative_rhs(0.0, &[1.0], &[]).unwrap();
+    let mut into_out = [f64::NAN];
+    generated::derivative_rhs_into(0.0, &[1.0], &[], &mut into_out).unwrap();
     let after = ALLOCATIONS.load(Ordering::SeqCst);
     assert_eq!(before, after, "fixed ODE evaluation allocated");
     assert!((out[0] + 2.0).abs() < 1e-12);
+    assert!((into_out[0] + 2.0).abs() < 1e-12);
 }}
 "#,
             unsafe_block = concat!("un", "safe"),
@@ -646,13 +697,12 @@ fn main() {{
         "execute checked fixed Rust ODE target",
     );
 }
-
 #[test]
 fn cuda_ode_generated_kernel_compiles_and_executes_cpu_emulation() {
     let (directory, files) = rendered_target("cuda-ode");
     let source = files
         .iter()
-        .find(|file| file.path.ends_with(".cu"))
+        .find(|file| file.path().ends_with(".cu"))
         .expect("CUDA ODE target emits CUDA source");
     let harness = directory.path().join("main.cpp");
     fs::write(
@@ -662,7 +712,6 @@ fn cuda_ode_generated_kernel_compiles_and_executes_cpu_emulation() {
 static Dim3 blockIdx, blockDim, threadIdx;
 #define __global__
 #include {:?}
-
 int main() {{
     const double y[2] = {{1.0, 2.0}};
     const double p[2] = {{0.0, 0.0}};
@@ -675,7 +724,7 @@ int main() {{
     return out[0] == -2.0 && out[1] == -4.0 ? 0 : 1;
 }}
 "#,
-            source.path,
+            source.path(),
         ),
     )
     .expect("write CUDA CPU-emulation harness");
@@ -694,13 +743,12 @@ int main() {{
         "execute CUDA ODE CPU emulation",
     );
 }
-
 #[test]
 fn cuda_ode_generated_kernel_compiles_with_required_nvcc() {
     let (directory, files) = rendered_target("cuda-ode");
     let source = files
         .iter()
-        .find(|file| file.path.ends_with(".cu"))
+        .find(|file| file.path().ends_with(".cu"))
         .expect("CUDA ODE target emits CUDA source");
     let available = Command::new("nvcc").arg("--version").output().is_ok();
     if !super::template_runtime_policy::prerequisites_are_available(
@@ -712,22 +760,21 @@ fn cuda_ode_generated_kernel_compiles_with_required_nvcc() {
     run_checked(
         Command::new("nvcc")
             .args(["-std=c++17", "-c"])
-            .arg(directory.path().join(&source.path))
+            .arg(directory.path().join(source.path()))
             .arg("-o")
             .arg(directory.path().join("cuda-ode.o")),
         "compile CUDA ODE kernel with NVCC",
     );
 }
-
 #[test]
 fn casadi_ode_target_imports_evaluates_and_differentiates() {
     let (directory, files) = rendered_target("casadi-ode");
     let module = files
         .iter()
-        .find(|file| file.path.ends_with(".py"))
+        .find(|file| file.path().ends_with(".py"))
         .expect("CasADi target emits Python");
     run_python(
-        &directory.path().join(&module.path),
+        &directory.path().join(module.path()),
         r#"
 import importlib.util, sys
 import casadi as ca
@@ -742,16 +789,15 @@ assert float(derivative(ca.DM([1.0]))) == -2.0
 "#,
     );
 }
-
 #[test]
 fn jax_ode_target_imports_jits_evaluates_and_differentiates() {
     let (directory, files) = rendered_target("jax-ode");
     let module = files
         .iter()
-        .find(|file| file.path.ends_with(".py"))
+        .find(|file| file.path().ends_with(".py"))
         .expect("JAX target emits Python");
     run_python(
-        &directory.path().join(&module.path),
+        &directory.path().join(module.path()),
         r#"
 import importlib.util, sys
 import jax

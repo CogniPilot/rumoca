@@ -102,6 +102,7 @@ fn define_guarded_variables<'dae>(
     dae.variables(|variables| {
         let input = variables.input(
             VarName::new("u"),
+            rumoca_core::InstanceId::new(1),
             real,
             dae::InputVariability::Continuous,
             spans.input,
@@ -112,6 +113,7 @@ fn define_guarded_variables<'dae>(
         )?;
         let output = variables.discrete_real(
             VarName::new("y"),
+            rumoca_core::InstanceId::new(2),
             real,
             spans.output,
             dae::VariableAttributes {
@@ -121,6 +123,7 @@ fn define_guarded_variables<'dae>(
         )?;
         let level = variables.discrete_real(
             VarName::new("level"),
+            rumoca_core::InstanceId::new(3),
             real,
             spans.level,
             dae::VariableAttributes::default(),
@@ -280,8 +283,18 @@ fn dependent_parameter_model() -> dae::Dae {
         let ((gain, gain_reservation), (_derived, derived_reservation)) =
             dae.variables(|variables| {
                 Ok((
-                    variables.reserve_parameter(VarName::new("gain"), real, gain_at)?,
-                    variables.reserve_parameter(VarName::new("derived"), real, derived_at)?,
+                    variables.reserve_parameter(
+                        VarName::new("gain"),
+                        rumoca_core::InstanceId::new(4),
+                        real,
+                        gain_at,
+                    )?,
+                    variables.reserve_parameter(
+                        VarName::new("derived"),
+                        rumoca_core::InstanceId::new(5),
+                        real,
+                        derived_at,
+                    )?,
                 ))
             })?;
         let (gain_default, derived_binding) = dae.expressions(|expressions| {
@@ -332,9 +345,55 @@ fn dependent_parameter_model() -> dae::Dae {
     .expect("checked dependent-parameter fixture constructs")
 }
 
-fn project(model: &dae::Dae, name: &str) -> AlgorithmCodePackage {
-    lower_to_algorithm_code(&GalecInput::new(model, name), &GalecOptions::default())
-        .unwrap_or_else(|errors| panic!("fixture must project: {errors:?}"))
+fn project<'inv>(
+    brand: rumoca_core::TargetInvocationBrand<'inv>,
+    model: &dae::Dae,
+    name: &str,
+) -> rumoca_ir_galec::TracedAlgorithmCodeProduct<'inv> {
+    lower_to_algorithm_code(
+        brand,
+        &GalecInput::new(model, name),
+        &GalecOptions::new(
+            rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+                rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+                rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+                rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+            ),
+        ),
+    )
+    .unwrap_or_else(|errors| panic!("fixture must project: {errors:?}"))
+}
+
+#[test]
+fn projection_retains_each_explicit_arithmetic_selection() {
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let model = tick_order_model();
+        for semantics in [
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+        ] {
+            let package = lower_to_algorithm_code(
+                brand,
+                &GalecInput::new(&model, "ExplicitProfile"),
+                &GalecOptions::new(
+                    rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+                        rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+                        rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+                        semantics,
+                    ),
+                ),
+            )
+            .unwrap_or_else(|errors| panic!("explicit profile must project: {errors:?}"));
+
+            assert_eq!(
+                package
+                    .package()
+                    .arithmetic_profile()
+                    .real_matrix_multiply(),
+                semantics
+            );
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -527,11 +586,12 @@ fn do_step_lines(package: &AlgorithmCodePackage) -> Vec<String> {
 
 #[test]
 fn lower_to_algorithm_code_projects_the_whole_module() {
-    let package = project(&tick_order_model(), "TickOrder");
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let package = project(brand, &tick_order_model(), "TickOrder");
 
-    assert_eq!(
-        render_block(&package),
-        "\
+        assert_eq!(
+            render_block(package.package()),
+            "\
 block TickOrder
   input Real u;
   output Real y;
@@ -547,101 +607,214 @@ block TickOrder
     if self.level > 0.5 then
       self.y := 10.0;
     end if;",
-        "the projected module changed; re-read the diff before updating this"
-    );
+            "the projected module changed; re-read the diff before updating this"
+        );
+    });
 }
 
 #[test]
 fn dependent_parameter_binding_is_recomputed_during_recalibrate() {
-    let package = project(&dependent_parameter_model(), "DependentParameter");
-    let block = package.block();
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let package = project(brand, &dependent_parameter_model(), "DependentParameter");
+        let block = package.package().block();
 
-    assert!(block.interface.iter().any(|variable| {
-        variable.kind == gast::InterfaceKind::TunableParameter
-            && variable.decl.name.lexeme() == "gain"
-    }));
-    assert!(block.protected.iter().any(|variable| {
-        variable.kind == gast::ProtectedKind::DependentParameter
-            && variable.decl.name.lexeme() == "derived"
-    }));
-    assert_eq!(block.recalibrate.statements.len(), 1);
-    assert!(matches!(
-        &block.recalibrate.statements[0].node,
-        gast::Statement::Assignment { target, value }
-            if render_reference(target) == "self.derived"
-                && render_expression(value).contains("self.gain")
-    ));
+        assert!(block.interface.iter().any(|variable| {
+            variable.kind == gast::InterfaceKind::TunableParameter
+                && variable.decl.name.lexeme() == "gain"
+        }));
+        assert!(block.protected.iter().any(|variable| {
+            variable.kind == gast::ProtectedKind::DependentParameter
+                && variable.decl.name.lexeme() == "derived"
+        }));
+        assert_eq!(block.recalibrate.statements.len(), 1);
+        assert!(matches!(
+            &block.recalibrate.statements[0].node,
+            gast::Statement::Assignment { target, value }
+                if render_reference(target) == "self.derived"
+                    && render_expression(value).contains("self.gain")
+        ));
+    });
 }
 
 #[test]
 fn the_package_metadata_correlates_with_the_block_declarations() {
-    let package = project(&tick_order_model(), "TickOrder");
-    let block = package.block();
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let product = project(brand, &tick_order_model(), "TickOrder");
+        let package = product.package();
+        let block = package.block();
 
-    let declaration_count = block.interface.len()
-        + block.protected.len()
-        + block
-            .compartments
-            .iter()
-            .map(|compartment| compartment.entities.len())
-            .sum::<usize>();
-    assert_eq!(
-        package.variable_nominals().len(),
-        declaration_count,
-        "one nominal slot per declared block variable"
-    );
-
-    let ordinal = package.clock_variable_ordinal();
-    assert!(ordinal >= 1, "the clock ordinal is one-based");
-    let clock_name = block
-        .interface
-        .iter()
-        .map(|variable| variable.decl.name.lexeme().to_owned())
-        .chain(
-            block
-                .protected
+        let declaration_count = block.interface.len()
+            + block.protected.len()
+            + block
+                .compartments
                 .iter()
-                .map(|entity| entity.decl.name.lexeme().to_owned()),
-        )
-        .nth(ordinal - 1)
-        .expect("the clock ordinal addresses a declared variable");
-    assert_eq!(clock_name, "samplePeriod");
+                .map(|compartment| compartment.entities.len())
+                .sum::<usize>();
+        assert_eq!(
+            package.variable_nominals().len(),
+            declaration_count,
+            "one nominal slot per declared block variable"
+        );
+
+        let ordinal = package.clock_variable_ordinal();
+        assert!(ordinal >= 1, "the clock ordinal is one-based");
+        let clock_name = block
+            .interface
+            .iter()
+            .map(|variable| variable.decl.name.lexeme().to_owned())
+            .chain(
+                block
+                    .protected
+                    .iter()
+                    .map(|entity| entity.decl.name.lexeme().to_owned()),
+            )
+            .nth(ordinal - 1)
+            .expect("the clock ordinal addresses a declared variable");
+        assert_eq!(clock_name, "samplePeriod");
+    });
 }
 
 #[test]
 fn a_guard_that_reads_a_discrete_value_forces_its_producer_earlier_in_the_tick() {
-    let package = project(&tick_order_model(), "TickOrder");
-    let lines = do_step_lines(&package);
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let package = project(brand, &tick_order_model(), "TickOrder");
+        let lines = do_step_lines(package.package());
 
-    let producer = lines
-        .iter()
-        .position(|line| line == "self.level := self.u;")
-        .unwrap_or_else(|| panic!("the producer assignment must be emitted: {lines:?}"));
-    let guard = lines
-        .iter()
-        .position(|line| line == "if self.level > 0.5 then")
-        .unwrap_or_else(|| panic!("the guard must read the producer's current value: {lines:?}"));
+        let producer = lines
+            .iter()
+            .position(|line| line == "self.level := self.u;")
+            .unwrap_or_else(|| panic!("the producer assignment must be emitted: {lines:?}"));
+        let guard = lines
+            .iter()
+            .position(|line| line == "if self.level > 0.5 then")
+            .unwrap_or_else(|| {
+                panic!("the guard must read the producer's current value: {lines:?}")
+            });
 
-    assert!(
-        producer < guard,
-        "`level` is produced after the guard that reads it, so the guard sees \
+        assert!(
+            producer < guard,
+            "`level` is produced after the guard that reads it, so the guard sees \
          the previous tick's value: {lines:?}"
-    );
+        );
 
-    // Counterfactual control: the identical block with `true` in place of the
-    // read keeps the declaration order, so the reordering above is caused by
-    // the guard's read and by nothing else in this fixture.
-    let control = project(&guarded_model(Guard::Constant), "TickOrder");
-    assert_eq!(
-        do_step_lines(&control),
-        [
-            "if true then".to_owned(),
-            "  self.y := 10.0;".to_owned(),
-            "end if;".to_owned(),
-            "self.level := self.u;".to_owned(),
-        ],
-        "without a same-tick read the rows keep their declaration order"
+        // Counterfactual control: the identical block with `true` in place of the
+        // read keeps the declaration order, so the reordering above is caused by
+        // the guard's read and by nothing else in this fixture.
+        let control = project(brand, &guarded_model(Guard::Constant), "TickOrder");
+        assert_eq!(
+            do_step_lines(control.package()),
+            [
+                "if true then".to_owned(),
+                "  self.y := 10.0;".to_owned(),
+                "end if;".to_owned(),
+                "self.level := self.u;".to_owned(),
+            ],
+            "without a same-tick read the rows keep their declaration order"
+        );
+    });
+}
+
+#[derive(Clone, Copy)]
+enum UnsupportedPeriodicAction {
+    Terminate,
+    LevelledAssert,
+}
+
+fn unsupported_periodic_action_model(action: UnsupportedPeriodicAction) -> (dae::Dae, Span) {
+    let (text, action_text) = match action {
+        UnsupportedPeriodicAction::Terminate => (
+            "when sample(0, 1) then terminate(\"stop\"); end when;",
+            "terminate(\"stop\")",
+        ),
+        UnsupportedPeriodicAction::LevelledAssert => (
+            "when sample(0, 1) then assert(false, \"bad\", 1); end when;",
+            "assert(false, \"bad\", 1)",
+        ),
+    };
+    let mut sources = SourceMap::new();
+    let source = sources.add("UnsupportedPeriodicAction.mo", text);
+    let clock_at = at(source, text, "sample(0, 1)");
+    let action_at = at(source, text, action_text);
+    let action_span = action_at.span();
+    let model = dae::Dae::construct(sources, |dae| {
+        let clock = dae.clocks(|clocks| {
+            clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO)
+                    .expect("fixture lattice is valid"),
+                clock_at,
+            )
+        })?;
+        let clock = dae::ClockId::from(clock);
+        let (trigger, guard) = dae.conditions(|conditions| {
+            let trigger = conditions.reserve(clock_at)?;
+            conditions.define(trigger, dae::ConditionInput::Clock(clock), clock_at)?;
+            let guard = conditions.reserve(action_at)?;
+            conditions.define(guard, dae::ConditionInput::Always, action_at)?;
+            Ok((trigger, guard))
+        })?;
+        let (message, level) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(action_at)
+                    .literal(dae::DaeLiteral::String("message".to_owned()))?,
+                expressions
+                    .at(action_at)
+                    .literal(dae::DaeLiteral::Integer(1))?,
+            ))
+        })?;
+        dae.events(|events| {
+            match action {
+                UnsupportedPeriodicAction::Terminate => {
+                    events.terminate(trigger, guard, message, action_at)?;
+                }
+                UnsupportedPeriodicAction::LevelledAssert => {
+                    events.assert_with_level(trigger, guard, message, Some(level), action_at)?;
+                }
+            }
+            Ok(())
+        })
+    })
+    .expect("checked periodic action fixture constructs");
+    (model, action_span)
+}
+
+fn assert_public_package_rejects_event_action(action: UnsupportedPeriodicAction) {
+    let (model, action_span) = unsupported_periodic_action_model(action);
+    let errors = rumoca_core::with_target_invocation_brand(|brand| {
+        lower_to_algorithm_code(
+            brand,
+            &GalecInput::new(&model, "UnsupportedPeriodicAction"),
+            &GalecOptions::new(
+                rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+                    rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+                    rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+                    rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+                ),
+            ),
+        )
+        .expect_err("unsupported periodic event action must fail before packaging")
+    });
+    assert!(
+        errors.iter().any(|error| matches!(
+            error,
+            rumoca_phase_galec::GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "event-action" && *span == action_span
+        )),
+        "expected an exact-span event-action refusal, got {errors:?}"
     );
+}
+
+#[test]
+fn periodic_terminate_is_rejected_by_the_public_package_entry() {
+    assert_public_package_rejects_event_action(UnsupportedPeriodicAction::Terminate);
+}
+
+#[test]
+fn periodic_levelled_assert_is_rejected_by_the_public_package_entry() {
+    assert_public_package_rejects_event_action(UnsupportedPeriodicAction::LevelledAssert);
 }
 
 #[test]
@@ -661,6 +834,7 @@ fn a_model_without_a_periodic_clock_is_rejected_by_the_entry_point() {
         dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(6),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -670,11 +844,20 @@ fn a_model_without_a_periodic_clock_is_rejected_by_the_entry_point() {
     })
     .expect("checked clock-free fixture constructs");
 
-    let errors = lower_to_algorithm_code(
-        &GalecInput::new(&model, "NoClock"),
-        &GalecOptions::default(),
-    )
-    .expect_err("GALEC requires one admitted periodic clock");
+    let errors = rumoca_core::with_target_invocation_brand(|brand| {
+        lower_to_algorithm_code(
+            brand,
+            &GalecInput::new(&model, "NoClock"),
+            &GalecOptions::new(
+                rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+                    rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+                    rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+                    rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+                ),
+            ),
+        )
+        .expect_err("GALEC requires one admitted periodic clock")
+    });
     assert!(
         errors
             .iter()
@@ -685,15 +868,23 @@ fn a_model_without_a_periodic_clock_is_rejected_by_the_entry_point() {
 
 #[test]
 fn the_block_name_option_overrides_the_model_name() {
-    let model = tick_order_model();
-    let package = lower_to_algorithm_code(
-        &GalecInput::new(&model, "TickOrder"),
-        &GalecOptions {
-            block_name: Some("Renamed".to_owned()),
-            ..GalecOptions::default()
-        },
-    )
-    .expect("fixture projects");
+    rumoca_core::with_target_invocation_brand(|brand| {
+        let model = tick_order_model();
+        let package = lower_to_algorithm_code(
+            brand,
+            &GalecInput::new(&model, "TickOrder"),
+            &GalecOptions::new(
+                rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+                    rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+                    rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+                    rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+                ),
+            )
+            .with_block_name("Renamed"),
+        )
+        .expect("fixture projects");
 
-    assert_eq!(package.block().name.lexeme(), "Renamed");
+        assert_eq!(package.package().block().name.lexeme(), "Renamed");
+        assert_eq!(package.semantic_model().as_str(), "TickOrder");
+    });
 }

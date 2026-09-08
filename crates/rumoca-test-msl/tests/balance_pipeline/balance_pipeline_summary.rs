@@ -284,9 +284,9 @@ pub(super) fn prepare_sim_trace_dirs(run_simulation: bool) {
         msl_results_dir().join("ir_solve"),
     ] {
         if dir.exists() {
-            let _ = fs::remove_dir_all(&dir);
+            fs::remove_dir_all(&dir).expect("remove stale simulation trace directory");
         }
-        let _ = fs::create_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create simulation trace directory");
     }
 }
 
@@ -311,10 +311,10 @@ VmHWM:\t  524288 kB
                 "Modelica.Test.External".to_string(),
                 "ToDae",
                 Some(
-                    "unsupported-feature:external_tables: Target 'custom' does not support feature 'external_tables'"
+                    "unsupported-feature:external_functions: Target 'custom' does not support feature 'external_functions'"
                         .to_string(),
                 ),
-                Some("unsupported-feature:external_tables".to_string()),
+                Some("unsupported-feature:external_functions".to_string()),
             ),
             phase_error_result(
                 "Modelica.Test.Random".to_string(),
@@ -344,11 +344,13 @@ VmHWM:\t  524288 kB
         assert_eq!(
             counters
                 .error_code_counts
-                .get("unsupported-feature:external_tables"),
+                .get("unsupported-feature:external_functions"),
             Some(&1)
         );
         assert_eq!(
-            counters.unsupported_feature_counts.get("external_tables"),
+            counters
+                .unsupported_feature_counts
+                .get("external_functions"),
             Some(&1)
         );
         assert_eq!(counters.unsupported_feature_counts.get("random"), Some(&1));
@@ -368,7 +370,7 @@ VmHWM:\t  524288 kB
             counters
                 .unsupported_feature_counts_by_backend
                 .get("custom")
-                .and_then(|counts| counts.get("external_tables")),
+                .and_then(|counts| counts.get("external_functions")),
             Some(&1)
         );
         assert_eq!(

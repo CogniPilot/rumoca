@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- set model_identifier = "Rumoca_" ~ (__rumoca_artifact_identity_v1_fmu | replace("-", "_")) %}
 <fmiModelDescription
   fmiVersion="2.0"
-  modelName="{{ model_name | xml_escape }}"
+  modelName="{{ model_qualified_name | xml_escape }}"
   generationTool="Rumoca"
-  guid="{ {{- artifact.identities.fmu -}} }"
+  guid="{ {{- __rumoca_artifact_identity_v1_fmu -}} }"
   numberOfEventIndicators="0">
   <ModelExchange modelIdentifier="{{ model_identifier }}">
     <SourceFiles>
@@ -17,72 +17,50 @@
     </SourceFiles>
   </CoSimulation>
   <UnitDefinitions>
-    <Unit name="s">
-      <BaseUnit s="1"/>
+{%- for unit in fmi.fmi2.unit_definitions %}
+{%- if unit.base_unit_seconds_exponent is not none %}
+    <Unit name="{{ unit.name | xml_escape }}">
+      <BaseUnit s="{{ unit.base_unit_seconds_exponent }}"/>
     </Unit>
+{%- else %}
+    <Unit name="{{ unit.name | xml_escape }}"/>
+{%- endif %}
+{%- endfor %}
   </UnitDefinitions>
   <ModelVariables>
     <ScalarVariable name="time" valueReference="0" causality="independent" variability="continuous">
       <Real unit="s"/>
     </ScalarVariable>
-{%- set index = namespace(model=2, vr=1) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    <ScalarVariable name="{{ variable.scalar_names[scalar] | xml_escape }}" valueReference="{{ index.vr }}" causality="{{ "calculatedParameter" if variable.causality == "calculated_parameter" else variable.causality }}" variability="{{ variable.variability }}"{% if variable.role == "State" %} initial="exact"{% elif variable.causality in ["parameter", "calculated_parameter"] %} initial="exact"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
-      <Real start="{{ variable.start[scalar] }}"{% if variable.minimum %} min="{{ variable.minimum[scalar] }}"{% endif %}{% if variable.maximum %} max="{{ variable.maximum[scalar] }}"{% endif %}{% if variable.nominal %} nominal="{{ variable.nominal[scalar] }}"{% endif %}/>
+{%- for variable in fmi.fmi2.variables %}
+    <ScalarVariable name="{{ variable.name | xml_escape }}" valueReference="{{ variable.value_reference }}" causality="{{ variable.causality }}" variability="{{ variable.variability }}"{% if variable.initial is not none %} initial="{{ variable.initial }}"{% endif %}{% if variable.description %} description="{{ variable.description | xml_escape }}"{% endif %}>
+      <Real{% if variable.start is not none %} start="{{ variable.start }}"{% endif %}{% if variable.minimum is not none %} min="{{ variable.minimum }}"{% endif %}{% if variable.maximum is not none %} max="{{ variable.maximum }}"{% endif %}{% if variable.nominal is not none %} nominal="{{ variable.nominal }}"{% endif %}{% if variable.unit %} unit="{{ variable.unit | xml_escape }}"{% endif %}/>
     </ScalarVariable>
-{%- set index.model = index.model + 1 %}
-{%- set index.vr = index.vr + 1 %}
 {%- endfor %}
-{%- endfor %}
-{%- set derivative_model_index = index.model %}
-{%- set state_model_index = namespace(value=2) %}
-{%- for variable in fmi.variables %}
-{%- if variable.role == "State" %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    <ScalarVariable name="der({{ variable.scalar_names[scalar] | xml_escape }})" valueReference="{{ index.vr }}" causality="local" variability="continuous" initial="calculated">
-      <Real derivative="{{ state_model_index.value }}"/>
+{%- for derivative in fmi.fmi2.derivatives %}
+    <ScalarVariable name="{{ derivative.name | xml_escape }}" valueReference="{{ derivative.link.derivative_value_reference }}" causality="{{ derivative.causality }}" variability="{{ derivative.variability }}" initial="{{ derivative.initial }}">
+      <Real derivative="{{ derivative.link.state_model_index }}"/>
     </ScalarVariable>
-{%- set index.model = index.model + 1 %}
-{%- set index.vr = index.vr + 1 %}
-{%- set state_model_index.value = state_model_index.value + 1 %}
-{%- endfor %}
-{%- else %}
-{%- set state_model_index.value = state_model_index.value + variable.storage.scalar_count %}
-{%- endif %}
 {%- endfor %}
   </ModelVariables>
   <ModelStructure>
-{%- set output_index = namespace(value=2) %}
-{%- set output_count = namespace(value=0) %}
-{%- for variable in fmi.variables %}
-{%- if variable.causality == "output" %}
-{%- set output_count.value = output_count.value + variable.storage.scalar_count %}
-{%- endif %}
-{%- set output_index.value = output_index.value + variable.storage.scalar_count %}
-{%- endfor %}
-{%- if output_count.value > 0 %}
+{%- if fmi.fmi2.output_model_indices | length > 0 %}
     <Outputs>
-{%- set model_index = namespace(value=2) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-{%- if variable.causality == "output" %}
-      <Unknown index="{{ model_index.value }}"/>
-{%- endif %}
-{%- set model_index.value = model_index.value + 1 %}
-{%- endfor %}
+{%- for model_index in fmi.fmi2.output_model_indices %}
+      <Unknown index="{{ model_index }}"/>
 {%- endfor %}
     </Outputs>
 {%- endif %}
-{%- if solve.solve_layout.state_scalar_count > 0 %}
+{%- if fmi.fmi2.derivative_model_indices | length > 0 %}
     <Derivatives>
-{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
-      <Unknown index="{{ derivative_model_index + scalar }}"/>
+{%- for model_index in fmi.fmi2.derivative_model_indices %}
+      <Unknown index="{{ model_index }}"/>
 {%- endfor %}
     </Derivatives>
+{%- endif %}
+{%- if fmi.fmi2.initial_unknown_model_indices | length > 0 %}
     <InitialUnknowns>
-{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
-      <Unknown index="{{ derivative_model_index + scalar }}"/>
+{%- for model_index in fmi.fmi2.initial_unknown_model_indices %}
+      <Unknown index="{{ model_index }}"/>
 {%- endfor %}
     </InitialUnknowns>
 {%- endif %}

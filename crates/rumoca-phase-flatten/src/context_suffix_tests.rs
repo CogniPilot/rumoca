@@ -1,36 +1,6 @@
 use super::Context;
 
 #[test]
-fn test_enum_reference_matches_parameter_ignores_fake_suffix_from_subscript_dot() {
-    let ctx = Context::new();
-    let mut param_names = rustc_hash::FxHashSet::default();
-    param_names.insert("medium].energyDynamics");
-
-    assert!(
-        !ctx.enum_reference_matches_parameter(
-            "pipe1.system[data.medium].energyDynamics",
-            &param_names,
-        ),
-        "dot inside subscript expression must not create synthetic suffix matches",
-    );
-}
-
-#[test]
-fn test_lookup_enum_reference_candidate_ignores_fake_suffix_from_subscript_dot() {
-    let mut ctx = Context::new();
-    ctx.enum_parameter_values.insert(
-        "medium].energyDynamics".to_string(),
-        "Modelica.Fluid.Types.Dynamics.FixedInitial".to_string(),
-    );
-
-    assert_eq!(
-        ctx.lookup_enum_reference_candidate("pipe1.system[data.medium].energyDynamics"),
-        None,
-        "dot inside subscript expression must not create synthetic suffix lookup candidates",
-    );
-}
-
-#[test]
 fn test_resolve_alias_once_ignores_fake_prefix_from_subscript_dot() {
     let mut ctx = Context::new();
     ctx.record_aliases.insert(
@@ -43,4 +13,38 @@ fn test_resolve_alias_once_ignores_fake_prefix_from_subscript_dot() {
         "pipe1.system[data.medium].energyDynamics".to_string(),
         "dot inside subscript expression must not create synthetic alias prefixes",
     );
+}
+
+#[test]
+fn record_alias_closure_accepts_a_twelve_edge_chain() {
+    let mut aliases = rustc_hash::FxHashMap::default();
+    for index in 0..12 {
+        aliases.insert(
+            rumoca_core::ComponentPath::from_flat_path(&format!("record{index}")),
+            rumoca_core::ComponentPath::from_flat_path(&format!("record{}", index + 1)),
+        );
+    }
+
+    crate::compute_transitive_alias_closure(&mut aliases)
+        .expect("a finite twelve-edge alias chain closes exactly");
+
+    assert_eq!(
+        aliases[&rumoca_core::ComponentPath::from_flat_path("record0")].as_str(),
+        "record12"
+    );
+}
+
+#[test]
+fn record_alias_closure_rejects_an_exact_cycle() {
+    let mut aliases = rustc_hash::FxHashMap::default();
+    aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("left"),
+        rumoca_core::ComponentPath::from_flat_path("right"),
+    );
+    aliases.insert(
+        rumoca_core::ComponentPath::from_flat_path("right"),
+        rumoca_core::ComponentPath::from_flat_path("left"),
+    );
+
+    assert!(crate::compute_transitive_alias_closure(&mut aliases).is_err());
 }

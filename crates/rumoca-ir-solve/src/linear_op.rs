@@ -461,6 +461,15 @@ impl FunctionFoldProgram {
     pub fn update(&self) -> &[LinearOp] {
         &self.update
     }
+
+    fn bitwise_eq(&self, other: &Self) -> bool {
+        self.domain == other.domain
+            && self.domain_scalar_count == other.domain_scalar_count
+            && self.carried_count == other.carried_count
+            && self.capture_count == other.capture_count
+            && self.register_count == other.register_count
+            && LinearOp::slice_bitwise_eq(&self.update, &other.update)
+    }
 }
 
 fn validate_function_fold_domain(
@@ -518,6 +527,13 @@ impl FunctionConditionalArmProgram {
     #[must_use]
     pub fn result(&self) -> &[LinearOp] {
         &self.result
+    }
+
+    fn bitwise_eq(&self, other: &Self) -> bool {
+        self.condition_register_count == other.condition_register_count
+            && self.result_register_count == other.result_register_count
+            && LinearOp::slice_bitwise_eq(&self.condition, &other.condition)
+            && LinearOp::slice_bitwise_eq(&self.result, &other.result)
     }
 }
 
@@ -763,6 +779,21 @@ impl FunctionConditionalProgram {
     #[must_use]
     pub const fn owner(&self) -> Option<FunctionConditionalOwnerId> {
         self.owner
+    }
+
+    fn bitwise_eq(&self, other: &Self) -> bool {
+        self.owner == other.owner
+            && self.capture_count == other.capture_count
+            && self.target_widths == other.target_widths
+            && self.result_count == other.result_count
+            && self.arms.len() == other.arms.len()
+            && self
+                .arms
+                .iter()
+                .zip(&other.arms)
+                .all(|(lhs, rhs)| lhs.bitwise_eq(rhs))
+            && self.fallback_register_count == other.fallback_register_count
+            && LinearOp::slice_bitwise_eq(&self.fallback, &other.fallback)
     }
 
     #[must_use]
@@ -1061,32 +1092,6 @@ pub enum LinearOp {
         seed_start: Option<usize>,
         lanes: usize,
     },
-    /// Host-backed table bound lookup (`*_Tmin`, `*_Tmax`, `*_AbscissaUmin`, `*_AbscissaUmax`).
-    TableBounds {
-        dst: Reg,
-        table_id: Reg,
-        max: bool,
-    },
-    /// Host-backed table lookup (`getTimeTableValue*`, `getTable1DValue*`).
-    TableLookup {
-        dst: Reg,
-        table_id: Reg,
-        column: Reg,
-        input: Reg,
-    },
-    /// Host-backed table lookup slope d(lookup)/d(input) for AD rows.
-    TableLookupSlope {
-        dst: Reg,
-        table_id: Reg,
-        column: Reg,
-        input: Reg,
-    },
-    /// Host-backed table next-event lookup (`getNextTimeEvent`).
-    TableNextEvent {
-        dst: Reg,
-        table_id: Reg,
-        time: Reg,
-    },
     /// Deterministic random state initialization for MSL Xorshift generators.
     RandomInitialState {
         dst: Reg,
@@ -1243,6 +1248,166 @@ pub enum LinearOp {
 }
 
 impl LinearOp {
+    /// Exact structural instruction identity, including every IEEE-754 bit.
+    ///
+    /// The exhaustive outer match is intentional: a future instruction that
+    /// embeds a real value or a nested program must choose its equality rule
+    /// here instead of silently inheriting numerical `PartialEq`.
+    pub(crate) fn bitwise_eq(&self, other: &Self) -> bool {
+        match self {
+            Self::Const { dst, value } => matches!(
+                other,
+                Self::Const {
+                    dst: other_dst,
+                    value: other_value,
+                } if dst == other_dst && value.to_bits() == other_value.to_bits()
+            ),
+            Self::FunctionFold { .. }
+            | Self::GuardedFunctionFold { .. }
+            | Self::FunctionConditional { .. } => self.nested_program_bitwise_eq(other),
+            Self::StoreOutputFunctionFold { .. } => self.store_fold_bitwise_eq(other),
+            Self::LoadTime { .. }
+            | Self::LoadY { .. }
+            | Self::LoadP { .. }
+            | Self::LoadIndexedRegister { .. }
+            | Self::LoadIndexedFoldCarried { .. }
+            | Self::LoadIndexedFoldCapture { .. }
+            | Self::LoadSeed { .. }
+            | Self::LoadFoldCarried { .. }
+            | Self::LoadFoldIndex { .. }
+            | Self::LoadFoldCapture { .. }
+            | Self::LoadFunctionConditionalCapture { .. }
+            | Self::LoadFunctionConditionalCaptureRange { .. }
+            | Self::Move { .. }
+            | Self::LinearSolveComponent { .. }
+            | Self::DotProduct { .. }
+            | Self::MatrixMultiply { .. }
+            | Self::TensorBinary { .. }
+            | Self::TensorCross { .. }
+            | Self::TensorTranspose { .. }
+            | Self::TensorConcatenate { .. }
+            | Self::TensorUpdate { .. }
+            | Self::TensorFill { .. }
+            | Self::TensorIdentity { .. }
+            | Self::TensorLoad { .. }
+            | Self::RandomInitialState { .. }
+            | Self::RandomResult { .. }
+            | Self::RandomState { .. }
+            | Self::ImpureRandomInit { .. }
+            | Self::ImpureRandom { .. }
+            | Self::ImpureRandomInteger { .. }
+            | Self::Unary { .. }
+            | Self::Binary { .. }
+            | Self::Compare { .. }
+            | Self::Select { .. }
+            | Self::PureCall { .. }
+            | Self::PureCallDirectional { .. }
+            | Self::StoreOutputFoldTensorUpdate { .. }
+            | Self::StoreOutputRange { .. }
+            | Self::StoreOutput { .. } => self == other,
+        }
+    }
+
+    pub(crate) fn slice_bitwise_eq(lhs: &[Self], rhs: &[Self]) -> bool {
+        lhs.len() == rhs.len() && lhs.iter().zip(rhs).all(|(lhs, rhs)| lhs.bitwise_eq(rhs))
+    }
+
+    fn nested_program_bitwise_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::FunctionFold {
+                    dst_start,
+                    initial_start,
+                    capture_start,
+                    program,
+                },
+                Self::FunctionFold {
+                    dst_start: other_dst_start,
+                    initial_start: other_initial_start,
+                    capture_start: other_capture_start,
+                    program: other_program,
+                },
+            ) => {
+                dst_start == other_dst_start
+                    && initial_start == other_initial_start
+                    && capture_start == other_capture_start
+                    && program.bitwise_eq(other_program)
+            }
+            (
+                Self::GuardedFunctionFold {
+                    dst_start,
+                    initial_start,
+                    capture_start,
+                    activation,
+                    program,
+                },
+                Self::GuardedFunctionFold {
+                    dst_start: other_dst_start,
+                    initial_start: other_initial_start,
+                    capture_start: other_capture_start,
+                    activation: other_activation,
+                    program: other_program,
+                },
+            ) => {
+                dst_start == other_dst_start
+                    && initial_start == other_initial_start
+                    && capture_start == other_capture_start
+                    && activation == other_activation
+                    && program.bitwise_eq(other_program)
+            }
+            (
+                Self::FunctionConditional {
+                    dst_start,
+                    capture_start,
+                    program,
+                },
+                Self::FunctionConditional {
+                    dst_start: other_dst_start,
+                    capture_start: other_capture_start,
+                    program: other_program,
+                },
+            ) => {
+                dst_start == other_dst_start
+                    && capture_start == other_capture_start
+                    && program.bitwise_eq(other_program)
+            }
+            _ => false,
+        }
+    }
+
+    fn store_fold_bitwise_eq(&self, other: &Self) -> bool {
+        let Self::StoreOutputFunctionFold {
+            initial,
+            capture_start,
+            program,
+            result_base,
+            count,
+            condition,
+            nested_when_true,
+        } = self
+        else {
+            return false;
+        };
+        matches!(
+            other,
+            Self::StoreOutputFunctionFold {
+                initial: other_initial,
+                capture_start: other_capture_start,
+                program: other_program,
+                result_base: other_result_base,
+                count: other_count,
+                condition: other_condition,
+                nested_when_true: other_nested_when_true,
+            } if initial == other_initial
+                && capture_start == other_capture_start
+                && program.bitwise_eq(other_program)
+                && result_base == other_result_base
+                && count == other_count
+                && condition == other_condition
+                && nested_when_true == other_nested_when_true
+        )
+    }
+
     #[must_use]
     pub fn kind_name(&self) -> &'static str {
         match self {
@@ -1273,10 +1438,6 @@ impl LinearOp {
             Self::TensorFill { .. } => "TensorFill",
             Self::TensorIdentity { .. } => "TensorIdentity",
             Self::TensorLoad { .. } => "TensorLoad",
-            Self::TableBounds { .. } => "TableBounds",
-            Self::TableLookup { .. } => "TableLookup",
-            Self::TableLookupSlope { .. } => "TableLookupSlope",
-            Self::TableNextEvent { .. } => "TableNextEvent",
             Self::RandomInitialState { .. } => "RandomInitialState",
             Self::RandomResult { .. } => "RandomResult",
             Self::RandomState { .. } => "RandomState",
@@ -1316,10 +1477,6 @@ impl LinearOp {
             | Self::Move { dst, .. }
             | Self::LinearSolveComponent { dst, .. }
             | Self::DotProduct { dst, .. }
-            | Self::TableBounds { dst, .. }
-            | Self::TableLookup { dst, .. }
-            | Self::TableLookupSlope { dst, .. }
-            | Self::TableNextEvent { dst, .. }
             | Self::RandomInitialState { dst, .. }
             | Self::RandomResult { dst, .. }
             | Self::RandomState { dst, .. }
@@ -2354,11 +2511,6 @@ fn validate_op_sources(
         LinearOp::TensorIdentity { size, lanes, .. } => tensor_identity(cx, size, lanes),
         LinearOp::TensorLoad { count, seed_start, lanes, .. } =>
             tensor_load(cx, count, seed_start, lanes),
-        LinearOp::TableBounds { table_id, .. } => single_source(cx, table_id),
-        LinearOp::TableLookup { table_id, column, input, .. }
-        | LinearOp::TableLookupSlope { table_id, column, input, .. } =>
-            three_sources(cx, table_id, column, input),
-        LinearOp::TableNextEvent { table_id, time, .. } => two_sources(cx, table_id, time),
         LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
         | LinearOp::RandomState { .. } | LinearOp::ImpureRandomInit { .. }
         | LinearOp::ImpureRandom { .. } | LinearOp::ImpureRandomInteger { .. } =>
@@ -3490,8 +3642,7 @@ fn require_strided_register_range(
             len: count,
         },
     )?;
-    for ordinal in 0..count {
-        let register = start + Reg::try_from(ordinal * stride).expect("checked output range");
+    for register in (start..=end).step_by(stride) {
         require_register(op_index, operation, register, initialized)?;
     }
     Ok(end)
@@ -3553,17 +3704,6 @@ mod tests {
         assert!(CompareOp::Ne.compare(0.0, near_zero));
         assert_eq!(CompareOp::Eq.compare_as_f64(0.0, near_zero), 0.0);
         assert_eq!(CompareOp::Ne.compare_as_f64(0.0, near_zero), 1.0);
-    }
-
-    #[test]
-    fn linear_op_kind_name_reports_stable_variant_name() {
-        let op = LinearOp::TableNextEvent {
-            dst: 0,
-            table_id: 1,
-            time: 2,
-        };
-
-        assert_eq!(op.kind_name(), "TableNextEvent");
     }
 
     #[test]

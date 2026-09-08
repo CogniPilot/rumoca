@@ -920,176 +920,266 @@ impl ProgramLowerer<'_, '_> {
         Ok(())
     }
 
-    // SPEC_0021: exhaustive dispatch over the closed typed operation vocabulary.
-    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-    #[allow(clippy::too_many_lines)]
     fn lower_operation(&mut self, operation: &solve::SolveOperation) -> Result<(), CompileError> {
+        use solve::SolveOperation as Op;
         match operation {
-            solve::SolveOperation::Constant { destination, value } => {
-                self.lower_constant(*destination, value)
-            }
-            solve::SolveOperation::Load { destination, slot } => {
-                let source = self.slot(*slot)?.clone();
-                let destination = self.register(*destination)?.clone();
-                self.copy(&source, &destination)
-            }
-            solve::SolveOperation::Store { slot, source } => {
-                let source = self.register(*source)?.clone();
-                let destination = self.slot(*slot)?.clone();
-                self.copy(&source, &destination)
-            }
-            solve::SolveOperation::Unary {
-                destination,
-                operator,
-                operand,
-            } => self.lower_unary(*destination, *operator, *operand),
-            solve::SolveOperation::Binary {
-                destination,
-                operator,
+            Op::Constant {
+                destination: dst,
+                value,
+            } => self.lower_constant(*dst, value),
+            Op::Load {
+                destination: dst,
+                slot,
+            } => self.lower_load(*dst, *slot),
+            Op::Store { slot, source } => self.lower_store(*slot, *source),
+            Op::Unary {
+                destination: dst,
+                operator: op,
+                operand: arg,
+            } => self.lower_unary(*dst, *op, *arg),
+            Op::Binary {
+                destination: dst,
+                operator: op,
                 lhs,
                 rhs,
-            } => self.lower_binary(*destination, *operator, *lhs, *rhs),
-            solve::SolveOperation::Compare {
-                destination,
-                operator,
+            } => self.lower_binary(*dst, *op, *lhs, *rhs),
+            Op::Compare {
+                destination: dst,
+                operator: op,
                 lhs,
                 rhs,
-            } => self.lower_compare(*destination, *operator, *lhs, *rhs),
-            solve::SolveOperation::Convert {
-                destination,
-                operator,
-                operand,
-            } => self.lower_convert(*destination, *operator, *operand),
-            solve::SolveOperation::Select {
-                destination,
-                condition,
+            } => self.lower_compare(*dst, *op, *lhs, *rhs),
+            Op::Convert {
+                destination: dst,
+                operator: op,
+                operand: arg,
+            } => self.lower_convert(*dst, *op, *arg),
+            Op::Select {
+                destination: dst,
+                condition: cond,
                 if_true,
                 if_false,
-            } => self.lower_select(*destination, *condition, *if_true, *if_false),
-            solve::SolveOperation::Conditional {
-                condition,
+            } => self.lower_select(*dst, *cond, *if_true, *if_false),
+            Op::Conditional { .. }
+            | Op::Map { .. }
+            | Op::Fold { .. }
+            | Op::MatrixMultiply { .. }
+            | Op::Scale { .. }
+            | Op::BroadcastBinary { .. }
+            | Op::Transpose { .. }
+            | Op::Cross { .. }
+            | Op::Reduce { .. }
+            | Op::Identity { .. }
+            | Op::Diagonal { .. }
+            | Op::Concatenate { .. }
+            | Op::Fill { .. }
+            | Op::ConstructAggregate { .. }
+            | Op::ProjectElement { .. }
+            | Op::ProjectElementDynamic { .. }
+            | Op::ProjectSlice { .. }
+            | Op::ProjectView { .. }
+            | Op::SelectElement { .. }
+            | Op::UpdateElement { .. }
+            | Op::UpdateSlice { .. }
+            | Op::UpdateView { .. }
+            | Op::Call { .. } => self.lower_structured_operation(operation),
+        }
+    }
+
+    fn lower_structured_operation(
+        &mut self,
+        operation: &solve::SolveOperation,
+    ) -> Result<(), CompileError> {
+        use solve::SolveOperation as Op;
+        match operation {
+            Op::Conditional {
+                condition: cond,
                 captures,
-                destinations,
+                destinations: dsts,
                 if_true,
                 if_false,
-            } => self.lower_conditional(*condition, captures, destinations, if_true, if_false),
-            solve::SolveOperation::Map {
+            } => self.lower_conditional(*cond, captures, dsts, if_true, if_false),
+            Op::Map {
                 domain,
                 captures,
-                destination,
+                destination: dst,
                 body,
-            } => self.lower_map(domain, captures, *destination, body),
-            solve::SolveOperation::Fold {
+            } => self.lower_map(domain, captures, *dst, body),
+            Op::Fold {
                 domain,
                 initial,
                 captures,
-                destinations,
+                destinations: dsts,
                 transition,
-            } => self.lower_fold(domain, initial, captures, destinations, transition),
-            solve::SolveOperation::MatrixMultiply {
-                destination,
+            } => self.lower_fold(domain, initial, captures, dsts, transition),
+            Op::MatrixMultiply {
+                destination: dst,
                 lhs,
                 rhs,
-            } => self.lower_matrix_multiply(*destination, *lhs, *rhs),
-            solve::SolveOperation::Scale {
-                destination,
+                plan,
+            } => self.lower_matrix_multiply(*dst, *lhs, *rhs, *plan),
+            Op::Scale {
+                destination: dst,
                 aggregate,
                 scalar,
-            } => self.lower_scale(*destination, *aggregate, *scalar),
-            solve::SolveOperation::BroadcastBinary {
-                destination,
-                operator,
+            } => self.lower_scale(*dst, *aggregate, *scalar),
+            Op::BroadcastBinary {
+                destination: dst,
+                operator: op,
                 aggregate,
                 scalar,
                 scalar_on_lhs,
-            } => self.lower_broadcast_binary(
-                *destination,
-                *operator,
-                *aggregate,
-                *scalar,
-                *scalar_on_lhs,
-            ),
-            solve::SolveOperation::Transpose {
-                destination,
-                operand,
-            } => self.lower_transpose(*destination, *operand),
-            solve::SolveOperation::Cross {
-                destination,
+            } => self.lower_broadcast_binary(*dst, *op, *aggregate, *scalar, *scalar_on_lhs),
+            Op::Transpose {
+                destination: dst,
+                operand: arg,
+            } => self.lower_transpose(*dst, *arg),
+            Op::Cross {
+                destination: dst,
                 lhs,
                 rhs,
-            } => self.lower_cross(*destination, *lhs, *rhs),
-            solve::SolveOperation::Reduce {
-                destination,
-                operator,
-                operand,
-            } => self.lower_reduce(*destination, *operator, *operand),
-            solve::SolveOperation::Identity { destination } => self.lower_identity(*destination),
-            solve::SolveOperation::Diagonal {
-                destination,
-                operand,
-            } => self.lower_diagonal(*destination, *operand),
-            solve::SolveOperation::Concatenate {
-                destination,
+            } => self.lower_cross(*dst, *lhs, *rhs),
+            Op::Reduce {
+                destination: dst,
+                operator: op,
+                operand: arg,
+            } => self.lower_reduce(*dst, *op, *arg),
+            Op::Identity { destination: dst } => self.lower_identity(*dst),
+            Op::Diagonal {
+                destination: dst,
+                operand: arg,
+            } => self.lower_diagonal(*dst, *arg),
+            Op::Concatenate {
+                destination: dst,
                 axis,
                 operands,
-            } => self.lower_concatenate(*destination, *axis, operands),
-            solve::SolveOperation::Fill { destination, value } => {
-                self.lower_fill(*destination, *value)
-            }
-            solve::SolveOperation::ConstructAggregate {
-                destination,
+            } => self.lower_concatenate(*dst, *axis, operands),
+            Op::Fill {
+                destination: dst,
+                value,
+            } => self.lower_fill(*dst, *value),
+            Op::Constant { .. }
+            | Op::Load { .. }
+            | Op::Store { .. }
+            | Op::Unary { .. }
+            | Op::Binary { .. }
+            | Op::Compare { .. }
+            | Op::Convert { .. }
+            | Op::Select { .. } => unreachable!("scalar operation was classified before here"),
+            Op::ConstructAggregate { .. }
+            | Op::ProjectElement { .. }
+            | Op::ProjectElementDynamic { .. }
+            | Op::ProjectSlice { .. }
+            | Op::ProjectView { .. }
+            | Op::SelectElement { .. }
+            | Op::UpdateElement { .. }
+            | Op::UpdateSlice { .. }
+            | Op::UpdateView { .. }
+            | Op::Call { .. } => self.lower_aggregate_operation(operation),
+        }
+    }
+
+    fn lower_aggregate_operation(
+        &mut self,
+        operation: &solve::SolveOperation,
+    ) -> Result<(), CompileError> {
+        use solve::SolveOperation as Op;
+        match operation {
+            Op::ConstructAggregate {
+                destination: dst,
                 elements,
-            } => self.lower_construct_aggregate(*destination, elements),
-            solve::SolveOperation::ProjectElement {
-                destination,
+            } => self.lower_construct_aggregate(*dst, elements),
+            Op::ProjectElement {
+                destination: dst,
                 aggregate,
                 indices,
-            } => self.lower_project_element(*destination, *aggregate, indices),
-            solve::SolveOperation::ProjectElementDynamic {
-                destination,
+            } => self.lower_project_element(*dst, *aggregate, indices),
+            Op::ProjectElementDynamic {
+                destination: dst,
                 aggregate,
                 indices,
-            } => self.lower_project_element_dynamic(*destination, *aggregate, indices),
-            solve::SolveOperation::ProjectSlice {
-                destination,
+            } => self.lower_project_element_dynamic(*dst, *aggregate, indices),
+            Op::ProjectSlice {
+                destination: dst,
                 aggregate,
                 origin,
-            } => self.lower_project_slice(*destination, *aggregate, origin),
-            solve::SolveOperation::ProjectView {
-                destination,
+            } => self.lower_project_slice(*dst, *aggregate, origin),
+            Op::ProjectView {
+                destination: dst,
                 aggregate,
                 axes,
-            } => self.lower_project_view(*destination, *aggregate, axes),
-            solve::SolveOperation::SelectElement {
-                destination,
+            } => self.lower_project_view(*dst, *aggregate, axes),
+            Op::SelectElement {
+                destination: dst,
                 aggregate,
                 indices,
                 out_of_range,
-            } => self.lower_select_element(*destination, *aggregate, indices, *out_of_range),
-            solve::SolveOperation::UpdateElement {
-                destination,
+            } => self.lower_select_element(*dst, *aggregate, indices, *out_of_range),
+            Op::UpdateElement {
+                destination: dst,
                 aggregate,
                 value,
                 indices,
-            } => self.lower_update_element(*destination, *aggregate, *value, indices),
-            solve::SolveOperation::UpdateSlice {
-                destination,
+            } => self.lower_update_element(*dst, *aggregate, *value, indices),
+            Op::UpdateSlice {
+                destination: dst,
                 aggregate,
                 value,
                 origin,
-            } => self.lower_update_slice(*destination, *aggregate, *value, origin),
-            solve::SolveOperation::UpdateView {
-                destination,
+            } => self.lower_update_slice(*dst, *aggregate, *value, origin),
+            Op::UpdateView {
+                destination: dst,
                 aggregate,
                 value,
                 axes,
-            } => self.lower_update_view(*destination, *aggregate, *value, axes),
-            solve::SolveOperation::Call {
+            } => self.lower_update_view(*dst, *aggregate, *value, axes),
+            Op::Call {
                 owner,
                 arguments,
-                destinations,
-            } => self.lower_call(*owner, arguments, destinations),
+                destinations: dsts,
+            } => self.lower_call(*owner, arguments, dsts),
+            Op::Constant { .. }
+            | Op::Load { .. }
+            | Op::Store { .. }
+            | Op::Unary { .. }
+            | Op::Binary { .. }
+            | Op::Compare { .. }
+            | Op::Convert { .. }
+            | Op::Select { .. }
+            | Op::Conditional { .. }
+            | Op::Map { .. }
+            | Op::Fold { .. }
+            | Op::MatrixMultiply { .. }
+            | Op::Scale { .. }
+            | Op::BroadcastBinary { .. }
+            | Op::Transpose { .. }
+            | Op::Cross { .. }
+            | Op::Reduce { .. }
+            | Op::Identity { .. }
+            | Op::Diagonal { .. }
+            | Op::Concatenate { .. }
+            | Op::Fill { .. } => unreachable!("operation was classified before here"),
         }
+    }
+
+    fn lower_load(
+        &mut self,
+        destination: solve::SolveRegisterId,
+        slot: solve::SolveSlotId,
+    ) -> Result<(), CompileError> {
+        let source = self.slot(slot)?.clone();
+        let destination = self.register(destination)?.clone();
+        self.copy(&source, &destination)
+    }
+
+    fn lower_store(
+        &mut self,
+        slot: solve::SolveSlotId,
+        source: solve::SolveRegisterId,
+    ) -> Result<(), CompileError> {
+        let source = self.register(source)?.clone();
+        let destination = self.slot(slot)?.clone();
+        self.copy(&source, &destination)
     }
 
     fn slot(&self, slot: solve::SolveSlotId) -> Result<&ValueLocation, CompileError> {
@@ -1394,6 +1484,9 @@ impl ProgramLowerer<'_, '_> {
         count: u32,
         mut body: impl FnMut(&mut Self, Value) -> Result<(), CompileError>,
     ) -> Result<(), CompileError> {
+        if count == 0 {
+            return Ok(());
+        }
         if count == 1 {
             let zero = self.builder.ins().iconst(types::I64, 0);
             return body(self, zero);
@@ -1437,12 +1530,24 @@ impl ProgramLowerer<'_, '_> {
         index: Value,
     ) -> Result<Value, CompileError> {
         let address = self.cell_address(base, location.cell, index);
-        Ok(self.builder.ins().load(
-            scalar_cranelift_type(location.value_type.element_type()),
-            self.flags,
-            address,
-            0,
-        ))
+        match location.value_type.element_type() {
+            solve::SolveScalarType::Real {
+                format: solve::SolveRealFormat::Binary32,
+            } => {
+                let cell = self.builder.ins().load(types::I64, self.flags, address, 0);
+                let bits = self.builder.ins().ireduce(types::I32, cell);
+                Ok(self
+                    .builder
+                    .ins()
+                    .bitcast(types::F32, MemFlags::new(), bits))
+            }
+            scalar => {
+                Ok(self
+                    .builder
+                    .ins()
+                    .load(scalar_cranelift_type(scalar), self.flags, address, 0))
+            }
+        }
     }
 
     fn store_scalar(
@@ -1462,7 +1567,23 @@ impl ProgramLowerer<'_, '_> {
         value: Value,
     ) -> Result<(), CompileError> {
         let address = self.cell_address(base, location.cell, index);
-        self.builder.ins().store(self.flags, value, address, 0);
+        let cell = match location.value_type.element_type() {
+            solve::SolveScalarType::Real {
+                format: solve::SolveRealFormat::Binary32,
+            } => {
+                let bits = self
+                    .builder
+                    .ins()
+                    .bitcast(types::I32, MemFlags::new(), value);
+                self.builder.ins().uextend(types::I64, bits)
+            }
+            solve::SolveScalarType::Real {
+                format: solve::SolveRealFormat::Binary64,
+            }
+            | solve::SolveScalarType::Integer(_)
+            | solve::SolveScalarType::Boolean => value,
+        };
+        self.builder.ins().store(self.flags, cell, address, 0);
         Ok(())
     }
 
@@ -1491,12 +1612,6 @@ impl ProgramLowerer<'_, '_> {
                 Ok(demote_real(self.builder, format, result))
             }
             solve::SolveScalarType::Integer(_) => Ok(match operator {
-                solve::SolveUnaryOperator::Negate => self.builder.ins().ineg(value),
-                solve::SolveUnaryOperator::Abs => {
-                    let negative = self.builder.ins().icmp_imm(IntCC::SignedLessThan, value, 0);
-                    let negated = self.builder.ins().ineg(value);
-                    self.builder.ins().select(negative, negated, value)
-                }
                 solve::SolveUnaryOperator::Sign => {
                     let zero = self.builder.ins().iconst(types::I64, 0);
                     let one = self.builder.ins().iconst(types::I64, 1);
@@ -1509,11 +1624,9 @@ impl ProgramLowerer<'_, '_> {
                     let nonpositive = self.builder.ins().select(negative, negative_one, zero);
                     self.builder.ins().select(positive, one, nonpositive)
                 }
-                _ => {
-                    return Err(CompileError::Backend(
-                        "invalid typed Integer unary operator".into(),
-                    ));
-                }
+                _ => unreachable!(
+                    "typed-program construction excludes unproved Integer unary ranges"
+                ),
             }),
             solve::SolveScalarType::Boolean => match operator {
                 solve::SolveUnaryOperator::Not => {
@@ -1549,10 +1662,6 @@ impl ProgramLowerer<'_, '_> {
                 Ok(demote_real(self.builder, format, result))
             }
             solve::SolveScalarType::Integer(_) => Ok(match operator {
-                solve::SolveBinaryOperator::Add => self.builder.ins().iadd(lhs, rhs),
-                solve::SolveBinaryOperator::Subtract => self.builder.ins().isub(lhs, rhs),
-                solve::SolveBinaryOperator::Multiply => self.builder.ins().imul(lhs, rhs),
-                solve::SolveBinaryOperator::Divide => self.builder.ins().sdiv(lhs, rhs),
                 solve::SolveBinaryOperator::Min | solve::SolveBinaryOperator::Max => {
                     let code = if operator == solve::SolveBinaryOperator::Min {
                         IntCC::SignedLessThan
@@ -1562,11 +1671,9 @@ impl ProgramLowerer<'_, '_> {
                     let condition = self.builder.ins().icmp(code, lhs, rhs);
                     self.builder.ins().select(condition, lhs, rhs)
                 }
-                _ => {
-                    return Err(CompileError::Backend(
-                        "typed Integer binary operator is unsupported".into(),
-                    ));
-                }
+                _ => unreachable!(
+                    "typed-program construction excludes unproved Integer binary ranges"
+                ),
             }),
             solve::SolveScalarType::Boolean => Ok(match operator {
                 solve::SolveBinaryOperator::And => self.builder.ins().band(lhs, rhs),
@@ -1612,39 +1719,30 @@ impl ProgramLowerer<'_, '_> {
     fn convert_element(
         &mut self,
         operator: solve::SolveConversionOperator,
-        source: solve::SolveScalarType,
+        _source: solve::SolveScalarType,
         destination: &solve::SolveValueType,
         value: Value,
     ) -> Result<Value, CompileError> {
         Ok(match operator {
-            solve::SolveConversionOperator::IntegerToReal => {
-                let value = self.builder.ins().fcvt_from_sint(types::F64, value);
-                match destination.element_type() {
-                    solve::SolveScalarType::Real { format, .. } => {
-                        demote_real(self.builder, format, value)
-                    }
-                    _ => {
-                        return Err(CompileError::Backend(
-                            "invalid Integer-to-Real destination".into(),
-                        ));
-                    }
+            solve::SolveConversionOperator::IntegerToReal => match destination.element_type() {
+                solve::SolveScalarType::Real {
+                    format: solve::SolveRealFormat::Binary32,
+                    ..
+                } => self.builder.ins().fcvt_from_sint(types::F32, value),
+                solve::SolveScalarType::Real {
+                    format: solve::SolveRealFormat::Binary64,
+                    ..
+                } => self.builder.ins().fcvt_from_sint(types::F64, value),
+                _ => {
+                    return Err(CompileError::Backend(
+                        "invalid Integer-to-Real destination".into(),
+                    ));
                 }
-            }
-            solve::SolveConversionOperator::RealToIntegerTowardZero => {
-                let source = promote_conversion_source(self.builder, source, value)?;
-                self.builder.ins().fcvt_to_sint(types::I64, source)
-            }
-            solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity => {
-                let source = promote_conversion_source(self.builder, source, value)?;
-                let floored = emit_unary_op(
-                    self.builder,
-                    self.module,
-                    self.math,
-                    rumoca_ir_solve::UnaryOp::Floor,
-                    source,
-                )?;
-                self.builder.ins().fcvt_to_sint(types::I64, floored)
-            }
+            },
+            solve::SolveConversionOperator::RealToIntegerTowardZero
+            | solve::SolveConversionOperator::RealToIntegerTowardNegativeInfinity => unreachable!(
+                "typed-program construction excludes Real-to-Integer without range evidence"
+            ),
         })
     }
 }
@@ -1682,19 +1780,6 @@ fn demote_real(
     match format {
         solve::SolveRealFormat::Binary32 => builder.ins().fdemote(types::F32, value),
         solve::SolveRealFormat::Binary64 => value,
-    }
-}
-
-fn promote_conversion_source(
-    builder: &mut FunctionBuilder<'_>,
-    source: solve::SolveScalarType,
-    value: Value,
-) -> Result<Value, CompileError> {
-    match source {
-        solve::SolveScalarType::Real { format, .. } => Ok(promote_real(builder, format, value)),
-        _ => Err(CompileError::Backend(
-            "invalid Real-to-Integer source".into(),
-        )),
     }
 }
 
@@ -1779,6 +1864,7 @@ mod storage_tests {
         solve::SolveArithmeticProfile::construct(
             solve::SolveRealFormat::Binary64,
             solve::SolveIntegerDomain::construct(i32::MIN.into(), i32::MAX.into()).unwrap(),
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
         )
     }
 

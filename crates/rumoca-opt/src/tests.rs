@@ -54,7 +54,7 @@ fn linear_model_with_options(options: &SimOptions) -> DifferentiableModel {
         .model("LinearFit")
         .compile_str(LINEAR_FIT, "LinearFit.mo")
         .expect("LinearFit should compile");
-    DifferentiableModel::from_dae_default(&result.dae, options)
+    DifferentiableModel::from_dae_default(result.dae(), options)
         .expect("LinearFit should prepare for optimization")
 }
 
@@ -118,7 +118,7 @@ fn reverse_rhs_mse_rejects_non_finite_gradient() {
         .model("OverflowGradient")
         .compile_str(OVERFLOW_GRADIENT, "OverflowGradient.mo")
         .expect("OverflowGradient should compile");
-    let model = DifferentiableModel::from_dae_default(&result.dae, &SimOptions::default())
+    let model = DifferentiableModel::from_dae_default(result.dae(), &SimOptions::default())
         .expect("OverflowGradient should prepare for optimization");
     let trainables = TrainableSet::by_names(&model, &["p"]).expect("known trainable");
     let objective = RhsMseObjective::new(0.0, vec![-1.0e154]);
@@ -141,7 +141,7 @@ fn trainable_discovery_uses_independent_dae_parameters() {
         .model("ParameterDependency")
         .compile_str(PARAMETER_DEPENDENCY, "ParameterDependency.mo")
         .expect("ParameterDependency should compile");
-    let model = DifferentiableModel::from_dae_default(&result.dae, &SimOptions::default())
+    let model = DifferentiableModel::from_dae_default(result.dae(), &SimOptions::default())
         .expect("ParameterDependency should prepare for optimization");
 
     let names = model
@@ -175,7 +175,7 @@ fn trainable_discovery_exposes_array_parameter_scalars() {
         .model("ArrayTrainables")
         .compile_str(ARRAY_TRAINABLES, "ArrayTrainables.mo")
         .expect("ArrayTrainables should compile");
-    let model = DifferentiableModel::from_dae_default(&result.dae, &SimOptions::default())
+    let model = DifferentiableModel::from_dae_default(result.dae(), &SimOptions::default())
         .expect("ArrayTrainables should prepare for optimization");
 
     let names = model

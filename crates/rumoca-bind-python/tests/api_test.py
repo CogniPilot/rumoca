@@ -422,13 +422,23 @@ def test_codegen_file_helper() -> None:
         written = rm.Session(roots=[str(SOURCE_ROOT)]).codegen_file(
             MODEL_FILE,
             "UsesLib",
-            "c-ode",
+            "rust-ode",
             tmp,
         )
         assert written
-        assert any(path.endswith(".c") for path in written)
+        assert any(path.endswith(".rs") for path in written)
         for path in written:
             assert Path(path).exists()
+
+
+def test_unknown_codegen_target_is_rejected() -> None:
+    model = _load_fixture()
+    try:
+        model.codegen("definitely-not-a-target")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unknown target unexpectedly rendered")
 
 
 def test_run_codegen_scenario() -> None:
@@ -451,7 +461,7 @@ def test_run_codegen_scenario() -> None:
                     'name = "UsesLib"',
                     "",
                     "[codegen]",
-                    'target = "c-ode"',
+                    'target = "rust-ode"',
                     'output_dir = "generated"',
                     "",
                 ]
@@ -555,6 +565,7 @@ def main() -> None:
     test_run_scenario_batch_with_output_override()
     test_session_run_scenario_reuses_session_surface()
     test_codegen_file_helper()
+    test_unknown_codegen_target_is_rejected()
     test_run_codegen_scenario()
     test_structure_blt()
     test_errors_teach_did_you_mean()

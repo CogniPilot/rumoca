@@ -338,8 +338,6 @@ struct DefinitionSource<'dae> {
 #[derive(Clone, Copy)]
 struct AssertionSource<'dae> {
     id: FunctionAssertionId<'dae>,
-    condition: ExprId<'dae>,
-    message: ExprId<'dae>,
     provenance: DaeProvenance,
 }
 
@@ -474,8 +472,6 @@ impl<'plan, 'dae> CallablePlanConstruction<'plan, 'dae> {
             .assertions()
             .map(|item| AssertionSource {
                 id: item.assertion(),
-                condition: item.condition(),
-                message: item.message(),
                 provenance: item.provenance(),
             })
             .collect::<Box<[_]>>();
@@ -1604,67 +1600,6 @@ impl<'plan, 'dae> CallablePlanConstruction<'plan, 'dae> {
                 )
             })
             .collect()
-    }
-
-    pub fn add_assertion(
-        &mut self,
-        scope: ConstructionScopeId<'plan>,
-        source: CallableAssertionSource<'plan, 'dae>,
-        predicate: ConstructionValueId<'plan>,
-        message: CallableExpressionSource<'plan, 'dae>,
-    ) -> Result<(), PlanConstructionError> {
-        self.transaction(|construction| {
-            construction.try_add_assertion(scope, source, predicate, message)
-        })
-    }
-
-    fn try_add_assertion(
-        &mut self,
-        scope: ConstructionScopeId<'plan>,
-        source: CallableAssertionSource<'plan, 'dae>,
-        predicate: ConstructionValueId<'plan>,
-        message: CallableExpressionSource<'plan, 'dae>,
-    ) -> Result<(), PlanConstructionError> {
-        let span = source.provenance.span();
-        let data = self
-            .assertions
-            .iter()
-            .find(|item| item.id == source.assertion)
-            .copied()
-            .ok_or(PlanConstructionError::InvalidSourceOccurrence { span })?;
-        let predicate_entry = self
-            .values
-            .get(predicate.raw as usize)
-            .ok_or(PlanConstructionError::InvalidOperation { span })?;
-        let owner = self.scope_owner(scope, span)?;
-        if source.function != self.scope_owner_function(scope, span)?
-            || predicate_entry.owner != owner
-            || !self.scope_dominates(predicate_entry.scope, scope.raw)
-            || predicate_entry.source_expression != data.condition.index()
-            || message.function != source.function
-            || message.expression != data.message
-        {
-            return Err(PlanConstructionError::InvalidOperation { span });
-        }
-        if !self.outstanding_assertions.remove(&source.assertion) {
-            return Err(PlanConstructionError::DuplicateOccurrence { span });
-        }
-        let message_expression = self.checked_expression(scope, message)?;
-        if !matches!(
-            message_expression.operation(),
-            ExpressionOperation::Literal(rumoca_ir_dae::DaeLiteral::String(_))
-        ) {
-            return Err(PlanConstructionError::InvalidOperation { span });
-        }
-        self.claim_expression(message)?;
-        self.effects.push(EffectEntry {
-            owner,
-            condition_expression: data.condition.index(),
-            predicate: predicate.raw,
-            message_expression: data.message.index(),
-            provenance: data.provenance,
-        });
-        Ok(())
     }
 
     fn checked_expression(

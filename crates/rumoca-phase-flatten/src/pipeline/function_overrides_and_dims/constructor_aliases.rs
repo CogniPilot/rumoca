@@ -48,11 +48,11 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
     class_scope: &str,
     active_aliases: bool,
     visited_classes: &mut FxHashSet<usize>,
-    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
-) {
+    overrides: &mut AliasOverrideTable,
+) -> Result<(), FlattenError> {
     let class_ptr = class_def as *const rumoca_ir_ast::ClassDef as usize;
     if !visited_classes.insert(class_ptr) {
-        return;
+        return Ok(());
     }
 
     for ext in &class_def.extends {
@@ -78,7 +78,7 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
             false,
             visited_classes,
             overrides,
-        );
+        )?;
     }
 
     collect_nested_package_aliases_for_class(
@@ -88,17 +88,20 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
         class_scope,
         active_aliases,
         overrides,
-    );
+    )?;
     collect_extends_redeclare_aliases_for_class(
         tree,
         class_index,
         class_def,
         class_scope,
         overrides,
-    );
-    collect_element_redeclare_aliases_for_class(tree, class_index, class_def, overrides);
+    )?;
+    collect_element_redeclare_aliases_for_class(tree, class_index, class_def, overrides)?;
 
     for (component_name, component) in &class_def.components {
+        let Some(alias_slot) = component.def_id else {
+            continue;
+        };
         let Some(target_ref) =
             resolve_component_type_ref(component, tree, class_index, class_scope)
         else {
@@ -107,12 +110,17 @@ pub(crate) fn collect_component_constructor_aliases_for_class(
         if !is_receiver_alias_type(&target_ref.class_def.class_type) {
             continue;
         }
-        // Derived classes should override inherited aliases with the same name.
         overrides.insert(
-            component_name.clone(),
-            OverrideTarget::from_resolved(component_name.clone(), target_ref, active_aliases),
+            alias_slot,
+            OverrideTarget::from_resolved(
+                component_name.clone(),
+                alias_slot,
+                target_ref,
+                active_aliases,
+            ),
         );
     }
+    Ok(())
 }
 
 fn collect_nested_package_aliases_for_class(
@@ -121,8 +129,8 @@ fn collect_nested_package_aliases_for_class(
     class_def: &rumoca_ir_ast::ClassDef,
     class_scope: &str,
     active_aliases: bool,
-    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
-) {
+    overrides: &mut AliasOverrideTable,
+) -> Result<(), FlattenError> {
     for (alias, nested) in &class_def.classes {
         if nested.class_type != rumoca_core::ClassType::Package {
             continue;
@@ -132,14 +140,42 @@ fn collect_nested_package_aliases_for_class(
         else {
             continue;
         };
-        if target_ref.class_def.class_type == rumoca_core::ClassType::Package {
-            let active_alias = active_aliases && leaf_segment(&target_ref.name) != alias;
-            overrides.insert(
-                alias.clone(),
-                OverrideTarget::from_resolved(alias.clone(), target_ref, active_alias),
-            );
+        if target_ref.class_def.class_type != rumoca_core::ClassType::Package {
+            continue;
         }
+        // A redeclaring alias fills the inherited slot it replaces; a plain
+        // alias is its own slot. Selection is by identity: the alias is an
+        // active selection when the class it resolves to differs from what
+        // the slot selects by default.
+        let (alias_slot, active_alias) = if nested.is_redeclare {
+            let Some(slot) = nested.redeclare_target_def_id else {
+                return Err(FlattenError::unhonored_function_redeclare(
+                    alias,
+                    format!(
+                        "the package redeclare `{alias}` names no exact replaceable slot identity"
+                    ),
+                    required_location_span(
+                        &tree.source_map,
+                        &nested.location,
+                        "package redeclare alias",
+                    )?,
+                ));
+            };
+            let default_selection = resolve_package_alias_chain(tree, class_index, slot)
+                .map(|default_ref| default_ref.def_id);
+            (slot, default_selection != Some(target_ref.def_id))
+        } else {
+            let Some(slot) = nested.def_id else {
+                continue;
+            };
+            (slot, active_aliases)
+        };
+        overrides.insert(
+            alias_slot,
+            OverrideTarget::from_resolved(alias.clone(), alias_slot, target_ref, active_alias),
+        );
     }
+    Ok(())
 }
 
 fn nested_package_alias_target_ref<'a>(
@@ -239,13 +275,13 @@ pub(crate) fn collect_component_constructor_aliases(
     instance: &rumoca_ir_ast::InstanceData,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    overrides: &mut rustc_hash::FxHashMap<String, OverrideTarget>,
-) {
+    overrides: &mut AliasOverrideTable,
+) -> Result<(), FlattenError> {
     let Some(type_def_id) = instance.type_def_id else {
-        return;
+        return Ok(());
     };
     let Some(class_def) = class_index.get(type_def_id) else {
-        return;
+        return Ok(());
     };
     let class_scope = tree
         .def_map
@@ -261,5 +297,5 @@ pub(crate) fn collect_component_constructor_aliases(
         false,
         &mut visited_classes,
         overrides,
-    );
+    )
 }

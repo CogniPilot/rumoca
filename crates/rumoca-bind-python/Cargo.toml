@@ -38,7 +38,10 @@ rumoca-tool-lint = { workspace = true }
 # Python minor version. Cuts the wheel matrix and avoids source builds when a
 # user is on a Python version we didn't pre-build.
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310"] }
+getrandom = { workspace = true }
 serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = "0.22"

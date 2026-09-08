@@ -4,7 +4,7 @@
 
 use super::*;
 use rumoca_compile::SessionConfig;
-use rumoca_compile::codegen::targets::RenderedTargetFile;
+use rumoca_compile::codegen::targets::CompletedRenderedFile;
 
 // Keep this dispatch-parity fixture inside the currently checked GALEC
 // projection. Coupled discrete Real equations have their own fail-closed
@@ -48,7 +48,11 @@ fn diagnostics_clean_source_has_no_syntax_error() {
 
 #[test]
 fn builtin_targets_exclude_removed_dae_symbolic_schema() {
-    let ids: Vec<String> = targets::list_targets().into_iter().map(|t| t.id).collect();
+    let ids: Vec<String> = targets::list_targets()
+        .expect("built-in target manifests must construct")
+        .into_iter()
+        .map(|t| t.id)
+        .collect();
     for removed in [
         "casadi-mx",
         "casadi-sx",
@@ -102,7 +106,7 @@ fn solver_listing_omits_solvers_that_cannot_run() {
 
 fn compile_fixed_wing_outer_loop() -> HighLevelCompilationResult {
     let mut session = Session::new(SessionConfig::default());
-    let (result, model_name) = compile_source_in_session(
+    let result = compile_source_in_session(
         &mut session,
         FIXED_WING_OUTER_LOOP_SOURCE,
         Some("FixedWingOuterLoop"),
@@ -110,14 +114,19 @@ fn compile_fixed_wing_outer_loop() -> HighLevelCompilationResult {
         &[],
     )
     .expect("FixedWingOuterLoop fixture should compile through the Python binding session path");
-    assert_eq!(model_name, "FixedWingOuterLoop");
+    assert_eq!(result.model_name(), "FixedWingOuterLoop");
     result
 }
 
-fn rendered_pairs(files: Vec<RenderedTargetFile>) -> Vec<(String, String)> {
+fn rendered_pairs(files: Vec<CompletedRenderedFile>) -> Vec<(String, String)> {
     files
         .into_iter()
-        .map(|file| (file.path, normalize_dynamic_manifest_content(&file.content)))
+        .map(|file| {
+            (
+                file.path().to_owned(),
+                normalize_dynamic_manifest_content(file.content()),
+            )
+        })
         .collect()
 }
 
@@ -177,11 +186,14 @@ fn is_uuid_body(value: &str) -> bool {
 
 fn assert_binding_codegen_matches_cli_dispatch(target: &str) {
     let result = compile_fixed_wing_outer_loop();
-    let binding_files = render_target_files(&result, "FixedWingOuterLoop", target)
+    let binding_files = render_target_files(&result, target)
         .unwrap_or_else(|err| panic!("binding render for {target} failed: {}", err.0));
-    let cli_dispatch_files =
-        ::rumoca::render_target_files(&result, "FixedWingOuterLoop", target, None)
-            .unwrap_or_else(|err| panic!("CLI dispatch render for {target} failed: {err:#}"));
+    let cli_dispatch_files = ::rumoca::render_target_files(
+        &result,
+        target,
+        fresh_artifact_session_input().expect("test artifact session input"),
+    )
+    .unwrap_or_else(|err| panic!("CLI dispatch render for {target} failed: {err:#}"));
     assert_eq!(
         rendered_pairs(binding_files),
         rendered_pairs(cli_dispatch_files),
@@ -190,11 +202,6 @@ fn assert_binding_codegen_matches_cli_dispatch(target: &str) {
 }
 
 #[test]
-fn fixed_wing_outer_loop_embedded_c_galec_matches_cli_dispatch() {
-    assert_binding_codegen_matches_cli_dispatch("embedded-c-galec");
-}
-
-#[test]
-fn fixed_wing_outer_loop_galec_production_matches_cli_dispatch() {
-    assert_binding_codegen_matches_cli_dispatch("galec-production");
+fn fixed_wing_outer_loop_galec_matches_cli_dispatch() {
+    assert_binding_codegen_matches_cli_dispatch("galec");
 }

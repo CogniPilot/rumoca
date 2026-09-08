@@ -36,38 +36,19 @@
 //!    `connect_sub_variable` reads `flow` off side A only and lets the §9.2
 //!    flow/non-flow validator (below) own the mismatch.
 //!
-//! 2. **Accepted, generating no equation — structural pairs.** When *both*
-//!    members are `parameter` or `constant`, MLS §9.3 says "Constants or
-//!    parameters in connected components yield the appropriate assert-statements
-//!    to check that they have the same value; connections are not generated".
-//!    Both sides are translation-time values, so generating nothing leaves no
-//!    unknown behind. Accepted for the same reason: `parameter` paired with
-//!    `constant`, which no comparator implementation rejects and which §9.3's
-//!    assert is well-formed over.
+//! 2. **Accepted, generating an equality assertion — like structural pairs.**
+//!    `parameter`/`parameter` and `constant`/`constant` are admitted and routed
+//!    to the connection assertion owner. They never enter a potential or flow
+//!    residual set. A mixed `parameter`/`constant` pair is rejected by the same
+//!    explicit "only ... to ..." rule.
 //!
-//! 3. **Accepted — pairs this phase has no evidence about.** A member whose
-//!    path resolves to no declaration in the flat model carries no prefix
-//!    information here, so the pair is connected rather than judged. Rejecting
-//!    on absent evidence would reject legal models whose connector members
-//!    reach this phase in a collapsed array representation.
-//!
-//!    This is decided on the pair, not per side, and that choice is deliberate
-//!    in one asymmetric case: **when one side resolves to a `parameter` or
-//!    `constant` and its counterpart resolves to nothing, the pair is
-//!    connected** — the structural member joins the potential set instead of
-//!    being dropped. For the variability rule alone that is *less* conservative
-//!    than the skip this classifier replaced, which needed only side A's
-//!    declaration to decide. The choice is: absent counterpart evidence means
-//!    connect, accepting the §9.3 variability risk on such a path, because a
-//!    one-sided rejection would be a rejection on absent evidence — exactly
-//!    what rule 3 exists to forbid — and the collapsed-array representations
-//!    that make a counterpart unresolvable are legal models. No reachable input
-//!    reaches it today (an element path either resolves through its declared
-//!    base here or is rejected in typecheck), so it is pinned by
-//!    `structural_member_with_an_unresolvable_counterpart_is_connected` rather
-//!    than by a corpus model. If a reachable path is ever found, the fix is to
-//!    make the structural side's evidence alone sufficient to abstain, not to
-//!    widen `EF028` to a one-sided rejection.
+//! 3. **Rejected — absent declaration evidence.** By this flatten boundary,
+//!    legal direct members and scalar array selections resolve either exactly or
+//!    through their checked declared base. Expandable-member union is handled
+//!    (or explicitly refused as unsupported) before this classifier, and false
+//!    conditional connections have already been pruned. Any remaining missing
+//!    declaration is invalid phase evidence, so `EF038` fires before connection
+//!    sets or equations can be constructed.
 //!
 //! Only the provably impossible remainder is rejected, and never by dropping
 //! the pair:
@@ -80,11 +61,10 @@
 //!   while the non-stream side expects a §9.2 equality — so accepting it
 //!   silently under-constrains the model. Reported against both member
 //!   declarations.
-//! - **One side `parameter`/`constant`, the other neither** (`EF028`, the
-//!   CONN-028 contract). MLS §9.3 admits only parameter-to-parameter and
-//!   constant-to-constant. Dropping the pair, which is what this phase did
-//!   before, leaves the non-structural side with no equation at all. Reported
-//!   against both member declarations.
+//! - **Incompatible variability** (`EF028`, the CONN-028 contract). MLS §9.3
+//!   admits only parameter-to-parameter and constant-to-constant structural
+//!   pairs. This rejects structural/non-structural and parameter/constant
+//!   pairings against both member declarations.
 //!
 //! ## Scope of `EF027`/`EF028`
 //!
@@ -97,33 +77,29 @@
 //!   non-flow mismatch is rejected before connection-set construction by
 //!   `validate_flow_consistency`, reached from `validate_connections` on both
 //!   the primitive-endpoint and expanded-member paths, and gated on
-//!   `FlattenOptions::strict_connection_validation` (true in every production
-//!   session). That validator owns the clause and reports it as `EF002`; this
+//!   the unconditional pre-construction validation pass. That validator owns
+//!   the clause and reports it as `EF002`; this
 //!   classifier deliberately does not duplicate it.
 //! - **Members present on one connector only.** MLS §9.3 requires "the same
-//!   named component elements"; an unmatched member is silently dropped by
-//!   `connect_sub_variable`, because member matching returns no counterpart to
-//!   judge. Owned by connector type-compatibility checking
-//!   (`validate_expanded_connector_connection`), not by this classifier.
+//!   named component elements". Complete bidirectional coverage is proven
+//!   before connection-set mutation; a partial or empty intersection returns
+//!   `EF002`. The asymmetric compact-array form is accepted only when every
+//!   member is covered in one complete direction. This remains owned by
+//!   connector expansion, not by this per-pair classifier.
 //! - **Causal (`input`/`output`) prefix pairing.** MLS §9.3's third clause is
 //!   not checked here; causality is judged by the §9.2 single-source contract
 //!   (CONN-004) in the resolve phase.
 //! - **The §9.3 assert-statement for a structural pair.** MLS §9.3 pairs
 //!   "connections are not generated" with an assertion that the two values
-//!   agree, and OMC emits exactly that — `assert(a.m == b.m, "Connected
-//!   constants/parameters must be equal")` for a parameter pair, and the
-//!   constant-folded `assert(a.m == 3)` when one side is a `constant`. This
-//!   phase generates neither, so two structurally conflicting values (`a.m = 3`
-//!   connected to `b.m = 4`) compile silently instead of failing the assertion.
-//!   That is a missing check, not a missing equation — parameters and constants
-//!   are not unknowns, so it cannot under-constrain the model — and it is owned
-//!   by the connection-equation generator (`equation_generation`).
-//! - **Array-output expansions.** `connect_array_to_expanded` and
-//!   `connect_output_to_array_element` pair a whole array endpoint against
-//!   expanded elements and read the prefixes off one side only. They keep their
-//!   existing behaviour and are owned by `connect_array_output_variables`; the
-//!   `connect`-expansion paths (`connect_primitive_vars`,
-//!   `connect_sub_variable`) are the ones routed through this classifier.
+//!   agree. Scalar pairs are preserved as Flat `AssertEquation` owners by
+//!   `equation_generation`; an empty value is vacuously equal. A nonempty
+//!   array-valued structural pair is rejected with `EF038` until Flat owns a
+//!   compact assertion family, because treating array `==` as the scalar
+//!   Boolean condition of one assertion would be invalid IR.
+//! - **Array-output expansions.** `connect_array_to_expanded` pairs a whole
+//!   array endpoint against checked expanded members. The `connect`-expansion
+//!   paths (`connect_primitive_vars`, `connect_sub_variable`) are the ones
+//!   routed through this classifier.
 
 use super::*;
 
@@ -136,28 +112,30 @@ pub(super) enum MemberPairing {
     Connect,
     /// MLS §9.3: "Constants or parameters in connected components yield the
     /// appropriate assert-statements to check that they have the same value;
-    /// connections are not generated." Both sides are translation-time values,
-    /// so no unknown is left behind by generating nothing.
-    NoEquation,
+    /// connections are not generated."
+    StructuralAssertion,
 }
 
-/// The declaration a connection-set member resolves to, or `None` when this
-/// phase holds no declaration for it.
-///
-/// One shared resolution for every prefix question asked about a member —
-/// `flow` (MLS §9.2), `stream` (MLS §9.3/§15.1) and variability (MLS §9.3) —
-/// so a member can never be judged flow by one rule and unknown by another.
-/// An element path resolves through its declared base exactly as
-/// `connection_endpoint_dims` does.
-pub(super) fn connection_member_declaration<'flat>(
-    flat: &'flat flat::Model,
+/// Read the `flow` role only from a required exact declaration token.
+pub(crate) fn is_flow_variable(
+    flat: &flat::Model,
     var_name: &rumoca_core::VarName,
-) -> Option<&'flat flat::Variable> {
-    if let Some(v) = flat.variables.get(var_name) {
-        return Some(v);
-    }
-    let base = subscripted_base_var(var_name, flat)?;
-    flat.variables.get(&base)
+    span: rumoca_core::Span,
+) -> Result<bool, FlattenError> {
+    Ok(require_connection_declaration(flat, var_name, span)?
+        .declaration()
+        .flow)
+}
+
+/// Read the `stream` role only from a required exact declaration token.
+pub(super) fn is_stream_variable(
+    flat: &flat::Model,
+    var_name: &rumoca_core::VarName,
+    span: rumoca_core::Span,
+) -> Result<bool, FlattenError> {
+    Ok(require_connection_declaration(flat, var_name, span)?
+        .declaration()
+        .stream)
 }
 
 /// Name of the variability prefix that makes a member structural, or `None`
@@ -170,51 +148,44 @@ fn structural_variability_label(variable: &flat::Variable) -> Option<&'static st
     }
 }
 
+fn connection_variability_label(variable: &flat::Variable) -> &'static str {
+    structural_variability_label(variable).unwrap_or("non-structural")
+}
+
 /// Decide what one matched pair of primitive connection members generates.
 ///
-/// See this module's acceptance contract: the pair is accepted and connected
-/// unless MLS proves it cannot be, and "no declaration in view" is never such a
-/// proof.
+/// See this module's acceptance contract: a pair is classified only after both
+/// declarations resolve exactly or through checked array-selection evidence.
 pub(super) fn classify_connection_member_pair(
     flat: &flat::Model,
     var_a: &rumoca_core::VarName,
     var_b: &rumoca_core::VarName,
+    span: rumoca_core::Span,
 ) -> Result<MemberPairing, FlattenError> {
-    let (Some(decl_a), Some(decl_b)) = (
-        connection_member_declaration(flat, var_a),
-        connection_member_declaration(flat, var_b),
-    ) else {
-        // A member with no declaration in view carries no evidence about its
-        // prefixes, so this phase does not judge the pair.
-        return Ok(MemberPairing::Connect);
-    };
+    let evidence_a = require_connection_declaration(flat, var_a, span)?;
+    let evidence_b = require_connection_declaration(flat, var_b, span)?;
+    let decl_a = evidence_a.declaration();
+    let decl_b = evidence_b.declaration();
 
     // MLS §9.3: "the primitive components may only connect parameter variables
     // to parameter variables and constant variables to constant variables".
-    match (
-        structural_variability_label(decl_a),
-        structural_variability_label(decl_b),
-    ) {
-        (Some(_), Some(_)) => return Ok(MemberPairing::NoEquation),
-        (Some(label), None) => {
-            return Err(FlattenError::structural_member_paired_with_variable(
+    let variability_a = connection_variability_label(decl_a);
+    let variability_b = connection_variability_label(decl_b);
+    match (variability_a, variability_b) {
+        ("parameter", "parameter") | ("constant", "constant") => {
+            return Ok(MemberPairing::StructuralAssertion);
+        }
+        ("non-structural", "non-structural") => {}
+        _ => {
+            return Err(FlattenError::connection_variability_mismatch(
                 var_a.as_str(),
-                label,
+                variability_a,
                 decl_a.source_span,
                 var_b.as_str(),
+                variability_b,
                 decl_b.source_span,
             ));
         }
-        (None, Some(label)) => {
-            return Err(FlattenError::structural_member_paired_with_variable(
-                var_b.as_str(),
-                label,
-                decl_b.source_span,
-                var_a.as_str(),
-                decl_a.source_span,
-            ));
-        }
-        (None, None) => {}
     }
 
     // MLS §9.3: "stream variables only to other stream variables". MLS §15.1

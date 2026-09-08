@@ -23,7 +23,7 @@
 //! rejected, and no token, identifier, or second correlation fact exists to be
 //! guessed or compared.
 
-use super::MeError;
+use super::{MeContinuousStateDomain, MeError, MeSolverTolerances};
 
 /// The unrelated-solver conformance fixture required by ME-INT-001. It is
 /// compiled only under test, so it can never become a production path.
@@ -37,6 +37,9 @@ pub mod time_only;
 
 pub(super) use derivative::MeDerivativeController;
 pub use derivative::{MeDerivativeHandle, MeDerivativeRefused};
+
+#[cfg(any(test, feature = "test-support"))]
+pub(super) use derivative::MeDerivativeActivation;
 
 #[cfg(test)]
 pub(super) use derivative::{DerivativeClosure, detached_handle};
@@ -208,50 +211,39 @@ impl MeIntegrationError {
 /// from reading component nominal policy or the public [`crate::SimOptions`]
 /// (which carries output cadence, experiment coordinates, timeout, pacing, and
 /// solver selection). Everything numerically relevant a solver legitimately
-/// needs is validated once, here, by the host.
+/// needs is validated once by its earliest owner and assembled here only by
+/// the host. Numerical plugins can inspect this product but cannot construct
+/// one or supply a second continuous-state width.
+///
+/// ```compile_fail,E0624
+/// use rumoca_solver::fmi_me::MeNumericalSetup;
+///
+/// let _ = MeNumericalSetup::from_checked_host(
+///     1.0e-6,
+///     1.0e-9,
+///     vec![1.0],
+///     Some(0.01),
+/// );
+/// ```
 #[derive(Debug, Clone)]
 pub struct MeNumericalSetup {
-    relative_tolerance: f64,
-    absolute_tolerance: f64,
+    tolerances: MeSolverTolerances,
     state_nominals: Vec<f64>,
     initial_step_hint: Option<f64>,
 }
 
 impl MeNumericalSetup {
-    /// Construct the configuration, proving every value the plugin may scale
-    /// with. The nominal vector is the complete component width the host
-    /// already validated for its own root policy; there is no fallback entry.
-    pub fn new(
-        relative_tolerance: f64,
-        absolute_tolerance: f64,
+    /// Assemble the plugin view from values the checked host already owns.
+    ///
+    /// Session options proved both tolerances, while the root policy or the
+    /// component-width nominal getter proved `state_nominals`. Rechecking any
+    /// of those facts here would create a second admission boundary. The step
+    /// hint is new caller input and is therefore checked exactly once here.
+    pub(in crate::fmi_me) fn from_checked_host(
+        tolerances: MeSolverTolerances,
         state_nominals: Vec<f64>,
-        state_count: usize,
         initial_step_hint: Option<f64>,
     ) -> Result<Self, MeIntegrationError> {
-        for (label, value) in [
-            ("relative tolerance", relative_tolerance),
-            ("absolute tolerance", absolute_tolerance),
-        ] {
-            if !value.is_finite() || value <= 0.0 {
-                return Err(MeIntegrationError::contract(format!(
-                    "numerical {label} must be finite and positive, got {value}"
-                )));
-            }
-        }
-        if state_nominals.len() != state_count {
-            return Err(MeIntegrationError::contract(format!(
-                "numerical setup carries {} nominals for a component of width {state_count}",
-                state_nominals.len()
-            )));
-        }
-        if let Some(index) = state_nominals
-            .iter()
-            .position(|nominal| !nominal.is_finite() || *nominal <= 0.0)
-        {
-            return Err(MeIntegrationError::contract(format!(
-                "continuous-state nominal {index} is not finite and positive"
-            )));
-        }
         if let Some(hint) = initial_step_hint
             && (!hint.is_finite() || hint <= 0.0)
         {
@@ -260,8 +252,7 @@ impl MeNumericalSetup {
             )));
         }
         Ok(Self {
-            relative_tolerance,
-            absolute_tolerance,
+            tolerances,
             state_nominals,
             initial_step_hint,
         })
@@ -269,12 +260,12 @@ impl MeNumericalSetup {
 
     #[must_use]
     pub fn relative_tolerance(&self) -> f64 {
-        self.relative_tolerance
+        self.tolerances.relative()
     }
 
     #[must_use]
     pub fn absolute_tolerance(&self) -> f64 {
-        self.absolute_tolerance
+        self.tolerances.absolute()
     }
 
     /// The complete positive finite nominal vector, host-validated.
@@ -327,8 +318,8 @@ pub fn canonical_coordinate(time: f64) -> f64 {
 /// A checked continuous coordinate: finite time, finite states, exact
 /// component width.
 ///
-/// Only the host constructs one. `state_count` is the linked component's own
-/// continuous-state width, so no caller can assert an arity the component does
+/// Only the host constructs one. `state_domain` is the linked component's own
+/// continuous-state domain, so no caller can assert an arity the component does
 /// not have; a plugin reads points the host issues and
 /// returns raw [`MeStepCandidate`] numbers instead of minting them.
 ///
@@ -345,25 +336,27 @@ pub fn canonical_coordinate(time: f64) -> f64 {
 pub struct MeContinuousPoint {
     time: f64,
     states: Vec<f64>,
+    state_domain: MeContinuousStateDomain,
 }
 
 impl MeContinuousPoint {
-    /// Construct a point of exactly `state_count` finite values at a finite
-    /// time, where `state_count` is the linked component's width.
+    /// Construct a point of exactly one linked component domain at a finite
+    /// time.
     pub(super) fn new(
         time: f64,
         states: Vec<f64>,
-        state_count: usize,
+        state_domain: MeContinuousStateDomain,
     ) -> Result<Self, MeIntegrationError> {
         if !time.is_finite() {
             return Err(MeIntegrationError::contract(format!(
                 "continuous point time {time} must be finite"
             )));
         }
-        if states.len() != state_count {
+        if states.len() != state_domain.len() {
             return Err(MeIntegrationError::contract(format!(
-                "continuous point carries {} states for a component of width {state_count}",
-                states.len()
+                "continuous point carries {} states for a component of width {}",
+                states.len(),
+                state_domain.len()
             )));
         }
         if let Some(index) = states.iter().position(|value| !value.is_finite()) {
@@ -374,6 +367,7 @@ impl MeContinuousPoint {
         Ok(Self {
             time: canonical_coordinate(time),
             states,
+            state_domain,
         })
     }
 
@@ -389,7 +383,11 @@ impl MeContinuousPoint {
 
     #[must_use]
     pub fn width(&self) -> usize {
-        self.states.len()
+        self.state_domain.len()
+    }
+
+    pub(super) const fn state_domain(&self) -> MeContinuousStateDomain {
+        self.state_domain
     }
 
     #[must_use]
@@ -666,9 +664,9 @@ impl MeStepProposal {
     /// it up here, so a proposal that exists at all was built from the request
     /// its own coordinates came from. Nothing needs to be compared afterwards.
     ///
-    /// `component_state_count` is the linked component's own continuous-state
-    /// width, supplied by the session; the candidate has no say in it. The start
-    /// point is the request's current point, never the candidate's, so a
+    /// The linked component domain comes from the consumed request; the
+    /// candidate and caller have no width argument to supply. The start point
+    /// is the request's current point, never the candidate's, so a
     /// candidate computed against a stale or invented interval cannot smuggle
     /// its own origin in: it can only fail the progress and bound checks
     /// against the actual current coordinate.
@@ -679,7 +677,6 @@ impl MeStepProposal {
     pub(super) fn bind(
         request: MeAdvanceRequest,
         candidate: MeStepCandidate,
-        component_state_count: usize,
     ) -> Result<Self, MeIntegrationError> {
         let MeStepCandidate {
             accepted_time,
@@ -691,25 +688,11 @@ impl MeStepProposal {
                 "an accepted step must declare a positive local continuous-extension order",
             ));
         }
-        let previous_width = request.current().width();
-        if previous_width != component_state_count {
-            return Err(MeIntegrationError::contract(format!(
-                "the host issued a request of width {previous_width} for a component of width \
-                 {component_state_count}"
-            )));
-        }
-        if accepted_states.len() != component_state_count {
-            return Err(MeIntegrationError::contract(format!(
-                "the numerical candidate reports {} states for a component of width \
-                 {component_state_count}",
-                accepted_states.len()
-            )));
-        }
+        let state_domain = request.current().state_domain();
         // Finiteness, arity, and the negative-zero coordinate rule are proved
         // once, here, by the same checked constructor the host uses everywhere
         // else. Until this succeeds the candidate holds no checked coordinate.
-        let accepted =
-            MeContinuousPoint::new(accepted_time, accepted_states, component_state_count)?;
+        let accepted = MeContinuousPoint::new(accepted_time, accepted_states, state_domain)?;
         let previous_time = request.current().time();
         let duration = accepted.time() - previous_time;
         let roundoff = accepted_step_roundoff(previous_time, duration);
@@ -833,14 +816,14 @@ fn normalize_endpoint(
     request: &MeAdvanceRequest,
     roundoff: f64,
 ) -> Result<MeContinuousPoint, MeIntegrationError> {
-    let width = accepted.width();
+    let state_domain = accepted.state_domain();
     let Some(coordinate) = request.binding_public_coordinate(accepted.time(), roundoff) else {
         return Ok(accepted);
     };
     if coordinate.to_bits() == accepted.time().to_bits() {
         return Ok(accepted);
     }
-    MeContinuousPoint::new(coordinate, accepted.into_states(), width)
+    MeContinuousPoint::new(coordinate, accepted.into_states(), state_domain)
 }
 
 /// The one numerical capability a concrete solver supplies.
@@ -946,8 +929,12 @@ mod tests {
     use super::*;
 
     fn point(time: f64, states: &[f64]) -> MeContinuousPoint {
-        MeContinuousPoint::new(time, states.to_vec(), states.len())
-            .expect("fixture point is checked")
+        MeContinuousPoint::new(
+            time,
+            states.to_vec(),
+            MeContinuousStateDomain::verification_fixture(states.len()),
+        )
+        .expect("fixture point is checked")
     }
 
     fn request(now: f64, yield_time: f64) -> MeAdvanceRequest {
@@ -963,20 +950,16 @@ mod tests {
         states: &[f64],
         order: u32,
     ) -> Result<MeStepProposal, MeIntegrationError> {
-        let width = request.current().width();
-        MeStepProposal::bind(
-            request,
-            MeStepCandidate::new(time, states.to_vec(), order),
-            width,
-        )
+        MeStepProposal::bind(request, MeStepCandidate::new(time, states.to_vec(), order))
     }
 
     #[test]
     fn a_continuous_point_rejects_non_finite_values_and_wrong_widths() {
-        assert!(MeContinuousPoint::new(f64::NAN, vec![0.0], 1).is_err());
-        assert!(MeContinuousPoint::new(0.0, vec![f64::INFINITY], 1).is_err());
-        assert!(MeContinuousPoint::new(0.0, vec![0.0, 1.0], 1).is_err());
-        assert!(MeContinuousPoint::new(0.0, vec![0.0], 1).is_ok());
+        let domain = MeContinuousStateDomain::verification_fixture(1);
+        assert!(MeContinuousPoint::new(f64::NAN, vec![0.0], domain).is_err());
+        assert!(MeContinuousPoint::new(0.0, vec![f64::INFINITY], domain).is_err());
+        assert!(MeContinuousPoint::new(0.0, vec![0.0, 1.0], domain).is_err());
+        assert!(MeContinuousPoint::new(0.0, vec![0.0], domain).is_ok());
     }
 
     #[test]
@@ -1055,17 +1038,8 @@ mod tests {
         // Wider, narrower, and empty: the linked component's width decides.
         assert!(bind(request(0.0, 1.0), 0.5, &[1.0, 2.0], 3).is_err());
         assert!(bind(request(0.0, 1.0), 0.5, &[], 3).is_err());
-        // The candidate cannot talk its way past the width either: binding
-        // takes the count from the component, not from the candidate.
-        assert!(
-            MeStepProposal::bind(
-                request(0.0, 1.0),
-                MeStepCandidate::new(0.5, vec![1.0, 2.0], 3),
-                2, // an arity the linked component does not have
-            )
-            .is_err(),
-            "the request's own checked width contradicts the claimed component width"
-        );
+        // There is no width argument at this boundary: binding consumes the
+        // actual request and obtains its domain from that value.
     }
 
     #[test]
@@ -1107,7 +1081,12 @@ mod tests {
 
     #[test]
     fn a_checked_coordinate_canonicalizes_negative_zero() {
-        let point = MeContinuousPoint::new(-0.0, vec![1.0], 1).expect("checked point");
+        let point = MeContinuousPoint::new(
+            -0.0,
+            vec![1.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("checked point");
         assert_eq!(point.time().to_bits(), 0.0_f64.to_bits());
         assert_eq!(canonical_coordinate(-0.0).to_bits(), 0.0_f64.to_bits());
         assert_eq!(canonical_coordinate(1.5).to_bits(), 1.5_f64.to_bits());
@@ -1134,14 +1113,23 @@ mod tests {
     }
 
     #[test]
-    fn the_numerical_setup_rejects_every_unproven_scaling_value() {
-        assert!(MeNumericalSetup::new(0.0, 1.0e-6, vec![1.0], 1, None).is_err());
-        assert!(MeNumericalSetup::new(1.0e-6, f64::NAN, vec![1.0], 1, None).is_err());
-        assert!(MeNumericalSetup::new(1.0e-6, 1.0e-6, vec![1.0, 1.0], 1, None).is_err());
-        assert!(MeNumericalSetup::new(1.0e-6, 1.0e-6, vec![0.0], 1, None).is_err());
-        assert!(MeNumericalSetup::new(1.0e-6, 1.0e-6, vec![1.0], 1, Some(-1.0)).is_err());
-        assert!(MeNumericalSetup::new(1.0e-6, 1.0e-6, vec![1.0], 1, Some(0.1)).is_ok());
-        assert!(MeNumericalSetup::new(1.0e-6, 1.0e-6, Vec::new(), 0, None).is_ok());
+    fn the_numerical_setup_checks_only_the_new_step_hint() {
+        assert!(
+            MeNumericalSetup::from_checked_host(
+                MeSolverTolerances::check(1.0e-6, 1.0e-6).unwrap(),
+                vec![1.0],
+                Some(-1.0),
+            )
+            .is_err()
+        );
+        assert!(
+            MeNumericalSetup::from_checked_host(
+                MeSolverTolerances::check(1.0e-6, 1.0e-6).unwrap(),
+                vec![1.0],
+                Some(0.1),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

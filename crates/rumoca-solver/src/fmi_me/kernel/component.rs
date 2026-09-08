@@ -1,22 +1,182 @@
-use rumoca_ir_solve::ScalarSlot;
+pub(super) mod event_storage;
+mod instantiation;
+#[cfg(test)]
+mod storage_identity;
 
 use super::event_boundary::event_boundary_horizon;
-use super::indicator_plan::{IndicatorPlanInputs, IndicatorReading, IndicatorZeroSide};
+use super::indicator_plan::{IndicatorReading, IndicatorZeroSide};
 use super::*;
+use event_storage::EventVectorLatch;
+#[cfg(test)]
+use storage_identity::{
+    DerivativeScratchIdentity, EventStageStorageIdentity, IndicatorStorageIdentity,
+};
 
 impl SolveMeKernel {
+    /// `fmi3InstantiateModelExchange`: project the checked kernel once.
+    pub fn instantiate(source: MeModelSource, config: &MeInstanceConfig) -> Result<Self, MeError> {
+        Self::instantiate_with_execution(
+            source,
+            config,
+            crate::fmi_me::MeExecutionSelection::Interpreter,
+        )
+    }
+
+    pub fn instantiate_with_execution(
+        source: MeModelSource,
+        config: &MeInstanceConfig,
+        execution: crate::fmi_me::MeExecutionSelection,
+    ) -> Result<Self, MeError> {
+        let (lifecycle, body) = MeKernelBody::instantiate_body(source, config, execution)
+            .map_err(|failure| failure.at_stage(MeStage::Instantiate))?;
+        let event_stage = Box::new(
+            body.construction_event_stage()
+                .map_err(|failure| failure.at_stage(MeStage::Instantiate))?,
+        );
+        let event_runtime_checkpoint = body.runtime.snapshot();
+        Ok(Self {
+            lifecycle,
+            body,
+            event_stage,
+            event_runtime_checkpoint,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_indicator_storage(&self) -> IndicatorStorageIdentity {
+        self.body.verification_indicator_storage()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_indicator_domains(&self) -> (Vec<bool>, Vec<bool>) {
+        self.body.indicator_storage.domain_values()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_derivative_scratch_identity(&self) -> DerivativeScratchIdentity {
+        self.body.verification_derivative_scratch_identity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_event_stage_identity(&self) -> EventStageStorageIdentity {
+        EventStageStorageIdentity {
+            live_model: std::ptr::from_ref(self.body.runtime.model()) as usize,
+            stage_model: std::ptr::from_ref(self.event_stage.runtime.model()) as usize,
+            live_linked_facts: std::ptr::from_ref(self.body.runtime.fmi_linked_runtime_facts())
+                as usize,
+            stage_linked_facts: std::ptr::from_ref(
+                self.event_stage.runtime.fmi_linked_runtime_facts(),
+            ) as usize,
+            linked_descriptor_table: self
+                .body
+                .runtime
+                .fmi_linked_runtime_facts()
+                .float64_descriptors()
+                .as_ptr() as usize,
+            live_entry_table: self.body.indicator_plan().entries().as_ptr() as usize,
+            stage_entry_table: self.event_stage.indicator_plan().entries().as_ptr() as usize,
+            stage_body: std::ptr::from_ref(self.event_stage.as_ref()) as usize,
+            live_indicator_buffers: self.body.indicator_storage.storage_identities(),
+            stage_indicator_buffers: self.event_stage.indicator_storage.storage_identities(),
+            live_event_buffers: self.body.event_buffer_identity(),
+            stage_event_buffers: self.event_stage.event_buffer_identity(),
+            live_transaction_buffers: self.body.transaction_buffer_identity(),
+            stage_transaction_buffers: self.event_stage.transaction_buffer_identity(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_observable_state(&self) -> (MeState, u64, Vec<u64>, Vec<u64>) {
+        let (time, states, params) = self.body.verification_observable_body();
+        (self.lifecycle.state(), time, states, params)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_canonicalize_committed_event_view(
+        &mut self,
+        event_time: f64,
+        solver_y: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.body
+            .verification_canonicalize_committed_event_view(event_time, solver_y)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_continuous_linearization_cache_matches(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+    ) -> bool {
+        self.body
+            .verification_continuous_linearization_cache_matches(time, state, parameters)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_cache_continuous_linearization(
+        &self,
+        time: f64,
+        state: &[f64],
+        parameters: &[f64],
+        solver_y: &[f64],
+    ) {
+        self.body
+            .verification_cache_continuous_linearization(time, state, parameters, solver_y);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn verification_matches_snapshot(&self, saved: &MeFmuState) -> bool {
+        self.lifecycle.matches_saved(&saved.component.lifecycle)
+            && self.body.verification_matches_snapshot(saved)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
+        self.body.cached_derivative(time, state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache_derivative(&self, time: f64, state: &[f64], derivative: &[f64]) {
+        self.body.cache_derivative(time, state, derivative);
+    }
+
+    #[cfg(test)]
+    pub(super) fn numerics_settle(&self) -> AlgebraicSettle {
+        self.body.numerics_settle()
+    }
+}
+
+impl MeKernelBody {
+    pub(super) fn indicator_plan(&self) -> &FmiIndicatorPlan {
+        self.runtime.fmi_linked_runtime_facts().indicator_plan()
+    }
+
+    pub(super) fn pending_event_entry(&self) -> PendingEventEntry {
+        let scheduled_here = self
+            .pending_event_stop
+            .is_some_and(|(time, _)| time_match_with_tol(time, self.time));
+        PendingEventEntry {
+            cause: if self.pending_state_event_entry || !scheduled_here {
+                PendingEventCause::State
+            } else {
+                PendingEventCause::Time
+            },
+            event_time: self.time,
+            horizon: self.stop_time.max(self.time),
+        }
+    }
+
     pub(crate) fn continuous_state_derivatives_into(
         &self,
         derivatives: &mut [f64],
     ) -> Result<(), MeError> {
-        if derivatives.len() != self.state_count {
+        if derivatives.len() != self.state_domain.len() {
             return Err(contract(format!(
                 "continuous-state derivative buffer has {} entries for {} states",
                 derivatives.len(),
-                self.state_count,
+                self.state_domain.len(),
             )));
         }
-        self.require_active_lifecycle("get_continuous_state_derivatives")?;
         let time = self.continuous_eval_time();
         if self.copy_cached_derivative_into(time, &self.states, derivatives) {
             return Ok(());
@@ -31,23 +191,46 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    pub(crate) fn event_indicators_into(&self, indicators: &mut [f64]) -> Result<(), MeError> {
-        let indicator_count = self.indicator_plan.len();
-        if indicators.len() != indicator_count {
-            return Err(contract(format!(
-                "event-indicator buffer has {} entries for {} indicators",
-                indicators.len(),
-                indicator_count,
-            )));
-        }
-        self.require_active_lifecycle("get_event_indicators")?;
-        if indicator_count == 0 {
+    pub(super) fn event_indicators_into(
+        &self,
+        indicators: &mut FmiPublicationIndicatorValues,
+    ) -> Result<(), MeError> {
+        if indicators.is_empty() {
             return Ok(());
         }
         let time = self.continuous_eval_time();
-        if self.copy_cached_root_conditions_into(time, &self.states, indicators) {
+        if self
+            .indicator_storage
+            .copy_cache_into_publication(time, &self.states, indicators)
+        {
             return Ok(());
         }
+        let mut working = self.indicator_storage.working_values_mut();
+        self.evaluate_current_indicators(time, &mut working)?;
+        self.indicator_storage
+            .copy_working_to_publication(&working, indicators);
+        self.indicator_storage
+            .store_publication_cache(time, &self.states, indicators);
+        Ok(())
+    }
+
+    fn refresh_working_indicators(&self) -> Result<(), MeError> {
+        let time = self.continuous_eval_time();
+        let mut working = self.indicator_storage.working_values_mut();
+        if self
+            .indicator_storage
+            .copy_cache_into_working(time, &self.states, &mut working)
+        {
+            return Ok(());
+        }
+        self.evaluate_current_indicators(time, &mut working)
+    }
+
+    fn evaluate_current_indicators(
+        &self,
+        time: f64,
+        indicators: &mut WorkingPublishedIndicatorValues,
+    ) -> Result<(), MeError> {
         let mut settled_guess = self.cached_continuous_solver_y(time, &self.states, &self.params);
         self.with_delay_evaluation_params(time, &self.states, |params| {
             self.evaluate_inventory_indicators(time, params, &mut settled_guess, indicators)
@@ -55,7 +238,6 @@ impl SolveMeKernel {
         .map_err(|error| error.at_stage(MeStage::Integration))?
         .map_err(|error| error.at_stage(MeStage::Integration))?;
         self.apply_indicator_zero_sides(indicators);
-        self.cache_root_conditions(time, &self.states, indicators);
         Ok(())
     }
 
@@ -71,11 +253,11 @@ impl SolveMeKernel {
         time: f64,
         params: &[f64],
         settled_guess: &mut Option<Vec<f64>>,
-        indicators: &mut [f64],
+        indicators: &mut WorkingPublishedIndicatorValues,
     ) -> Result<(), MeError> {
-        let mut root_values = self.indicator_root_scratch.borrow_mut();
-        let mut deadlines = self.indicator_deadline_scratch.borrow_mut();
-        if self.indicator_plan.reads_deadlines() && settled_guess.is_none() {
+        let mut root_values = self.indicator_storage.root_values_mut();
+        let mut deadlines = self.indicator_storage.deadline_values_mut();
+        if self.indicator_plan().reads_deadlines() && settled_guess.is_none() {
             *settled_guess = Some(self.runtime.full_solver_y(
                 time,
                 &self.states,
@@ -84,28 +266,37 @@ impl SolveMeKernel {
                 UPDATE_MAX_ITERS,
             )?);
         }
-        if self.indicator_plan.reads_root_values() {
-            root_values.fill(0.0);
-            self.evaluate_root_conditions(time, params, settled_guess, &mut root_values)?;
+        if self.indicator_plan().reads_root_values() {
+            root_values.as_mut_slice().fill(0.0);
+            self.evaluate_root_conditions(time, params, settled_guess, root_values.as_mut_slice())?;
         }
-        if self.indicator_plan.reads_deadlines() {
+        if self.indicator_plan().reads_deadlines() {
             let guess = settled_guess.as_deref().ok_or_else(|| {
                 contract("FMI dynamic-time indicators need a settled algebraic coordinate")
             })?;
-            self.runtime
-                .eval_dynamic_time_event_rows_into(time, guess, params, &mut deadlines)?;
+            self.runtime.eval_dynamic_time_event_rows_into(
+                time,
+                guess,
+                params,
+                deadlines.as_mut_slice(),
+            )?;
         }
-        for (indicator, entry) in indicators.iter_mut().zip(self.indicator_plan.entries()) {
-            *indicator = indicator_reading_value(entry.reading(), time, &root_values, &deadlines)?;
+        for (indicator, entry) in indicators
+            .as_mut_slice()
+            .iter_mut()
+            .zip(self.indicator_plan().entries())
+        {
+            *indicator = indicator_reading_value(entry.reading(), time, &root_values, &deadlines);
         }
         Ok(())
     }
 
     /// Report an exact zero on the side the plan assigned that position.
-    fn apply_indicator_zero_sides(&self, indicators: &mut [f64]) {
+    fn apply_indicator_zero_sides(&self, indicators: &mut WorkingPublishedIndicatorValues) {
         for (position, (indicator, entry)) in indicators
+            .as_mut_slice()
             .iter_mut()
-            .zip(self.indicator_plan.entries())
+            .zip(self.indicator_plan().entries())
             .enumerate()
         {
             if *indicator != 0.0 {
@@ -121,12 +312,8 @@ impl SolveMeKernel {
 
     /// The side the previous completed point froze one indicator on.
     fn frozen_indicator_zero(&self, position: usize) -> f64 {
-        if self
-            .frozen_indicator_positive
-            .get(position)
-            .copied()
-            .unwrap_or(false)
-        {
+        let positive = self.indicator_storage.frozen_domains()[position];
+        if positive {
             f64::EPSILON
         } else {
             -f64::EPSILON
@@ -196,67 +383,57 @@ impl SolveMeKernel {
         }
     }
 
-    /// Freeze the standard indicator domains at one completed point and retain
-    /// any domain changes for the next argument-free Event Mode transition.
-    ///
-    /// This is component-owned state: the host classifies roots for location,
-    /// while the component independently observes the standard callback at its
-    /// own accepted coordinate. No crossing vector crosses the FMI boundary.
-    pub(super) fn complete_indicator_domains(&mut self) -> Result<bool, MeError> {
-        let count = self.indicator_plan.len();
-        if count == 0 {
-            self.frozen_indicator_positive.clear();
+    /// Retain the standard domains at one completed point without classifying
+    /// state or time events. FMI assigns that classification to the importer.
+    pub(super) fn freeze_completed_indicator_domains(&mut self) -> Result<(), MeError> {
+        if self.indicator_plan().is_empty() {
             self.pending_root_crossings.clear();
-            return Ok(false);
+            return Ok(());
         }
-        let mut indicators = std::mem::take(&mut self.indicator_value_scratch);
-        let read = self.event_indicators_into(&mut indicators);
-        self.indicator_value_scratch = indicators;
-        read?;
-        let mut current = std::mem::take(&mut self.indicator_domain_scratch);
-        current.clear();
-        current.extend(
-            self.indicator_value_scratch
-                .iter()
-                .map(|indicator| *indicator > 0.0),
-        );
-        if self.frozen_indicator_positive.len() != count {
-            std::mem::swap(&mut self.frozen_indicator_positive, &mut current);
-            self.indicator_domain_scratch = current;
-            self.pending_root_crossings.clear();
-            return Ok(false);
-        }
+        self.refresh_working_indicators()?;
+        self.indicator_storage.freeze_working_domains();
+        self.pending_root_crossings.clear();
+        Ok(())
+    }
 
+    /// Classify the component-private domain pair only after the importer has
+    /// independently selected Event Mode.
+    pub(super) fn classify_entered_state_event(&mut self) -> Result<(), MeError> {
         let domain_changed = self
-            .frozen_indicator_positive
+            .indicator_storage
+            .working_domains()
             .iter()
-            .zip(&current)
+            .zip(self.indicator_storage.frozen_domains())
             .any(|(before, after)| before != after);
         if !domain_changed {
-            self.indicator_domain_scratch = current;
             self.pending_root_crossings.clear();
-            return Ok(false);
+            return Ok(());
         }
         self.capture_event_entry()?;
         let mut crossings = std::mem::take(&mut self.pending_root_crossings);
         crossings.clear();
         crossings.extend(
-            self.frozen_indicator_positive
+            self.indicator_storage
+                .working_domains()
                 .iter()
-                .zip(&current)
+                .zip(self.indicator_storage.frozen_domains())
                 .enumerate()
                 .filter(|(_, (before, after))| before != after)
                 .filter_map(|(position, (_, after))| {
                     Some(RootCrossing {
-                        index: self.indicator_plan.crossing_root_index(position)?,
+                        index: self.indicator_plan().crossing_root_index(position)?,
                         post_relation_memory_value: if *after { 0.0 } else { 1.0 },
                     })
                 }),
         );
         self.pending_root_crossings = crossings;
-        std::mem::swap(&mut self.frozen_indicator_positive, &mut current);
-        self.indicator_domain_scratch = current;
-        Ok(true)
+        self.indicator_storage.copy_frozen_to_working_domains();
+        Ok(())
+    }
+
+    pub(super) fn cache_accepted_derivatives(&self) -> Result<(), MeError> {
+        let mut accepted = self.accepted_derivative_scratch.borrow_mut();
+        self.continuous_state_derivatives_into(&mut accepted)
     }
 
     /// Seed the domain cache after Event Mode from the settled component state.
@@ -266,48 +443,32 @@ impl SolveMeKernel {
     /// froze. Static strict/non-strict roots were already oriented by their
     /// checked `RootZeroDomain`.
     pub(super) fn seed_settled_indicator_domains(&mut self) -> Result<(), MeError> {
-        let count = self.indicator_plan.len();
-        if count == 0 {
-            self.frozen_indicator_positive.clear();
-            return Ok(());
+        let count = self.indicator_plan().len();
+        self.refresh_working_indicators()?;
+        for position in 0..count {
+            let settled = match self.indicator_plan().relation_memory_target(position) {
+                Some(target) => constructed_relation_memory_domain(&self.params, position, target)?,
+                None => self.indicator_storage.working_values().as_slice()[position] > 0.0,
+            };
+            self.indicator_storage.set_domain(position, settled);
         }
-        let previous = self.frozen_indicator_positive.clone();
-        let mut indicators = std::mem::take(&mut self.indicator_value_scratch);
-        let read = self.event_indicators_into(&mut indicators);
-        self.indicator_value_scratch = indicators;
-        read?;
-        let settled = self
-            .indicator_value_scratch
-            .iter()
-            .enumerate()
-            .map(|(position, indicator)| {
-                match self.indicator_plan.relation_memory_target(position) {
-                    Some(ScalarSlot::P {
-                        index: parameter, ..
-                    }) => self
-                        .params
-                        .get(parameter)
-                        .is_none_or(|memory| *memory <= 0.5),
-                    _ => previous.get(position).copied().unwrap_or(*indicator > 0.0),
-                }
-            })
-            .collect();
-        self.frozen_indicator_positive = settled;
         Ok(())
     }
 
     /// Capture the component's own pre-event values before relation-memory
     /// overrides are consumed by Event Mode.
     pub(super) fn capture_event_entry(&mut self) -> Result<(), MeError> {
-        let pre_y = self.runtime.full_solver_y(
+        self.runtime.full_solver_y_into(
             self.time,
             &self.states,
             &self.params,
             ALGEBRAIC_REFRESH_TOL,
             UPDATE_MAX_ITERS,
+            self.pending_event_pre_y.storage_mut(),
         )?;
-        self.pending_event_pre_y = Some(pre_y);
-        self.pending_event_pre_p = Some(self.params.clone());
+        self.pending_event_pre_y.mark_occupied();
+        self.pending_event_pre_p
+            .set(&self.params, "event-entry parameter latch")?;
         Ok(())
     }
 
@@ -319,14 +480,11 @@ impl SolveMeKernel {
     /// change this value.
     #[cfg(test)]
     pub(crate) fn verification_indicator_storage(&self) -> IndicatorStorageIdentity {
-        let mut domain_buffers = [
-            self.frozen_indicator_positive.as_ptr() as usize,
-            self.indicator_domain_scratch.as_ptr() as usize,
-        ];
-        domain_buffers.sort_unstable();
         IndicatorStorageIdentity {
+            linked_facts: std::ptr::from_ref(self.runtime.fmi_linked_runtime_facts()) as usize,
+            entry_table: self.indicator_plan().entries().as_ptr() as usize,
             entries: self
-                .indicator_plan
+                .indicator_plan()
                 .entries()
                 .iter()
                 .map(|entry| {
@@ -337,19 +495,75 @@ impl SolveMeKernel {
                     )
                 })
                 .collect(),
-            root_value_len: self.indicator_plan.root_value_len(),
-            deadline_len: self.indicator_plan.deadline_len(),
-            root_buffer: self.indicator_root_scratch.borrow().as_ptr() as usize,
-            deadline_buffer: self.indicator_deadline_scratch.borrow().as_ptr() as usize,
-            value_buffer: self.indicator_value_scratch.as_ptr() as usize,
-            domain_buffers,
+            role_widths: self.indicator_storage.role_widths(),
+            buffers: self.indicator_storage.storage_identities(),
+        }
+    }
+
+    /// The identity of the construction-reserved caller-publication storage
+    /// used by the derivative getters.
+    ///
+    /// For the nonzero verification fixture, the constructor-issued widths
+    /// make replacement or growth of these publication buffers observable as
+    /// a changed pointer or length. Evaluator, JVP, and delay workspace
+    /// allocation is outside this identity.
+    #[cfg(test)]
+    pub(crate) fn verification_derivative_scratch_identity(&self) -> DerivativeScratchIdentity {
+        let id = |cell: &RefCell<Vec<f64>>| {
+            let buffer = cell.borrow();
+            (buffer.as_ptr() as usize, buffer.len())
+        };
+        DerivativeScratchIdentity {
+            output: id(&self.derivative_output_scratch),
+            directional_seed: id(&self.directional_seed_scratch),
+            directional_sensitivity: id(&self.directional_sensitivity_scratch),
+            directional_serialized: id(&self.directional_serialized_scratch),
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn verification_observable_state(&self) -> (MeState, u64, Vec<u64>, Vec<u64>) {
+    fn transaction_buffer_identity(&self) -> [usize; 16] {
+        let derivative = self.derivative_cache.borrow();
+        let indicator_cache = self.indicator_storage.storage_identities()[6].0;
+        let linearization = self.continuous_linearization_cache.borrow();
+        [
+            self.states.as_ptr() as usize,
+            self.params.as_ptr() as usize,
+            self.pending_root_crossings.as_ptr() as usize,
+            self.solver_y_guess.borrow().as_ptr() as usize,
+            self.delay_params_scratch.borrow().as_ptr() as usize,
+            self.delay_solver_y_scratch.borrow().as_ptr() as usize,
+            self.accepted_derivative_scratch.borrow().as_ptr() as usize,
+            self.derivative_output_scratch.borrow().as_ptr() as usize,
+            self.directional_seed_scratch.borrow().as_ptr() as usize,
+            self.directional_sensitivity_scratch.borrow().as_ptr() as usize,
+            self.directional_serialized_scratch.borrow().as_ptr() as usize,
+            derivative.state.as_ptr() as usize,
+            derivative.derivative.as_ptr() as usize,
+            indicator_cache,
+            linearization.state.as_ptr() as usize,
+            linearization.parameters.as_ptr() as usize,
+        ]
+    }
+
+    #[cfg(test)]
+    fn event_buffer_identity(&self) -> [usize; 9] {
+        [
+            self.pending_event_pre_y.storage_identity(),
+            self.pending_event_pre_p.storage_identity(),
+            self.boundary_event_pre_y.storage_identity(),
+            self.boundary_event_pre_p.storage_identity(),
+            self.settled_initialization_y.storage_identity(),
+            self.event_solver_y_work.as_ptr() as usize,
+            self.event_state_before.as_ptr() as usize,
+            self.scheduled_root_index_scratch.as_ptr() as usize,
+            self.root_override_scratch.as_ptr() as usize,
+        ]
+    }
+
+    #[cfg(test)]
+    fn verification_observable_body(&self) -> (u64, Vec<u64>, Vec<u64>) {
         (
-            self.lifecycle.state(),
             self.time.to_bits(),
             self.states.iter().map(|value| value.to_bits()).collect(),
             self.params.iter().map(|value| value.to_bits()).collect(),
@@ -393,26 +607,32 @@ impl SolveMeKernel {
             return false;
         }
         let state = &saved.component;
-        self.lifecycle.state() == state.lifecycle
-            && self.stop_time.to_bits() == state.stop_time.to_bits()
+        self.stop_time.to_bits() == state.stop_time.to_bits()
             && self.time.to_bits() == state.time.to_bits()
-            && option_float_bit_eq(self.event_boundary, state.event_boundary)
+            && self.set_time_bounds.bit_eq(state.set_time_bounds)
             && option_float_bit_eq(self.post_event_eval_time, state.post_event_eval_time)
             && self.event_anchor_time.to_bits() == state.event_anchor_time.to_bits()
             && float_slice_bit_eq(&self.states, &state.states)
             && float_slice_bit_eq(&self.params, &state.params)
             && self.stop_schedule.bit_eq(&state.stop_schedule)
             && option_event_entry_bit_eq(self.pending_event_entry, state.pending_event_entry)
-            && option_event_entry_bit_eq(self.last_event_entry, state.last_event_entry)
+            && self.pending_state_event_entry == state.pending_state_event_entry
             && option_event_stop_bit_eq(self.pending_event_stop, state.pending_event_stop)
             && self.advance_state_to_event_right_limit == state.advance_state_to_event_right_limit
             && self.state_time_coincidence == state.state_time_coincidence
             && self.initial_event_pending == state.initial_event_pending
             && root_crossings_bit_eq(&self.pending_root_crossings, &state.pending_root_crossings)
-            && option_float_vec_bit_eq(&self.pending_event_pre_y, &state.pending_event_pre_y)
-            && option_float_vec_bit_eq(&self.pending_event_pre_p, &state.pending_event_pre_p)
-            && option_float_vec_bit_eq(&self.boundary_event_pre_y, &state.boundary_event_pre_y)
-            && option_float_vec_bit_eq(&self.boundary_event_pre_p, &state.boundary_event_pre_p)
+            && self
+                .indicator_storage
+                .matches_snapshot(&state.indicator_storage)
+            && self.pending_event_pre_y.bit_eq(&state.pending_event_pre_y)
+            && self.pending_event_pre_p.bit_eq(&state.pending_event_pre_p)
+            && self
+                .boundary_event_pre_y
+                .bit_eq(&state.boundary_event_pre_y)
+            && self
+                .boundary_event_pre_p
+                .bit_eq(&state.boundary_event_pre_p)
             && float_slice_bit_eq(&self.solver_y_guess.borrow(), &state.solver_y_guess)
             && float_slice_bit_eq(
                 &self.delay_params_scratch.borrow(),
@@ -422,200 +642,96 @@ impl SolveMeKernel {
                 &self.delay_solver_y_scratch.borrow(),
                 &state.delay_solver_y_scratch,
             )
-            && derivative_cache_bit_eq(
-                self.derivative_cache.borrow().as_ref(),
-                state.derivative_cache.as_ref(),
-            )
-            && root_cache_bit_eq(self.root_cache.borrow().as_ref(), state.root_cache.as_ref())
+            && derivative_cache_bit_eq(&self.derivative_cache.borrow(), &state.derivative_cache)
             && continuous_linearization_cache_bit_eq(
-                self.continuous_linearization_cache.borrow().as_ref(),
-                state.continuous_linearization_cache.as_ref(),
+                &self.continuous_linearization_cache.borrow(),
+                &state.continuous_linearization_cache,
             )
-            && observations_bit_eq(&self.initial_observations, &state.initial_observations)
             && option_float_bit_eq(self.max_step_duration, state.max_step_duration)
-            && self.last_projection_changed == state.last_projection_changed
             && termination_bit_eq(self.termination.as_ref(), state.termination.as_ref())
-            && option_float_vec_bit_eq(
-                &self.settled_initialization_y,
-                &state.settled_initialization_y,
-            )
+            && self
+                .settled_initialization_y
+                .bit_eq(&state.settled_initialization_y)
             && self.runtime.matches_snapshot(&state.runtime)
     }
 
-    pub(super) fn require_lifecycle_transition(
-        &self,
-        command: MeLifecycleCommand,
-    ) -> Result<(), MeError> {
-        self.lifecycle
-            .next(command)
-            .map(|_| ())
-            .map_err(lifecycle_contract)
-    }
-
-    pub(super) fn commit_lifecycle_transition(
-        &mut self,
-        command: MeLifecycleCommand,
-    ) -> Result<(), MeError> {
-        self.lifecycle
-            .transition(command)
-            .map_err(lifecycle_contract)
-    }
-
-    pub(super) fn require_active_lifecycle(&self, operation: &'static str) -> Result<(), MeError> {
-        if self.lifecycle.is_terminated() {
-            return Err(contract(format!(
-                "{operation} called after the component was terminated"
-            )));
-        }
-        Ok(())
-    }
-
-    pub(super) fn require_observation_brand(
-        &self,
-        observation: &MeObservation,
-    ) -> Result<(), MeError> {
-        if !Rc::ptr_eq(&observation.instance_brand, &self.instance_brand) {
-            return Err(contract("observation belongs to a different ME instance"));
-        }
-        Ok(())
-    }
-
-    /// `fmi3InstantiateModelExchange`: project the checked kernel once.
+    /// Publish a successful detached event transaction into the existing
+    /// construction-owned storage.
     ///
-    /// Rejects a model the component cannot represent before any evaluation,
-    /// per SPEC_0038 "Unsupported lifecycle capability fails before execution".
-    pub fn instantiate(
-        source: MeModelSource<'_>,
-        config: &MeInstanceConfig,
-    ) -> Result<Self, MeError> {
-        Self::instantiate_with_execution(
-            source,
-            config,
-            crate::fmi_me::MeExecutionSelection::Interpreter,
-        )
-    }
-
-    /// Instantiate with a host-supplied compiled-code execution backend.
-    ///
-    /// The backend arrives as the opaque [`crate::fmi_me::MeExecutionBackend`]
-    /// handle so an integrator host never names a runtime object (SPEC_0038
-    /// §Internal Solver Boundary); it is unwrapped here, inside the contract.
-    pub fn instantiate_with_execution(
-        source: MeModelSource<'_>,
-        config: &MeInstanceConfig,
-        execution: crate::fmi_me::MeExecutionSelection,
-    ) -> Result<Self, MeError> {
-        Self::instantiate_inner(source, config, execution)
-            .map_err(|failure| failure.at_stage(MeStage::Instantiate))
-    }
-
-    pub(super) fn instantiate_inner(
-        source: MeModelSource<'_>,
-        config: &MeInstanceConfig,
-        execution: crate::fmi_me::MeExecutionSelection,
-    ) -> Result<Self, MeError> {
-        let (model, event_indicator_sources, max_step_duration_value_reference, configuration) =
-            source
-                .into_parts()
-                .map_err(|error| contract(error.to_string()))?;
-        let delay_bearing = !model.problem.events().delays.delay_time_rhs.is_empty();
-        if max_step_duration_value_reference.is_some() != delay_bearing {
-            return Err(contract(if delay_bearing {
-                "a delay-bearing component has no maximum-step-duration Float64 variable"
-            } else {
-                "a delay-free component declares a maximum-step-duration Float64 variable"
-            }));
+    /// Every operation before this call is fallible. These exact-size copies
+    /// retain the preallocated indicator tables and buffers, value-reference
+    /// brands, and runtime identity; no caller can observe an intermediate
+    /// field assignment because the component is exclusively borrowed.
+    pub(super) fn publish_event_stage(&mut self, staged: &mut Self) {
+        self.stop_time = staged.stop_time;
+        self.time = staged.time;
+        self.set_time_bounds = staged.set_time_bounds;
+        self.post_event_eval_time = staged.post_event_eval_time;
+        self.event_anchor_time = staged.event_anchor_time;
+        self.states.clone_from(&staged.states);
+        self.params.clone_from(&staged.params);
+        self.stop_schedule.clone_from(&staged.stop_schedule);
+        self.pending_event_entry = staged.pending_event_entry;
+        self.pending_state_event_entry = staged.pending_state_event_entry;
+        self.pending_event_stop = staged.pending_event_stop;
+        self.advance_state_to_event_right_limit = staged.advance_state_to_event_right_limit;
+        self.state_time_coincidence = staged.state_time_coincidence;
+        self.initial_event_pending = staged.initial_event_pending;
+        self.pending_root_crossings
+            .clone_from(&staged.pending_root_crossings);
+        self.indicator_storage
+            .copy_mutable_from(&staged.indicator_storage);
+        self.pending_event_pre_y
+            .copy_from(&staged.pending_event_pre_y);
+        self.pending_event_pre_p
+            .copy_from(&staged.pending_event_pre_p);
+        self.boundary_event_pre_y
+            .copy_from(&staged.boundary_event_pre_y);
+        self.boundary_event_pre_p
+            .copy_from(&staged.boundary_event_pre_p);
+        self.event_solver_y_work
+            .copy_from_slice(&staged.event_solver_y_work);
+        self.event_state_before
+            .copy_from_slice(&staged.event_state_before);
+        self.scheduled_root_index_scratch
+            .clone_from(&staged.scheduled_root_index_scratch);
+        self.root_override_scratch
+            .clone_from(&staged.root_override_scratch);
+        self.solver_y_guess
+            .borrow_mut()
+            .clone_from(&staged.solver_y_guess.borrow());
+        self.accepted_derivative_scratch
+            .borrow_mut()
+            .copy_from_slice(&staged.accepted_derivative_scratch.borrow());
+        self.delay_params_scratch
+            .borrow_mut()
+            .clone_from(&staged.delay_params_scratch.borrow());
+        self.delay_solver_y_scratch
+            .borrow_mut()
+            .clone_from(&staged.delay_solver_y_scratch.borrow());
+        self.derivative_cache
+            .borrow_mut()
+            .copy_from(&staged.derivative_cache.borrow());
+        self.continuous_linearization_cache
+            .borrow_mut()
+            .copy_from(&staged.continuous_linearization_cache.borrow());
+        self.max_step_duration = staged.max_step_duration;
+        self.termination.clone_from(&staged.termination);
+        self.settled_initialization_y
+            .copy_from(&staged.settled_initialization_y);
+        #[cfg(test)]
+        {
+            self.verification_fail_next_exit_initialization =
+                staged.verification_fail_next_exit_initialization;
+            self.verification_fail_next_enter_initialization =
+                staged.verification_fail_next_enter_initialization;
+            self.verification_fail_next_update_discrete_states =
+                staged.verification_fail_next_update_discrete_states;
+            self.verification_fail_next_completed_integrator_step =
+                staged.verification_fail_next_completed_integrator_step;
+            self.verification_fail_next_enter_continuous_time_mode =
+                staged.verification_fail_next_enter_continuous_time_mode;
         }
-        rumoca_eval_solve::reset_solve_row_eval_trace();
-        validate_explicit_solve_model(model)?;
-        let model = model
-            .resolved_periodic_schedules_at(config.start_time)
-            .map_err(|error| {
-                contract(format!(
-                    "periodic schedule cannot be anchored at FMI startTime: {error}"
-                ))
-            })?;
-        let runtime = Rc::new(match execution {
-            crate::fmi_me::MeExecutionSelection::Native(backend) => {
-                let backend = backend.into_runtime_backend();
-                SolveRuntime::new_native(&model, backend.as_ref())?
-            }
-            crate::fmi_me::MeExecutionSelection::Interpreter => SolveRuntime::new(&model)?,
-        });
-        let state_count = runtime.state_count;
-        let states = runtime.model.initial_y[..state_count].to_vec();
-        let params = runtime.model.parameters.clone();
-        let stop_schedule =
-            SolveStopSchedule::new(&runtime.model.problem, config.start_time, config.stop_time);
-        let output_meta = convert_variable_meta(&runtime.model.variable_meta());
-        let events = &runtime.model.problem.events();
-        let indicator_plan = FmiIndicatorPlan::derive(
-            &event_indicator_sources,
-            IndicatorPlanInputs {
-                root_value_count: runtime.root_condition_count(),
-                model_root_count: events.root_conditions.output_count(),
-                deadline_count: events.dynamic_time_event_rhs.output_count(),
-                root_zero_domains: &events.root_zero_domains,
-                root_relation_memory_targets: &events.root_relation_memory_targets,
-            },
-        )
-        .map_err(|error| contract(error.to_string()))?;
-        let indicator_value_scratch =
-            reserved_indicator_values(indicator_plan.len(), "event-indicator values")?;
-        let indicator_root_scratch =
-            reserved_indicator_values(indicator_plan.root_value_len(), "event-indicator roots")?;
-        let indicator_deadline_scratch = reserved_indicator_values(
-            indicator_plan.deadline_len(),
-            "event-indicator dynamic-time deadlines",
-        )?;
-        let indicator_domain_scratch = reserved_indicator_domains(indicator_plan.len())?;
-        let frozen_indicator_positive = reserved_indicator_domains(indicator_plan.len())?;
-        Ok(Self {
-            solver_y_guess: RefCell::new(runtime.model.initial_y.clone()),
-            indicator_root_scratch: RefCell::new(indicator_root_scratch),
-            indicator_deadline_scratch: RefCell::new(indicator_deadline_scratch),
-            indicator_value_scratch,
-            indicator_domain_scratch,
-            delay_params_scratch: RefCell::new(params.clone()),
-            delay_solver_y_scratch: RefCell::new(runtime.model.initial_y.clone()),
-            runtime,
-            indicator_plan,
-            instance_brand: Rc::new(()),
-            instance_name: config.instance_name,
-            lifecycle: MeLifecycle::instantiated(configuration),
-            tolerance: config.tolerance,
-            stop_time: config.stop_time,
-            time: config.start_time,
-            event_boundary: None,
-            post_event_eval_time: None,
-            event_anchor_time: config.start_time,
-            states,
-            params,
-            state_count,
-            stop_schedule,
-            pending_event_entry: None,
-            last_event_entry: None,
-            pending_event_stop: None,
-            advance_state_to_event_right_limit: false,
-            state_time_coincidence: StateTimeCoincidence::None,
-            initial_event_pending: false,
-            pending_root_crossings: Vec::new(),
-            frozen_indicator_positive,
-            pending_event_pre_y: None,
-            pending_event_pre_p: None,
-            boundary_event_pre_y: None,
-            boundary_event_pre_p: None,
-            derivative_cache: RefCell::new(None),
-            root_cache: RefCell::new(None),
-            continuous_linearization_cache: RefCell::new(None),
-            initial_observations: Vec::new(),
-            max_step_duration: None,
-            max_step_duration_value_reference,
-            last_projection_changed: false,
-            termination: None,
-            output_meta,
-            settled_initialization_y: None,
-        })
     }
 
     // -- internal time model ---------------------------------------------
@@ -631,12 +747,7 @@ impl SolveMeKernel {
 
     /// The evaluation time derivative and event-indicator reads use.
     pub(super) fn continuous_eval_time(&self) -> f64 {
-        match self.event_boundary {
-            Some(boundary) if self.time >= boundary => {
-                timeline::event_left_probe_time(boundary, self.tolerance)
-            }
-            _ => self.public_time_eval_time(self.time),
-        }
+        self.public_time_eval_time(self.time)
     }
 
     pub(super) fn set_post_event_eval_time(&mut self, right_limit: Option<f64>) {
@@ -656,10 +767,6 @@ impl SolveMeKernel {
             tolerance: self.tolerance,
             settle: self.numerics_settle(),
         }
-    }
-
-    pub(super) fn initialization_solver_y(&self) -> Result<Vec<f64>, MeError> {
-        self.current_solver_y()
     }
 
     pub(super) fn with_callback_solver_y<R>(&self, f: impl FnOnce(&mut Vec<f64>) -> R) -> R {
@@ -682,11 +789,7 @@ impl SolveMeKernel {
         };
         {
             let cache = self.continuous_linearization_cache.borrow();
-            if cache
-                .as_ref()
-                .filter(|cached| cached.matches(time, &self.states, parameters))
-                .is_some()
-            {
+            if cache.matches(time, &self.states, parameters) {
                 let solver_y = self.solver_y_guess.borrow();
                 return self
                     .runtime
@@ -749,10 +852,6 @@ impl SolveMeKernel {
 
     // -- internal solver vector ------------------------------------------
 
-    pub(super) fn current_solver_y(&self) -> Result<Vec<f64>, MeError> {
-        self.solver_y_at_time(self.public_time_eval_time(self.time))
-    }
-
     /// Build one atomic public observation outside Event Mode.
     ///
     /// Periodic activation lanes are true only while Event Mode consumes a
@@ -783,12 +882,12 @@ impl SolveMeKernel {
     ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
         let settle = self.numerics_settle();
         let states = solver_y
-            .get(..self.state_count)
+            .get(..self.state_domain.len())
             .ok_or_else(|| {
                 contract(format!(
                     "observation solver vector has {} entries for {} state values",
                     solver_y.len(),
-                    self.state_count
+                    self.state_domain.len()
                 ))
             })?
             .to_vec();
@@ -797,7 +896,7 @@ impl SolveMeKernel {
                 .refresh_delay_values(time, &solver_y, &mut parameters)
                 .map_err(MeError::from)?;
         }
-        write_observation_clock_activation_params(&self.runtime.model, &mut parameters);
+        write_observation_clock_activation_params(self.runtime.model(), &mut parameters);
         // Seed the coupled public fixed point from the already settled
         // component coordinate. Direct activation aliases therefore update
         // before the first algebraic projection, while a row that depends on
@@ -824,8 +923,8 @@ impl SolveMeKernel {
             .map_err(MeError::from)?;
         if !self
             .runtime
-            .model
-            .problem
+            .model()
+            .problem()
             .discrete()
             .observation_refresh_reads_y
         {
@@ -863,39 +962,31 @@ impl SolveMeKernel {
         ))
     }
 
-    pub(super) fn refresh_initial_observation(
+    pub(super) fn solver_y_at_time_into(
         &self,
-        observation: &InitialEventObservation,
-    ) -> Result<MeObservation, MeError> {
-        let (solver_y, parameters) = self.refresh_public_observation_coordinate(
-            observation.y.clone(),
-            observation.p.clone(),
-            observation.t,
-        )?;
-        Ok(MeObservation {
-            time: observation.t,
-            solver_y,
-            parameters,
-            instance_brand: Rc::clone(&self.instance_brand),
-        })
-    }
-
-    pub(super) fn solver_y_at_time(&self, time: f64) -> Result<Vec<f64>, MeError> {
+        time: f64,
+        solver_y: &mut [f64],
+    ) -> Result<(), MeError> {
+        if solver_y.len() != self.solver_y_guess.borrow().len() {
+            return Err(contract(format!(
+                "event solver buffer has {} entries for constructed width {}",
+                solver_y.len(),
+                self.solver_y_guess.borrow().len()
+            )));
+        }
+        solver_y.copy_from_slice(&self.solver_y_guess.borrow());
         let settle = self.numerics_settle();
         self.with_delay_evaluation_params(time, &self.states, |params| {
-            self.with_callback_solver_y(|guess| {
-                self.runtime
-                    .full_solver_y_with_guess(
-                        time,
-                        &self.states,
-                        params,
-                        guess,
-                        settle.tol,
-                        settle.max_iters,
-                    )
-                    .map(|()| guess.clone())
-                    .map_err(MeError::from)
-            })
+            self.runtime
+                .full_solver_y_with_guess(
+                    time,
+                    &self.states,
+                    params,
+                    solver_y,
+                    settle.tol,
+                    settle.max_iters,
+                )
+                .map_err(MeError::from)
         })?
     }
 
@@ -936,7 +1027,7 @@ impl SolveMeKernel {
         Ok(f(&params))
     }
 
-    pub(super) fn commit_delay_point(&mut self) -> Result<(), MeError> {
+    pub(super) fn refresh_current_delay_facts(&mut self) -> Result<(), MeError> {
         if !self.runtime.has_delay_channels() {
             return Ok(());
         }
@@ -944,7 +1035,7 @@ impl SolveMeKernel {
         let mut solver_y = self.solver_y_guess.borrow_mut();
         if solver_y.len() < self.states.len() {
             return Err(contract(format!(
-                "delay commit solver vector has {} entries for {} state values",
+                "delay refresh solver vector has {} entries for {} state values",
                 solver_y.len(),
                 self.states.len()
             )));
@@ -965,6 +1056,12 @@ impl SolveMeKernel {
             )?;
             self.cache_continuous_linearization(self.time, &self.states, &self.params, &solver_y);
         }
+        Ok(())
+    }
+
+    pub(super) fn commit_delay_point(&mut self) -> Result<(), MeError> {
+        self.refresh_current_delay_facts()?;
+        let solver_y = self.solver_y_guess.borrow();
         self.runtime
             .commit_delay_history(self.time, &solver_y, &self.params)?;
         Ok(())
@@ -974,93 +1071,42 @@ impl SolveMeKernel {
 
     fn copy_cached_derivative_into(&self, time: f64, state: &[f64], out: &mut [f64]) -> bool {
         let cache = self.derivative_cache.borrow();
-        let Some(cached) = cache.as_ref() else {
-            return false;
-        };
-        if cached.time.to_bits() != time.to_bits()
-            || !state_values_match(&cached.state, state)
-            || cached.derivative.len() != out.len()
+        if !cache.valid
+            || cache.time.to_bits() != time.to_bits()
+            || !state_values_match(&cache.state, state)
+            || cache.derivative.len() != out.len()
         {
             return false;
         }
-        out.copy_from_slice(&cached.derivative);
+        out.copy_from_slice(&cache.derivative);
         true
     }
 
     #[cfg(test)]
     pub(crate) fn cached_derivative(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
         let cache = self.derivative_cache.borrow();
-        let cached = cache.as_ref()?;
-        (cached.time.to_bits() == time.to_bits() && state_values_match(&cached.state, state))
-            .then(|| cached.derivative.clone())
+        (cache.valid
+            && cache.time.to_bits() == time.to_bits()
+            && state_values_match(&cache.state, state))
+        .then(|| cache.derivative.clone())
     }
 
     pub(crate) fn cache_derivative(&self, time: f64, state: &[f64], derivative: &[f64]) {
         let mut cache = self.derivative_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.derivative.clone_from_slice(derivative);
-        } else {
-            *cache = Some(CachedDerivative {
-                time,
-                state: state.to_vec(),
-                derivative: derivative.to_vec(),
-            });
-        }
-    }
-
-    pub(super) fn clear_derivative_cache(&self) {
-        *self.derivative_cache.borrow_mut() = None;
-        *self.continuous_linearization_cache.borrow_mut() = None;
+        cache.valid = true;
+        cache.time = time;
+        cache.state.clone_from_slice(state);
+        cache.derivative.clone_from_slice(derivative);
     }
 
     pub(super) fn clear_runtime_caches(&self) {
         self.clear_callback_value_caches();
-        *self.continuous_linearization_cache.borrow_mut() = None;
+        self.continuous_linearization_cache.borrow_mut().valid = false;
     }
 
     pub(super) fn clear_callback_value_caches(&self) {
-        *self.derivative_cache.borrow_mut() = None;
-        *self.root_cache.borrow_mut() = None;
-    }
-
-    fn copy_cached_root_conditions_into(&self, time: f64, state: &[f64], out: &mut [f64]) -> bool {
-        let cache = self.root_cache.borrow();
-        let Some(cached) = cache.as_ref() else {
-            return false;
-        };
-        if cached.time.to_bits() != time.to_bits()
-            || !state_values_match(&cached.state, state)
-            || cached.values.len() != out.len()
-        {
-            return false;
-        }
-        out.copy_from_slice(&cached.values);
-        true
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cached_root_conditions(&self, time: f64, state: &[f64]) -> Option<Vec<f64>> {
-        let cache = self.root_cache.borrow();
-        let cached = cache.as_ref()?;
-        (cached.time.to_bits() == time.to_bits() && state_values_match(&cached.state, state))
-            .then(|| cached.values.clone())
-    }
-
-    pub(crate) fn cache_root_conditions(&self, time: f64, state: &[f64], values: &[f64]) {
-        let mut cache = self.root_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.values.clone_from_slice(values);
-        } else {
-            *cache = Some(CachedRootConditions {
-                time,
-                state: state.to_vec(),
-                values: values.to_vec(),
-            });
-        }
+        self.derivative_cache.borrow_mut().valid = false;
+        self.indicator_storage.clear_cache();
     }
 
     pub(super) fn cache_continuous_linearization(
@@ -1070,22 +1116,16 @@ impl SolveMeKernel {
         parameters: &[f64],
         _solver_y: &[f64],
     ) {
+        self.indicator_storage.clear_cache();
         let mut cache = self.continuous_linearization_cache.borrow_mut();
-        if let Some(cached) = cache.as_mut() {
-            cached.time = time;
-            cached.state.clone_from_slice(state);
-            cached.parameters.clone_from_slice(parameters);
-        } else {
-            *cache = Some(CachedContinuousLinearization {
-                time,
-                state: state.to_vec(),
-                parameters: parameters.to_vec(),
-            });
-        }
+        cache.valid = true;
+        cache.time = time;
+        cache.state.clone_from_slice(state);
+        cache.parameters.clone_from_slice(parameters);
     }
 
     fn invalidate_continuous_linearization(&self) {
-        *self.continuous_linearization_cache.borrow_mut() = None;
+        self.continuous_linearization_cache.borrow_mut().valid = false;
     }
 
     fn continuous_linearization_cache_matches(
@@ -1096,8 +1136,7 @@ impl SolveMeKernel {
     ) -> bool {
         self.continuous_linearization_cache
             .borrow()
-            .as_ref()
-            .is_some_and(|cached| cached.matches(time, state, parameters))
+            .matches(time, state, parameters)
     }
 
     fn cached_continuous_solver_y(
@@ -1108,8 +1147,8 @@ impl SolveMeKernel {
     ) -> Option<Vec<f64>> {
         self.continuous_linearization_cache
             .borrow()
-            .as_ref()
-            .filter(|cached| cached.matches(time, state, parameters))
+            .matches(time, state, parameters)
+            .then_some(())
             .map(|_| self.solver_y_guess.borrow().clone())
     }
 
@@ -1117,10 +1156,40 @@ impl SolveMeKernel {
 
     /// `fmi3EnterInitializationMode`, unannotated; the trait method attaches
     /// [`MeStage::Initialization`].
-    pub(super) fn enter_initialization_mode_inner(&mut self) -> Result<(), MeError> {
+    pub(super) fn enter_initialization_mode_inner(
+        &mut self,
+        start_time: f64,
+    ) -> Result<(), MeError> {
+        if !start_time.is_finite() || start_time > self.stop_time {
+            return Err(contract(format!(
+                "initialization start must be finite and no later than stop time {}; got {start_time}",
+                self.stop_time,
+            )));
+        }
+        self.time = start_time;
+        self.set_time_bounds = MeSetTimeBounds::at_start(start_time);
+        self.post_event_eval_time = None;
+        self.event_anchor_time = start_time;
+        self.stop_schedule =
+            SolveStopSchedule::new(self.runtime.model().problem(), start_time, self.stop_time);
+        self.pending_event_entry = None;
+        self.pending_state_event_entry = false;
+        self.pending_event_stop = None;
+        self.advance_state_to_event_right_limit = false;
+        self.state_time_coincidence = StateTimeCoincidence::None;
+        self.initial_event_pending = false;
+        self.pending_root_crossings.clear();
+        self.pending_event_pre_y.clear();
+        self.pending_event_pre_p.clear();
+        self.boundary_event_pre_y.clear();
+        self.boundary_event_pre_p.clear();
+        self.settled_initialization_y.clear();
+        self.termination = None;
+        self.clear_runtime_caches();
+        self.runtime.reset_delay_history();
         self.runtime.initialize_delay_history(
-            self.time,
-            &self.runtime.model.initial_y,
+            start_time,
+            self.runtime.model().initial_y(),
             &mut self.params,
         )?;
         self.runtime.set_initial_event_flag(&mut self.params, true);
@@ -1130,24 +1199,28 @@ impl SolveMeKernel {
     /// `fmi3ExitInitializationMode`, unannotated; the trait method attaches
     /// [`MeStage::Initialization`].
     pub(super) fn exit_initialization_mode_inner(&mut self) -> Result<(), MeError> {
-        let mut solver_y = self.initialization_solver_y()?;
+        let mut solver_y = std::mem::take(&mut self.event_solver_y_work);
+        let result = self.exit_initialization_mode_with_storage(&mut solver_y);
+        self.event_solver_y_work = solver_y;
+        result
+    }
+
+    fn exit_initialization_mode_with_storage(
+        &mut self,
+        solver_y: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.solver_y_at_time_into(self.public_time_eval_time(self.time), solver_y)?;
         let policy = self.algebraic_projection_policy();
         let settle = policy.settle;
         self.runtime.settle_initialization_system(
-            &mut solver_y,
+            solver_y,
             &mut self.params,
             self.time,
             self.tolerance,
             settle.max_iters,
         )?;
-        project_algebraics(
-            &self.runtime,
-            &mut solver_y,
-            &mut self.params,
-            self.time,
-            policy,
-        )?;
-        self.copy_states_from_solver_y(&solver_y);
+        project_algebraics(&self.runtime, solver_y, &mut self.params, self.time, policy)?;
+        self.copy_states_from_solver_y(solver_y);
         self.runtime.update_relation_memory_from_state(
             self.time,
             &self.states,
@@ -1155,93 +1228,20 @@ impl SolveMeKernel {
             self.tolerance,
             settle.max_iters,
         )?;
-        self.copy_states_from_solver_y(&solver_y);
+        self.copy_states_from_solver_y(solver_y);
         self.invalidate_continuous_linearization();
-        *self.solver_y_guess.borrow_mut() = solver_y.clone();
+        self.solver_y_guess.borrow_mut().copy_from_slice(solver_y);
         // MLS 3.6 §8.6: before integration, v = pre(v). The initial event
         // therefore reads the values the initialization system just settled,
         // never the declared starts that seeded that solve.
-        self.pending_event_pre_y = Some(solver_y.clone());
-        self.pending_event_pre_p = Some(self.params.clone());
-        self.settled_initialization_y = Some(solver_y);
+        self.pending_event_pre_y
+            .set(solver_y, "initial event-entry solver latch")?;
+        self.pending_event_pre_p
+            .set(&self.params, "initial event-entry parameter latch")?;
+        self.settled_initialization_y
+            .set(solver_y, "settled initialization solver latch")?;
         self.initial_event_pending = true;
         Ok(())
-    }
-
-    // -- continuous time mode ----------------------------------------------
-
-    /// [`SolveMeKernel::project_continuous_states`], unannotated; the
-    /// trait method attaches [`MeStage::ManifoldProjection`].
-    pub(super) fn project_continuous_states_inner(
-        &mut self,
-        states: &mut [f64],
-    ) -> Result<bool, MeError> {
-        let before = states.to_vec();
-        let projected = self.project_continuous_states_for_observation(states)?;
-        let changed = projected && runtime_values_changed(&before, states, self.tolerance);
-        if !changed {
-            // A correction below the component's certified runtime tolerance
-            // is the same accepted point. Keeping the native endpoint avoids
-            // discarding multistep history for roundoff-sized projections.
-            states.copy_from_slice(&before);
-        }
-        self.last_projection_changed = changed;
-        Ok(changed)
-    }
-
-    /// Project an off-point observation without making its correction the
-    /// accepted-step fact consumed by `completed_integrator_step`.
-    pub(crate) fn project_continuous_states_for_observation(
-        &self,
-        states: &mut [f64],
-    ) -> Result<bool, MeError> {
-        if !self.runtime.requires_state_manifold_projection() {
-            return Ok(false);
-        }
-        let time = self.time;
-        let settle = self.numerics_settle();
-        let mut solver_y = self.solver_y_guess.borrow().clone();
-        self.runtime.full_solver_y_with_guess(
-            time,
-            states,
-            &self.params,
-            &mut solver_y,
-            settle.tol,
-            settle.max_iters,
-        )?;
-        let changed = self.runtime.project_state_manifold(
-            &mut solver_y,
-            &self.params,
-            time,
-            ALGEBRAIC_REFRESH_TOL,
-        )?;
-        states.copy_from_slice(&solver_y[..self.state_count]);
-        solver_y[..self.state_count].copy_from_slice(states);
-        self.invalidate_continuous_linearization();
-        *self.solver_y_guess.borrow_mut() = solver_y;
-        Ok(changed)
-    }
-
-    /// Query the next component-owned scheduled event while constructing
-    /// `fmi3UpdateDiscreteStates` output.
-    pub(super) fn next_event_stop_inner(&mut self, horizon: f64) -> Result<MeEventStop, MeError> {
-        let solver_y = self
-            .runtime
-            .dynamic_time_event_stop_reads_solver_y()
-            .then(|| self.current_solver_y())
-            .transpose()?;
-        let (time, event) = self.runtime.next_runtime_event_stop(
-            solver_y.as_deref().unwrap_or(&[]),
-            &self.params,
-            &mut self.stop_schedule,
-            self.time,
-            horizon,
-        )?;
-        self.pending_event_stop = event.map(|event| (time, event));
-        Ok(MeEventStop {
-            time,
-            is_event: event.is_some(),
-        })
     }
 
     // -- event boundary ----------------------------------------------------
@@ -1251,22 +1251,50 @@ impl SolveMeKernel {
         event_time: f64,
         _event: RuntimeEventStop,
         row_filter: EventUpdateRowFilter,
-        iteration_y: Option<Vec<f64>>,
+        refresh_iteration_y: bool,
     ) -> Result<(), MeError> {
+        let mut solver_y = std::mem::take(&mut self.event_solver_y_work);
+        let mut root_overrides = std::mem::take(&mut self.root_override_scratch);
+        root_overrides.clear();
+        root_overrides.extend(
+            self.pending_root_crossings
+                .drain(..)
+                .map(|crossing| (crossing.index, crossing.post_relation_memory_value)),
+        );
+        let result = self.apply_discrete_event_updates_with_storage(
+            event_time,
+            row_filter,
+            refresh_iteration_y,
+            &mut solver_y,
+            &root_overrides,
+        );
+        self.event_solver_y_work = solver_y;
+        self.root_override_scratch = root_overrides;
+        result
+    }
+
+    fn apply_discrete_event_updates_with_storage(
+        &mut self,
+        event_time: f64,
+        row_filter: EventUpdateRowFilter,
+        refresh_iteration_y: bool,
+        solver_y: &mut [f64],
+        root_overrides: &[(usize, f64)],
+    ) -> Result<(), MeError> {
+        if refresh_iteration_y {
+            self.solver_y_at_time_into(self.public_time_eval_time(self.time), solver_y)?;
+        } else {
+            solver_y.copy_from_slice(
+                self.pending_event_pre_y
+                    .get("event update requires a latched pre-event solver vector")?,
+            );
+        }
         let event_entry_y = self
             .pending_event_pre_y
-            .take()
-            .map(Ok)
-            .unwrap_or_else(|| self.current_solver_y())?;
+            .get("event update requires a latched pre-event solver vector")?;
         let event_entry_p = self
             .pending_event_pre_p
-            .take()
-            .unwrap_or_else(|| self.params.clone());
-        let mut solver_y = iteration_y
-            .map(Ok)
-            .unwrap_or_else(|| self.event_iteration_solver_y(&event_entry_y))?;
-        let pending_root_overrides = self.take_pending_event_root_overrides();
-        let root_overrides = pending_root_overrides.as_slice();
+            .get("event update requires a latched pre-event parameter vector")?;
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
         let policy = self.algebraic_projection_policy();
@@ -1274,12 +1302,12 @@ impl SolveMeKernel {
         let settle = policy.settle;
         let outcome = runtime.apply_projected_event_update(
             ProjectedEventUpdateInput {
-                y: &mut solver_y,
+                y: solver_y,
                 p: &mut self.params,
                 t: event_time,
                 tol,
-                event_pre_y: &event_entry_y,
-                event_pre_p: &event_entry_p,
+                event_pre_y: event_entry_y,
+                event_pre_p: event_entry_p,
                 max_iters: settle.max_iters,
                 row_filter,
                 root_relation_overrides: root_overrides,
@@ -1289,6 +1317,8 @@ impl SolveMeKernel {
         // Unrelated algebraic/output lanes remain lazy in the retained solver
         // seed. Their owning callback refresh plan materializes them if and
         // when a derivative, root, or visible-value consumer asks for them.
+        self.pending_event_pre_y.clear();
+        self.pending_event_pre_p.clear();
         self.commit_event_runtime_state(event_time, solver_y, root_overrides)?;
         self.record_event_action_outcome(outcome, event_time)?;
         // `commit_event_runtime_state` leaves a checked post-event
@@ -1300,46 +1330,31 @@ impl SolveMeKernel {
         Ok(())
     }
 
-    fn take_pending_event_root_overrides(&mut self) -> Vec<(usize, f64)> {
-        let pending = self.pending_root_crossings.drain(..).collect::<Vec<_>>();
-        pending
-            .iter()
-            .map(|crossing| (crossing.index, crossing.post_relation_memory_value))
-            .collect()
-    }
-
     pub(super) fn commit_event_runtime_state(
         &mut self,
         event_time: f64,
-        mut solver_y: Vec<f64>,
+        solver_y: &mut [f64],
         root_overrides: &[(usize, f64)],
     ) -> Result<(), MeError> {
         let history_changed = commit_pre_params_after_event_at(
-            &self.runtime.model,
-            &solver_y,
+            self.runtime.model(),
+            solver_y,
             &mut self.params,
             Some(event_time),
             self.tolerance,
         );
         if history_changed {
-            self.canonicalize_committed_event_view(event_time, &mut solver_y, root_overrides)?;
+            self.canonicalize_committed_event_view(event_time, solver_y, root_overrides)?;
         }
-        self.copy_states_from_solver_y(&solver_y);
+        self.copy_states_from_solver_y(solver_y);
         self.invalidate_continuous_linearization();
-        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.solver_y_guess.borrow_mut().copy_from_slice(solver_y);
         if history_changed {
             let solver_y = self.solver_y_guess.borrow();
             self.cache_continuous_linearization(event_time, &self.states, &self.params, &solver_y);
         }
         self.commit_delay_point()?;
         Ok(())
-    }
-
-    pub(super) fn event_iteration_solver_y(
-        &self,
-        event_entry_y: &[f64],
-    ) -> Result<Vec<f64>, MeError> {
-        Ok(event_entry_y.to_vec())
     }
 
     /// Reconstruct the canonical post-event view after `pre` history advances.
@@ -1389,16 +1404,26 @@ impl SolveMeKernel {
     pub(super) fn record_event_action_outcome(
         &mut self,
         outcome: EventActionOutcome,
-        event_time: f64,
+        _event_time: f64,
     ) -> Result<(), MeError> {
         match outcome {
             EventActionOutcome::Continue => Ok(()),
-            EventActionOutcome::AssertionFailed { time, message } => Err(MeError::Assertion {
-                time: if time.is_finite() { time } else { event_time },
-                message,
-            }),
+            EventActionOutcome::AssertionFailed { time, message: _ } if !time.is_finite() => {
+                Err(MeError::NonFiniteEventActionTime {
+                    action: "assert",
+                    time,
+                })
+            }
+            EventActionOutcome::AssertionFailed { time, message } => {
+                Err(MeError::Assertion { time, message })
+            }
+            EventActionOutcome::Terminated { time, .. } if !time.is_finite() => {
+                Err(MeError::NonFiniteEventActionTime {
+                    action: "terminate",
+                    time,
+                })
+            }
             EventActionOutcome::Terminated { time, message } => {
-                let time = if time.is_finite() { time } else { event_time };
                 self.termination
                     .get_or_insert(SimTermination { time, message });
                 Ok(())
@@ -1406,12 +1431,12 @@ impl SolveMeKernel {
         }
     }
 
-    pub(super) fn event_pre_for_update(
+    pub(super) fn prepare_event_pre_for_update(
         &mut self,
         event_time: f64,
         event: RuntimeEventStop,
-    ) -> Result<(Vec<f64>, Vec<f64>), MeError> {
-        if let Some(mut event_pre_y) = self.pending_event_pre_y.take() {
+    ) -> Result<(), MeError> {
+        if self.pending_event_pre_y.is_occupied() {
             if matches!(
                 self.state_time_coincidence,
                 StateTimeCoincidence::Unconsumed
@@ -1425,13 +1450,13 @@ impl SolveMeKernel {
                 // non-state lanes required by the frozen profile, but restore
                 // the continuous-state prefix before clock-owned rows sample
                 // it.
-                event_pre_y[..self.state_count].copy_from_slice(&self.states);
+                self.pending_event_pre_y
+                    .get_mut("event pre-state is unavailable")?[..self.state_domain.len()]
+                    .copy_from_slice(&self.states);
             }
-            let event_pre_p = self
-                .pending_event_pre_p
-                .take()
-                .unwrap_or_else(|| self.params.clone());
-            return Ok((event_pre_y, event_pre_p));
+            self.pending_event_pre_p
+                .get("event pre-state has no paired parameter latch")?;
+            return Ok(());
         }
         let pre_time = match event.pre_mode {
             EventPreMode::EventEntry | EventPreMode::Fixed => {
@@ -1453,9 +1478,19 @@ impl SolveMeKernel {
         // In both cases `solver_y_at_time` evaluates against the exact
         // importer-owned event-entry state; only the evaluation coordinate
         // differs between a scheduled left limit and a located root bracket.
-        let event_pre_y = self.solver_y_at_time(pre_time)?;
-        let event_pre_p = self.params.clone();
-        Ok((event_pre_y, event_pre_p))
+        let mut solver_y = std::mem::take(&mut self.event_solver_y_work);
+        let result = self
+            .solver_y_at_time_into(pre_time, &mut solver_y)
+            .and_then(|()| {
+                self.pending_event_pre_y
+                    .set(&solver_y, "computed event-entry solver latch")
+            })
+            .and_then(|()| {
+                self.pending_event_pre_p
+                    .set(&self.params, "computed event-entry parameter latch")
+            });
+        self.event_solver_y_work = solver_y;
+        result
     }
 
     pub(super) fn clear_event_entry_scheduled_root_relation_memory(
@@ -1466,29 +1501,32 @@ impl SolveMeKernel {
         if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
             return Ok(());
         }
-        let root_indices = self.scheduled_root_indices_at_time(event_time);
-        self.clear_scheduled_root_relation_memory(&root_indices)
+        self.fill_scheduled_root_indices_at_time(event_time);
+        clear_scheduled_root_relation_memory(
+            self.runtime.model(),
+            &self.scheduled_root_index_scratch,
+            &mut self.params,
+        )
+        .map_err(contract)
     }
 
     pub(super) fn clear_all_scheduled_root_relation_memory(&mut self) -> Result<(), MeError> {
-        let root_indices = self
-            .runtime
-            .model
-            .problem
-            .events()
-            .scheduled_root_conditions
-            .iter()
-            .map(|root| root.root_index)
-            .collect::<Vec<_>>();
-        self.clear_scheduled_root_relation_memory(&root_indices)
-    }
-
-    pub(super) fn clear_scheduled_root_relation_memory(
-        &mut self,
-        root_indices: &[usize],
-    ) -> Result<(), MeError> {
-        clear_scheduled_root_relation_memory(&self.runtime.model, root_indices, &mut self.params)
-            .map_err(contract)
+        self.scheduled_root_index_scratch.clear();
+        self.scheduled_root_index_scratch.extend(
+            self.runtime
+                .model()
+                .problem()
+                .events()
+                .scheduled_root_conditions
+                .iter()
+                .map(|root| root.root_index),
+        );
+        clear_scheduled_root_relation_memory(
+            self.runtime.model(),
+            &self.scheduled_root_index_scratch,
+            &mut self.params,
+        )
+        .map_err(contract)
     }
 
     pub(super) fn seed_scheduled_root_relation_overrides(
@@ -1499,7 +1537,8 @@ impl SolveMeKernel {
         if event.observe_right_limit || !matches!(event.pre_mode, EventPreMode::EventEntry) {
             return;
         }
-        for index in self.scheduled_root_indices_at_time(event_time) {
+        self.fill_scheduled_root_indices_at_time(event_time);
+        for index in self.scheduled_root_index_scratch.iter().copied() {
             self.pending_root_crossings.push(RootCrossing {
                 index,
                 post_relation_memory_value: 1.0,
@@ -1507,83 +1546,102 @@ impl SolveMeKernel {
         }
     }
 
-    pub(super) fn scheduled_root_indices_at_time(&self, event_time: f64) -> Vec<usize> {
-        timeline::scheduled_root_indices_at_time(
-            &self
-                .runtime
-                .model
-                .problem
+    fn fill_scheduled_root_indices_at_time(&mut self, event_time: f64) {
+        self.scheduled_root_index_scratch.clear();
+        self.scheduled_root_index_scratch.extend(
+            self.runtime
+                .model()
+                .problem()
                 .events()
-                .scheduled_root_conditions,
-            event_time,
-        )
+                .scheduled_root_conditions
+                .iter()
+                .filter(|root| timeline::scheduled_root_matches_time(root, event_time))
+                .map(|root| root.root_index),
+        );
     }
 
     pub(super) fn run_initial_event_boundary(&mut self) -> Result<MeDiscreteStates, MeError> {
-        let continuous_states_before = self.states.clone();
+        self.event_state_before.copy_from_slice(&self.states);
         let event_time = self.time;
-        let mut solver_y = self
-            .settled_initialization_y
-            .take()
-            .ok_or_else(|| contract("initial event boundary requires a settled solver vector"))?;
-        let startup_event_pre_y = self
-            .pending_event_pre_y
-            .take()
-            .ok_or_else(|| contract("initial event boundary requires a latched pre-event state"))?;
-        let startup_event_pre_p = self
-            .pending_event_pre_p
-            .take()
-            .unwrap_or_else(|| self.params.clone());
-        let dynamic_event =
-            self.runtime
-                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time)?;
         let runtime = Rc::clone(&self.runtime);
         let projection_runtime = Rc::clone(&runtime);
         let policy = self.algebraic_projection_policy();
         let tol = policy.tolerance;
         let settle = policy.settle;
-        let outcome = runtime.apply_projected_initial_event_boundary(
+        let settled_initialization_y = self
+            .settled_initialization_y
+            .get("initial event boundary requires a settled solver vector")?;
+        let startup_event_pre_y = self
+            .pending_event_pre_y
+            .get("initial event boundary requires a latched pre-event state")?;
+        let startup_event_pre_p = self
+            .pending_event_pre_p
+            .get("initial event boundary requires a latched pre-event parameter vector")?;
+        let mut solver_y = std::mem::take(&mut self.event_solver_y_work);
+        solver_y.copy_from_slice(settled_initialization_y);
+        self.settled_initialization_y.clear();
+        let dynamic_event_result =
+            self.runtime
+                .current_dynamic_time_event_stop(&solver_y, &self.params, self.time);
+        let dynamic_event = match dynamic_event_result {
+            Ok(event) => event,
+            Err(error) => {
+                self.event_solver_y_work = solver_y;
+                return Err(error.into());
+            }
+        };
+        let outcome_result = runtime.apply_projected_initial_event_boundary(
             ProjectedInitialEventInput {
                 y: &mut solver_y,
                 p: &mut self.params,
                 t_start: self.time,
                 t_end: self.stop_time,
                 tol,
-                event_pre_y: &startup_event_pre_y,
-                event_pre_p: &startup_event_pre_p,
+                event_pre_y: startup_event_pre_y,
+                event_pre_p: startup_event_pre_p,
                 max_iters: settle.max_iters,
                 dynamic_event,
             },
             move |y, p, t| project_algebraics(&projection_runtime, y, p, t, policy),
-        )?;
+        );
+        let outcome = match outcome_result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.event_solver_y_work = solver_y;
+                return Err(error.into());
+            }
+        };
+        self.pending_event_pre_y.clear();
+        self.pending_event_pre_p.clear();
         self.copy_states_from_solver_y(&solver_y);
         self.invalidate_continuous_linearization();
-        *self.solver_y_guess.borrow_mut() = solver_y;
+        self.solver_y_guess.borrow_mut().copy_from_slice(&solver_y);
+        // The line above is the last read of the taken workspace. The single
+        // construction-reserved buffer returns to its field here, before any
+        // consumer runs: `discrete_states_after_update` takes the same field
+        // to evaluate a solver-reading dynamic time event, and it must find
+        // the sized storage, not the empty vector left by `mem::take`.
+        self.event_solver_y_work = solver_y;
         self.time = outcome.final_t;
-        self.initial_observations = outcome
-            .observations
-            .iter()
-            .map(|observation| self.refresh_initial_observation(observation))
-            .collect::<Result<Vec<_>, _>>()?;
         self.record_event_action_outcome(outcome.action, event_time)?;
         self.initial_event_pending = false;
         let right_limit = (outcome.final_t > event_time).then_some(outcome.final_t);
         self.time = event_time;
         self.set_post_event_eval_time(right_limit);
         self.discrete_states_after_update(continuous_state_values_changed(
-            &continuous_states_before,
+            &self.event_state_before,
             &self.states,
         ))
     }
 
     pub(super) fn run_runtime_event_boundary(
         &mut self,
-        entry: MeEventEntry,
+        entry: PendingEventEntry,
     ) -> Result<MeDiscreteStates, MeError> {
-        let continuous_states_before = self.states.clone();
+        self.event_state_before.copy_from_slice(&self.states);
         let tolerance = self.tolerance.max(1.0e-10);
         match entry.cause {
-            MeEventCause::StateEvent => {
+            PendingEventCause::State => {
                 self.advance_state_to_event_right_limit = false;
                 let scheduled = self
                     .stop_schedule
@@ -1623,11 +1681,11 @@ impl SolveMeKernel {
                 }
                 self.state_time_coincidence = StateTimeCoincidence::None;
                 self.discrete_states_after_update(continuous_state_values_changed(
-                    &continuous_states_before,
+                    &self.event_state_before,
                     &self.states,
                 ))
             }
-            MeEventCause::TimeEvent => {
+            PendingEventCause::Time => {
                 self.advance_state_to_event_right_limit = true;
                 self.state_time_coincidence = StateTimeCoincidence::None;
                 let (_, event) = self.pending_event_stop.take().ok_or_else(|| {
@@ -1645,7 +1703,7 @@ impl SolveMeKernel {
                 self.clear_event_entry_scheduled_root_relation_memory(outcome.final_t, event)?;
                 self.clear_runtime_caches();
                 self.discrete_states_after_update(continuous_state_values_changed(
-                    &continuous_states_before,
+                    &self.event_state_before,
                     &self.states,
                 ))
             }
@@ -1664,8 +1722,39 @@ impl SolveMeKernel {
             self.pending_event_stop = None;
             None
         } else {
-            let stop = self.next_event_stop_inner(self.stop_time)?;
-            stop.is_event.then_some(stop.time)
+            let reads_solver_y = self.runtime.dynamic_time_event_stop_reads_solver_y();
+            let mut solver_y = std::mem::take(&mut self.event_solver_y_work);
+            let result = if reads_solver_y {
+                match self
+                    .solver_y_at_time_into(self.public_time_eval_time(self.time), &mut solver_y)
+                {
+                    Ok(()) => self
+                        .runtime
+                        .next_runtime_event_stop(
+                            &solver_y,
+                            &self.params,
+                            &mut self.stop_schedule,
+                            self.time,
+                            self.stop_time,
+                        )
+                        .map_err(MeError::from),
+                    Err(error) => Err(error),
+                }
+            } else {
+                self.runtime
+                    .next_runtime_event_stop(
+                        &[],
+                        &self.params,
+                        &mut self.stop_schedule,
+                        self.time,
+                        self.stop_time,
+                    )
+                    .map_err(MeError::from)
+            };
+            self.event_solver_y_work = solver_y;
+            let (time, event) = result?;
+            self.pending_event_stop = event.map(|event| (time, event));
+            event.map(|_| time)
         };
         Ok(MeDiscreteStates {
             discrete_states_need_update: false,
@@ -1681,66 +1770,13 @@ impl SolveMeKernel {
 fn indicator_reading_value(
     reading: IndicatorReading,
     time: f64,
-    root_values: &[f64],
-    deadlines: &[f64],
-) -> Result<f64, MeError> {
+    root_values: &RootIndicatorValues,
+    deadlines: &DeadlineIndicatorValues,
+) -> f64 {
     match reading {
-        IndicatorReading::RootValue { index } => root_values
-            .get(index)
-            .copied()
-            .ok_or_else(|| contract("FMI root indicator source is out of range")),
-        IndicatorReading::DeadlineDistance { index } => deadlines
-            .get(index)
-            .copied()
-            .map(|deadline| deadline - time)
-            .ok_or_else(|| contract("FMI dynamic-time indicator source is out of range")),
+        IndicatorReading::RootValue { index } => root_values.as_slice()[index],
+        IndicatorReading::DeadlineDistance { index } => deadlines.as_slice()[index] - time,
     }
-}
-
-/// The resolved indicator table together with the addresses of the buffers
-/// every indicator read uses.
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IndicatorStorageIdentity {
-    entries: Vec<(IndicatorReading, IndicatorZeroSide, Option<usize>)>,
-    root_value_len: usize,
-    deadline_len: usize,
-    root_buffer: usize,
-    deadline_buffer: usize,
-    value_buffer: usize,
-    /// The frozen-domain buffer and its working buffer, which the completed-step
-    /// callback swaps, so the pair is compared as a set.
-    domain_buffers: [usize; 2],
-}
-
-/// Reserve one indicator working buffer at instantiation.
-///
-/// Every FMI event-indicator buffer this component reads is sized here, so a
-/// reservation failure is an instantiation refusal rather than a per-step
-/// abort, and the step path never grows a buffer.
-fn reserved_indicator_values(entries: usize, context: &'static str) -> Result<Vec<f64>, MeError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(entries)
-        .map_err(|_| MeError::Allocation { context, entries })?;
-    values.resize(entries, 0.0);
-    Ok(values)
-}
-
-/// Reserve one indicator-domain buffer at instantiation.
-///
-/// The completed-step callback swaps the frozen domains with their working
-/// buffer, so both start with the whole inventory reserved and neither grows
-/// afterward.
-fn reserved_indicator_domains(entries: usize) -> Result<Vec<bool>, MeError> {
-    let mut domains = Vec::new();
-    domains
-        .try_reserve_exact(entries)
-        .map_err(|_| MeError::Allocation {
-            context: "event-indicator domains",
-            entries,
-        })?;
-    Ok(domains)
 }
 
 fn merge_coincident_event_stops(

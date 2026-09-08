@@ -3,7 +3,6 @@ import {
   galecDefinition,
   galecDiagnostics,
   galecHover,
-  renderGalecCFromAlg,
   renderGalecTargetFiles,
 } from './rumoca_galec.js';
 
@@ -120,14 +119,6 @@ export async function ensureParsedSourceRootCache(wasm, cacheUrl) {
   return true;
 }
 
-export async function prepareGpuSimulationWithRuntime({ wasm, source, modelName, sourceRootCacheUrl = '' }) {
-  await ensureParsedSourceRootCache(wasm, sourceRootCacheUrl);
-  if (typeof wasm.prepare_gpu_simulation !== 'function') {
-    throw new Error('prepare_gpu_simulation missing in this WASM build');
-  }
-  return wasm.prepare_gpu_simulation(source, modelName);
-}
-
 export async function simulateModelWithRuntime({
   wasm,
   pkgBase,
@@ -170,8 +161,7 @@ export async function diffsolAvailable(pkgBase) {
   return diffsolAddonAvailable(pkgBase);
 }
 
-// Render a GALEC codegen target (`galec` / `galec-production` /
-// `embedded-c-galec`) via the separate GALEC addon and return the
+// Render the `galec` Algorithm Code target via the separate GALEC addon and return the
 // presentation-ready `{ path, content }[]` file list. Mirrors
 // `renderDaeTextWithRuntime`, but the GALEC projection needs the flat model —
 // so it drives the addon's in-memory compile (which owns the projection)
@@ -183,16 +173,6 @@ export async function renderGalecFilesWithRuntime({
   target,
 }) {
   return renderGalecTargetFiles(pkgBase, workspaceSources, modelName, target);
-}
-
-export async function renderGalecCFromAlgWithRuntime({
-  pkgBase = './',
-  algSource,
-  fileName = 'generated.alg',
-  modelName = 'model',
-  target = 'embedded-c-galec',
-}) {
-  return renderGalecCFromAlg(pkgBase, algSource, fileName, modelName, target);
 }
 
 export async function galecDiagnosticsWithRuntime({

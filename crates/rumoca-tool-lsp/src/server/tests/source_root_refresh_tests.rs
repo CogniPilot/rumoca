@@ -26,7 +26,7 @@ fn live_source_root_edits_mark_and_clear_session_owned_refresh_state() {
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should be applied");
+            .require_loaded();
 
         server
             .did_open(DidOpenTextDocumentParams {

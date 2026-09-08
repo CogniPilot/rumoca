@@ -14,8 +14,19 @@ impl TypeChecker {
         rhs: &Expression,
         type_table: &TypeTable,
     ) {
-        let lhs_ty = self.infer_expression_type(lhs, type_table);
-        let rhs_ty = self.infer_expression_type(rhs, type_table);
+        // Shape invalidity is independent of whether scalar element types can
+        // be resolved. A known-invalid shape must not borrow a type-inference
+        // abstention and reach a later phase.
+        self.check_equation_shape_compatibility(lhs, rhs, type_table);
+        // MLS §8.3.1: an output-expression-list on the left carries one type
+        // per position, so it is compared position-wise against the callee's
+        // full output list rather than collapsed to a single value type.
+        if let Expression::Tuple { elements, .. } = lhs {
+            self.check_output_expression_list_types(elements, rhs, type_table);
+            return;
+        }
+        let lhs_ty = self.infer_expression_type(lhs, type_table).value_identity();
+        let rhs_ty = self.infer_expression_type(rhs, type_table).value_identity();
 
         let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) else {
             return;
@@ -23,15 +34,14 @@ impl TypeChecker {
         if lhs_ty.is_unknown() || rhs_ty.is_unknown() {
             return;
         }
-        let lhs_root = self.resolve_type_root(type_table, lhs_ty);
-        let rhs_root = self.resolve_type_root(type_table, rhs_ty);
+        let lhs_root = self.resolve_type_root(lhs_ty);
+        let rhs_root = self.resolve_type_root(rhs_ty);
         if Self::is_unresolved_alias_root(type_table, lhs_root)
             || Self::is_unresolved_alias_root(type_table, rhs_root)
         {
             return;
         }
         if self.equation_types_compatible(type_table, lhs_ty, rhs_ty) {
-            self.check_equation_shape_compatibility(lhs, rhs, type_table);
             return;
         }
 
@@ -54,20 +64,89 @@ impl TypeChecker {
         value: &Expression,
         type_table: &TypeTable,
     ) {
+        self.check_algorithm_assignment_shape_compatibility(target, value, type_table);
         let Some(expected) = self.infer_component_ref_type(target, type_table) else {
             return;
         };
-        let Some(found) = self.infer_expression_type(value, type_table) else {
+        let Some(found) = self
+            .infer_expression_type(value, type_table)
+            .value_identity()
+        else {
             return;
         };
-        self.check_expected_expression_type(
+        if expected.is_unknown() || found.is_unknown() {
+            return;
+        }
+        let expected_root = self.resolve_type_root(expected);
+        let found_root = self.resolve_type_root(found);
+        if Self::is_unresolved_alias_root(type_table, expected_root)
+            || Self::is_unresolved_alias_root(type_table, found_root)
+        {
+            return;
+        }
+        if self.assignment_types_compatible(type_table, expected, found) {
+            return;
+        }
+        let Some(location) = target.get_location().or_else(|| value.get_location()) else {
+            return;
+        };
+        self.emit_assignment_type_mismatch(
             expected,
             found,
-            target.get_location().or_else(|| value.get_location()),
+            location,
             "algorithm assignment type compatibility",
             "algorithm assignment here",
             type_table,
         );
+    }
+
+    /// MLS §8.3.1 / §12.4.1: compare every position of an output-expression-list
+    /// against the corresponding declared output of the called function.
+    ///
+    /// Every position participates. Position 1 is not privileged, and no
+    /// position falls back to another position's type, so a mismatch anywhere
+    /// in `2..n` is reached.
+    fn check_output_expression_list_types(
+        &mut self,
+        targets: &[Expression],
+        value: &Expression,
+        type_table: &TypeTable,
+    ) {
+        let Expression::FunctionCall {
+            comp,
+            is_partial_application: false,
+            ..
+        } = value
+        else {
+            return;
+        };
+        let Some(outputs) = self.user_function_output_types(comp, type_table) else {
+            return;
+        };
+        for (position, target) in targets.iter().enumerate() {
+            // Output-list arity is owned by the function-call checker; this
+            // check owns types only, so a short list simply has no expectation
+            // for the extra positions.
+            let Some(output_type) = outputs.get(position).copied() else {
+                continue;
+            };
+            let Some(target_type) = self
+                .infer_expression_type(target, type_table)
+                .value_identity()
+            else {
+                continue;
+            };
+            // The target is the expectation and the declared output is the
+            // found value, exactly as for a scalar assignment.
+            self.check_expected_expression_type(
+                target_type,
+                output_type,
+                target.get_location().or_else(|| value.get_location()),
+                "output expression list type compatibility",
+                "incompatible output position",
+                type_table,
+            );
+        }
     }
 
     pub(crate) fn check_expected_expression_type(
@@ -82,8 +161,8 @@ impl TypeChecker {
         if expected.is_unknown() || found.is_unknown() {
             return;
         }
-        let expected_root = self.resolve_type_root(type_table, expected);
-        let found_root = self.resolve_type_root(type_table, found);
+        let expected_root = self.resolve_type_root(expected);
+        let found_root = self.resolve_type_root(found);
         if Self::is_unresolved_alias_root(type_table, expected_root)
             || Self::is_unresolved_alias_root(type_table, found_root)
             || self.assignment_types_compatible(type_table, expected, found)
@@ -127,8 +206,8 @@ impl TypeChecker {
         if lhs == rhs || self.nominal_class_types_compatible(type_table, lhs, rhs) {
             return true;
         }
-        let lhs_root = self.resolve_type_root(type_table, lhs);
-        let rhs_root = self.resolve_type_root(type_table, rhs);
+        let lhs_root = self.resolve_type_root(lhs);
+        let rhs_root = self.resolve_type_root(rhs);
         if lhs_root == rhs_root
             || self.nominal_class_types_compatible(type_table, lhs_root, rhs_root)
         {
@@ -149,8 +228,8 @@ impl TypeChecker {
         if self.assignment_types_compatible(type_table, lhs, rhs) {
             return true;
         }
-        let lhs_root = self.resolve_type_root(type_table, lhs);
-        let rhs_root = self.resolve_type_root(type_table, rhs);
+        let lhs_root = self.resolve_type_root(lhs);
+        let rhs_root = self.resolve_type_root(rhs);
         matches!(
             (type_table.get(lhs_root), type_table.get(rhs_root)),
             (
@@ -201,7 +280,9 @@ impl TypeChecker {
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) {
-        if self.is_integer_iterator_reference(comp) {
+        // A `for` binder is a local, not a component, so component lookup does
+        // not own it. This holds whatever its range domain issued as its type.
+        if self.iterator_binder_type(comp).is_some() {
             return;
         }
         match self.resolve_component_reference_type(comp, type_table) {
@@ -210,6 +291,9 @@ impl TypeChecker {
                 self.emit_unknown_component_member(missing, type_table);
             }
             Err(ComponentReferenceTypeError::MissingSourceContext(error)) => {
+                self.emit_typecheck_error(error);
+            }
+            Err(ComponentReferenceTypeError::InvalidAstSubscript(error)) => {
                 self.emit_typecheck_error(error);
             }
             Err(ComponentReferenceTypeError::AmbiguousIdentity { reference, span }) => {
@@ -269,6 +353,7 @@ impl TypeChecker {
                 // declaration's rank.
                 SemanticLookup::Found(None)
                 | SemanticLookup::Ambiguous
+                | SemanticLookup::InvalidAstSubscript
                 | SemanticLookup::Missing => {
                     effective_shape = None;
                 }

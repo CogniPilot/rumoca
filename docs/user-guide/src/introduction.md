@@ -57,8 +57,7 @@ end HotAirBalloon;
 // Render the balloon state as a small Three.js scene.
 // Only the integrated states (h, v, T, fuel) are read; the algebraics
 // `burner` and `fuelPercent` are recomputed from the states below so the
-// viz works on every solver path (the GPU integrator returns states only
-// and freezes algebraics).
+// The visualization reads the integrated states and recomputes its algebraics.
 api.plotSeries(['h', 'fuel']);
 const { THREE } = await api.loadThree();
 const h = api.series('h');

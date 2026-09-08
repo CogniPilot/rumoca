@@ -15,7 +15,7 @@ static PARALLELISM_OVERRIDE: OnceLock<usize> = OnceLock::new();
 /// any parallel compile stage runs. A zero or repeated value is ignored.
 pub fn set_compiler_parallelism(threads: usize) {
     if threads > 0 {
-        let _ = PARALLELISM_OVERRIDE.set(threads);
+        let _already_initialized = PARALLELISM_OVERRIDE.set(threads);
     }
 }
 

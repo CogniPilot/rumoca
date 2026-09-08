@@ -19,28 +19,18 @@
 //! this module does not keep (SPEC_0008).
 //!
 //! - **Over-subscripting a declared array** (`connect(a[1,2], b)` for `C a[2]`).
-//!   Not judged here: the check accepts any non-zero declared rank, because the
-//!   flat representation of a collapsed connector-array member cannot be told
-//!   apart from an over-subscripted one. Current behaviour: the endpoint matches
-//!   nothing, the connection contributes no equations, a duplicate flow-zero
-//!   equation keeps the ED001 balance count satisfied, and the model dies later
-//!   as an `E011` structural singularity. Tracked as task #82; typecheck's
-//!   `ET009` (MLS §10.5.1) already implements this rule for *expression*
-//!   references and is the natural owner once it walks connect arguments.
-//! - **Non-literal subscripts** — `end`, `:`, and any subscript that is not an
-//!   evaluated integer. These are erased upstream: `ast::QualifiedName` carries
-//!   `Vec<i64>` per segment, so by the time a connection reaches this module the
-//!   distinction is gone, and resolve's `ER085` skips `Subscript::Range` and
-//!   treats `end` as evaluable. Current behaviour: `connect(m.u[end], s)`
-//!   fabricates members on a scalar and reports `ED001` with a wrong story;
-//!   `connect(m.u[2,:], s)` drops the connection entirely and dies as `E011`.
-//!   Tracked as task #87; the fix belongs upstream, where the subscript form
-//!   still exists.
-//! - **Slices of *composite* connector arrays** (a `C u[2,3]` whose `C` has
-//!   members). `find_sub_variables_indexed` drops these connections entirely
-//!   (zero equations generated). Tracked as task #87. The leaf-counting fix in
-//!   point 1 of the [parent module docs](super) covers *primitive* connector
-//!   arrays only.
+//!   The endpoint index compares the supplied index count with authoritative
+//!   retained declaration rank and refuses before connection-set mutation.
+//! - **Non-value subscripts** — `end`, whole-dimension `:`, recovery nodes, and
+//!   scalar selectors that cannot be evaluated. Instantiate still owns their
+//!   source syntax and returns `EI035`; it never erases one into the
+//!   `QualifiedName` scalar endpoint. Whole-dimension `:` is an explicit
+//!   unsupported feature, while an explicit finite range such as `1:2` becomes
+//!   a compact `InstanceConnectionFamily`.
+//! - **Finite slices of composite connector arrays.** Explicit range endpoints
+//!   stay compact through Instance IR, and the Flat scalar compatibility view
+//!   pairs their primitive members. Whole-dimension `:` remains covered by the
+//!   typed Instantiate refusal above rather than silently dropping the slice.
 //! - **Redeclared array dimensions** (MLS §7.3). A redeclaration may replace a
 //!   component together with its dimensions, and reaches a component along four
 //!   routes: an `extends` modification
@@ -171,11 +161,11 @@ impl ConnectionEndpointIndex {
     /// [`Self::check_endpoint_subscripts`].
     pub(super) fn check_connection_endpoint_subscripts(
         &self,
-        connections: &[&ast::InstanceConnection],
+        connections: &[&ast::InstanceScalarConnection],
     ) -> Result<(), FlattenError> {
         for conn in connections {
-            self.check_endpoint_subscripts(&conn.a, conn.span)?;
-            self.check_endpoint_subscripts(&conn.b, conn.span)?;
+            self.check_endpoint_subscripts(conn.a(), conn.span())?;
+            self.check_endpoint_subscripts(conn.b(), conn.span())?;
         }
         Ok(())
     }
@@ -285,19 +275,25 @@ mod tests {
     #[test]
     fn indexed_declared_expandable_member_needs_no_augmentation() {
         let mut overlay = ast::InstanceOverlay::new();
-        overlay.add_component(ast::InstanceData {
-            instance_id: rumoca_core::InstanceId(1),
-            qualified_name: ast::QualifiedName::from_ident("telemetry"),
-            is_expandable_connector_type: true,
-            ..Default::default()
-        });
-        overlay.add_component(ast::InstanceData {
-            instance_id: rumoca_core::InstanceId(2),
-            owner_class_id: Some(rumoca_core::InstanceId(1)),
-            qualified_name: ast::QualifiedName::from_dotted("telemetry.motor"),
-            dims: vec![4],
-            ..Default::default()
-        });
+        let telemetry_id = overlay.alloc_id();
+        let motor_id = overlay.alloc_id();
+        overlay
+            .add_component(ast::InstanceData {
+                instance_id: telemetry_id,
+                qualified_name: ast::QualifiedName::from_ident("telemetry"),
+                is_expandable_connector_type: true,
+                ..Default::default()
+            })
+            .expect("fixture occurrence insertion must succeed");
+        overlay
+            .add_component(ast::InstanceData {
+                instance_id: motor_id,
+                owner_class_id: None,
+                qualified_name: ast::QualifiedName::from_dotted("telemetry.motor"),
+                dims: vec![4],
+                ..Default::default()
+            })
+            .expect("fixture occurrence insertion must succeed");
         let index = ConnectionEndpointIndex::new(&overlay);
         let mut element = ast::QualifiedName::from_ident("telemetry");
         element.push("motor".to_owned(), vec![1]);

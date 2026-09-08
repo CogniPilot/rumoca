@@ -26,7 +26,7 @@ impl PositiveParameterPlan {
 }
 
 pub(super) fn analyze_delays(
-    flat: &flat::Model,
+    owners: &StructuredEquationOwners<'_>,
     constants: &EvalContext,
 ) -> Result<HashMap<Span, DelayPlan>, ToDaeError> {
     let mut analyzer = DelayAnalyzer {
@@ -34,7 +34,7 @@ pub(super) fn analyze_delays(
         plans: HashMap::new(),
         in_function: false,
     };
-    analyzer.visit_model_owners(flat)?;
+    analyzer.visit_model_owners(owners)?;
     Ok(analyzer.plans)
 }
 

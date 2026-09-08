@@ -82,30 +82,38 @@ pub(crate) fn independent_constraint_model(spare_unknown: bool) -> dae::Dae {
         let variables = model.variables(|variables| {
             let parameter = variables.parameter(
                 VarName::new("p"),
+                InstanceId::new(1),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
             )?;
-            let mut state = |name: &str| {
+            let mut state = |name: &str, occurrence| {
                 variables.state(
                     VarName::new(name),
+                    InstanceId::new(occurrence),
                     real,
                     declare(&format!("Real {name}")),
                     dae::VariableAttributes::default(),
                 )
             };
-            let states = [state("x")?, state("y")?, state("u")?, state("v")?];
-            let mut algebraic = |name: &str| {
+            let states = [
+                state("x", 2)?,
+                state("y", 3)?,
+                state("u", 4)?,
+                state("v", 5)?,
+            ];
+            let mut algebraic = |name: &str, occurrence| {
                 variables.algebraic(
                     VarName::new(name),
+                    InstanceId::new(occurrence),
                     real,
                     declare(&format!("Real {name}")),
                     dae::VariableAttributes::default(),
                 )
             };
-            let algebraics = [algebraic("a")?, algebraic("b")?];
+            let algebraics = [algebraic("a", 6)?, algebraic("b", 7)?];
             if spare_unknown {
-                algebraic("spare")?;
+                algebraic("spare", 8)?;
             }
             Ok((parameter, states, algebraics))
         })?;

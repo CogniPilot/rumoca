@@ -2,11 +2,13 @@
 
 use rumoca_core::Span;
 
-use super::Expression;
 use super::context::EvalContext;
 use super::errors::EvalError;
 use super::expr_eval::eval_expr_with_span;
 use super::value::Value;
+use super::{DEFAULT_EVAL_BUDGET, Expression};
+
+const MAX_RANGE_ELEMENTS: usize = DEFAULT_EVAL_BUDGET - 1;
 
 /// Evaluate a range expression to an array.
 pub(super) fn eval_range(
@@ -19,45 +21,80 @@ pub(super) fn eval_range(
     let start_val = eval_expr_with_span(start, ctx, span)?;
     let end_val = eval_expr_with_span(end, ctx, span)?;
 
-    // Determine if we have integer or real range
-    match (start_val.as_integer(), end_val.as_integer()) {
-        (Some(s), Some(e)) => eval_integer_range(s, e, step, ctx, span),
-        _ => eval_real_range(&start_val, &end_val, step, ctx, span),
+    if start_val.as_enum().is_some() || end_val.as_enum().is_some() {
+        return eval_value_range(&start_val, None, &end_val, span);
     }
+    let step_val = step
+        .map(|step| eval_expr_with_span(step, ctx, span))
+        .transpose()?;
+    eval_value_range(&start_val, step_val.as_ref(), &end_val, span)
 }
 
-/// Evaluate an integer range.
-fn eval_integer_range(
-    s: i64,
-    e: i64,
-    step: Option<&Expression>,
-    ctx: &EvalContext,
+/// Evaluate already-settled range values under one shared enum/numeric
+/// ownership decision for direct expressions and user-function interpretation.
+pub(super) fn eval_value_range(
+    start: &Value,
+    step: Option<&Value>,
+    end: &Value,
     span: Span,
 ) -> Result<Value, EvalError> {
-    let step_int = match step {
-        Some(step_expr) => {
-            let step_val = eval_expr_with_span(step_expr, ctx, span)?;
-            step_val
+    if matches!(start, Value::Bool(_))
+        || start.as_enum().is_some()
+        || matches!(end, Value::Bool(_))
+        || end.as_enum().is_some()
+        || step.is_some_and(|value| matches!(value, Value::Bool(_)) || value.as_enum().is_some())
+    {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "Boolean and enumeration ranges require typed index-domain metadata".to_string(),
+            span,
+        });
+    }
+    if let (Some(start), Some(end)) = (start.as_integer(), end.as_integer()) {
+        let step = match step {
+            Some(value) => value
                 .as_integer()
-                .ok_or_else(|| EvalError::type_mismatch("Integer", step_val.type_name(), span))?
+                .ok_or_else(|| EvalError::type_mismatch("Integer", value.type_name(), span))?,
+            None => 1,
+        };
+        if step == 0 {
+            return Err(EvalError::range_error("step cannot be zero", span));
         }
-        None => 1,
-    };
-
-    if step_int == 0 {
-        return Err(EvalError::range_error("step cannot be zero", span));
+        return collect_int_range(start, end, step, span).map(Value::Array);
     }
 
-    let values = collect_int_range(s, e, step_int);
-    Ok(Value::Array(values))
+    let start = start
+        .to_real()
+        .ok_or_else(|| EvalError::type_mismatch("Real or Integer", start.type_name(), span))?;
+    let end = end
+        .to_real()
+        .ok_or_else(|| EvalError::type_mismatch("Real or Integer", end.type_name(), span))?;
+    let step = match step {
+        Some(value) => value
+            .to_real()
+            .ok_or_else(|| EvalError::type_mismatch("Real or Integer", value.type_name(), span))?,
+        None => 1.0,
+    };
+    collect_real_range(start, end, step, span).map(Value::Array)
 }
 
 /// Collect integer range values.
-pub(super) fn collect_int_range(start: i64, end: i64, step: i64) -> Vec<Value> {
+pub(super) fn collect_int_range(
+    start: i64,
+    end: i64,
+    step: i64,
+    span: Span,
+) -> Result<Vec<Value>, EvalError> {
     let mut values = Vec::new();
     let mut i = start;
     if step > 0 {
         while i <= end {
+            if values.len() == MAX_RANGE_ELEMENTS {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "integer range is beyond the constant-evaluation retained-node budget"
+                        .to_string(),
+                    span,
+                });
+            }
             values.push(Value::Integer(i));
             let Some(next) = i.checked_add(step) else {
                 break;
@@ -66,6 +103,13 @@ pub(super) fn collect_int_range(start: i64, end: i64, step: i64) -> Vec<Value> {
         }
     } else {
         while i >= end {
+            if values.len() == MAX_RANGE_ELEMENTS {
+                return Err(EvalError::UnsupportedExpression {
+                    kind: "integer range is beyond the constant-evaluation retained-node budget"
+                        .to_string(),
+                    span,
+                });
+            }
             values.push(Value::Integer(i));
             let Some(next) = i.checked_add(step) else {
                 break;
@@ -73,46 +117,7 @@ pub(super) fn collect_int_range(start: i64, end: i64, step: i64) -> Vec<Value> {
             i = next;
         }
     }
-    values
-}
-
-/// Evaluate a real range.
-fn eval_real_range(
-    start_val: &Value,
-    end_val: &Value,
-    step: Option<&Expression>,
-    ctx: &EvalContext,
-    span: Span,
-) -> Result<Value, EvalError> {
-    let s = start_val
-        .to_real()
-        .ok_or_else(|| EvalError::type_mismatch("Real or Integer", start_val.type_name(), span))?;
-    let e = end_val
-        .to_real()
-        .ok_or_else(|| EvalError::type_mismatch("Real or Integer", end_val.type_name(), span))?;
-
-    let step_f = match step {
-        Some(step_expr) => {
-            let step_val = eval_expr_with_span(step_expr, ctx, span)?;
-            step_val.to_real().ok_or_else(|| {
-                EvalError::type_mismatch("Real or Integer", step_val.type_name(), span)
-            })?
-        }
-        None => 1.0,
-    };
-
-    if step_f == 0.0 {
-        return Err(EvalError::range_error("step cannot be zero", span));
-    }
-    if !s.is_finite() || !e.is_finite() || !step_f.is_finite() {
-        return Err(EvalError::range_error(
-            "range bounds and step must be finite",
-            span,
-        ));
-    }
-
-    let values = collect_real_range(s, e, step_f, span)?;
-    Ok(Value::Array(values))
+    Ok(values)
 }
 
 /// Collect real range values.
@@ -159,6 +164,15 @@ pub(super) fn collect_real_range(
     let count = (last_index as usize)
         .checked_add(1)
         .ok_or_else(|| EvalError::range_error("range has too many elements", span))?;
+    if count
+        .checked_add(1)
+        .is_none_or(|nodes| nodes > DEFAULT_EVAL_BUDGET)
+    {
+        return Err(EvalError::UnsupportedExpression {
+            kind: "real range is beyond the constant-evaluation retained-node budget".to_string(),
+            span,
+        });
+    }
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
@@ -206,5 +220,24 @@ mod tests {
         let values = collect_real_range(start, start + 0.5, 0.01, Span::DUMMY).unwrap();
         assert_eq!(values.len(), 51);
         assert_eq!(values[0], values[1]);
+    }
+
+    #[test]
+    fn range_budget_includes_the_retained_array_container() {
+        let last = MAX_RANGE_ELEMENTS as i64;
+        assert_eq!(
+            collect_int_range(1, last, 1, Span::DUMMY)
+                .expect("the largest retained range fits")
+                .len(),
+            MAX_RANGE_ELEMENTS
+        );
+        assert!(matches!(
+            collect_int_range(1, last + 1, 1, Span::DUMMY),
+            Err(EvalError::UnsupportedExpression { .. })
+        ));
+        assert!(matches!(
+            collect_real_range(1.0, last as f64 + 1.0, 1.0, Span::DUMMY),
+            Err(EvalError::UnsupportedExpression { .. })
+        ));
     }
 }

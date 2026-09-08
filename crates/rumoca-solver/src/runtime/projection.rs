@@ -34,10 +34,7 @@ pub(crate) use tearing::per_row_torn_block_sweep;
 
 #[cfg(test)]
 use plan::algebraic_tail_len;
-use plan::{
-    require_square_projection_block, validate_algebraic_projection_plan,
-    validate_initial_projection_plan,
-};
+use plan::{require_square_projection_block, validate_algebraic_projection_plan};
 
 const ALGEBRAIC_PROJECTION_MAX_ITERS: usize = 32;
 

@@ -16,6 +16,8 @@ mod imports;
 mod inherited_lookup;
 mod loops_and_scopes;
 mod partial_replaceable;
+mod producer_diagnostics;
+mod receiver_identity;
 mod redeclare_modifiers;
 mod semantic_rules;
 
@@ -58,6 +60,7 @@ fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
         ast::Expression::FunctionCall { comp, args, .. } => comp
             .root_def_id()
             .or_else(|| args.iter().find_map(find_comp_ref_def_id)),
+        ast::Expression::DerivativeCall { args, .. } => args.iter().find_map(find_comp_ref_def_id),
         ast::Expression::ClassModification {
             target,
             modifications,
@@ -66,9 +69,9 @@ fn find_comp_ref_def_id(expr: &rumoca_ir_ast::Expression) -> Option<DefId> {
             .root_def_id()
             .or_else(|| modifications.iter().find_map(find_comp_ref_def_id)),
         ast::Expression::NamedArgument { value, .. } => find_comp_ref_def_id(value),
-        ast::Expression::Modification { target, value, .. } => {
-            target.root_def_id().or_else(|| find_comp_ref_def_id(value))
-        }
+        ast::Expression::Modification { target, value, .. } => target
+            .root_def_id()
+            .or_else(|| value.as_deref().and_then(find_comp_ref_def_id)),
         ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
             elements.iter().find_map(find_comp_ref_def_id)
         }

@@ -16,7 +16,8 @@ pub(crate) fn structured_array_equation_family(
         .copied()
         .enumerate()
         .map(|(dimension, upper)| rumoca_core::StructuredIndexBinder {
-            id: dimension,
+            id: rumoca_core::StructuredIndexBinderId::from_ordinal(dimension)
+                .expect("structured-domain rank must fit its typed binder identity"),
             display_name: format!("__array_i{}", dimension + 1),
             lower: 1,
             upper,

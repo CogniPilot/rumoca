@@ -2,10 +2,9 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rumoca_compile::codegen::targets::{
-    TargetCapabilities, TargetTemplateIr, parse_target_manifest,
-};
-use rumoca_compile::codegen::templates::builtin_targets;
+use rumoca_compile::codegen::targets::{TargetCapabilities, builtin_target_descriptors};
+
+use crate::error::ApiResult;
 
 /// A codegen target as declared by its `target.toml`.
 #[pyclass(module = "rumoca")]
@@ -13,44 +12,34 @@ use rumoca_compile::codegen::templates::builtin_targets;
 pub struct Target {
     #[pyo3(get)]
     pub id: String,
-    /// IR stage this target consumes.
+    /// The single checked product derived from the target's file contexts.
     #[pyo3(get)]
-    pub ir: String,
+    pub required_product: String,
+    /// Ordered `(output_path_template, IR_crate_context, checked_view)` plans.
+    #[pyo3(get)]
+    pub file_plans: Vec<(String, String, String)>,
     #[pyo3(get)]
     pub description: Option<String>,
+    capabilities: Option<TargetCapabilities>,
 }
 
 #[pymethods]
 impl Target {
     /// Declared capability flags (events, AD, initialization, ...) as a dict.
     #[getter]
-    fn capabilities(&self, py: Python<'_>) -> PyObject {
-        // Re-parse lazily so the hot listing path stays cheap; targets are few.
-        let caps = builtin_targets()
-            .iter()
-            .find(|t| t.name == self.id)
-            .and_then(|t| parse_target_manifest(t.manifest).ok())
-            .and_then(|m| m.capabilities);
-        capabilities_dict(py, caps.as_ref())
+    fn capabilities(&self, py: Python<'_>) -> ApiResult<PyObject> {
+        capabilities_dict(py, self.capabilities.as_ref())
     }
 
     fn __repr__(&self) -> String {
-        format!("Target(id={:?}, ir={:?})", self.id, self.ir)
+        format!(
+            "Target(id={:?}, required_product={:?})",
+            self.id, self.required_product
+        )
     }
 }
 
-fn ir_str(ir: TargetTemplateIr) -> &'static str {
-    match ir {
-        TargetTemplateIr::Ast => "ast",
-        TargetTemplateIr::Flat => "flat",
-        TargetTemplateIr::Dae => "dae",
-        TargetTemplateIr::Solve => "solve",
-        TargetTemplateIr::Fmi => "fmi",
-        TargetTemplateIr::AlgorithmCode => "algorithm-code",
-    }
-}
-
-fn capabilities_dict(py: Python<'_>, caps: Option<&TargetCapabilities>) -> PyObject {
+fn capabilities_dict(py: Python<'_>, caps: Option<&TargetCapabilities>) -> ApiResult<PyObject> {
     let dict = PyDict::new_bound(py);
     if let Some(c) = caps {
         let pairs: [(&str, Option<bool>); 8] = [
@@ -65,11 +54,11 @@ fn capabilities_dict(py: Python<'_>, caps: Option<&TargetCapabilities>) -> PyObj
         ];
         for (key, value) in pairs {
             if let Some(v) = value {
-                let _ = dict.set_item(key, v);
+                dict.set_item(key, v)?;
             }
         }
     }
-    dict.into_py(py)
+    Ok(dict.into_py(py))
 }
 
 /// One solver available in THIS build (feature-gated).
@@ -96,20 +85,34 @@ impl SolverInfo {
 }
 
 /// Runtime-discovered codegen targets, sorted by id.
-pub(crate) fn list_targets() -> Vec<Target> {
-    let mut targets: Vec<Target> = builtin_targets()
-        .iter()
-        .filter_map(|t| {
-            let manifest = parse_target_manifest(t.manifest).ok()?;
-            Some(Target {
-                id: t.name.to_string(),
-                ir: ir_str(manifest.ir).to_string(),
-                description: manifest.description.clone(),
-            })
-        })
-        .collect();
+pub(crate) fn list_targets() -> Result<Vec<Target>, crate::PyRuntimeStringError> {
+    let descriptors = builtin_target_descriptors().map_err(|error| {
+        crate::PyRuntimeStringError(format!(
+            "built-in target discovery failed checked construction: {error:#}"
+        ))
+    })?;
+    let mut targets = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        targets.push(Target {
+            id: descriptor.id,
+            required_product: descriptor.required_product.as_str().to_string(),
+            file_plans: descriptor
+                .file_plans
+                .into_iter()
+                .map(|file| {
+                    (
+                        file.path,
+                        file.semantic_context.as_str().to_string(),
+                        file.semantic_view.as_str().to_string(),
+                    )
+                })
+                .collect(),
+            description: descriptor.description,
+            capabilities: descriptor.capabilities,
+        });
+    }
     targets.sort_by(|a, b| a.id.cmp(&b.id));
-    targets
+    Ok(targets)
 }
 
 /// Solvers available in this build. The Python extension always compiles

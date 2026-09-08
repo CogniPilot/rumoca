@@ -33,7 +33,8 @@ fn validate_while_sum(
     else {
         return Err(unsupported_reduction(function));
     };
-    let initial = plan_function_statements(&function.body[..2], context)?;
+    let initial_source = function.body.iter().take(2).cloned().collect::<Vec<_>>();
+    let initial = plan_function_statements(&initial_source, context)?;
     let [
         FunctionStatementPlan::Assignment(result_assignment),
         FunctionStatementPlan::Assignment(index_assignment),
@@ -89,10 +90,21 @@ fn validate_while_sum(
         return Err(unsupported_reduction(function));
     }
     require_span(*span, "function while reduction")?;
+    let Expression::Binary { rhs: bound, .. } = &block.cond else {
+        return Err(unsupported_reduction(function));
+    };
+    let Expression::Binary { rhs: one, .. } = index_update else {
+        return Err(unsupported_reduction(function));
+    };
+    let initial = issue_function_statement_sequence(initial_source, initial, *span)?;
     Ok(FunctionPlan::IntegerReduction {
         initial,
         result,
-        reduction: FunctionIntegerReduction::WhileExclusive,
+        reduction: Box::new(FunctionIntegerReduction::WhileExclusive {
+            bound: bound.as_ref().clone(),
+            one: one.as_ref().clone(),
+            span: *span,
+        }),
     })
 }
 
@@ -134,7 +146,8 @@ fn validate_capped_for_sum(
     let [rumoca_core::Statement::Break { span: break_span }] = block.stmts.as_slice() else {
         return Err(unsupported_reduction(function));
     };
-    let initial = plan_function_statements(&function.body[..1], context)?;
+    let initial_source = function.body.iter().take(1).cloned().collect::<Vec<_>>();
+    let initial = plan_function_statements(&initial_source, context)?;
     let [FunctionStatementPlan::Assignment(result_assignment)] = initial.as_slice() else {
         return Err(unsupported_reduction(function));
     };
@@ -174,10 +187,25 @@ fn validate_capped_for_sum(
     }
     require_span(*span, "function capped for reduction")?;
     require_span(*break_span, "function break statement")?;
+    let Expression::Range {
+        start: one, end, ..
+    } = &index.range
+    else {
+        return Err(unsupported_reduction(function));
+    };
+    let Expression::Binary { rhs: cap, .. } = &block.cond else {
+        return Err(unsupported_reduction(function));
+    };
+    let initial = issue_function_statement_sequence(initial_source, initial, *span)?;
     Ok(FunctionPlan::IntegerReduction {
         initial,
         result,
-        reduction: FunctionIntegerReduction::ForInclusiveCapped,
+        reduction: Box::new(FunctionIntegerReduction::ForInclusiveCapped {
+            one: one.as_ref().clone(),
+            end: end.as_ref().clone(),
+            cap: cap.as_ref().clone(),
+            span: *span,
+        }),
     })
 }
 

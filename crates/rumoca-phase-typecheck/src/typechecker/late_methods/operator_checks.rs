@@ -46,8 +46,8 @@ impl TypeChecker {
                 }
                 OpBinary::Eq | OpBinary::Neq => {
                     let (Some(lhs_ty), Some(rhs_ty)) = (
-                        self.infer_expression_type(lhs, type_table),
-                        self.infer_expression_type(rhs, type_table),
+                        self.infer_expression_type(lhs, type_table).value_identity(),
+                        self.infer_expression_type(rhs, type_table).value_identity(),
                     ) else {
                         return;
                     };
@@ -74,7 +74,10 @@ impl TypeChecker {
                 for (condition, _) in branches {
                     self.require_boolean_expression(condition, "if", type_table);
                 }
-                if let Some(expected) = self.infer_expression_type(else_branch, type_table) {
+                if let Some(expected) = self
+                    .infer_expression_type(else_branch, type_table)
+                    .value_identity()
+                {
                     self.check_if_expression_branch_types(branches, expected, type_table);
                 }
             }
@@ -118,8 +121,10 @@ impl TypeChecker {
         expression: &Expression,
         type_table: &TypeTable,
     ) -> Option<DefId> {
-        let ty = self.infer_expression_type(expression, type_table)?;
-        let root = Self::resolve_alias_root(type_table, ty);
+        let ty = self
+            .infer_expression_type(expression, type_table)
+            .value_identity()?;
+        let root = self.resolve_type_root(ty);
         let Type::Class(class) = type_table.get(root)? else {
             return None;
         };
@@ -167,7 +172,10 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         for (_, value) in branches {
-            let Some(found) = self.infer_expression_type(value, type_table) else {
+            let Some(found) = self
+                .infer_expression_type(value, type_table)
+                .value_identity()
+            else {
                 continue;
             };
             if self.equation_types_compatible(type_table, expected, found) {
@@ -195,7 +203,7 @@ impl TypeChecker {
             .last()
             .map(|part| part.ident.text.as_ref())
             .unwrap_or_default();
-        if leaf == "String" || rumoca_core::BuiltinFunction::from_name(leaf).is_some() {
+        if leaf == "String" || self.resolved_builtin_function(comp).is_some() {
             return;
         }
         let dotted_name = Self::component_ref_name(comp);
@@ -227,18 +235,23 @@ impl TypeChecker {
                 (
                     name.to_string(),
                     self.resolve_function_signature_component_type(comp, component, type_table),
+                    Self::declared_component_shape(component),
                 )
             })
             .collect();
 
         let mut positional = 0usize;
         for arg in args {
-            let Some((expected, value)) =
+            let Some((expected, expected_shape, value)) =
                 Self::expected_function_argument(arg, &inputs, &mut positional)
             else {
                 continue;
             };
-            let Some(found) = self.infer_expression_type(value, type_table) else {
+            self.check_function_argument_shape_compatibility(expected_shape, value, type_table);
+            let Some(found) = self
+                .infer_expression_type(value, type_table)
+                .value_identity()
+            else {
                 continue;
             };
             self.check_expected_expression_type(
@@ -254,18 +267,18 @@ impl TypeChecker {
 
     fn expected_function_argument<'a>(
         arg: &'a Expression,
-        inputs: &[(String, TypeId)],
+        inputs: &[(String, TypeId, Option<Vec<usize>>)],
         positional: &mut usize,
-    ) -> Option<(TypeId, &'a Expression)> {
+    ) -> Option<(TypeId, Option<Vec<usize>>, &'a Expression)> {
         match arg {
             Expression::NamedArgument { name, value, .. } => inputs
                 .iter()
-                .find(|(input_name, _)| input_name.as_str() == name.text.as_ref())
-                .map(|(_, expected)| (*expected, value.as_ref())),
+                .find(|(input_name, _, _)| input_name.as_str() == name.text.as_ref())
+                .map(|(_, expected, shape)| (*expected, shape.clone(), value.as_ref())),
             value => {
-                let expected = inputs.get(*positional)?.1;
+                let (_, expected, shape) = inputs.get(*positional)?;
                 *positional += 1;
-                Some((expected, value))
+                Some((*expected, shape.clone(), value))
             }
         }
     }
@@ -276,12 +289,21 @@ impl TypeChecker {
         operator: &str,
         type_table: &TypeTable,
     ) {
-        if self.expression_has_root(expression, type_table, rumoca_ir_ast::BuiltinType::Boolean) {
-            return;
-        }
-        let Some(found) = self.infer_expression_type(expression, type_table) else {
+        // One inference, one decision. The root test and the diagnostic read
+        // the same issued identity instead of asking for it twice.
+        let Some(found) = self
+            .infer_expression_type(expression, type_table)
+            .value_identity()
+        else {
             return;
         };
+        if Self::has_builtin_root(
+            type_table,
+            self.resolve_type_root(found),
+            rumoca_ir_ast::BuiltinType::Boolean,
+        ) {
+            return;
+        }
         self.emit_operator_operand_mismatch(expression, operator, "Boolean", found, type_table);
     }
 
@@ -291,10 +313,25 @@ impl TypeChecker {
         operator: &str,
         type_table: &TypeTable,
     ) {
-        let Some(found) = self.infer_expression_type(expression, type_table) else {
+        let Some(found) = self
+            .infer_expression_type(expression, type_table)
+            .value_identity()
+        else {
             return;
         };
-        let root = self.resolve_type_root(type_table, found);
+        self.require_numeric_identity(expression, operator, found, type_table);
+    }
+
+    /// Operand legality for the arithmetic operators, decided from an identity
+    /// the issuer already produced.
+    fn require_numeric_identity(
+        &mut self,
+        expression: &Expression,
+        operator: &str,
+        found: TypeId,
+        type_table: &TypeTable,
+    ) {
+        let root = self.resolve_type_root(found);
         match type_table.get(root) {
             Some(Type::Builtin(
                 rumoca_ir_ast::BuiltinType::Real | rumoca_ir_ast::BuiltinType::Integer,
@@ -318,16 +355,16 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         let (Some(lhs_type), Some(rhs_type)) = (
-            self.infer_expression_type(lhs, type_table),
-            self.infer_expression_type(rhs, type_table),
+            self.infer_expression_type(lhs, type_table).value_identity(),
+            self.infer_expression_type(rhs, type_table).value_identity(),
         ) else {
             // Unknown types are diagnosed at name/type resolution. Do not
             // reinterpret the known half of an unresolved string
             // concatenation as a numeric operand.
             return;
         };
-        let lhs_root = self.resolve_type_root(type_table, lhs_type);
-        let rhs_root = self.resolve_type_root(type_table, rhs_type);
+        let lhs_root = self.resolve_type_root(lhs_type);
+        let rhs_root = self.resolve_type_root(rhs_type);
         let both_strings = matches!(
             (type_table.get(lhs_root), type_table.get(rhs_root)),
             (
@@ -336,22 +373,21 @@ impl TypeChecker {
             )
         );
         if both_strings {
+            // MLS §3.6.1: `+` concatenates two Strings.
             return;
         }
-        self.require_numeric_expression(lhs, "+", type_table);
-        self.require_numeric_expression(rhs, "+", type_table);
+        // The operand identities are already issued; the numeric check reuses
+        // them rather than re-deriving the same fact.
+        self.require_numeric_identity(lhs, "+", lhs_type, type_table);
+        self.require_numeric_identity(rhs, "+", rhs_type, type_table);
     }
 
-    fn expression_has_root(
-        &self,
-        expression: &Expression,
+    fn has_builtin_root(
         type_table: &TypeTable,
+        root: TypeId,
         expected: rumoca_ir_ast::BuiltinType,
     ) -> bool {
-        self.infer_expression_type(expression, type_table)
-            .map(|ty| self.resolve_type_root(type_table, ty))
-            .and_then(|root| type_table.get(root))
-            .is_some_and(|ty| matches!(ty, Type::Builtin(found) if *found == expected))
+        matches!(type_table.get(root), Some(Type::Builtin(found)) if *found == expected)
     }
 
     fn emit_operator_operand_mismatch(

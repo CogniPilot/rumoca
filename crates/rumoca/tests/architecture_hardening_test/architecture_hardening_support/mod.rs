@@ -1,3 +1,12 @@
+mod cfg_predicate;
+mod production_modules;
+
+pub(crate) use cfg_predicate::{attribute_text_visibility, cfg_attr_sets_production_path};
+pub(crate) use production_modules::{
+    ProductionRustSourceContext, attributes_require_test, production_rust_source_contexts,
+    production_rust_sources, production_rust_target_roots,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -635,7 +644,6 @@ fn is_textual_model_path_recovery_debt_checked_source(rel: &str) -> bool {
     }
     if rel.contains("/tests/")
         || rel.ends_with("/tests.rs")
-        || rel.ends_with("_test.rs")
         || rel.ends_with("_tests.rs")
         || rel.ends_with("/path_utils.rs")
         || rel.starts_with("crates/rumoca-phase-codegen/")

@@ -58,6 +58,8 @@
 //! The values are untouched: the same bits select the same arm, and the arms
 //! are unchanged.
 
+use std::fmt;
+
 use rumoca_core::Span;
 use rumoca_ir_galec::ast as gast;
 
@@ -82,11 +84,11 @@ pub(super) struct BoundGuard {
 /// Returns the bindings in emission order. An empty result means nothing was
 /// provable, which is the default: declining costs a few instructions per
 /// element, a wrong rewrite changes an eFMI-visible status word.
-pub(super) fn bind_invariant_guards(
+pub(super) fn bind_invariant_guards<N: fmt::Display + ?Sized>(
     body: &mut [gast::Spanned<gast::Statement>],
     iterators: &[gast::Name],
     extents: &[u32],
-    namespace: &str,
+    namespace: &N,
     next_temporary: &mut usize,
     span: Span,
 ) -> Vec<BoundGuard> {
@@ -118,10 +120,10 @@ pub(super) fn bind_invariant_guards(
 }
 
 /// Move one proven condition into a fresh Boolean local.
-fn bind(
+fn bind<N: fmt::Display + ?Sized>(
     branch: &mut gast::IfBranch,
     permission: permission::HoistableGuard,
-    namespace: &str,
+    namespace: &N,
     next_temporary: &mut usize,
     span: Span,
 ) -> BoundGuard {
@@ -199,11 +201,6 @@ mod permission {
     pub(super) struct HoistableGuard {
         /// The GAL-040 half of the proof: repeating or not repeating this
         /// condition leaves the final status word bit-identical.
-        #[expect(
-            dead_code,
-            reason = "held as evidence: the obligation is that the token exists, \
-                      not that anything reads it back"
-        )]
         signal: RepeatableSignalEffect,
         /// The proven condition, moved out of the branch by `prove`.
         expression: gast::Expression,
@@ -267,10 +264,12 @@ mod permission {
             branch: &mut gast::IfBranch,
             name: &gast::Name,
         ) -> gast::Expression {
+            let Self { signal, expression } = self;
+            let _: RepeatableSignalEffect = signal;
             branch.condition = gast::Condition::Expression(gast::Expression::Ref(
                 gast::Reference::local(name.clone()),
             ));
-            self.expression
+            expression
         }
     }
 

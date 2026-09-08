@@ -302,3 +302,50 @@ fn save_publish_diagnostics_skips_stale_requests_before_strict_compile() {
         assert_no_stale_save_diagnostics_stats(before);
     });
 }
+
+#[test]
+fn source_root_failure_replaces_diagnostics_and_records_a_non_stale_timing() {
+    let _guard = session_stats_test_guard();
+    let temp = new_temp_dir("save-diagnostics-source-root-failure");
+    let timing_path = temp.join("diagnostics-timings.jsonl");
+
+    run_async_test(async {
+        let service = new_test_service();
+        let server = service.inner();
+        *server.diagnostics_timing_path.write().await = Some(timing_path.clone());
+        *server.source_root_paths.write().await =
+            vec![temp.join("missing-root").to_string_lossy().to_string()];
+        let active_path = temp.join("active.mo");
+        let active_uri = Url::from_file_path(&active_path).expect("file uri");
+        let active_source = "model Active\n  Missing.Root value;\nend Active;\n";
+
+        server
+            .publish_diagnostics(
+                active_uri,
+                active_source,
+                DiagnosticsTrigger::Save,
+                session_cache_stats(),
+            )
+            .await;
+    });
+
+    let entries: Vec<LoggedDiagnosticsTimingSummary> = read_jsonl(&timing_path);
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert!(entry.requested_source_root_load);
+    assert!(!entry.request_was_stale);
+    assert!(!entry.ran_compile);
+    assert_eq!(entry.semantic_layer, "source_root_error");
+    assert!(entry.source_root_load_ms <= entry.total_ms);
+
+    let error = SourceRootPreparationError::Reservation {
+        source_root_path: "missing-root".to_string(),
+        disposition: SourceRootLoadReservation::InFlight {
+            reservation_epoch: 7,
+        },
+    };
+    let diagnostic = super::super::diagnostics::source_root_preparation_failure_diagnostic(&error);
+    assert_eq!(diagnostic.severity, Some(DiagnosticSeverity::ERROR));
+    assert_eq!(diagnostic.source.as_deref(), Some("rumoca"));
+    assert!(diagnostic.message.contains("source-root reservation"));
+}

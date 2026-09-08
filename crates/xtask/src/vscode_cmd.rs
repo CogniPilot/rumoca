@@ -70,35 +70,20 @@ impl VscodePackageTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct VscodeStageCacheDeltaSummary {
-    #[serde(alias = "fileItemIndexQueryHits")]
     pub(crate) file_item_index_query_hits: Option<u64>,
-    #[serde(alias = "fileItemIndexQueryMisses")]
     pub(crate) file_item_index_query_misses: Option<u64>,
-    #[serde(alias = "declarationIndexQueryHits")]
     pub(crate) declaration_index_query_hits: Option<u64>,
-    #[serde(alias = "declarationIndexQueryMisses")]
     pub(crate) declaration_index_query_misses: Option<u64>,
-    #[serde(alias = "scopeQueryHits")]
     pub(crate) scope_query_hits: Option<u64>,
-    #[serde(alias = "scopeQueryMisses")]
     pub(crate) scope_query_misses: Option<u64>,
-    #[serde(alias = "sourceSetPackageMembershipQueryHits")]
     pub(crate) source_set_package_membership_query_hits: Option<u64>,
-    #[serde(alias = "sourceSetPackageMembershipQueryMisses")]
     pub(crate) source_set_package_membership_query_misses: Option<u64>,
-    #[serde(alias = "orphanPackageMembershipQueryHits")]
     pub(crate) orphan_package_membership_query_hits: Option<u64>,
-    #[serde(alias = "orphanPackageMembershipQueryMisses")]
     pub(crate) orphan_package_membership_query_misses: Option<u64>,
-    #[serde(alias = "libraryCompletionCacheHits")]
     pub(crate) namespace_completion_cache_hits: Option<u64>,
-    #[serde(alias = "libraryCompletionCacheMisses")]
     pub(crate) namespace_completion_cache_misses: Option<u64>,
-    #[serde(alias = "libraryFilesParsed")]
     pub(crate) source_root_files_parsed: Option<u64>,
-    #[serde(alias = "standardResolvedBuilds")]
     pub(crate) standard_resolved_builds: Option<u64>,
-    #[serde(alias = "semanticNavigationBuilds")]
     pub(crate) semantic_navigation_builds: Option<u64>,
 }
 
@@ -824,15 +809,15 @@ pub(crate) fn vscode_dev(args: VscodeHostArgs) -> Result<()> {
         stop.store(true, Ordering::Relaxed);
     }
     if let Some(handle) = rust_watch_handle {
-        let _ = handle.join();
+        let _watch_panic = handle.join();
     }
 
     if let Some(mut child) = ts_watch {
         match child.try_wait() {
             Ok(Some(_)) => {}
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _already_exited = child.kill();
+                let _reap_error = child.wait();
             }
             Err(_) => {}
         }
@@ -1240,7 +1225,7 @@ fn replace_staged_binary(source: &Path, target: &Path) -> Result<()> {
                 return Ok(());
             }
         }
-        let _ = fs::remove_file(&temp_target);
+        let _temporary_removal_error = fs::remove_file(&temp_target);
         return Err(error).with_context(|| {
             format!(
                 "failed to replace staged binary {} with {}",

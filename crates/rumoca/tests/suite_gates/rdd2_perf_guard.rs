@@ -106,15 +106,14 @@
 //! so the same baseline there would measure the runner rather than the
 //! compiler. Wiring it up needs a dedicated, pinned, non-shared machine and a
 //! baseline recorded on that machine; until such a runner exists, run it by
-//! hand before and after work that touches Solve lowering or codegen. The
-//! sibling `galec_review_surface` gate has no such constraint -- see its docs.
+//! hand before and after work that touches Solve lowering or codegen.
 
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-// Corpus/binary resolution is shared with the sibling `galec_review_surface`
-// gate, so the two cannot disagree about what they are measuring.
+// Corpus/binary resolution remains shared with any future authenticated RDD2
+// artifact gates so they cannot disagree about what they are measuring.
 use super::rdd2_gate_environment::{
     baseline_f64, baseline_path, baseline_str, corpus_provenance, read_baseline, release_binary,
     require_model_library,

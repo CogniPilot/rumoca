@@ -7,7 +7,7 @@ use rumoca_ir_ast as ast;
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::{ResolvedTree, resolve};
-use rumoca_phase_typecheck::typecheck_instanced;
+use rumoca_phase_typecheck::typecheck_instanced_tree;
 
 /// Helper: Find a component by qualified name in the overlay.
 fn find_component<'a>(
@@ -328,7 +328,7 @@ fn test_modification_propagation_nested() {
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
 
     let result = instantiate_model_with_outcome(&tree, "Test");
     let overlay = match result {
@@ -437,7 +437,7 @@ fn test_array_modifier_distribution_preserves_binding_source_scope() {
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
 
     let overlay = match instantiate_model_with_outcome(&tree, "Top") {
         InstantiationOutcome::Success(o) => o,
@@ -470,7 +470,7 @@ fn test_array_modifier_distribution_preserves_binding_source_scope() {
     );
 }
 
-/// Test that typecheck_instanced evaluates dimensions correctly.
+/// Test that the typecheck mint evaluates dimensions correctly.
 #[test]
 fn test_dimension_evaluation_after_typecheck() {
     let source = r#"
@@ -496,7 +496,7 @@ fn test_dimension_evaluation_after_typecheck() {
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
 
-    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), "Test") {
+    let overlay = match instantiate_model_with_outcome(resolved.inner(), "Test") {
         InstantiationOutcome::Success(o) => o,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("Needs inner: {:?}", missing_inners);
@@ -525,14 +525,18 @@ fn test_dimension_evaluation_after_typecheck() {
         "expected symbolic dims_expr or pre-evaluated dims=[2] before typecheck"
     );
 
-    // Run typecheck_instanced
-    let result = typecheck_instanced(&resolved, &mut overlay, "");
-    if let Err(diags) = result {
-        println!("\nTypecheck errors:");
-        for d in diags.iter() {
-            println!("  {}", d.message);
+    // Run the typecheck mint
+    let typed = match typecheck_instanced_tree(&resolved, overlay, "") {
+        Ok(typed) => typed,
+        Err(diags) => {
+            println!("\nTypecheck errors:");
+            for d in diags.iter() {
+                println!("  {}", d.message);
+            }
+            panic!("typecheck should succeed");
         }
-    }
+    };
+    let overlay = typed.overlay();
 
     // After typecheck: check dimensions
     println!("\n=== After typecheck ===");
@@ -612,7 +616,7 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
     tree.source_map.add("<test>", source);
     let parsed = ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve failed");
-    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), "P.Test") {
+    let overlay = match instantiate_model_with_outcome(resolved.inner(), "P.Test") {
         InstantiationOutcome::Success(o) => o,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("Needs inner: {:?}", missing_inners);
@@ -622,9 +626,11 @@ fn test_nested_colon_parameter_binding_drives_size_dimension() {
         }
     };
 
-    typecheck_instanced(&resolved, &mut overlay, "P.Test").expect("typecheck should succeed");
+    let typed =
+        typecheck_instanced_tree(&resolved, overlay, "P.Test").expect("typecheck should succeed");
+    let overlay = typed.overlay();
 
-    let q = find_component(&overlay, "pathPlanning.path.q").expect("path.q should exist");
+    let q = find_component(overlay, "pathPlanning.path.q").expect("path.q should exist");
     assert_eq!(q.dims, vec![6]);
 }
 
@@ -650,7 +656,7 @@ fn test_array_component_modifier_reference_typechecks_in_lexical_parent_scope() 
         end Top;
     "#;
 
-    let (tree, mut overlay) = instantiate_test_model(source, "Top");
+    let (tree, overlay) = instantiate_test_model(source, "Top");
 
     for index in 1..=3 {
         let cell_parameter_name = format!("group.cells[{index}].V");
@@ -685,7 +691,7 @@ fn test_array_component_modifier_reference_typechecks_in_lexical_parent_scope() 
         );
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Top")
+    let _typed = typecheck_instanced_tree(&tree, overlay, "Top")
         .expect("source-scoped array element modifier bindings should typecheck");
 }
 
@@ -710,7 +716,7 @@ fn test_dffreg_like_structure() {
         end Example;
     "#;
 
-    let (tree, mut overlay) = instantiate_test_model(source, "Example");
+    let (tree, overlay) = instantiate_test_model(source, "Example");
 
     // Debug output
     print_components_matching(&overlay, |name| {
@@ -727,10 +733,11 @@ fn test_dffreg_like_structure() {
     assert_integer_binding(&overlay, "dFFREG.dFFR.n", "2");
 
     // Run typecheck and verify dimensions
-    typecheck_instanced(&tree, &mut overlay, "")
+    let typed = typecheck_instanced_tree(&tree, overlay, "")
         .expect("DFFREG modifier propagation should typecheck");
-    assert_dims(&overlay, "dFFREG.dataIn", &[2]);
-    assert_dims(&overlay, "dFFREG.dFFR.dataIn", &[2]);
+    let overlay = typed.overlay();
+    assert_dims(overlay, "dFFREG.dataIn", &[2]);
+    assert_dims(overlay, "dFFREG.dFFR.dataIn", &[2]);
 }
 
 #[test]
@@ -1086,12 +1093,13 @@ fn test_constrainedby_mod_survives_redeclare_for_replaceable_component() {
         end Top;
     "#;
 
-    let (tree, mut overlay) = instantiate_test_model(source, "Top");
-    typecheck_instanced(&tree, &mut overlay, "")
+    let (tree, overlay) = instantiate_test_model(source, "Top");
+    let typed = typecheck_instanced_tree(&tree, overlay, "")
         .expect("redeclared component dimensions should typecheck");
+    let overlay = typed.overlay();
 
-    assert_integer_binding(&overlay, "p.comb.n", "2");
-    assert_dims(&overlay, "p.comb.u", &[2]);
+    assert_integer_binding(overlay, "p.comb.n", "2");
+    assert_dims(overlay, "p.comb.u", &[2]);
 }
 
 #[test]
@@ -1121,15 +1129,16 @@ fn test_record_constructor_defaults_preserve_colon_dimension_bindings() {
         end Top;
     "#;
 
-    let (tree, mut overlay) = instantiate_test_model(source, "Top");
-    typecheck_instanced(&tree, &mut overlay, "")
+    let (tree, overlay) = instantiate_test_model(source, "Top");
+    let typed = typecheck_instanced_tree(&tree, overlay, "")
         .expect("typecheck should infer dimensions through default record constructor fields");
+    let overlay = typed.overlay();
 
-    assert_dims(&overlay, "mat.tabris", &[2, 2]);
-    assert_dims(&overlay, "tab.table", &[2, 2]);
-    assert_dims(&overlay, "tab.columns", &[1]);
-    assert_dims(&overlay, "tab.u", &[1]);
-    assert_dims(&overlay, "tab.y", &[1]);
+    assert_dims(overlay, "mat.tabris", &[2, 2]);
+    assert_dims(overlay, "tab.table", &[2, 2]);
+    assert_dims(overlay, "tab.columns", &[1]);
+    assert_dims(overlay, "tab.u", &[1]);
+    assert_dims(overlay, "tab.y", &[1]);
 }
 
 #[test]

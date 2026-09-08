@@ -1,4 +1,5 @@
 use super::*;
+use crate::construction::analysis::record_array_fields::FieldAccessDisposition;
 
 pub(super) fn lower_call_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
@@ -11,31 +12,48 @@ pub(super) fn lower_call_expression<'dae>(
         name,
         args,
         is_constructor,
+        call_kind,
         span,
     } = expression
     else {
-        unreachable!("call lowering is selected from a function call")
-    };
-    if !*is_constructor
-        && let Some(conversion) = enumeration_conversion(symbols.functions.flat, name, args, *span)
-            .expect("analysis accepts every enumeration conversion it lowers")
-    {
-        return construction.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .enumeration_literal(conversion.ordinal)
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: provenance.span(),
         });
+    };
+    match rumoca_core::classify_named_function_arg_marker(name, args, *is_constructor, *call_kind) {
+        rumoca_core::NamedFunctionArgMarker::Valid { .. } => {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
+        }
+        rumoca_core::NamedFunctionArgMarker::Malformed => {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            });
+        }
+        rumoca_core::NamedFunctionArgMarker::NotMarker => {}
+    }
+    if !*is_constructor {
+        let conversion = enumeration_conversion(symbols.functions.flat, name, args, *span)
+            .map_err(|_| dae::DaeConstructionError::InvalidExpressionForm {
+                span: provenance.span(),
+            })?;
+        if let Some(conversion) = conversion {
+            return construction.expressions(|expressions| {
+                expressions
+                    .at(provenance)
+                    .enumeration_literal(conversion.ordinal)
+            });
+        }
     }
     match classify_function_call(*is_constructor) {
-        FunctionCallLowering::Constructor | FunctionCallLowering::Registry => lower_function_call(
-            construction,
-            symbols,
-            binders,
-            name,
-            args,
-            *is_constructor,
-            provenance,
-        ),
+        FunctionCallLowering::Constructor => {
+            lower_record_constructor(construction, symbols, binders, name, args, provenance)
+        }
+        FunctionCallLowering::Registry => {
+            let call = lower_call_operands(construction, symbols, binders, name, args, provenance)?;
+            call.result(construction, 0, provenance)
+        }
     }
 }
 
@@ -85,7 +103,9 @@ pub(super) fn lower_range<'dae>(
         start, step, end, ..
     } = input.expression
     else {
-        unreachable!("range lowering is selected from a range expression")
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: input.provenance.span(),
+        });
     };
     if enumeration_range_type(start, step.as_deref(), end, &|name| {
         is_flat_enumeration_literal(symbols.functions.flat, name)
@@ -444,31 +464,32 @@ pub(super) fn lower_record_array_field_access<'dae>(
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let fields = &symbols.functions.record_array_fields;
-    if fields.function_result(expression).is_some() {
-        let Expression::FieldAccess { base, .. } = expression else {
-            unreachable!("function-result plans are keyed only by field access")
-        };
-        return lower_expression_scoped(construction, symbols, binders, base, None);
-    }
-    if let Some(plan) = fields.structural(expression) {
-        let Expression::FieldAccess { base, .. } = expression else {
-            unreachable!("structural field plans are keyed only by field access")
-        };
-        let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
-        let ordinal = construction.expressions(|expressions| {
-            expressions.record_field_ordinal(base, &plan.name, provenance)
-        })?;
-        if ordinal != Some(plan.ordinal) {
+    let plan = match fields.classify_field_access(expression) {
+        FieldAccessDisposition::FunctionResult { base, .. } => {
+            return lower_expression_scoped(construction, symbols, binders, base, None);
+        }
+        FieldAccessDisposition::Structural { base, plan } => {
+            let base = lower_expression_scoped(construction, symbols, binders, base, None)?;
+            let ordinal = construction.expressions(|expressions| {
+                expressions.record_field_ordinal(base, &plan.name, provenance)
+            })?;
+            if ordinal != Some(plan.ordinal) {
+                return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: provenance.span(),
+                });
+            }
+            return construction
+                .expressions(|expressions| expressions.at(provenance).field(base, plan.ordinal));
+        }
+        FieldAccessDisposition::Materialized(plan) | FieldAccessDisposition::Projection(plan) => {
+            plan
+        }
+        FieldAccessDisposition::Unsupported => {
             return Err(dae::DaeConstructionError::InvalidExpressionForm {
                 span: provenance.span(),
             });
         }
-        return construction
-            .expressions(|expressions| expressions.at(provenance).field(base, plan.ordinal));
-    }
-    let plan = fields
-        .get(expression)
-        .expect("analysis certifies every lowered record-array field projection");
+    };
     let (coordinates, subscripts) = match plan {
         RecordArrayFieldPlan::MaterializedCoordinate { coordinate, .. } => {
             let coordinate = exact_model_coordinate(symbols, *coordinate, provenance.span())?;

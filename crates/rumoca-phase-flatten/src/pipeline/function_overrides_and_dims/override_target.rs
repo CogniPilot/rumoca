@@ -4,9 +4,12 @@
 
 use super::*;
 
-pub(crate) type ComponentOverrideMap =
-    rustc_hash::FxHashMap<ComponentPath, rustc_hash::FxHashMap<String, OverrideTarget>>;
-pub(super) type OverrideFunctionMap = rustc_hash::FxHashMap<String, OverrideTarget>;
+/// Alias tables are keyed by the alias slot's declaration `DefId`, never by
+/// its spelled name: two same-spelled aliases at different nesting depths are
+/// different slots and must never merge.
+pub(crate) type AliasOverrideTable = rustc_hash::FxHashMap<rumoca_core::DefId, OverrideTarget>;
+pub(crate) type ComponentOverrideMap = rustc_hash::FxHashMap<ComponentPath, AliasOverrideTable>;
+pub(super) type OverrideFunctionMap = AliasOverrideTable;
 pub(super) type OverrideContext = (Vec<OverrideTarget>, OverrideFunctionMap);
 
 #[derive(Clone, Debug)]
@@ -24,10 +27,10 @@ pub(super) struct ResolvedClassRef<'a> {
 
 /// Identity of the replaceable declaration slot a function redeclare fills.
 ///
-/// A redeclare is honored by exact slot identity, never by name. `Exact`
-/// is the typed token validation mints for the rewrite to consume;
-/// `Unresolved` records a redeclare whose slot identity could not be
-/// established, which the rewrite must refuse rather than silently ignore.
+/// A redeclare is honored by exact slot identity, never by name. `Exact` is
+/// the typed token validation mints for the rewrite to consume. A redeclare
+/// whose slot identity cannot be established is refused with a typed error at
+/// collection time, so an unresolved slot is unrepresentable here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FunctionSlot {
     /// The alias is not a function redeclare (component receiver, package
@@ -36,14 +39,15 @@ pub(super) enum FunctionSlot {
     /// The redeclare fills the replaceable function declaration with this
     /// exact `DefId`.
     Exact(rumoca_core::DefId),
-    /// The redeclare names a function but its slot identity did not resolve;
-    /// calls that may be governed by it must refuse instead of defaulting.
-    Unresolved,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct OverrideTarget {
+    /// Spelled alias name, retained for display and import-scope rendering
+    /// only; every table key and every selection decision uses `alias_slot`.
     pub(super) alias: String,
+    /// Declaration identity of the alias slot this target fills.
+    pub(super) alias_slot: rumoca_core::DefId,
     pub(crate) name: String,
     pub(super) def_id: rumoca_core::DefId,
     pub(super) class_type: rumoca_core::ClassType,
@@ -55,20 +59,23 @@ pub(crate) struct OverrideTarget {
 impl OverrideTarget {
     pub(super) fn from_resolved(
         alias: impl Into<String>,
+        alias_slot: rumoca_core::DefId,
         target: ResolvedClassRef<'_>,
         active: bool,
     ) -> Self {
-        Self::from_resolved_with_modifier_args(alias, target, active, Vec::new())
+        Self::from_resolved_with_modifier_args(alias, alias_slot, target, active, Vec::new())
     }
 
     pub(super) fn from_resolved_with_modifier_args(
         alias: impl Into<String>,
+        alias_slot: rumoca_core::DefId,
         target: ResolvedClassRef<'_>,
         active: bool,
         modifier_args: Vec<FunctionModifierArg>,
     ) -> Self {
         Self {
             alias: alias.into(),
+            alias_slot,
             name: target.name,
             def_id: target.def_id,
             class_type: target.class_def.class_type.clone(),
@@ -113,7 +120,7 @@ pub(super) fn function_modifier_arg_from_ast(
         }
         rumoca_ir_ast::Expression::Modification {
             target,
-            value,
+            value: Some(value),
             span,
         } => Some(FunctionModifierArg {
             name: single_component_ref_name(target)?,

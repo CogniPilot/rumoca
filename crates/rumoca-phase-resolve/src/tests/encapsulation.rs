@@ -45,6 +45,30 @@ end P;
 }
 
 #[test]
+fn test_encapsulated_class_cannot_see_enclosing_type() {
+    let source = r#"
+package P
+  type Hidden = Real;
+  encapsulated model M
+    Hidden value;
+  end M;
+end P;
+"#;
+
+    let diagnostics =
+        resolve_test_source(source).expect_err("encapsulated M must not resolve P.Hidden");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("ER002")
+                && diagnostic
+                    .message
+                    .contains("unresolved type reference: 'Hidden'")
+        }),
+        "the type lookup must stop at the encapsulated boundary: {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_encapsulated_class_resolves_predefined_type() {
     let source = r#"
 package P

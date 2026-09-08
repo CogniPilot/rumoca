@@ -9,7 +9,6 @@ pub(crate) fn process_class_instance(
     ctx: &mut Context,
     flat: &mut Model,
     class_data: &ClassInstanceData,
-    class_def_id: Option<rumoca_core::DefId>,
     component_override_map: &ComponentOverrideMap,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
@@ -17,7 +16,9 @@ pub(crate) fn process_class_instance(
 ) -> Result<(), FlattenError> {
     let previous_class_scope = ctx.current_class_scope_path.clone();
     let previous_class_instance = ctx.current_class_instance_id;
-    ctx.current_class_scope_path = class_def_id.and_then(|id| tree.def_map.get(&id).cloned());
+    ctx.current_class_scope_path = class_data
+        .class_def_id
+        .and_then(|id| tree.def_map.get(&id).cloned());
     ctx.current_class_instance_id = Some(class_data.instance_id);
     let result = process_class_instance_body(
         ctx,
@@ -46,7 +47,6 @@ fn process_class_instance_body(
 ) -> Result<(), FlattenError> {
     let operators = semantic_catalogs.connections();
     let prefix = &class_data.qualified_name;
-    let def_map = Some(&tree.def_map);
     let class_scope = class_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&class_scope, component_override_map);
@@ -77,8 +77,7 @@ fn process_class_instance_body(
             &override_functions,
         );
         // Handle when-equations separately (pass context for parameter evaluation).
-        let chain =
-            when_equations::flatten_when_equation(ctx, &inst_eq, prefix, def_map, operators)?;
+        let chain = when_equations::flatten_when_equation(ctx, &inst_eq, prefix, operators)?;
         if let Some(mut chain) = chain {
             attach_when_chain_reference_scopes(&mut chain, class_data.instance_id)?;
             rewrite_function_overrides_in_when_chain(
@@ -93,8 +92,7 @@ fn process_class_instance_body(
         }
 
         // Handle other equations (including for-loops that may contain when-equations).
-        let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map, operators)?;
+        let mut flattened = equations::flatten_equation(ctx, &inst_eq, prefix, operators)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,
@@ -147,8 +145,7 @@ fn process_class_instance_body(
             ));
         }
 
-        let mut flattened =
-            equations::flatten_equation_with_def_map(ctx, &inst_eq, prefix, def_map, operators)?;
+        let mut flattened = equations::flatten_equation(ctx, &inst_eq, prefix, operators)?;
         attach_equation_reference_scopes(&mut flattened, class_data.instance_id)?;
         rewrite_function_overrides_in_flattened(
             &mut flattened,

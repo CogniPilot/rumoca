@@ -36,7 +36,8 @@ use std::collections::{HashMap, HashSet};
 
 pub(crate) use call_args::materialize_flat_function_call_args;
 pub(crate) use call_canonicalization::{
-    canonicalize_collected_function_calls, canonicalize_function_calls_in_expression_with_scope,
+    StructuralFoldCallCanonicalizer, canonicalize_collected_function_calls,
+    canonicalize_function_calls_in_expression_with_scope,
 };
 use call_collection::collect_function_call_requests;
 #[cfg(test)]
@@ -47,8 +48,8 @@ use constructor_signature::{
     normalize_function_local_references,
 };
 use function_context::{
-    collect_function_context, collect_lexical_constant_aliases, extend_imports_if_absent,
-    function_initial_import_map, resolve_import_pairs,
+    ImportOrigin, collect_function_context, collect_lexical_constant_aliases,
+    extend_imports_if_absent, function_initial_import_map,
 };
 pub(crate) use function_metadata::FunctionTypeCatalog;
 pub(crate) use function_metadata::materialize_complete_record_value_defaults;
@@ -998,7 +999,6 @@ fn convert_callable<'tree>(
             class_def,
             exposure_def_id,
             qualified_name,
-            source_map,
             member_cache,
             type_catalog,
         )
@@ -1023,7 +1023,6 @@ fn convert_callable<'tree>(
                 class_index,
                 class_def,
                 &mut constructor,
-                source_map,
                 member_cache,
                 type_catalog,
             )?;
@@ -1078,7 +1077,6 @@ fn convert_external_object_callable<'tree>(
                 constructor,
                 owner_def_id,
                 exposed_name,
-                source_map,
                 member_cache,
                 type_catalog,
             )
@@ -1092,7 +1090,6 @@ fn convert_external_object_constructor<'tree>(
     constructor: &'tree ast::ClassDef,
     exposure_def_id: rumoca_core::DefId,
     exposed_name: &str,
-    source_map: &rumoca_core::SourceMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
@@ -1102,10 +1099,143 @@ fn convert_external_object_constructor<'tree>(
         constructor,
         exposure_def_id,
         exposed_name,
-        source_map,
         member_cache,
         type_catalog,
     )
+}
+
+/// The import view a function-body origin scope lowers against: the lookup
+/// authority's effective imports for that scope overlaid with the
+/// declaration-backed alias channels, plus the names the authority refused.
+struct FunctionImportView {
+    imports: qualify::ImportMap,
+    refusals: crate::pipeline::ImportRefusalMap,
+}
+
+/// Mint (or fetch) the import view of one origin scope inside a function
+/// conversion.
+///
+/// MLS §13.2 / §5.3.1: the one lookup authority decides the import view of
+/// the scope that textually declares a statement or member; imports are never
+/// inherited, so no extends-chain union of import clauses exists here. The
+/// declaration-backed alias channels (enclosing package/class aliases,
+/// enclosing constants) are layered after the seeded imports, mirroring the
+/// equation channel: a name such a channel deliberately binds is a
+/// declaration, not an import, and it also lifts an import-tier refusal.
+struct FunctionImportAssembly<'a, 'tree> {
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'tree>,
+    class_def: &'a ast::ClassDef,
+    qualified_name: &'a str,
+    context_aliases: &'a qualify::ImportMap,
+}
+
+fn function_import_view_for<'views, 'tree>(
+    views: &'views mut HashMap<ImportOrigin, FunctionImportView>,
+    origin: ImportOrigin,
+    assembly: &FunctionImportAssembly<'_, 'tree>,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+) -> Result<&'views FunctionImportView, FlattenError> {
+    use std::collections::hash_map::Entry;
+    match views.entry(origin) {
+        Entry::Occupied(entry) => Ok(entry.into_mut()),
+        Entry::Vacant(entry) => {
+            let mut imports = qualify::ImportMap::default();
+            let mut refusals = crate::pipeline::ImportRefusalMap::default();
+            if let ImportOrigin::Scope(scope_id) = origin {
+                crate::pipeline::seed_effective_imports(
+                    assembly.tree,
+                    scope_id,
+                    &mut imports,
+                    &mut refusals,
+                )?;
+            }
+            imports.extend(function_initial_import_map(
+                assembly.tree,
+                assembly.class_index,
+                assembly.class_def,
+                assembly.qualified_name,
+                member_cache,
+            ));
+            extend_imports_if_absent(&mut imports, assembly.context_aliases);
+            if let Some(class_def_id) = assembly.class_def.def_id {
+                collect_lexical_constant_aliases(
+                    assembly.tree,
+                    assembly.class_index,
+                    class_def_id,
+                    &mut imports,
+                    true,
+                );
+            }
+            refusals.retain(|name, _| !imports.contains_key(name));
+            Ok(entry.insert(FunctionImportView { imports, refusals }))
+        }
+    }
+}
+
+/// Reject any use of a refused imported name in the expressions a function
+/// component declaration carries (MLS §5.3.1): its start and binding
+/// expressions, attribute modifications, and declared array dimensions.
+fn refuse_refused_imports_in_component(
+    component: &ast::Component,
+    refusals: &crate::pipeline::ImportRefusalMap,
+    locals: &HashSet<String>,
+) -> Result<(), FlattenError> {
+    if refusals.is_empty() {
+        return Ok(());
+    }
+    crate::pipeline::refuse_ambiguous_import_uses(&component.start, refusals, Some(locals))?;
+    if let Some(binding) = component.binding.as_ref() {
+        crate::pipeline::refuse_ambiguous_import_uses(binding, refusals, Some(locals))?;
+    }
+    for value in component.modifications.values() {
+        crate::pipeline::refuse_ambiguous_import_uses(value, refusals, Some(locals))?;
+    }
+    for subscript in &component.shape_expr {
+        if let ast::Subscript::Expression(expr) = subscript {
+            crate::pipeline::refuse_ambiguous_import_uses(expr, refusals, Some(locals))?;
+        }
+    }
+    Ok(())
+}
+
+/// Convert each effective component of a callable into a function parameter,
+/// lowered against the import view of the scope that declares it.
+fn add_function_parameters<'tree>(
+    func: &mut rumoca_core::Function,
+    effective_components: &IndexMap<String, function_context::OriginComponent>,
+    import_views: &mut HashMap<ImportOrigin, FunctionImportView>,
+    import_assembly: &FunctionImportAssembly<'_, 'tree>,
+    member_cache: &mut qualify::MemberDefIdCache<'tree>,
+    function_locals: &HashSet<String>,
+    type_catalog: FunctionTypeCatalog<'_>,
+) -> Result<(), FlattenError> {
+    for (comp_name, member) in effective_components {
+        let view =
+            function_import_view_for(import_views, member.origin, import_assembly, member_cache)?;
+        refuse_refused_imports_in_component(&member.component, &view.refusals, function_locals)?;
+        let param = convert_component_to_param(
+            import_assembly.class_index,
+            comp_name,
+            &member.component,
+            &import_assembly.tree.source_map,
+            FunctionExpressionContext {
+                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(
+                    import_assembly.tree,
+                ),
+                type_catalog,
+            },
+            &view.imports,
+            function_locals,
+        )?;
+
+        match &member.component.causality {
+            rumoca_core::Causality::Input(_) => func.add_input(param),
+            rumoca_core::Causality::Output(_) => func.add_output(param),
+            rumoca_core::Causality::Empty => func.add_local(param),
+        }
+    }
+    Ok(())
 }
 
 /// Convert a ast::ClassDef (function) to a rumoca_core::Function.
@@ -1115,14 +1245,14 @@ fn convert_function<'tree>(
     class_def: &'tree ast::ClassDef,
     exposure_def_id: rumoca_core::DefId,
     qualified_name: &str,
-    source_map: &rumoca_core::SourceMap,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
     type_catalog: FunctionTypeCatalog<'_>,
 ) -> Result<rumoca_core::Function, FlattenError> {
+    let source_map = &tree.source_map;
     let span = required_location_span(source_map, &class_def.location, "function definition")?;
     let mut func = rumoca_core::Function::new(qualified_name, exposure_def_id, span);
     func.def_id = class_def.def_id;
-    let mut context = collect_function_context(tree, class_index, class_def, member_cache);
+    let mut context = collect_function_context(tree, class_index, class_def, member_cache)?;
     // MLS §7.3: a function body is converted from the class tree rather than
     // instantiated, so the member tails Resolve deferred across replaceable
     // class edges are proved here before lowering demands exact identity.
@@ -1134,43 +1264,47 @@ fn convert_function<'tree>(
         &mut context.algorithms,
     );
     let effective_components = context.components;
-    let mut import_map =
-        function_initial_import_map(tree, class_index, class_def, qualified_name, member_cache);
-    extend_imports_if_absent(&mut import_map, context.imports);
-    resolve_import_pairs(&class_def.imports, class_index, &mut import_map);
-    if let Some(class_def_id) = class_def.def_id {
-        collect_lexical_constant_aliases(tree, class_index, class_def_id, &mut import_map, true);
-    }
+    let context_aliases = context.aliases;
+    let import_assembly = FunctionImportAssembly {
+        tree,
+        class_index,
+        class_def,
+        qualified_name,
+        context_aliases: &context_aliases,
+    };
+    let mut import_views: HashMap<ImportOrigin, FunctionImportView> = HashMap::new();
     let prefix = ast::QualifiedName::new();
     let function_locals: HashSet<String> = effective_components.keys().cloned().collect();
 
-    for (comp_name, component) in &effective_components {
-        let param = convert_component_to_param(
-            class_index,
-            comp_name,
-            component,
-            source_map,
-            FunctionExpressionContext {
-                predefined_intrinsics: ast_lower::PredefinedIntrinsicIds::from_tree(tree),
-                type_catalog,
-            },
-            &import_map,
+    add_function_parameters(
+        &mut func,
+        &effective_components,
+        &mut import_views,
+        &import_assembly,
+        member_cache,
+        &function_locals,
+        type_catalog,
+    )?;
+
+    for section in &context.algorithms {
+        let view = function_import_view_for(
+            &mut import_views,
+            section.origin,
+            &import_assembly,
+            member_cache,
+        )?;
+        // MLS §5.3.1: a name the lookup authority refused to bind through the
+        // section's origin scope is a typed error at its use site.
+        crate::pipeline::refuse_ambiguous_import_uses_in_statements(
+            &section.statements,
+            &view.refusals,
             &function_locals,
         )?;
-
-        match &component.causality {
-            rumoca_core::Causality::Input(_) => func.add_input(param),
-            rumoca_core::Causality::Output(_) => func.add_output(param),
-            rumoca_core::Causality::Empty => func.add_local(param),
-        }
-    }
-
-    for alg in &context.algorithms {
         let flat_alg = algorithms::flatten_algorithm_section(
-            alg,
+            &section.statements,
             algorithms::AlgorithmSectionContext {
                 prefix: &prefix,
-                imports: &import_map,
+                imports: &view.imports,
                 initial_locals: &function_locals,
                 source_map: Some(source_map),
                 instance_name: None,

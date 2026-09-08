@@ -1,7 +1,7 @@
 //! Instantiation phase for the Rumoca compiler.
 //!
 //! This crate implements the instantiation pass that converts a
-//! `rumoca_phase_resolve::ResolvedTree` to an `ast::InstancedTree`.
+//! a resolved class tree to an [`ast::InstanceOverlay`].
 //! It finds the root model, applies modifications recursively, evaluates structural
 //! parameters, and builds the instance overlay.
 //!
@@ -30,10 +30,16 @@
 //! # Example
 //!
 //! ```ignore
-//! use rumoca_phase_instantiate::instantiate;
+//! use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 //!
 //! let resolved: rumoca_phase_resolve::ResolvedTree = resolve(parsed)?;
-//! let instanced: ast::InstancedTree = instantiate(resolved, "MyModel")?;
+//! match instantiate_model_with_outcome(resolved.inner(), "MyModel") {
+//!     InstantiationOutcome::Success(overlay) => use_overlay(overlay),
+//!     InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+//!         report_missing_inners(missing_inners)
+//!     }
+//!     InstantiationOutcome::Error(error) => return Err(error),
+//! }
 //! ```
 
 mod array_expansion;
@@ -43,12 +49,13 @@ mod conditional_components;
 mod connections;
 mod dims;
 mod entry;
+mod equality_constraint;
 mod errors;
-mod evaluate_annotation;
 mod inheritance;
 mod inner_outer;
 mod instance_sections;
 mod mod_env;
+mod nested_instantiation;
 mod nested_scope;
 mod package_constant_imports;
 mod path_utils;
@@ -60,35 +67,34 @@ mod type_lookup;
 mod type_overrides;
 
 pub(crate) use entry::description_tokens_to_string;
-pub use entry::{
-    instantiate, instantiate_model, instantiate_model_with_options, instantiate_model_with_outcome,
-    instantiate_model_with_outcome_options, instantiate_with_options,
-};
+pub use entry::{instantiate_model_with_outcome, instantiate_model_with_outcome_options};
 
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, OuterValues, array_index_tuples, evaluate_array_dimensions,
-    evaluate_component_condition_with_outer_values, extract_binding, extract_bool_params_with_mods,
-    extract_int_params_with_mods, extract_real_params_with_mods,
-    propagate_record_alias_integer_params, propagate_scoped_record_alias_integer_params,
-    try_eval_real_expr,
+    InstantiateEvalCtx, OuterValues, array_index_tuples, component_allows_structural_evaluation,
+    component_explicitly_disables_structural_evaluation, component_has_evaluate_annotation,
+    evaluate_array_dimensions_with_index, evaluate_component_condition_with_outer_values,
+    extract_binding, extract_bool_params_with_mods, extract_int_params_with_mods,
+    extract_real_params_with_mods, propagate_record_alias_integer_params,
+    propagate_scoped_record_alias_integer_params, try_eval_integer_expr, try_eval_real_expr,
 };
 
 use rumoca_core::Diagnostics;
 use rumoca_core::{DefId, Span, TypeId};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-use rumoca_phase_resolve::ResolvedTree;
+use std::sync::Arc;
 
 use array_expansion::{ArrayExpansionScope, expand_array_component};
 use attributes::*;
 use component_loop::{
-    ComponentImports, component_flow_stream, component_type_id, instantiate_effective_components,
+    ComponentImports, EffectiveComponentConstruction, component_flow_stream, component_type_id,
+    instantiate_effective_components,
 };
 use conditional_components::{ConditionScope, mark_disabled_component_if_needed};
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
-use evaluate_annotation::has_evaluate_annotation;
+use equality_constraint::construct_equality_constraint_exposure;
 #[cfg(test)]
 pub(crate) use inner_outer::inner_visible_to_outer;
 pub(crate) use inner_outer::{
@@ -101,6 +107,7 @@ use mod_env::{
     PopulateModEnvInput, RecordBindingProjection, populate_modification_environment,
     propagate_record_binding_to_fields,
 };
+use nested_instantiation::{NestedInstantiationInput, instantiate_nested_class};
 use nested_scope::{
     collect_referenced_mod_roots, collect_shifted_parent_mod_keys, collect_targeted_mod_keys,
     key_matches_referenced_root, resolve_component_nested_type_overrides, shift_modifications_down,
@@ -111,7 +118,7 @@ use package_constant_imports::{
 };
 use source_scope::{
     SourceScopeIndex, class_declaration_source_scope, component_declaration_source_scope,
-    expression_source_scope, register_zero_sized_array_component,
+    component_effective_imports, expression_source_scope, register_zero_sized_array_component,
 };
 use templates::get_or_compute_template;
 #[cfg(test)]
@@ -120,20 +127,23 @@ use type_lookup::{
     TypeInfo, is_type_compatible_with_def_id, lookup_type_info, resolve_primitive_type_id,
 };
 use type_overrides::{
-    SelectedComponentTypes, TypeOverrideMap, apply_type_override, build_type_override_map,
-    resolve_dynamic_equation_targets, resolve_dynamic_expression_targets,
-    resolve_dynamic_statement_targets, resolve_post_materialization_component_targets,
+    SelectedComponentTypeCatalog, SelectedComponentTypes, TypeOverrideMap, build_type_override_map,
+    component_with_issued_type_selection, issue_selected_component_types,
+    resolve_dynamic_equation_targets_at_occurrence,
+    resolve_dynamic_expression_targets_at_occurrence,
+    resolve_dynamic_statement_targets_at_occurrence,
+    resolve_dynamic_subscript_targets_at_occurrence,
 };
 
 pub use connections::{ConnectionParams, extract_connections, filter_out_connections};
-pub use errors::{InstantiateError, InstantiateResult, InstantiateWarning, InstantiationOutcome};
+pub(crate) use errors::InstantiateResult;
+pub use errors::{InstantiateError, InstantiateWarning, InstantiationOutcome};
 pub use inheritance::resolve_effective_components_for_eval;
 pub use inheritance::{
     InheritanceCache, InheritedContent, SubtypeCache, class_extends, class_extends_cached,
     find_class_in_tree, get_effective_components, get_effective_components_with_cache,
     get_effective_equations, get_effective_equations_with_cache, is_type_subtype,
     is_type_subtype_cached, location_to_span, process_extends, process_extends_with_cache,
-    type_names_match,
 };
 pub use templates::{ClassTemplate, ClassTemplateCache};
 
@@ -146,7 +156,19 @@ pub struct ExtractedAttributes {
     pub min: Option<ast::Expression>,
     pub max: Option<ast::Expression>,
     pub nominal: Option<ast::Expression>,
+    /// Lexical scope in which each attribute expression was written, keyed by
+    /// attribute name. These are class-namespace scopes used downstream for
+    /// import-sensitive name resolution (MLS §13.2). They are NOT instance
+    /// occurrences and must never key the selected-component-type catalog.
     pub source_scopes: IndexMap<String, ast::QualifiedName>,
+    /// Instance occurrence that wrote each attribute modification, keyed by
+    /// attribute name. Populated only for modifications carried through the
+    /// modification environment, whose source scope is an instance path in the
+    /// same namespace as the selected-component-type catalog (the same
+    /// provenance as `binding_source_scope`). An attribute written locally on
+    /// the declaration or through an inherited `extends` modifier has no entry
+    /// here; its instance occurrence is the component's declaration occurrence.
+    pub attribute_instance_scopes: IndexMap<String, ast::QualifiedName>,
     pub quantity: Option<String>,
     pub unit: Option<String>,
     pub display_unit: Option<String>,
@@ -236,29 +258,31 @@ struct ScopeFrame {
     /// annotation(Evaluate = true), so everything instantiated beneath it is
     /// evaluated during translation, record members included.
     evaluate: bool,
+    /// An enclosing parameter occurrence explicitly set `fixed=false` or
+    /// `Evaluate=false`; nested values must not re-enter structural maps.
+    structural_evaluation_blocked: bool,
     causality: Option<rumoca_core::Causality>,
     flow: bool,
     stream: bool,
     expandable: bool,
-    overconstrained: Option<(usize, String)>,
     protected: bool,
 }
 
 struct ScopeFrameInput<'a> {
     variability: &'a rumoca_core::Variability,
     evaluate: bool,
+    structural_evaluation_blocked: bool,
     causality: &'a rumoca_core::Causality,
     flow: bool,
     stream: bool,
     expandable: bool,
-    overconstrained_eq_size: Option<usize>,
     protected: bool,
 }
 
 impl ScopeFrame {
     fn inherited_from_component(
         input: ScopeFrameInput<'_>,
-        context_path: &ast::QualifiedName,
+        _context_path: &ast::QualifiedName,
     ) -> Self {
         let variability = matches!(
             input.variability,
@@ -270,18 +294,14 @@ impl ScopeFrame {
             rumoca_core::Causality::Input(_) | rumoca_core::Causality::Output(_)
         )
         .then(|| input.causality.clone());
-        let overconstrained = input
-            .overconstrained_eq_size
-            .map(|size| (size, context_path.to_flat_string()));
-
         Self {
             variability,
             evaluate: input.evaluate,
+            structural_evaluation_blocked: input.structural_evaluation_blocked,
             causality,
             flow: input.flow,
             stream: input.stream,
             expandable: input.expandable,
-            overconstrained,
             protected: input.protected,
         }
     }
@@ -339,8 +359,15 @@ pub struct InstantiateContext {
     active_instantiations: Vec<InstantiationFrame>,
     /// Source declaration scopes keyed by resolved DefId.
     source_scope_index: SourceScopeIndex,
+    /// Duplicate-aware equalityConstraint declarations, built once per phase
+    /// invocation and replayed for every effective record occurrence.
+    equality_constraint_declarations: Option<ast::EqualityConstraintDeclarationIndex>,
     /// Active package/type redeclarations inherited from enclosing component scopes.
     active_type_overrides: Vec<TypeOverrideMap>,
+    /// All occurrence plans issued by the recursive traversal. Retention lets
+    /// an enclosing expression traverse nested redeclare selections after the
+    /// nested component has finished, without rebuilding facts from the overlay.
+    selected_component_type_catalog: SelectedComponentTypeCatalog,
     active_package_constant_aliases: Vec<(String, DefId)>,
     /// Monotonic count of `inner`/`outer` registrations performed so far
     /// (MLS §5.4). Compact component-array replication is only sound when a
@@ -397,7 +424,9 @@ impl InstantiateContext {
             options,
             active_instantiations: Vec::new(),
             source_scope_index: SourceScopeIndex::default(),
+            equality_constraint_declarations: None,
             active_type_overrides: Vec::new(),
+            selected_component_type_catalog: SelectedComponentTypeCatalog::new(),
             active_package_constant_aliases: Vec::new(),
             inner_outer_events: 0,
         }
@@ -405,6 +434,14 @@ impl InstantiateContext {
 
     fn index_source_scopes(&mut self, tree: &ast::ClassTree) {
         self.source_scope_index = SourceScopeIndex::from_tree(tree);
+        self.equality_constraint_declarations =
+            Some(ast::EqualityConstraintDeclarationIndex::new(tree));
+    }
+
+    fn equality_constraint_declarations(&self) -> &ast::EqualityConstraintDeclarationIndex {
+        self.equality_constraint_declarations
+            .as_ref()
+            .expect("Instantiate entry initializes equalityConstraint declarations")
     }
 
     fn class_frame_key(class: &ast::ClassDef) -> Option<InstantiationFrameKey> {
@@ -478,16 +515,35 @@ impl InstantiateContext {
         }
     }
 
-    /// Build a connection integer-parameter map by combining globally known and local values.
+    /// Build the integer environment visible from one concrete class instance.
     fn merged_int_params_for_connections(
         &self,
+        scope: &ast::QualifiedName,
         local: &rustc_hash::FxHashMap<String, i64>,
+        outer: &rustc_hash::FxHashMap<String, i64>,
     ) -> rustc_hash::FxHashMap<String, i64> {
-        let mut merged = self.known_int_params.clone();
-        for (k, v) in local {
-            merged.insert(k.clone(), *v);
-        }
-        merged
+        scoped_connection_values(&self.known_int_params, scope, outer, local)
+    }
+
+    /// Build the structural Boolean environment used to select conditional
+    /// connection branches. Child instances have already been instantiated at
+    /// this point, so their qualified parameter values must participate too.
+    fn merged_bool_params_for_connections(
+        &self,
+        scope: &ast::QualifiedName,
+        local: &rustc_hash::FxHashMap<String, bool>,
+        outer: &rustc_hash::FxHashMap<String, bool>,
+    ) -> rustc_hash::FxHashMap<String, bool> {
+        scoped_connection_values(&self.known_bool_params, scope, outer, local)
+    }
+
+    fn merged_real_params_for_connections(
+        &self,
+        scope: &ast::QualifiedName,
+        local: &rustc_hash::FxHashMap<String, f64>,
+        outer: &rustc_hash::FxHashMap<String, f64>,
+    ) -> rustc_hash::FxHashMap<String, f64> {
+        scoped_connection_values(&self.known_real_params, scope, outer, local)
     }
 
     /// Record the effective value of an instantiated structural integer.
@@ -496,8 +552,15 @@ impl InstantiateContext {
     /// components are instantiated. Re-evaluating the concrete instance binding
     /// here replaces that seed at the earliest point where modifier source scope
     /// and projected record fields are both known.
-    fn register_known_integer_instance(&mut self, data: &ast::InstanceData) {
-        if !data.is_discrete_type
+    fn register_known_integer_instance(
+        &mut self,
+        data: &ast::InstanceData,
+        occurrence_allows_structural_evaluation: bool,
+    ) {
+        if !occurrence_allows_structural_evaluation
+            || self.structural_evaluation_blocked()
+            || data.fixed == Some(false)
+            || !data.is_discrete_type
             || !matches!(
                 data.variability,
                 rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
@@ -522,7 +585,8 @@ impl InstantiateContext {
         // scope; MLS §5.3 lookup for it starts at the root, whose rendered
         // scope path is empty. This is the root scope, not a silent default.
         let scope = declared_scope.unwrap_or_else(|| ROOT_SCOPE_PATH.to_string());
-        let mut eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+        let mut eval_ctx =
+            rumoca_eval_ast::eval::TypeCheckEvalContext::for_pre_identity_structural();
         eval_ctx.integers.extend(
             self.known_int_params
                 .iter()
@@ -550,29 +614,6 @@ impl InstantiateContext {
     /// Check if we're inside an expandable connector.
     fn is_in_expandable_connector(&self) -> bool {
         self.scope_frames.iter().any(|frame| frame.expandable)
-    }
-
-    /// Check if we're inside an overconstrained connector.
-    fn is_in_overconstrained(&self) -> bool {
-        self.scope_frames
-            .iter()
-            .any(|frame| frame.overconstrained.is_some())
-    }
-
-    /// Return the equalityConstraint output size from the innermost OC scope.
-    fn overconstrained_eq_size(&self) -> Option<usize> {
-        self.scope_frames
-            .iter()
-            .rev()
-            .find_map(|frame| frame.overconstrained.as_ref().map(|(n, _)| *n))
-    }
-
-    /// Return the OC record path from the innermost OC scope.
-    fn overconstrained_record_path(&self) -> Option<String> {
-        self.scope_frames
-            .iter()
-            .rev()
-            .find_map(|frame| frame.overconstrained.as_ref().map(|(_, path)| path.clone()))
     }
 
     /// Check if we're inside a protected component.
@@ -605,12 +646,17 @@ impl InstantiateContext {
         self.scope_frames.iter().any(|frame| frame.evaluate)
     }
 
+    fn structural_evaluation_blocked(&self) -> bool {
+        self.scope_frames
+            .iter()
+            .any(|frame| frame.structural_evaluation_blocked)
+    }
+
     /// Push inherited scope metadata for nested class instantiation.
     /// MLS §4.4.2.1: Record fields inherit variability
     /// MLS §4.4.2.2: Record fields inherit causality
     /// MLS §9.3: Record fields inherit flow/stream
     /// MLS §9.1.3: Track expandable connector membership
-    /// MLS §9.4: Track overconstrained connector scopes
     fn push_scope_frame(&mut self, input: ScopeFrameInput<'_>) {
         let current_path = self.current_path();
         self.scope_frames
@@ -637,7 +683,7 @@ impl InstantiateContext {
     }
 
     /// Check if there are any missing inner declarations.
-    pub fn has_missing_inners(&self) -> bool {
+    fn has_missing_inners(&self) -> bool {
         !self.missing_inners.is_empty()
     }
 
@@ -646,20 +692,17 @@ impl InstantiateContext {
         &self.missing_inners
     }
 
-    /// Get the list of missing inner declaration names (for public API compatibility).
-    pub fn missing_inner_names(&self) -> Vec<String> {
+    /// Return each unresolved name and its source span once, in discovery order.
+    fn unique_missing_inner_summary(&self) -> (Vec<String>, Vec<Span>) {
         let mut names = Vec::new();
+        let mut spans = Vec::new();
         for mi in &self.missing_inners {
             if !names.contains(&mi.name) {
                 names.push(mi.name.clone());
+                spans.push(mi.span);
             }
         }
-        names
-    }
-
-    /// Get missing inner source spans.
-    pub fn missing_inner_spans(&self) -> Vec<Span> {
-        self.missing_inners.iter().map(|mi| mi.span).collect()
+        (names, spans)
     }
 
     /// Get the current qualified path.
@@ -748,6 +791,26 @@ impl InstantiateContext {
             overrides.extend_from(scoped_overrides);
         }
         overrides
+    }
+
+    fn issue_selected_component_types(
+        &mut self,
+        selections: Arc<SelectedComponentTypes>,
+    ) -> InstantiateResult<()> {
+        let instance_scope = self.current_path();
+        self.selected_component_type_catalog
+            .issue(instance_scope, selections)
+    }
+
+    fn selected_component_types_for_scope(
+        &self,
+        source_scope: &ast::QualifiedName,
+    ) -> Option<&SelectedComponentTypes> {
+        self.selected_component_type_catalog.plan(source_scope)
+    }
+
+    fn selected_component_type_catalog(&self) -> &SelectedComponentTypeCatalog {
+        &self.selected_component_type_catalog
     }
 
     fn active_package_constant_aliases(&self) -> Vec<(String, DefId)> {
@@ -847,12 +910,79 @@ impl Default for InstantiateContext {
     }
 }
 
+fn scoped_connection_values<T: Copy>(
+    known: &rustc_hash::FxHashMap<String, T>,
+    scope: &ast::QualifiedName,
+    outer: &rustc_hash::FxHashMap<String, T>,
+    local: &rustc_hash::FxHashMap<String, T>,
+) -> rustc_hash::FxHashMap<String, T> {
+    let prefix = scope.to_flat_string();
+    let mut values = rustc_hash::FxHashMap::default();
+    for (path, value) in known {
+        let visible_path = if prefix.is_empty() {
+            Some(path.as_str())
+        } else {
+            path.strip_prefix(prefix.as_str())
+                .and_then(|tail| tail.strip_prefix('.'))
+        };
+        if let Some(visible_path) = visible_path {
+            values.insert(visible_path.to_string(), *value);
+        }
+    }
+    values.extend(outer.iter().map(|(name, value)| (name.clone(), *value)));
+    values.extend(local.iter().map(|(name, value)| (name.clone(), *value)));
+    values
+}
+
+struct LocalStructuralParams {
+    bools: rustc_hash::FxHashMap<String, bool>,
+    integers: rustc_hash::FxHashMap<String, i64>,
+    reals: rustc_hash::FxHashMap<String, f64>,
+}
+
+fn extract_local_structural_params(
+    tree: &ast::ClassTree,
+    effective_components: &IndexMap<String, ast::Component>,
+    ctx: &InstantiateContext,
+) -> LocalStructuralParams {
+    if ctx.structural_evaluation_blocked() {
+        return LocalStructuralParams {
+            bools: rustc_hash::FxHashMap::default(),
+            integers: rustc_hash::FxHashMap::default(),
+            reals: rustc_hash::FxHashMap::default(),
+        };
+    }
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let bools = extract_bool_params_with_mods(&eval_ctx);
+    let integers = extract_int_params_with_mods(&eval_ctx);
+    let reals = extract_real_params_with_mods(&eval_ctx, &rustc_hash::FxHashMap::default());
+    LocalStructuralParams {
+        bools,
+        integers,
+        reals,
+    }
+}
+
 /// Instantiate a class and all its components.
+enum ClassOccurrenceConstruction {
+    FreshRoot,
+    ReservedRoot(rumoca_core::InstanceId),
+    Nested {
+        owner_component_id: rumoca_core::InstanceId,
+        component_type_selections: nested_scope::NestedComponentTypeSelections,
+    },
+}
+
 fn instantiate_class(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     class: &ast::ClassDef,
-    owner_component_id: Option<rumoca_core::InstanceId>,
-    reserved_instance_id: Option<rumoca_core::InstanceId>,
+    occurrence: ClassOccurrenceConstruction,
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
 ) -> InstantiateResult<()> {
@@ -860,7 +990,18 @@ fn instantiate_class(
     ctx.enter_instantiation_class(class, &tree.source_map)?;
     ctx.push_inner_scope(); // Push a new inner scope for this class (MLS §5.4)
     let result = (|| {
-        let instance_id = reserved_instance_id.unwrap_or_else(|| overlay.alloc_id());
+        let (owner_component_id, instance_id, nested_component_selections) = match occurrence {
+            ClassOccurrenceConstruction::FreshRoot => (None, overlay.alloc_id(), None),
+            ClassOccurrenceConstruction::ReservedRoot(instance_id) => (None, instance_id, None),
+            ClassOccurrenceConstruction::Nested {
+                owner_component_id,
+                component_type_selections,
+            } => (
+                Some(owner_component_id),
+                overlay.alloc_id(),
+                Some(component_type_selections),
+            ),
+        };
         let qualified_name = ctx.current_path();
         // Get or compute the class template (cached to avoid recomputing inheritance)
         // For example, if we have `Resistor r[100]`, we compute the template once and
@@ -872,35 +1013,22 @@ fn instantiate_class(
         // MLS §7.3: Build type override map for replaceable type redeclarations.
         // When a record type like ThermodynamicState is redeclared in the enclosing
         // package, components referencing the old type need to use the redeclared version.
-        let mut type_overrides = build_type_override_map(tree, class, Some(ctx.mod_env()));
+        let mut type_overrides = build_type_override_map(tree, class, Some(ctx.mod_env()))?;
         type_overrides.extend_from(&ctx.active_type_override_map());
-        let class_overrides = type_overrides.class_overrides(tree);
+        let class_overrides = type_overrides.class_overrides(tree, class.location.span())?;
 
-        // Extract boolean parameter values for conditional connection evaluation
-        // This enables proper handling of patterns like:
-        // if use_numberPort then connect(numberPort, showNumber); else ... end if;
-        // Check both the component definitions and the modification environment
-        let bool_params = extract_bool_params_with_mods(effective_components, ctx.mod_env());
+        let local_params = extract_local_structural_params(tree, effective_components, ctx);
         // MLS §5.4: record this scope's booleans so `outer` references from nested
         // classes can be resolved back to the matching `inner` instance.
-        ctx.register_known_bool_params(&qualified_name, &bool_params);
+        ctx.register_known_bool_params(&qualified_name, &local_params.bools);
 
         // MLS §5.4/§4.5: `inner` elements are visible to the entire class that
         // declares them, independently of where in the class they appear, so make
         // them resolvable before the first component is instantiated.
-        preregister_class_inners(tree, effective_components, ctx)?;
+        preregister_class_inners(tree, class_index, effective_components, ctx)?;
 
-        // Extract integer parameter values for for-loop range evaluation
-        // This enables proper handling of patterns like:
-        // for k in 1:m loop connect(plug_p.pin[k], resistor[k].p); end for;
-        let eval_ctx = InstantiateEvalCtx {
-            tree,
-            mod_env: ctx.mod_env(),
-            effective_components,
-            resolve_class_components: resolve_effective_components_for_eval,
-        };
-        let int_params = extract_int_params_with_mods(&eval_ctx);
-        ctx.register_known_int_params(&qualified_name, &int_params);
+        ctx.register_known_int_params(&qualified_name, &local_params.integers);
+        ctx.register_known_real_params(&qualified_name, &local_params.reals);
 
         // Instantiate each effective component (MLS §4.8 conditional components)
         // Components with conditions are only instantiated if the condition evaluates to true.
@@ -908,56 +1036,47 @@ fn instantiate_class(
         // equations should not exist in the flat model.
         // MLS §10.1: Array components of structured types are expanded to indexed instances.
         let active_package_constant_aliases = ctx.active_package_constant_aliases();
-        let component_imports = resolved_imports_with_active_package_constants(
-            tree,
-            &template.resolved_imports,
-            &active_package_constant_aliases,
-        );
-        let resolved_imports =
-            resolved_imports_with_enclosing_package_constants(tree, class, &component_imports);
+        // Constant-alias channels for expression rewriting. Imports are NOT
+        // part of these pairs: import rewriting consults the lookup
+        // authority's effective bindings instead.
+        let overriding_constants =
+            resolved_imports_with_active_package_constants(tree, &active_package_constant_aliases);
+        let enclosing_constants = resolved_imports_with_enclosing_package_constants(tree, class);
+        // MLS §13.2: the class's own import bindings, minted by the one
+        // lookup authority for its resolved scope.
+        let class_imports = class.scope_id.map(|scope| tree.effective_imports(scope));
 
-        instantiate_effective_components(
+        let selected_component_types = instantiate_effective_components(
             tree,
             effective_components,
             &type_overrides,
             instance_id,
             ctx,
             overlay,
-            ComponentImports {
-                qualification: &component_imports,
-                attributes: &resolved_imports,
+            EffectiveComponentConstruction {
+                imports: ComponentImports {
+                    class_index,
+                    overriding_constants: &overriding_constants,
+                    enclosing_constants: &enclosing_constants,
+                    class_imports: class_imports.as_ref(),
+                },
+                nested_selections: nested_component_selections,
             },
         )?;
 
-        // Rebuild merged integer params after nested component instantiation so
-        // record-field integers (e.g., cellData.nRC) are available for top-level
-        // for-loop and if-equation connection extraction.
-        let mut conn_int_params = ctx.merged_int_params_for_connections(&int_params);
-        propagate_record_alias_integer_params(&mut conn_int_params, ctx.mod_env());
-        propagate_scoped_record_alias_integer_params(
-            &mut conn_int_params,
-            ctx.mod_env(),
-            &qualified_name,
-        );
-        let conn_params = connections::ConnectionParams {
-            bools: bool_params,
-            integers: conn_int_params,
-        };
-
-        // Extract connections from all equations (including conditional connections)
-        let source_map = &tree.source_map;
-        let connections = connections::extract_connections(
+        let connections = extract_class_connections(
+            tree,
+            effective_components,
             all_equations,
             &qualified_name,
-            &conn_params,
-            source_map,
+            &local_params,
+            ctx,
         )?;
 
         // MLS §7.3: a reference rooted in a replaceable component (`b.v`) has an
         // instance-dependent member set, so Resolve deferred its tail. The
         // component occurrences of this class instance were just materialized,
         // so their selected types now prove those members exactly.
-        let selected_component_types = selected_component_types_of_class(overlay, instance_id);
         let sections = class_instance_sections(
             tree,
             ctx,
@@ -980,9 +1099,18 @@ fn instantiate_class(
             algorithms: sections.algorithms,
             initial_algorithms: sections.initial_algorithms,
             connections,
-            resolved_imports,
         };
-        overlay.add_class(class_data);
+        let class_span = location_to_span(
+            &class.name.location,
+            &tree.source_map,
+            "instance class occurrence",
+        )?;
+        overlay.add_class(class_data).map_err(|reason| {
+            Box::new(InstantiateError::invalid_instance_occurrence(
+                reason.to_string(),
+                class_span,
+            ))
+        })?;
 
         Ok(())
     })();
@@ -993,33 +1121,53 @@ fn instantiate_class(
     result
 }
 
+fn extract_class_connections(
+    tree: &ast::ClassTree,
+    effective_components: &IndexMap<String, ast::Component>,
+    equations: &[ast::Equation],
+    qualified_name: &ast::QualifiedName,
+    local_params: &LocalStructuralParams,
+    ctx: &InstantiateContext,
+) -> InstantiateResult<Vec<ast::InstanceConnection>> {
+    // Nested instances can expose record-field parameters used by this
+    // class's structural for/if-equations, so assemble the environment only
+    // after component instantiation has completed.
+    let outer_ints = ctx.outer_reference_int_values(effective_components);
+    let outer_bools = ctx.outer_reference_bool_values(effective_components);
+    let outer_reals = ctx.outer_reference_real_values(effective_components);
+    let mut integers =
+        ctx.merged_int_params_for_connections(qualified_name, &local_params.integers, &outer_ints);
+    propagate_record_alias_integer_params(&mut integers, ctx.mod_env());
+    propagate_scoped_record_alias_integer_params(&mut integers, ctx.mod_env(), qualified_name);
+    let bools =
+        ctx.merged_bool_params_for_connections(qualified_name, &local_params.bools, &outer_bools);
+    let reals =
+        ctx.merged_real_params_for_connections(qualified_name, &local_params.reals, &outer_reals);
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: ctx.mod_env(),
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    connections::extract_connections(
+        equations,
+        qualified_name,
+        &connections::ConnectionParams {
+            bools,
+            integers,
+            reals,
+            eval_ctx: Some(&eval_ctx),
+        },
+        &tree.source_map,
+    )
+}
+
 /// Instance-tree sections converted from one class template.
 struct ClassSections {
     equations: Vec<ast::InstanceEquation>,
     initial_equations: Vec<ast::InstanceEquation>,
     algorithms: Vec<Vec<ast::InstanceStatement>>,
     initial_algorithms: Vec<Vec<ast::InstanceStatement>>,
-}
-
-/// Selected class of every component occurrence directly owned by `class_id`,
-/// keyed by the component's declaration identity.
-///
-/// A replaceable component declaration keeps its own `DefId` across a
-/// redeclaration, so this maps the declaration Resolve recorded on a reference
-/// root onto the class instantiation actually selected for it (MLS §7.3).
-fn selected_component_types_of_class(
-    overlay: &ast::InstanceOverlay,
-    class_id: rumoca_core::InstanceId,
-) -> SelectedComponentTypes {
-    overlay
-        .components
-        .values()
-        .filter(|component| component.owner_class_id == Some(class_id))
-        .filter_map(|component| {
-            let declaration = component.component_ref.as_ref()?.target_def_id();
-            Some((declaration, component.type_def_id?))
-        })
-        .collect()
 }
 
 /// Convert a class template's equation and algorithm sections to instance form.
@@ -1039,7 +1187,7 @@ fn class_instance_sections(
         resolve_class_components: resolve_effective_components_for_eval,
     };
     // Convert regular equations in one pass without intermediate equation vectors.
-    let mut sections = ClassSections {
+    let sections = ClassSections {
         equations: equations_to_instance_without_connections(
             ctx,
             &template.effective_equations,
@@ -1064,45 +1212,128 @@ fn class_instance_sections(
     };
     resolve_dynamic_section_targets(
         tree,
+        ctx,
         type_overrides,
         selected_component_types,
-        &mut sections,
-    )?;
-    Ok(sections)
+        sections,
+    )
 }
 
 fn resolve_dynamic_section_targets(
     tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
     type_overrides: &TypeOverrideMap,
     selected_component_types: &SelectedComponentTypes,
-    sections: &mut ClassSections,
-) -> InstantiateResult<()> {
-    for equation in sections
-        .equations
-        .iter_mut()
-        .chain(&mut sections.initial_equations)
-    {
-        equation.equation = resolve_dynamic_equation_targets(
+    sections: ClassSections,
+) -> InstantiateResult<ClassSections> {
+    let ClassSections {
+        equations,
+        initial_equations,
+        algorithms,
+        initial_algorithms,
+    } = sections;
+    let resolve_equation = |equation| {
+        resolve_dynamic_instance_equation(
             tree,
+            ctx,
             type_overrides,
             selected_component_types,
-            std::mem::take(&mut equation.equation),
-        )?;
-    }
-    for statement in sections
-        .algorithms
-        .iter_mut()
-        .chain(&mut sections.initial_algorithms)
-        .flatten()
-    {
-        statement.statement = resolve_dynamic_statement_targets(
+            equation,
+        )
+    };
+    let resolve_algorithm = |algorithm: Vec<ast::InstanceStatement>| {
+        algorithm
+            .into_iter()
+            .map(|statement| {
+                resolve_dynamic_instance_statement(
+                    tree,
+                    ctx,
+                    type_overrides,
+                    selected_component_types,
+                    statement,
+                )
+            })
+            .collect::<InstantiateResult<Vec<_>>>()
+    };
+
+    Ok(ClassSections {
+        equations: equations
+            .into_iter()
+            .map(resolve_equation)
+            .collect::<InstantiateResult<Vec<_>>>()?,
+        initial_equations: initial_equations
+            .into_iter()
+            .map(resolve_equation)
+            .collect::<InstantiateResult<Vec<_>>>()?,
+        algorithms: algorithms
+            .into_iter()
+            .map(resolve_algorithm)
+            .collect::<InstantiateResult<Vec<_>>>()?,
+        initial_algorithms: initial_algorithms
+            .into_iter()
+            .map(resolve_algorithm)
+            .collect::<InstantiateResult<Vec<_>>>()?,
+    })
+}
+
+fn resolve_dynamic_instance_equation(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    type_overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
+    equation: ast::InstanceEquation,
+) -> InstantiateResult<ast::InstanceEquation> {
+    let ast::InstanceEquation {
+        equation,
+        origin,
+        source_scope,
+        source_scope_id,
+        span,
+    } = equation;
+    Ok(ast::InstanceEquation {
+        equation: resolve_dynamic_equation_targets_at_occurrence(
             tree,
             type_overrides,
+            ctx.selected_component_type_catalog(),
+            &origin,
             selected_component_types,
-            std::mem::take(&mut statement.statement),
-        )?;
-    }
-    Ok(())
+            equation,
+        )?,
+        origin,
+        source_scope,
+        source_scope_id,
+        span,
+    })
+}
+
+fn resolve_dynamic_instance_statement(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    type_overrides: &TypeOverrideMap,
+    selected_component_types: &SelectedComponentTypes,
+    statement: ast::InstanceStatement,
+) -> InstantiateResult<ast::InstanceStatement> {
+    let ast::InstanceStatement {
+        statement,
+        origin,
+        source_scope,
+        source_scope_id,
+        span,
+    } = statement;
+    Ok(ast::InstanceStatement {
+        statement: resolve_dynamic_statement_targets_at_occurrence(
+            tree,
+            type_overrides,
+            ctx.selected_component_type_catalog(),
+            &origin,
+            selected_component_types,
+            statement,
+        )?,
+        origin,
+        source_scope,
+        source_scope_id,
+        span,
+    })
 }
 
 struct InstanceDataBuild<'a> {
@@ -1183,6 +1414,7 @@ fn build_instance_data(
         })?;
     let instance_data = ast::InstanceData {
         instance_id: args.instance_id,
+        declaration_def_id: args.comp.def_id,
         owner_class_id: args.owner_class_id,
         component_ref: Some(component_ref),
         qualified_name: args.qualified_name,
@@ -1232,19 +1464,12 @@ fn build_instance_data(
         from_expandable_connector: args.ctx.is_in_expandable_connector(),
         evaluate: args.evaluate,
         is_final: args.comp.is_final,
-        is_overconstrained: args.ctx.is_in_overconstrained(),
         is_protected: args.comp.is_protected || args.ctx.is_in_protected(),
         is_connector_type: args
             .class_def
             .map(|c| matches!(c.class_type, rumoca_core::ClassType::Connector))
             .unwrap_or(false),
         is_expandable_connector_type: args.class_def.is_some_and(|class| class.expandable),
-        oc_record_path: if args.ctx.is_in_overconstrained() {
-            args.ctx.overconstrained_record_path()
-        } else {
-            None
-        },
-        oc_eq_constraint_size: args.ctx.overconstrained_eq_size(),
     };
 
     Ok((
@@ -1330,7 +1555,16 @@ struct ComponentInstantiationScope<'a> {
     owner_class_id: Option<rumoca_core::InstanceId>,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
+    selected_component_types: &'a SelectedComponentTypes,
     imports: ComponentImports<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct ComponentSourceSemantics<'a> {
+    effective_components: &'a IndexMap<String, ast::Component>,
+    type_overrides: &'a TypeOverrideMap,
+    selected_component_types: &'a SelectedComponentTypes,
+    imports: crate::dims::ImportRewrite<'a>,
 }
 
 // SPEC_0021: Exception - component instantiation is the phase entry point that
@@ -1365,6 +1599,10 @@ fn instantiate_component(
         is_primitive,
         is_discrete: is_discrete_type,
     } = validated_component_type_info(tree, comp, ctx, &qualified_name, &type_name)?;
+    // MLS §13.2: declaration-side expressions (shape, binding, attributes)
+    // were written in the component's declaring class, so its import bindings
+    // govern their qualification.
+    let declaring_imports = component_effective_imports(tree, ctx, comp);
     let ComponentBindingInfo {
         mut attrs,
         binding,
@@ -1376,10 +1614,13 @@ fn instantiate_component(
         tree,
         comp,
         ctx,
-        scope.effective_components,
-        scope.type_overrides,
+        ComponentSourceSemantics {
+            effective_components: scope.effective_components,
+            type_overrides: scope.type_overrides,
+            selected_component_types: scope.selected_component_types,
+            imports: scope.imports.attributes(declaring_imports.as_ref()),
+        },
         is_discrete_type,
-        scope.imports.attributes,
     )?;
     let (flow, stream) = component_flow_stream(comp, ctx);
     validate_final_type_attribute_overrides(tree, class_def, comp, ctx.mod_env())?;
@@ -1389,10 +1630,14 @@ fn instantiate_component(
         comp,
         ctx,
         class_def,
-        scope.effective_components,
-        scope.imports.qualification,
+        ComponentSourceSemantics {
+            effective_components: scope.effective_components,
+            type_overrides: scope.type_overrides,
+            selected_component_types: scope.selected_component_types,
+            imports: scope.imports.qualification(declaring_imports.as_ref()),
+        },
     )?;
-    let type_id = component_type_id(tree, &type_name, class_def, is_primitive);
+    let type_id = component_type_id(tree, &type_name, class_def, is_primitive)?;
     let declaration_source_scope = component_declaration_source_scope(ctx, comp);
     let binding_scope_for_record_expansion = binding_scope_for_record_expansion(
         &qualified_name,
@@ -1400,16 +1645,39 @@ fn instantiate_component(
         binding_source_scope.as_ref(),
     );
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
-    let evaluate = has_evaluate_annotation(comp) || ctx.inherited_evaluate();
+    let inherited_evaluate = ctx.inherited_evaluate();
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
-    let (class_overrides, has_forwarding_class_redeclare, nested_type_overrides) =
-        resolve_component_nested_type_overrides(
+    let (evaluate_annotation, explicitly_disables_structural_evaluation) = {
+        let eval_ctx = InstantiateEvalCtx {
             tree,
-            comp,
-            class_def,
-            ctx.mod_env(),
-            scope.type_overrides,
-        )?;
+            mod_env: ctx.mod_env(),
+            effective_components: scope.effective_components,
+            resolve_class_components: resolve_effective_components_for_eval,
+        };
+        (
+            component_has_evaluate_annotation(comp, &eval_ctx),
+            component_explicitly_disables_structural_evaluation(&comp.name, comp, &eval_ctx),
+        )
+    };
+    let evaluate = evaluate_annotation || inherited_evaluate;
+    let occurrence_allows_structural_evaluation = match effective_variability {
+        rumoca_core::Variability::Constant(_) => true,
+        rumoca_core::Variability::Parameter(_) => !explicitly_disables_structural_evaluation,
+        _ => false,
+    };
+    let (
+        class_overrides,
+        has_forwarding_class_redeclare,
+        nested_type_overrides,
+        nested_component_selections,
+    ) = resolve_component_nested_type_overrides(
+        tree,
+        comp,
+        class_def,
+        ctx.mod_env(),
+        scope.type_overrides,
+    )?
+    .into_parts();
 
     let (instance_data, binding_for_record_expansion, binding_source_for_record_expansion) =
         build_instance_data(InstanceDataBuild {
@@ -1451,8 +1719,13 @@ fn instantiate_component(
             .each_modifier_bindings
             .insert(instance_data.qualified_name.to_component_path());
     }
-    ctx.register_known_integer_instance(&instance_data);
-    overlay.add_component(instance_data);
+    ctx.register_known_integer_instance(&instance_data, occurrence_allows_structural_evaluation);
+    overlay.add_component(instance_data).map_err(|reason| {
+        Box::new(InstantiateError::invalid_instance_occurrence(
+            reason.to_string(),
+            component_span,
+        ))
+    })?;
 
     instantiate_nested_component_if_needed(
         tree,
@@ -1473,7 +1746,10 @@ fn instantiate_component(
             binding_is_each,
             effective_components: scope.effective_components,
             type_overrides: &nested_type_overrides,
-            modifier_imports: scope.imports.attributes,
+            component_type_selections: nested_component_selections,
+            // Modifications applied to this component were written in the
+            // instantiating class, so its own import bindings apply.
+            modifier_imports: scope.imports.attributes(None),
         },
     )?;
 
@@ -1504,19 +1780,42 @@ fn resolve_component_shape(
     comp: &ast::Component,
     ctx: &InstantiateContext,
     class_def: Option<&ast::ClassDef>,
-    effective_components: &IndexMap<String, ast::Component>,
-    imports: &[(String, String)],
+    source: ComponentSourceSemantics<'_>,
 ) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
-    let type_dims =
-        resolve_type_alias_dimensions(tree, class_def, ctx.mod_env(), effective_components)?;
-    Ok(resolve_component_dimensions(
-        comp,
+    let mut component = comp.clone();
+    let declaration_occurrence = parent_instance_scope(&ctx.current_path());
+    component.shape_expr = resolve_dynamic_subscript_targets_at_occurrence(
+        tree,
+        source.type_overrides,
+        ctx.selected_component_type_catalog(),
+        &declaration_occurrence,
+        source.selected_component_types,
+        component.shape_expr,
+    )?;
+    let type_dims = resolve_type_alias_dimensions(
+        tree,
+        class_def,
+        ctx.mod_env(),
+        source.effective_components,
+        source.imports.class_index,
+    )?;
+    let (dims, dims_expr) = resolve_component_dimensions(
+        &component,
         &type_dims,
         ctx.mod_env(),
-        effective_components,
+        source.effective_components,
         tree,
-        imports,
-    ))
+        source.imports,
+    )?;
+    let dims_expr = resolve_dynamic_subscript_targets_at_occurrence(
+        tree,
+        source.type_overrides,
+        ctx.selected_component_type_catalog(),
+        &declaration_occurrence,
+        source.selected_component_types,
+        dims_expr,
+    )?;
+    Ok((dims, dims_expr))
 }
 
 struct ComponentBindingInfo {
@@ -1532,15 +1831,13 @@ fn prepare_component_binding_info(
     tree: &ast::ClassTree,
     comp: &ast::Component,
     ctx: &mut InstantiateContext,
-    effective_components: &IndexMap<String, ast::Component>,
-    type_overrides: &TypeOverrideMap,
+    source: ComponentSourceSemantics<'_>,
     is_discrete_type: bool,
-    imports: &[(String, String)],
 ) -> InstantiateResult<ComponentBindingInfo> {
     let eval_ctx = InstantiateEvalCtx {
         tree,
         mod_env: ctx.mod_env(),
-        effective_components,
+        effective_components: source.effective_components,
         resolve_class_components: resolve_effective_components_for_eval,
     };
     let ComponentAttrsAndBinding {
@@ -1550,30 +1847,62 @@ fn prepare_component_binding_info(
         binding_source_scope,
         binding_from_modification,
         binding_is_each,
-    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, imports)?;
-    // Sibling component occurrences of this class are still being materialized,
-    // so only class-alias selections can be proved for declaration-side
-    // expressions here. A member that stays unproven keeps its absent identity
-    // and is reported at the Flat boundary rather than guessed.
-    let selected_component_types = SelectedComponentTypes::default();
-    for expression in [
-        &mut binding,
-        &mut binding_source,
-        &mut attrs.start,
-        &mut attrs.min,
-        &mut attrs.max,
-        &mut attrs.nominal,
-    ] {
-        if let Some(value) = expression.take() {
-            *expression = Some(resolve_dynamic_expression_targets(
-                tree,
-                type_overrides,
-                &selected_component_types,
-                value,
-            )?);
-        }
-    }
+    } = extract_component_attrs_and_binding(comp, ctx.mod_env(), &eval_ctx, source.imports)?;
     infer_local_attribute_source_scopes(ctx, comp, &mut attrs);
+    let declaration_occurrence = parent_instance_scope(&ctx.current_path());
+    let binding_occurrence = if binding_from_modification {
+        binding_source_scope.as_ref().ok_or_else(|| {
+            Box::new(InstantiateError::missing_source_context(format!(
+                "modifier binding of `{}` has no exact writing occurrence",
+                comp.name
+            )))
+        })?
+    } else {
+        &declaration_occurrence
+    };
+    (binding, binding_source) = resolve_component_bindings_from_occurrence(
+        tree,
+        ctx,
+        source,
+        &declaration_occurrence,
+        binding_occurrence,
+        binding,
+        binding_source,
+    )?;
+    let attribute_occurrences = ["start", "min", "max", "nominal"].map(|attribute_name| {
+        (
+            attribute_name,
+            attrs
+                .attribute_instance_scopes
+                .get(attribute_name)
+                .cloned()
+                .unwrap_or_else(|| declaration_occurrence.clone()),
+        )
+    });
+    for ((attribute_name, written_occurrence), expression) in
+        attribute_occurrences.into_iter().zip([
+            &mut attrs.start,
+            &mut attrs.min,
+            &mut attrs.max,
+            &mut attrs.nominal,
+        ])
+    {
+        let selections = selected_types_for_written_occurrence(
+            ctx,
+            &declaration_occurrence,
+            source.selected_component_types,
+            &written_occurrence,
+            attribute_name,
+        )?;
+        *expression = resolve_component_expression_with_plan(
+            tree,
+            ctx,
+            source,
+            &written_occurrence,
+            selections,
+            expression.take(),
+        )?;
+    }
     let start_from_declaration_binding =
         !binding_from_modification && binding.is_some() && attrs.start == binding;
     if !binding_from_modification
@@ -1583,8 +1912,9 @@ fn prepare_component_binding_info(
         let resolved_binding = mod_env::resolve_declaration_binding_expr(
             declaration_binding,
             ctx.mod_env(),
-            effective_components,
+            source.effective_components,
             tree,
+            source.imports.class_index,
         )?;
         if start_from_declaration_binding {
             attrs.start = Some(resolved_binding.clone());
@@ -1599,6 +1929,82 @@ fn prepare_component_binding_info(
         binding_from_modification,
         binding_is_each,
     })
+}
+
+fn resolve_component_bindings_from_occurrence(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    source: ComponentSourceSemantics<'_>,
+    declaration_occurrence: &ast::QualifiedName,
+    written_occurrence: &ast::QualifiedName,
+    binding: Option<ast::Expression>,
+    binding_source: Option<ast::Expression>,
+) -> InstantiateResult<(Option<ast::Expression>, Option<ast::Expression>)> {
+    let selections = selected_types_for_written_occurrence(
+        ctx,
+        declaration_occurrence,
+        source.selected_component_types,
+        written_occurrence,
+        "binding",
+    )?;
+    Ok((
+        resolve_component_expression_with_plan(
+            tree,
+            ctx,
+            source,
+            written_occurrence,
+            selections,
+            binding,
+        )?,
+        resolve_component_expression_with_plan(
+            tree,
+            ctx,
+            source,
+            written_occurrence,
+            selections,
+            binding_source,
+        )?,
+    ))
+}
+
+fn selected_types_for_written_occurrence<'a>(
+    ctx: &'a InstantiateContext,
+    declaration_occurrence: &ast::QualifiedName,
+    declaration_selections: &'a SelectedComponentTypes,
+    written_occurrence: &ast::QualifiedName,
+    surface: &str,
+) -> InstantiateResult<&'a SelectedComponentTypes> {
+    if written_occurrence == declaration_occurrence {
+        return Ok(declaration_selections);
+    }
+    ctx.selected_component_types_for_scope(written_occurrence)
+        .ok_or_else(|| {
+            Box::new(InstantiateError::missing_source_context(format!(
+                "component {surface} written in `{written_occurrence}` has no selected component-type plan"
+            )))
+        })
+}
+
+fn resolve_component_expression_with_plan(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    source: ComponentSourceSemantics<'_>,
+    written_occurrence: &ast::QualifiedName,
+    selections: &SelectedComponentTypes,
+    expression: Option<ast::Expression>,
+) -> InstantiateResult<Option<ast::Expression>> {
+    let Some(expression) = expression else {
+        return Ok(None);
+    };
+    resolve_dynamic_expression_targets_at_occurrence(
+        tree,
+        source.type_overrides,
+        ctx.selected_component_type_catalog(),
+        written_occurrence,
+        selections,
+        expression,
+    )
+    .map(Some)
 }
 
 fn declaration_binding_allows_structural_resolution(
@@ -1627,9 +2033,10 @@ struct NestedComponentRequest<'a> {
     binding_is_each: bool,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
+    component_type_selections: nested_scope::NestedComponentTypeSelections,
     /// Import aliases of the class that wrote these modifications (MLS §13.2),
     /// used to qualify unqualified names in modifier expressions.
-    modifier_imports: &'a [(String, String)],
+    modifier_imports: crate::dims::ImportRewrite<'a>,
 }
 
 fn instantiate_nested_component_if_needed(
@@ -1639,10 +2046,10 @@ fn instantiate_nested_component_if_needed(
     request: NestedComponentRequest<'_>,
 ) -> InstantiateResult<()> {
     if request.is_primitive || request.comp.outer && !request.comp.inner {
-        return Ok(());
+        return request.component_type_selections.finish();
     }
     let Some(nested_class) = request.class_def else {
-        return Ok(());
+        return request.component_type_selections.finish();
     };
     instantiate_nested_class(
         tree,
@@ -1662,6 +2069,7 @@ fn instantiate_nested_component_if_needed(
             binding_is_each: request.binding_is_each,
             effective_components: request.effective_components,
             type_overrides: request.type_overrides,
+            component_type_selections: request.component_type_selections,
             modifier_imports: request.modifier_imports,
         },
     )
@@ -1691,148 +2099,25 @@ fn parent_instance_scope(qualified_name: &ast::QualifiedName) -> ast::QualifiedN
 
 /// Handle nested class instantiation: set up modification environment,
 /// push inheritance flags, instantiate the class, and clean up.
-struct NestedInstantiationInput<'a> {
-    instance_id: rumoca_core::InstanceId,
-    nested_class: &'a ast::ClassDef,
-    comp: &'a ast::Component,
-    effective_variability: &'a rumoca_core::Variability,
-    causality: &'a rumoca_core::Causality,
-    flow: bool,
-    stream: bool,
-    binding_for_record_expansion: Option<&'a ast::Expression>,
-    binding_source_for_record_expansion: Option<&'a ast::Expression>,
-    binding_scope_for_record_expansion: Option<&'a ast::QualifiedName>,
-    binding_is_each: bool,
-    effective_components: &'a IndexMap<String, ast::Component>,
-    type_overrides: &'a TypeOverrideMap,
-    /// Import aliases of the class that wrote these modifications (MLS §13.2).
-    modifier_imports: &'a [(String, String)],
-}
-
-fn instantiate_nested_class(
-    tree: &ast::ClassTree,
-    ctx: &mut InstantiateContext,
-    overlay: &mut ast::InstanceOverlay,
-    input: NestedInstantiationInput<'_>,
-) -> InstantiateResult<()> {
-    let NestedInstantiationInput {
-        instance_id,
-        nested_class,
-        comp,
-        effective_variability,
-        causality,
-        flow,
-        stream,
-        binding_for_record_expansion,
-        binding_source_for_record_expansion,
-        binding_scope_for_record_expansion,
-        binding_is_each,
-        effective_components,
-        type_overrides,
-        modifier_imports,
-    } = input;
-
-    // Snapshot mod_env before modifications so we can restore it after.
-    // MLS §7.2: Modifications added for this nested component (via shift_modifications_down,
-    // populate_modification_environment, and propagate_record_binding_to_fields) are scoped
-    // to this component's instantiation. Parent-scope entries with names that coincidentally
-    // match nested class component names must NOT leak through (e.g., parent has parameter `T`
-    // and nested HeatPort connector also has field `T`).
-    let mod_env_snapshot = ctx.mod_env().active.clone();
-    let shifted_parent_keys = collect_shifted_parent_mod_keys(comp, &mod_env_snapshot);
-    let targeted_keys = collect_targeted_mod_keys(comp, &mod_env_snapshot);
-
-    shift_modifications_down(ctx, &comp.name);
-
-    populate_modification_environment(
-        ctx,
-        tree,
-        PopulateModEnvInput {
-            comp,
-            effective_components,
-            type_overrides,
-            target_class: Some(nested_class),
-            parent_snapshot: &mod_env_snapshot,
-            shifted_parent_keys: &shifted_parent_keys,
-            modifier_imports,
-        },
-    )?;
-
-    let record_projected_keys = if let Some(binding_expr) = binding_for_record_expansion {
-        propagate_record_binding_to_fields(
-            tree,
-            ctx,
-            RecordBindingProjection {
-                value: binding_expr,
-                source: binding_source_for_record_expansion,
-                source_scope: binding_scope_for_record_expansion.cloned(),
-                each: binding_is_each,
-            },
-            nested_class,
-            &targeted_keys,
-        )?
-    } else {
-        IndexMap::default()
-    };
-
-    let referenced_mod_roots = collect_referenced_mod_roots(comp);
-    ctx.mod_env_mut().active.retain(|key, _| {
-        // Keep entries not in the snapshot (they were newly added)
-        !mod_env_snapshot.contains_key(key)
-        // Keep record-field projections even when their local field names also
-        // existed in the parent snapshot (for example, `path.startPosition`
-        // nested inside a component modified at `startPosition`).
-        || record_projected_keys.contains_key(key)
-        // Keep entries that were explicitly targeted at this component
-        || targeted_keys.contains_key(key)
-        // Keep parent keys referenced by this component's modifier RHS expressions.
-        || key_matches_referenced_root(key, &referenced_mod_roots)
-    });
-
-    let eq_size = inheritance::equality_constraint_output_size(nested_class);
-
-    ctx.push_scope_frame(ScopeFrameInput {
-        variability: effective_variability,
-        evaluate: has_evaluate_annotation(comp) || ctx.inherited_evaluate(),
-        causality,
-        flow,
-        stream,
-        expandable: nested_class.expandable,
-        overconstrained_eq_size: eq_size,
-        protected: comp.is_protected,
-    });
-
-    let active_package_alias = active_package_constant_alias(comp, type_overrides);
-    if let Some(alias) = active_package_alias.as_ref() {
-        ctx.active_package_constant_aliases.push(alias.clone());
-    }
-    ctx.active_type_overrides.push(type_overrides.clone());
-    let result = instantiate_class(tree, nested_class, Some(instance_id), None, ctx, overlay);
-    ctx.active_type_overrides.pop();
-    if active_package_alias.is_some() {
-        ctx.active_package_constant_aliases.pop();
-    }
-    ctx.pop_scope_frame();
-
-    // Restore mod_env to pre-modification state, preserving outer scope modifications
-    ctx.mod_env_mut().active = mod_env_snapshot;
-    result?;
-
-    Ok(())
-}
-
 fn active_package_constant_alias(
     comp: &ast::Component,
     type_overrides: &TypeOverrideMap,
 ) -> Option<(String, DefId)> {
     let alias = comp.type_name.name.first()?.text.as_ref();
-    let target_def_id = type_overrides.target_for_alias_name(alias)?;
+    let alias_def_id = comp.type_name.def_id?;
+    let target_def_id = type_overrides.target_for_alias_def_id(alias_def_id)?;
     Some((alias.to_string(), target_def_id))
 }
 
 #[cfg(test)]
+mod alias_dims_and_builtin_tests;
+#[cfg(test)]
 mod conditional_outer_tests;
 #[cfg(test)]
 mod conditional_scope_tests;
+#[cfg(test)]
+mod equality_constraint_tests;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;

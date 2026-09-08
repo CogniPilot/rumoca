@@ -1,13 +1,21 @@
 #![feature(rustc_private)]
 
+extern crate rustc_ast;
 extern crate rustc_borrowck;
+extern crate rustc_driver;
+extern crate rustc_hashes;
 extern crate rustc_hir;
 extern crate rustc_interface;
 extern crate rustc_middle;
+extern crate rustc_session;
+extern crate rustc_span;
+extern crate rustc_target;
 
+mod artifact;
 pub mod binding;
 pub mod collection;
 mod positions;
+pub mod session;
 
 pub use positions::free_regions;
 use positions::match_positions;
@@ -15,17 +23,19 @@ use rustc_borrowck::consumers::BodyWithBorrowckFacts;
 use rustc_hir::def_id::{DefPathHash, LocalDefId};
 use rustc_middle::mir::MirSource;
 use rustc_middle::ty::{self, TyCtxt};
+use serde::{Deserialize, Serialize};
 
 /// A position in the full type, including phantom generic arguments.
 /// Bound occurrences are not free positions and remain in their original binder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RegionPart {
     ParentArguments,
     Signature,
     Captures,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegionSlot {
     part: RegionPart,
     occurrence: usize,
@@ -42,7 +52,8 @@ impl RegionSlot {
 }
 
 /// A path requirement issued from one body's graph, not a declared bound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequiredOutlives {
     longer: RegionSlot,
     shorter: RegionSlot,
@@ -69,7 +80,7 @@ pub struct ClosureRegionFacts {
     required_outlives: Vec<RequiredOutlives>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FactError {
     WrongBodyOwner,
     NotClosure,

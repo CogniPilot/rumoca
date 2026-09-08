@@ -34,20 +34,47 @@
 //! whole-inventory encoding.
 
 mod event_free;
+mod linked_runtime;
 mod max_step_duration;
 mod metadata;
+mod projection;
+mod scalar_constant_derivative;
 #[cfg(test)]
 mod tests;
+mod write_modes;
 
 pub use event_free::{FmiEventFreeCodegenView, FmiEventFreeError};
+pub use linked_runtime::{
+    FmiContinuousStateWidth, FmiDeadlineWidth, FmiDelayCapability,
+    FmiDirectionalReferenceDescriptor, FmiEventIndicatorEntry, FmiEventIndicatorPlan,
+    FmiIndicatorDomainWidth, FmiIndicatorReading, FmiIndicatorWidth, FmiIndicatorZeroSide,
+    FmiLinkedRuntimeFacts, FmiPublishedIndicatorWidth, FmiRootValueWidth, FmiRuntimeFloat64Backing,
+    FmiRuntimeFloat64Descriptor,
+};
 pub use max_step_duration::{
     MAX_STEP_DURATION_DESCRIPTION, MAX_STEP_DURATION_NAME, MAX_STEP_DURATION_UNCONSTRAINED,
     MAX_STEP_DURATION_UNIT,
 };
 pub use metadata::{
-    FmiCausality, FmiInitial, FmiStorageColumn, FmiStorageRun, FmiValueBacking, FmiVariability,
-    FmiVariable, FmiVariableInput,
+    FmiCausality, FmiInitial, FmiStateInitial, FmiStateReinit, FmiStorageRun, FmiValueBacking,
+    FmiVariability, FmiVariable, FmiWritePolicy,
 };
+pub use projection::{
+    Fmi2DerivativeVariable, Fmi2Projection, Fmi2ScalarVariable, Fmi3DerivativeVariable,
+    Fmi3Projection, Fmi3TensorVariable, FmiDerivativeLink, FmiDerivativeStorageRange,
+    FmiModelStructureMembership, FmiProjectionError, FmiUnitDefinition,
+};
+pub use scalar_constant_derivative::{
+    DerivativeKernelFacts, Fmi3InventoryEntryFact, Fmi3ScalarConstantDerivativeCarrier,
+    Fmi3StateDerivativeFact, Fmi3StateVariableFact, KernelOperationFact,
+    ScalarConstantDerivativeDisagreement, ScalarConstantDerivativeError,
+    ScalarConstantDerivativeFmi3Facts, ScalarConstantDerivativeReceipt,
+    ScalarConstantDerivativeSolveFacts, ScalarConstantDerivativeSystemFacts,
+    ScalarConstantDerivativeUnsupported, SolveScalarVariableFact, SolveStorageFact, StartLeg,
+    check_scalar_constant_derivative_projection, project_scalar_constant_derivative_fmi3_facts,
+    project_scalar_constant_derivative_solve_facts,
+};
+pub use write_modes::{Fmi2WriteMode, Fmi2WriteModes, Fmi3WriteMode, Fmi3WriteModes};
 
 /// Configuration-Mode capability declared by the checked FMI component.
 ///
@@ -64,8 +91,9 @@ pub enum FmiConfigurationCapability {
 }
 
 use crate::{
-    ScalarSlot, SolveArtifacts, SolveModel, SolveProblem, SolveVariableDeclaration,
-    SolveVariableStorageRole, SolveVariableStorageRun,
+    ScalarSlot, SolveArtifacts, SolveModel, SolveProblem, SolveStateInitialization,
+    SolveStorageColumn, SolveVariableCatalogEntry, SolveVariableCausality,
+    SolveVariableStorageRole, SolveVariableVariability,
 };
 use rumoca_core::Span;
 use std::collections::BTreeSet;
@@ -73,23 +101,6 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FmiComponentError {
-    #[error("Solve kernel is invalid: {0}")]
-    InvalidSolve(String),
-    #[error("FMI declaration count {variables} does not match Solve storage count {storage}")]
-    VariableCount { variables: usize, storage: usize },
-    #[error("FMI variable `{name}` has {actual} scalars but its shape requires {expected}")]
-    ScalarCount {
-        name: String,
-        actual: usize,
-        expected: usize,
-        span: Span,
-    },
-    #[error("FMI variable `{name}` has duplicate source identity")]
-    DuplicateName { name: String, span: Span },
-    #[error("FMI variable `{name}` does not match its Solve declaration or storage role")]
-    StorageTypeMismatch { name: String, span: Span },
-    #[error("FMI variable `{name}` is stored in a non-addressable Solve slot")]
-    NonAddressableStorage { name: String, span: Span },
     #[error("FMI 3 value-reference space exceeds u32")]
     ValueReferenceOverflow,
     #[error("FMI state scalar count {actual} does not match Solve state count {expected}")]
@@ -101,22 +112,22 @@ pub enum FmiComponentError {
     },
     #[error("FMI event-indicator inventory is invalid: {message}")]
     EventIndicatorInventory { message: String, span: Option<Span> },
+    #[error("FMI continuous-state reinit evidence is invalid: {message}")]
+    StateReinitEvidence { message: String },
+    #[error("FMI variable `{name}` has a causality/variability the catalog never issues")]
+    UnclassifiedWritePolicy { name: String, span: Span },
 }
 
 impl FmiComponentError {
     #[must_use]
     pub const fn span(&self) -> Option<Span> {
         match self {
-            Self::ScalarCount { span, .. }
-            | Self::DuplicateName { span, .. }
-            | Self::StorageTypeMismatch { span, .. }
-            | Self::NonAddressableStorage { span, .. } => Some(*span),
             Self::ReservedMaxStepDurationName { declaration, .. } => Some(*declaration),
             Self::EventIndicatorInventory { span, .. } => *span,
-            Self::InvalidSolve(_)
-            | Self::VariableCount { .. }
-            | Self::ValueReferenceOverflow
-            | Self::StateCount { .. } => None,
+            Self::UnclassifiedWritePolicy { span, .. } => Some(*span),
+            Self::ValueReferenceOverflow
+            | Self::StateCount { .. }
+            | Self::StateReinitEvidence { .. } => None,
         }
     }
 }
@@ -168,8 +179,8 @@ pub struct FmiEventIndicatorInventory {
 impl FmiEventIndicatorInventory {
     pub fn derive(model: &SolveModel) -> Result<Self, FmiComponentError> {
         let static_y = model
-            .problem
-            .continuous
+            .problem()
+            .continuous()
             .refresh_owners
             .root()
             .static_causal_rows()
@@ -177,14 +188,14 @@ impl FmiEventIndicatorInventory {
             .map(|row| row.target_index())
             .collect::<BTreeSet<_>>();
         let scheduled = model
-            .problem
-            .events
+            .problem()
+            .events()
             .scheduled_root_conditions
             .iter()
             .map(|root| root.root_index)
             .collect::<BTreeSet<_>>();
         let mut sources = dependency_backed_indicator_sources(
-            &model.problem.events.root_conditions,
+            &model.problem().events().root_conditions,
             &static_y,
             TimeReadOwner::Monitored,
             |index| {
@@ -193,13 +204,18 @@ impl FmiEventIndicatorInventory {
             },
         )?;
         sources.extend(dependency_backed_indicator_sources(
-            &model.problem.events.dynamic_time_event_rhs,
+            &model.problem().events().dynamic_time_event_rhs,
             &static_y,
             TimeReadOwner::Announced,
             |index| Some(FmiEventIndicatorSource::DynamicTimeEvent { index }),
         )?);
         sources.extend(
-            (0..model.problem.events.delays.delay_time_rhs.output_count())
+            (0..model
+                .problem()
+                .events()
+                .delays
+                .delay_time_rhs
+                .output_count())
                 .map(|index| FmiEventIndicatorSource::DelayDiscontinuity { index }),
         );
         Ok(Self {
@@ -368,28 +384,32 @@ impl FmiMetadata {
 pub struct FmiComponent {
     metadata: FmiMetadata,
     event_indicators: FmiEventIndicatorInventory,
+    linked_runtime_facts: Arc<FmiLinkedRuntimeFacts>,
+    event_class: Option<crate::SolveEventClass>,
     model: Arc<SolveModel>,
 }
 
 impl FmiComponent {
     /// Bind one checked kernel to the FMI inventory that describes it.
     ///
-    /// `inputs` is one entry per Solve storage run, and holds only facts the
-    /// Modelica declaration owns. The maximum-step-duration local of
-    /// SPEC_0044 §8 is not among them: this constructor derives it, exactly
-    /// when the checked kernel is delay-bearing.
-    pub fn construct(
-        model: SolveModel,
-        inputs: Vec<FmiVariableInput>,
-    ) -> Result<Self, FmiComponentError> {
-        model
-            .validate()
-            .map_err(|error| FmiComponentError::InvalidSolve(error.to_string()))?;
-        let metadata = checked_metadata(&model.problem, inputs)?;
+    /// All declaration facts and evaluated values come from the sealed catalog
+    /// retained by `model`. The maximum-step-duration local of SPEC_0044 §8 is
+    /// derived here when the checked kernel is delay-bearing.
+    pub fn construct(model: SolveModel) -> Result<Self, FmiComponentError> {
+        let metadata = checked_metadata(&model)?;
         let event_indicators = FmiEventIndicatorInventory::derive(&model)?;
+        let event_class = crate::solve_event_class(model.problem());
+        let linked_runtime_facts = Arc::new(FmiLinkedRuntimeFacts::construct(
+            &model,
+            &metadata,
+            &event_indicators,
+            event_class.is_some(),
+        )?);
         Ok(Self {
             metadata,
             event_indicators,
+            linked_runtime_facts,
+            event_class,
             model: Arc::new(model),
         })
     }
@@ -436,24 +456,24 @@ impl FmiComponent {
     /// are semantic event classes, so the one
     /// [`crate::solve_event_class`] fact decides it.
     ///
-    /// This is derived on demand from the kernel this component owns rather
-    /// than stored: a second copy of the fact is a second thing that can drift
-    /// from the kernel. It is a construction-owned capability fact only; the
+    /// Component construction derives the event class once from the kernel it
+    /// consumes and retains that closed fact. This accessor reads the retained
+    /// construction fact; it does not traverse the kernel a second time. The
     /// callback's runtime behaviour belongs to the linked component and is not
     /// implemented here.
     #[must_use]
     pub fn needs_completed_integrator_step(&self) -> bool {
-        crate::solve_event_class(self.problem()).is_some()
+        self.event_class.is_some()
     }
 
     #[must_use]
     pub fn problem(&self) -> &SolveProblem {
-        &self.model.problem
+        self.model.problem()
     }
 
     #[must_use]
     pub fn artifacts(&self) -> &SolveArtifacts {
-        &self.model.artifacts
+        self.model.artifacts()
     }
 
     /// Borrow the executable root through the component that proved its FMI
@@ -464,11 +484,18 @@ impl FmiComponent {
     /// construction. The view is borrowed and has no public constructor or
     /// owned-root escape.
     #[must_use]
-    pub fn runtime_view(&self) -> FmiRuntimeView<'_> {
+    pub fn runtime_model(&self) -> &SolveModel {
+        self.model.as_ref()
+    }
+
+    /// Consume the checked component into the one sealed linked-runtime
+    /// capability. The capability keeps the executable root and every issued
+    /// FMI descriptor correlated; neither owned part can be extracted.
+    #[must_use]
+    pub fn into_runtime_view(self) -> FmiRuntimeView {
         FmiRuntimeView {
-            model: &self.model,
-            metadata: &self.metadata,
-            event_indicators: &self.event_indicators,
+            model: self.model,
+            linked_runtime_facts: self.linked_runtime_facts,
         }
     }
 
@@ -481,24 +508,49 @@ impl FmiComponent {
         FmiCodegenView {
             metadata: self.metadata,
             event_indicators: self.event_indicators,
+            event_class: self.event_class,
             model: self.model,
         }
     }
 }
 
-/// Borrowed executable view minted only by [`FmiComponent::runtime_view`].
+/// Sealed executable capability minted only by
+/// [`FmiComponent::into_runtime_view`].
 ///
 /// This is the runtime counterpart of [`FmiCodegenView`]: it keeps the
-/// correlation proof but does not consume the component. Deliberately not
-/// `Clone` or `Copy`; a host lends it directly into one component instance.
+/// correlation proof and consumes the component. Deliberately not `Clone` or
+/// `Copy`; the linked runtime retains this whole value for its lifetime.
+///
+/// An importer cannot recover the owned Solve root or reconstruct the
+/// capability from independently held parts:
+///
+/// ```compile_fail
+/// fn escape(view: rumoca_ir_solve::fmi::FmiRuntimeView) {
+///     let _owned = view.shared_model();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use std::sync::Arc;
+/// use rumoca_ir_solve::fmi::{FmiLinkedRuntimeFacts, FmiRuntimeView};
+/// fn escape_facts(view: &FmiRuntimeView) -> Arc<FmiLinkedRuntimeFacts> {
+///     view.linked_runtime_facts()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn clone_generically<T: Clone>(value: &T) -> T { value.clone() }
+/// fn duplicate(view: &rumoca_ir_solve::fmi::FmiRuntimeView) {
+///     let _duplicate = clone_generically(view);
+/// }
+/// ```
 #[derive(Debug)]
-pub struct FmiRuntimeView<'component> {
-    model: &'component SolveModel,
-    metadata: &'component FmiMetadata,
-    event_indicators: &'component FmiEventIndicatorInventory,
+pub struct FmiRuntimeView {
+    model: Arc<SolveModel>,
+    linked_runtime_facts: Arc<FmiLinkedRuntimeFacts>,
 }
 
-impl<'component> FmiRuntimeView<'component> {
+impl FmiRuntimeView {
     #[must_use]
     pub const fn configuration_capability(&self) -> FmiConfigurationCapability {
         // The sole current constructor has no structural FMI variable. This
@@ -508,36 +560,17 @@ impl<'component> FmiRuntimeView<'component> {
     }
 
     /// The checked executable root borrowed from the correlated component.
-    /// No owned `SolveModel` can be recovered through this view.
+    /// No owned bare `SolveModel` can be recovered through this view.
     #[must_use]
-    pub fn model(self) -> &'component SolveModel {
-        self.model
+    pub fn model(&self) -> &SolveModel {
+        self.model.as_ref()
     }
 
+    /// Borrow the immutable FMI-to-runtime facts issued beside [`Self::model`].
+    /// The owning handles remain sealed inside this capability.
     #[must_use]
-    pub fn event_indicators(&self) -> &'component FmiEventIndicatorInventory {
-        self.event_indicators
-    }
-
-    /// The checked maximum-step-duration entry, when the component is
-    /// delay-bearing.
-    ///
-    /// Runtime linking borrows this typed inventory entry once; it never
-    /// rediscovers the annotation by name or inspects Solve operations.
-    #[must_use]
-    pub fn max_step_duration(&self) -> Option<&'component FmiVariable> {
-        self.metadata.max_step_duration()
-    }
-
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        &'component SolveModel,
-        &'component FmiMetadata,
-        &'component FmiEventIndicatorInventory,
-    ) {
-        (self.model, self.metadata, self.event_indicators)
+    pub fn linked_runtime_facts(&self) -> &FmiLinkedRuntimeFacts {
+        self.linked_runtime_facts.as_ref()
     }
 }
 
@@ -559,6 +592,7 @@ impl<'component> FmiRuntimeView<'component> {
 pub struct FmiCodegenView {
     metadata: FmiMetadata,
     event_indicators: FmiEventIndicatorInventory,
+    event_class: Option<crate::SolveEventClass>,
     model: Arc<SolveModel>,
 }
 
@@ -575,30 +609,25 @@ impl FmiCodegenView {
 
     #[must_use]
     pub fn problem(&self) -> &SolveProblem {
-        &self.model.problem
+        self.model.problem()
     }
 
     #[must_use]
     pub fn artifacts(&self) -> &SolveArtifacts {
-        &self.model.artifacts
+        self.model.artifacts()
     }
 }
 
-fn checked_metadata(
-    solve: &SolveProblem,
-    inputs: Vec<FmiVariableInput>,
-) -> Result<FmiMetadata, FmiComponentError> {
-    let runs = &solve.solve_layout.variable_storage_runs;
-    let declarations = &solve.solve_layout.variable_declarations;
-    if inputs.len() != runs.len() || inputs.len() != declarations.len() {
-        return Err(FmiComponentError::VariableCount {
-            variables: inputs.len(),
-            storage: runs.len(),
-        });
-    }
+fn checked_metadata(model: &SolveModel) -> Result<FmiMetadata, FmiComponentError> {
+    let solve = model.problem();
     let delay_bearing = !solve.events.delays.delay_time_rhs.is_empty();
+    let reinitialized_state_slots = checked_reinitialized_state_slots(solve)?;
 
-    let mut inventory = checked_storage_inventory(inputs, runs, declarations, delay_bearing)?;
+    let mut inventory = checked_storage_inventory(
+        model.variable_catalog(),
+        delay_bearing,
+        &reinitialized_state_slots,
+    )?;
     if inventory.state_scalar_count != solve.solve_layout.state_scalar_count {
         return Err(FmiComponentError::StateCount {
             actual: inventory.state_scalar_count,
@@ -629,34 +658,23 @@ struct StorageInventory {
 }
 
 fn checked_storage_inventory(
-    inputs: Vec<FmiVariableInput>,
-    runs: &[SolveVariableStorageRun],
-    declarations: &[SolveVariableDeclaration],
+    catalog: &crate::SolveVariableCatalog,
     delay_bearing: bool,
+    reinitialized_state_slots: &BTreeSet<usize>,
 ) -> Result<StorageInventory, FmiComponentError> {
-    let mut names = BTreeSet::new();
     let mut inventory = StorageInventory {
-        variables: Vec::with_capacity(inputs.len()),
+        variables: Vec::with_capacity(catalog.len()),
         state_variable_indices: Vec::new(),
         state_scalar_count: 0,
     };
-    for (index, (input, run)) in inputs.into_iter().zip(runs).enumerate() {
-        max_step_duration::reject_reserved_name(&input, delay_bearing)?;
-        if !names.insert(input.name.clone()) {
-            return Err(FmiComponentError::DuplicateName {
-                name: input.name,
-                span: input.declaration,
-            });
-        }
+    for entry in catalog.entries() {
+        max_step_duration::reject_reserved_name(entry, delay_bearing)?;
+        let run = entry.storage();
         let variable = checked_variable(
-            input,
-            *run,
-            declarations[index],
+            entry,
             value_reference_fmi3(inventory.variables.len())?,
+            reinitialized_state_slots,
         )?;
-        if run.scalar_count == 0 {
-            continue;
-        }
         if variable.role() == Some(SolveVariableStorageRole::State) {
             inventory
                 .state_variable_indices
@@ -681,81 +699,244 @@ fn value_reference_fmi3(index: usize) -> Result<u32, FmiComponentError> {
 }
 
 fn checked_variable(
-    input: FmiVariableInput,
-    run: SolveVariableStorageRun,
-    declaration: SolveVariableDeclaration,
+    entry: &SolveVariableCatalogEntry,
     value_reference_fmi3: u32,
+    reinitialized_state_slots: &BTreeSet<usize>,
 ) -> Result<FmiVariable, FmiComponentError> {
-    let scalar_count = checked_scalar_count(&input)?;
-    if scalar_count != run.scalar_count
-        || input.role != run.role
-        || input.value_kind != run.value_kind
-        || input.role != declaration.role()
-        || input.value_kind != declaration.value_kind()
-    {
-        return Err(FmiComponentError::StorageTypeMismatch {
-            name: input.name,
-            span: input.declaration,
-        });
-    }
-    let (column, base) = match run.base {
-        ScalarSlot::Y { index, .. } => (FmiStorageColumn::Y, index),
-        ScalarSlot::P { index, .. } => (FmiStorageColumn::P, index),
-        ScalarSlot::Time | ScalarSlot::Constant(_) => {
-            return Err(FmiComponentError::NonAddressableStorage {
-                name: input.name,
-                span: input.declaration,
-            });
-        }
+    let run = entry.storage();
+    let scalar_count = run.scalar_count;
+    let column = run.base.column();
+    let base = run.base.index();
+    let causality = fmi_causality(entry.causality());
+    let variability = fmi_variability(entry.variability());
+    // One read of the state-initialization fact feeds both the `initial`
+    // attribute and the write policy, so the two cannot describe the same
+    // state differently.
+    let state_initialization = entry.state_initialization();
+    let initial = fmi_initial(entry, causality, state_initialization);
+    let start = match initial {
+        Some(FmiInitial::Calculated) => None,
+        Some(FmiInitial::Exact | FmiInitial::Approx) | None => entry.start().map(<[f64]>::to_vec),
     };
+    let state_reinit_false = if matches!(entry.role(), SolveVariableStorageRole::State)
+        && matches!(column, SolveStorageColumn::Y)
+    {
+        let end = base.checked_add(scalar_count).ok_or_else(|| {
+            FmiComponentError::StateReinitEvidence {
+                message: format!("state `{}` storage range overflows Y", entry.name()),
+            }
+        })?;
+        (base..end).all(|index| !reinitialized_state_slots.contains(&index))
+    } else {
+        false
+    };
+    let state = fmi_state_facts(state_initialization, state_reinit_false);
+    let write_policy = fmi_write_policy(causality, variability, state).ok_or_else(|| {
+        FmiComponentError::UnclassifiedWritePolicy {
+            name: entry.name().to_string(),
+            span: entry.provenance(),
+        }
+    })?;
     Ok(FmiVariable {
-        name: input.name,
-        value_kind: input.value_kind,
-        dimensions: input.dimensions,
+        source_id: Some(entry.id()),
+        name: entry.name().to_string(),
+        value_kind: entry.value_kind(),
+        dimensions: entry.dimensions().to_vec(),
         backing: FmiValueBacking::SolveStorage {
-            role: input.role,
+            role: entry.role(),
             storage: FmiStorageRun {
                 column,
                 base,
                 scalar_count,
             },
-            scalar_names: input.scalar_names,
+            scalar_names: entry.scalar_names().to_vec(),
         },
-        start: Some(input.start),
-        minimum: input.minimum,
-        maximum: input.maximum,
-        nominal: input.nominal,
-        unit: input.unit,
-        description: input.description,
-        causality: input.causality,
-        variability: input.variability,
-        initial: None,
-        tunable: input.tunable,
-        declaration: Some(input.declaration),
+        start,
+        minimum: entry.minimum().map(<[f64]>::to_vec),
+        maximum: entry.maximum().map(<[f64]>::to_vec),
+        nominal: entry.nominal().map(<[f64]>::to_vec),
+        unit: entry.unit().map(str::to_string),
+        description: entry.description().map(str::to_string),
+        causality,
+        variability,
+        initial,
+        write_policy,
+        tunable: entry.is_tunable(),
+        declaration: Some(entry.provenance()),
         value_reference_fmi3,
     })
 }
 
-fn checked_scalar_count(input: &FmiVariableInput) -> Result<usize, FmiComponentError> {
-    let expected = input
-        .dimensions
-        .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-        .ok_or(FmiComponentError::ValueReferenceOverflow)?;
-    let counts = [
-        input.scalar_names.len(),
-        input.start.len(),
-        input.minimum.as_ref().map_or(expected, Vec::len),
-        input.maximum.as_ref().map_or(expected, Vec::len),
-        input.nominal.as_ref().map_or(expected, Vec::len),
-    ];
-    if let Some(actual) = counts.into_iter().find(|actual| *actual != expected) {
-        return Err(FmiComponentError::ScalarCount {
-            name: input.name.clone(),
-            actual,
-            expected,
-            span: input.declaration,
-        });
+const fn fmi_causality(causality: SolveVariableCausality) -> FmiCausality {
+    match causality {
+        SolveVariableCausality::Input => FmiCausality::Input,
+        SolveVariableCausality::Output => FmiCausality::Output,
+        SolveVariableCausality::Parameter => FmiCausality::Parameter,
+        SolveVariableCausality::CalculatedParameter => FmiCausality::CalculatedParameter,
+        SolveVariableCausality::Independent => FmiCausality::Independent,
+        SolveVariableCausality::Local => FmiCausality::Local,
     }
-    Ok(expected)
+}
+
+const fn fmi_variability(variability: SolveVariableVariability) -> FmiVariability {
+    match variability {
+        SolveVariableVariability::Constant => FmiVariability::Constant,
+        SolveVariableVariability::Fixed => FmiVariability::Fixed,
+        SolveVariableVariability::Tunable => FmiVariability::Tunable,
+        SolveVariableVariability::Discrete => FmiVariability::Discrete,
+        SolveVariableVariability::Continuous => FmiVariability::Continuous,
+    }
+}
+
+fn fmi_initial(
+    entry: &SolveVariableCatalogEntry,
+    causality: FmiCausality,
+    state_initialization: SolveStateInitialization,
+) -> Option<FmiInitial> {
+    // FMI owns the initialization convention for inputs. A source start value
+    // remains required and is projected, but `initial` is forbidden for both
+    // FMI 2 and FMI 3 input causality.
+    if matches!(causality, FmiCausality::Input | FmiCausality::Independent) {
+        return None;
+    }
+    match state_initialization {
+        SolveStateInitialization::Exact => return Some(FmiInitial::Exact),
+        SolveStateInitialization::Approximate => return Some(FmiInitial::Approx),
+        SolveStateInitialization::NotState => {}
+    }
+    let role = entry.role();
+    if matches!(
+        causality,
+        FmiCausality::CalculatedParameter | FmiCausality::Output
+    ) {
+        return Some(FmiInitial::Calculated);
+    }
+    if matches!(
+        role,
+        SolveVariableStorageRole::Parameter
+            | SolveVariableStorageRole::Constant
+            | SolveVariableStorageRole::ExternalInput
+    ) || matches!(causality, FmiCausality::Parameter)
+    {
+        return Some(FmiInitial::Exact);
+    }
+    if matches!(causality, FmiCausality::Local) {
+        return Some(FmiInitial::Calculated);
+    }
+    None
+}
+
+/// Fold the single state-initialization read and the reinit evidence into the
+/// state facts the write tables consume, present only for an actual continuous
+/// state.
+const fn fmi_state_facts(
+    state_initialization: SolveStateInitialization,
+    state_reinit_false: bool,
+) -> Option<(FmiStateInitial, FmiStateReinit)> {
+    let initial = match state_initialization {
+        SolveStateInitialization::Exact => FmiStateInitial::Exact,
+        SolveStateInitialization::Approximate => FmiStateInitial::Approx,
+        SolveStateInitialization::NotState => return None,
+    };
+    let reinit = if state_reinit_false {
+        FmiStateReinit::False
+    } else {
+        FmiStateReinit::Reinitializable
+    };
+    Some((initial, reinit))
+}
+
+/// Classify one projected variable's write facts, or `None` for a
+/// causality/variability the Modelica-to-ME catalog never issues.
+///
+/// The state facts already carry `initial` and reinit evidence, and the
+/// catalog enforces `tunable == (variability == Tunable)`, so neither a `role`
+/// nor a `tunable` argument is a second carrier of a fact this function reads
+/// off `variability`. A `None` result makes the caller fail closed rather than
+/// invent a policy for a combination that cannot arise.
+const fn fmi_write_policy(
+    causality: FmiCausality,
+    variability: FmiVariability,
+    state: Option<(FmiStateInitial, FmiStateReinit)>,
+) -> Option<FmiWritePolicy> {
+    if let Some((initial, reinit)) = state {
+        return Some(FmiWritePolicy::ContinuousState { initial, reinit });
+    }
+    match causality {
+        FmiCausality::Input => match variability {
+            FmiVariability::Continuous => Some(FmiWritePolicy::ContinuousInput),
+            FmiVariability::Discrete => Some(FmiWritePolicy::DiscreteInput),
+            FmiVariability::Constant | FmiVariability::Fixed | FmiVariability::Tunable => None,
+        },
+        FmiCausality::Parameter => match variability {
+            FmiVariability::Tunable => Some(FmiWritePolicy::TunableParameter),
+            FmiVariability::Fixed => Some(FmiWritePolicy::FixedParameter),
+            FmiVariability::Constant | FmiVariability::Discrete | FmiVariability::Continuous => {
+                None
+            }
+        },
+        FmiCausality::Output
+        | FmiCausality::CalculatedParameter
+        | FmiCausality::Local
+        | FmiCausality::Independent => Some(FmiWritePolicy::ReadOnly),
+    }
+}
+
+/// Derive the exact Solve Y lanes owned by source `reinit` actions once, while
+/// constructing correlated FMI metadata. Absence from this complete typed
+/// owner inventory is the [`FmiStateReinit::False`] evidence a
+/// [`FmiWritePolicy::ContinuousState`] carries.
+fn checked_reinitialized_state_slots(
+    solve: &SolveProblem,
+) -> Result<BTreeSet<usize>, FmiComponentError> {
+    let mut slots = BTreeSet::new();
+    for (target, role) in solve
+        .discrete
+        .update_targets
+        .iter()
+        .copied()
+        .zip(solve.discrete.row_roles.iter().copied())
+    {
+        if role == crate::DiscreteRowRole::EventAction
+            && let ScalarSlot::Y { index } = target
+        {
+            slots.insert(index);
+        }
+    }
+    for program in &solve.discrete.guarded_assignments {
+        if program.role() != crate::DiscreteRowRole::EventAction {
+            continue;
+        }
+        for range in program.target_ranges() {
+            let ScalarSlot::Y { index: base } = range.base() else {
+                continue;
+            };
+            let end = base.checked_add(range.count()).ok_or_else(|| {
+                FmiComponentError::StateReinitEvidence {
+                    message: "guarded reinit target range overflows Y storage".to_string(),
+                }
+            })?;
+            slots.extend(base..end);
+        }
+    }
+    for (update_index, update) in solve.discrete.structured_updates.iter().enumerate() {
+        if update.role != crate::DiscreteRowRole::EventAction {
+            continue;
+        }
+        let assignments = solve
+            .discrete
+            .structured_assignments(update_index)
+            .map_err(|error| FmiComponentError::StateReinitEvidence {
+                message: error.to_string(),
+            })?;
+        slots.extend(
+            assignments
+                .into_iter()
+                .filter_map(|(target, _)| match target {
+                    ScalarSlot::Y { index } => Some(index),
+                    ScalarSlot::P { .. } | ScalarSlot::Time | ScalarSlot::Constant(_) => None,
+                }),
+        );
+    }
+    Ok(slots)
 }

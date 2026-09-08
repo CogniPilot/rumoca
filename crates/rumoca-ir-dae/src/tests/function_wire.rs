@@ -129,7 +129,7 @@ fn iteration_local_loop_value_round_trips_and_restores_its_enclosing_definition(
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "k".to_owned(),
                                 lower: 1,
                                 upper: 2,
@@ -199,98 +199,144 @@ fn assertion_only_function_loop_round_trips_without_generated_fold_values() {
     let source = TestSource::new(
         "function f output Real y; algorithm y := 0; for k in 1:2 loop assert(k > 0, \"positive\"); end for; end f;",
     );
-    let function_at = source.source("function f", 0);
-    let output_at = source.source("output Real y", 0);
-    let assignment_at = source.source("y := 0", 0);
-    let zero_at = source.source("0", 0);
-    let loop_at = source.source("for k in 1:2 loop", 0);
-    let assertion_at = source.source("assert(k > 0, \"positive\")", 0);
-    let condition_at = source.source("k > 0", 0);
-    let condition_zero_at = source.source("0", 1);
-    let message_at = source.source("\"positive\"", 0);
-    let dae = Dae::construct(source.map, |dae| {
+    let spans = AssertionOnlyLoopSpans::new(&source);
+    let dae = assertion_only_loop_fixture(source, &spans);
+
+    assert_assertion_only_loop_roundtrip(&dae, spans.assertion);
+}
+
+struct AssertionOnlyLoopSpans {
+    function: DaeProvenance,
+    output: DaeProvenance,
+    assignment: DaeProvenance,
+    zero: DaeProvenance,
+    loop_owner: DaeProvenance,
+    assertion: DaeProvenance,
+    condition: DaeProvenance,
+    condition_zero: DaeProvenance,
+    message: DaeProvenance,
+}
+
+impl AssertionOnlyLoopSpans {
+    fn new(source: &TestSource) -> Self {
+        Self {
+            function: source.source("function f", 0),
+            output: source.source("output Real y", 0),
+            assignment: source.source("y := 0", 0),
+            zero: source.source("0", 0),
+            loop_owner: source.source("for k in 1:2 loop", 0),
+            assertion: source.source("assert(k > 0, \"positive\")", 0),
+            condition: source.source("k > 0", 0),
+            condition_zero: source.source("0", 1),
+            message: source.source("\"positive\"", 0),
+        }
+    }
+}
+
+fn assertion_only_loop_fixture(source: TestSource, spans: &AssertionOnlyLoopSpans) -> Dae {
+    Dae::construct(source.map, |dae| {
         let real =
-            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), function_at))?;
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), spans.function))?;
         dae.function(
-            FunctionSignature::new(VarName::new("f"), [], [real], function_at),
+            FunctionSignature::new(VarName::new("f"), [], [real], spans.function),
             |dae, reservation| {
                 let output = dae.functions(|functions| {
-                    functions.output(&reservation, VarName::new("y"), 0, output_at)
+                    functions.output(&reservation, VarName::new("y"), 0, spans.output)
                 })?;
                 let mut body =
-                    dae.functions(|functions| functions.begin(reservation, function_at))?;
+                    dae.functions(|functions| functions.begin(reservation, spans.function))?;
                 let zero = dae.expressions(|expressions| {
-                    expressions.at(zero_at).literal(DaeLiteral::Real(0.0))
+                    expressions.at(spans.zero).literal(DaeLiteral::Real(0.0))
                 })?;
                 dae.functions(|functions| {
-                    functions.assign(&mut body, output, zero, assignment_at)
+                    functions.assign(&mut body, output, zero, spans.assignment)
                 })?;
                 let domain = dae.domains(|domains| {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "k".to_string(),
                                 lower: 1,
                                 upper: 2,
                                 step: 1,
                             }],
                         },
-                        loop_at,
+                        spans.loop_owner,
                     )
                 })?;
-                let mut loop_body =
-                    dae.functions(|functions| functions.begin_loop(body, domain, [], loop_at))?;
+                let mut loop_body = dae.functions(|functions| {
+                    functions.begin_loop(body, domain, [], spans.loop_owner)
+                })?;
                 let k = dae.expressions(|expressions| {
                     expressions
-                        .at(condition_at)
+                        .at(spans.condition)
                         .binder(DomainBinderId::from_raw(domain.index(), 0))
                 })?;
                 let condition_zero = dae.expressions(|expressions| {
                     expressions
-                        .at(condition_zero_at)
+                        .at(spans.condition_zero)
                         .literal(DaeLiteral::Integer(0))
                 })?;
                 let condition = dae.expressions(|expressions| {
-                    expressions
-                        .at(condition_at)
-                        .binary(BinaryOperator::Greater, k, condition_zero)
+                    expressions.at(spans.condition).binary(
+                        BinaryOperator::Greater,
+                        k,
+                        condition_zero,
+                    )
                 })?;
                 let message = dae.expressions(|expressions| {
                     expressions
-                        .at(message_at)
+                        .at(spans.message)
                         .literal(DaeLiteral::String("positive".to_owned()))
                 })?;
                 dae.functions(|functions| {
-                    functions.assertion_loop(&mut loop_body, condition, message, assertion_at)
+                    functions.assertion_loop(&mut loop_body, condition, message, spans.assertion)
                 })?;
-                let body = dae.functions(|functions| functions.finish_loop(loop_body, loop_at))?;
-                dae.functions(|functions| functions.define(body, function_at))
+                let body =
+                    dae.functions(|functions| functions.finish_loop(loop_body, spans.loop_owner))?;
+                dae.functions(|functions| functions.define(body, spans.function))
             },
         )?;
         Ok(())
     })
-    .expect("an assertion-only compact fold constructs without carried values");
+    .expect("an assertion-only compact fold constructs without carried values")
+}
 
-    let inspect = |view: DaeView<'_>| {
-        let function = view.function(view.function_id(0).unwrap()).unwrap();
-        let statements = function.statements().collect::<Vec<_>>();
-        let FunctionStatementView::For {
-            fold, statements, ..
-        } = statements[1].clone()
-        else {
-            panic!("the assertion-only loop stays a compact fold");
-        };
-        assert_eq!(view.function_fold(fold).unwrap().targets().count(), 0);
-        assert!(matches!(
-            statements.collect::<Vec<_>>().as_slice(),
-            [FunctionStatementView::Assertion { .. }]
-        ));
+fn assert_assertion_only_loop(view: DaeView<'_>, assertion_at: DaeProvenance) {
+    view.with_callable_source_inventory(|inventory| {
+        assert_eq!(inventory.functions().len(), 1);
+        assert_eq!(inventory.definitions().len(), 1);
+        assert_eq!(inventory.assertions().len(), 1);
+        assert_eq!(inventory.folds().len(), 1);
+        assert_eq!(inventory.expressions().len(), 5);
+        let assertion = inventory.assertions().next().unwrap();
+        assert_eq!(
+            assertion.assertion().function(),
+            view.function_id(0).unwrap()
+        );
+        assert_eq!(assertion.provenance(), assertion_at);
+    });
+    let function = view.function(view.function_id(0).unwrap()).unwrap();
+    let statements = function.statements().collect::<Vec<_>>();
+    let FunctionStatementView::For {
+        fold, statements, ..
+    } = statements[1].clone()
+    else {
+        panic!("the assertion-only loop stays a compact fold");
     };
-    dae.inspect(inspect);
-    let encoded = serde_json::to_string(&dae).unwrap();
+    assert_eq!(view.function_fold(fold).unwrap().targets().count(), 0);
+    assert!(matches!(
+        statements.collect::<Vec<_>>().as_slice(),
+        [FunctionStatementView::Assertion { .. }]
+    ));
+}
+
+fn assert_assertion_only_loop_roundtrip(dae: &Dae, assertion_at: DaeProvenance) {
+    dae.inspect(|view| assert_assertion_only_loop(view, assertion_at));
+    let encoded = serde_json::to_string(dae).unwrap();
     let replayed: Dae = serde_json::from_str(&encoded).unwrap();
-    replayed.inspect(inspect);
+    replayed.inspect(|view| assert_assertion_only_loop(view, assertion_at));
 }
 
 #[test]
@@ -371,6 +417,8 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
         "folds",
         "definition",
         "results",
+        "statements",
+        "external",
     ] {
         assert!(
             !function.contains_key(removed),
@@ -378,12 +426,17 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
         );
     }
     assert_eq!(
-        function["statements"].as_array().unwrap().len(),
+        function["body"]["modelica"]["statements"]
+            .as_array()
+            .unwrap()
+            .len(),
         2,
         "assignments are the readable semantic operation log"
     );
     assert!(
-        function["statements"][0].get("assignment").is_some(),
+        function["body"]["modelica"]["statements"][0]
+            .get("assignment")
+            .is_some(),
         "an assignment stores its target, RHS, and provenance inline"
     );
 
@@ -394,7 +447,7 @@ fn function_operations_are_canonical_and_replay_in_owner_order() {
         .insert("definitions".to_owned(), serde_json::json!([]));
     assert!(
         serde_json::from_value::<Dae>(removed_definition_mirror).is_err(),
-        "wire-v12 rejects the removed definition mirror"
+        "the current wire rejects the removed definition mirror"
     );
 }
 
@@ -416,6 +469,76 @@ fn wire_replay_rejects_future_and_stale_function_reads() {
     assert!(
         serde_json::from_value::<Dae>(stale_wire).is_err(),
         "a read cannot return to an older definition after the owner advanced"
+    );
+}
+
+#[test]
+fn callable_inventory_replay_is_derived_from_exact_reachable_roots() {
+    let dae = function_read_fixture(false);
+    let inventory = |view: DaeView<'_>| {
+        view.with_callable_source_inventory(|inventory| {
+            inventory
+                .expressions()
+                .map(|occurrence| {
+                    (
+                        occurrence.function().index(),
+                        occurrence.expression().index(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let original = dae.inspect(inventory);
+    dae.inspect(|view| {
+        let unreachable_function_reads = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .filter(|expression| {
+                matches!(
+                    view.exact_expression(*expression).operation(),
+                    ExpressionOperation::FunctionValue { .. }
+                ) && !original
+                    .iter()
+                    .any(|(_, reachable)| *reachable == expression.index())
+            })
+            .count();
+        assert!(
+            unreachable_function_reads > 0,
+            "arena allocation alone cannot create a callable obligation"
+        );
+    });
+
+    let replayed: Dae = serde_json::from_value(serde_json::to_value(&dae).unwrap())
+        .expect("valid replay reissues the callable inventory");
+    assert_eq!(
+        replayed.inspect(inventory),
+        original,
+        "replay derives the same exact identities from finalized roots"
+    );
+
+    let mut missing: serde_json::Value = serde_json::to_value(&dae).unwrap();
+    let missing_id = missing["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .len();
+    missing["storage"]["functions"][0]["body"]["modelica"]["statements"][0]["assignment"]["rhs"] =
+        serde_json::json!(missing_id);
+    assert!(
+        serde_json::from_value::<Dae>(missing).is_err(),
+        "a finalized root cannot cite a missing expression identity"
+    );
+
+    let mut future: serde_json::Value = serde_json::to_value(&dae).unwrap();
+    let future_read = future["storage"]["expressions"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| node.get("function_value").is_some())
+        .expect("fixture retains an unreachable function-scoped read");
+    future["storage"]["functions"][0]["body"]["modelica"]["statements"][0]["assignment"]["rhs"] =
+        serde_json::json!(future_read);
+    assert!(
+        serde_json::from_value::<Dae>(future).is_err(),
+        "a root cannot make a future function-scoped expression reachable"
     );
 }
 
@@ -564,7 +687,7 @@ fn wire_replay_rejects_invalid_fold_transitions() {
     );
 
     let mut nested_begin = canonical.clone();
-    let statements = nested_begin["storage"]["functions"][0]["statements"]
+    let statements = nested_begin["storage"]["functions"][0]["body"]["modelica"]["statements"]
         .as_array_mut()
         .unwrap();
     let nested = statements
@@ -591,9 +714,10 @@ fn wire_replay_rejects_invalid_fold_transitions() {
         .iter()
         .position(|node| node.get("function_fold_output").is_some())
         .expect("fixture contains a generated fold output");
-    let statements = trailing_assignment["storage"]["functions"][0]["statements"]
-        .as_array_mut()
-        .unwrap();
+    let statements =
+        trailing_assignment["storage"]["functions"][0]["body"]["modelica"]["statements"]
+            .as_array_mut()
+            .unwrap();
     let assignments = statements
         .iter_mut()
         .find_map(|statement| statement.get_mut("for"))
@@ -647,7 +771,7 @@ fn active_loop_fixture() -> (Dae, DaeProvenance) {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "k".to_owned(),
                                 lower: 1,
                                 upper: 2,

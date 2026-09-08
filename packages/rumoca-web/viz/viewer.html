@@ -364,7 +364,6 @@ let msgCount = 0;
 let lastMsgTime = 0;
 let wsHz = 0;
 let activeWs = null;
-let reconnectTimer = null;
 let realtimeOn = true;
 
 function toggleRealtime() {
@@ -393,7 +392,6 @@ function sendKeyEvent(event, pressed = true) {
   activeWs.send(JSON.stringify({
     key: {
       code: event.code,
-      key: event.key,
       pressed,
       shift: event.shiftKey,
       ctrl: event.ctrlKey,
@@ -489,10 +487,6 @@ function connectWs() {
   )) {
     return;
   }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   const url = `${protocol}://${location.hostname}:${WS_PORT}`;
   dbg(`WS connecting to ${url}`);
@@ -508,6 +502,7 @@ function connectWs() {
   };
   let lastFrame = -1;
   let droppedFrames = 0;
+  let protocolFailure = false;
   ws.onmessage = (evt) => {
     try {
       latestState = JSON.parse(evt.data);
@@ -539,15 +534,23 @@ function connectWs() {
         const s = latestState;
         dbg(`ws: ${wsHz.toFixed(0)}Hz latency=${latency}ms dropped=${droppedFrames} t=${s.t?.toFixed(1)}`);
       }
-    } catch (_) {}
+    } catch (error) {
+      protocolFailure = true;
+      dbg(`WS payload rejected: ${error}`);
+      console.error("Invalid WebSocket state payload:", error, evt.data);
+      pipeline.ws = "invalid-payload";
+      renderPipeline();
+      ws.close(1003, "invalid state payload");
+    }
   };
   ws.onclose = () => {
     if (ws !== activeWs) return;
-    dbg("WS disconnected, reconnecting in 2s");
-    pipeline.ws = "closed";
+    dbg(protocolFailure
+      ? "WS closed after invalid server payload"
+      : "WS disconnected; automatic retry is disabled");
+    pipeline.ws = protocolFailure ? "invalid-payload" : "closed";
     renderPipeline();
     activeWs = null;
-    reconnectTimer = setTimeout(connectWs, 2000);
   };
   ws.onerror = () => {
     if (ws !== activeWs) return;

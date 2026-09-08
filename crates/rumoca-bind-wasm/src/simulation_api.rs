@@ -8,7 +8,7 @@ use rumoca_sim::{
     SimOptions, SimResult, SimSolverMode, SimulationRequestSummary, SimulationRunMetrics,
     build_simulation_metrics_value, build_simulation_payload, build_tunable_parameter_meta,
     fmi_component_wire, lower_correlated_for_simulation_with_overrides, lower_dae_for_simulation,
-    simulate_dae_with_diagnostics,
+    simulate_dae,
 };
 
 pub(crate) fn simulate_model_impl(
@@ -165,12 +165,12 @@ fn run_simulation(
     parameter_overrides: &[(String, f64)],
 ) -> Result<SimResult, WasmError> {
     if parameter_overrides.is_empty() {
-        return simulate_dae_with_diagnostics(&result.dae, opts)
+        return simulate_dae(&result.dae, opts)
             .map_err(|error| WasmError::new(format!("Simulation error: {error}")));
     }
     let mut override_opts = opts.clone();
     override_opts.param_overrides = parameter_overrides.to_vec();
-    simulate_dae_with_diagnostics(&result.dae, &override_opts)
+    simulate_dae(&result.dae, &override_opts)
         .map_err(|error| WasmError::new(format!("Simulation error: {error}")))
 }
 
@@ -185,7 +185,7 @@ fn model_parameter_metadata_in_session(
     let (opts, _) = build_simulation_options(&result, 0.0, 0.0, "auto");
     let solve_model = lower_dae_for_simulation(&result.dae, &opts)
         .map_err(|e| WasmError::new(format!("solve lowering error: {e}")))?;
-    let metadata = build_tunable_parameter_meta(&result.dae, &solve_model)
+    let metadata = build_tunable_parameter_meta(&solve_model)
         .map_err(|error| WasmError::new(format!("parameter metadata error: {error}")))?;
     serde_json::to_string(&metadata).map_err(|e| WasmError::new(format!("JSON error: {e}")))
 }

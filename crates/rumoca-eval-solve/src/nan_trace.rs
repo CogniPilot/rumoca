@@ -36,25 +36,6 @@ pub fn nan_trace_enabled() -> bool {
     NAN_TRACE_ENABLED.load(Ordering::Relaxed)
 }
 
-/// Heuristic: does this solver/diagnostic error message suggest a non-finite
-/// (`NaN`/`inf`) value was involved? Used to decide whether to automatically
-/// re-run a failed simulation with NaN tracing enabled.
-#[must_use]
-pub fn error_suggests_nonfinite(message: &str) -> bool {
-    const NEEDLES: &[&str] = &[
-        "NaN",
-        "non-finite",
-        "nonfinite",
-        "Step size is too small",
-        "step size too small",
-        "did not converge",
-        "SymbolicSingular",
-        "Failed to factorise",
-        "infinite",
-    ];
-    NEEDLES.iter().any(|needle| message.contains(needle))
-}
-
 /// Report any non-finite entries in `values`, naming each via `name_of`.
 ///
 /// Returns `true` if at least one non-finite value was found. When tracing is
@@ -86,7 +67,7 @@ pub fn report_state_derivative(
     if !nan_trace_enabled() {
         return;
     }
-    let names = &model.problem.solve_layout.solver_maps.names;
+    let names = &model.problem().solve_layout().solver_maps.names;
     report_nonfinite(
         "state-derivative inputs (solver_y after projection)",
         t,

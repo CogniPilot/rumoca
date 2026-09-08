@@ -1,6 +1,6 @@
 //! FUNC (Function) contract tests - MLS §12
 //!
-//! Tests for the 38 function contracts defined in SPEC_0022.
+//! Tests for the 39 function contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -692,8 +692,7 @@ fn func_022_impure_call_in_continuous_equation_rejected() {
             impure function F
                 input Real u;
                 output Real y;
-            algorithm
-                y := u;
+            external "C" y = rumoca_test_impure(u);
             end F;
             Real z;
         equation
@@ -702,6 +701,47 @@ fn func_022_impure_call_in_continuous_equation_rejected() {
     "#,
         "M",
         "ER088",
+    );
+}
+
+/// MLS §12.3 admits parameter bindings, but not constant bindings. Keeping both
+/// controls beside the rejection prevents a future broad variability shortcut
+/// from either accepting an impure constant or rejecting the legal parameter
+/// form.
+#[test]
+fn func_022_impure_call_in_constant_binding_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model M
+            impure function F
+                input Real u;
+                output Real y;
+            algorithm
+                y := u;
+            end F;
+            constant Real c = F(1.0);
+        end M;
+    "#,
+        "M",
+        "ER088",
+    );
+}
+
+#[test]
+fn func_022_impure_call_in_parameter_binding_is_accepted() {
+    expect_success(
+        r#"
+        model M
+            impure function F
+                input Real u;
+                output Real y;
+            external "C" y = rumoca_test_impure(u);
+            end F;
+            parameter Real p = F(1.0);
+            Real y = p;
+        end M;
+    "#,
+        "M",
     );
 }
 
@@ -1295,7 +1335,7 @@ fn func_037_external_object_destructor_with_output_rejected() {
 // Registry status is Partial: only the clause tested below is enforced. The
 // second clause ("each constructed object is constructed and destroyed exactly
 // once") has no implementation, so this test is deliberately absent from
-// `data/contract_cases.toml` and FUNC-038 is not in IMPLEMENTED_CONTRACT_IDS.
+// `data/contract_cases.toml`, and FUNC-038 remains Partial in the registry.
 // =============================================================================
 
 #[test]

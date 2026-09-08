@@ -10,6 +10,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use sha1::{Digest as _, Sha1};
+
+/// Independently recompute one eFMI SHA-1 digest from shipped bytes.
+pub(super) fn sha1_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha1::digest(bytes))
+}
+
 /// Write `<model>.mo` holding `source` into `dir` and return its path.
 pub(super) fn write_fixture(dir: &Path, model: &str, source: &str) -> PathBuf {
     let file = dir.join(format!("{model}.mo"));

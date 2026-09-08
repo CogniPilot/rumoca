@@ -25,7 +25,7 @@
 //! derivative questions. Every reader picks the layer its claim needs, so an
 //! offset can never leak into a substitution that names a value.
 
-use rumoca_core::StateSelect;
+use rumoca_core::{Fixity, StateSelect};
 use rumoca_eval_dae::NumericEvaluator;
 use rumoca_ir_dae as dae;
 
@@ -499,7 +499,7 @@ fn anchor_rank(view: dae::DaeView<'_>, anchor: EqualityAnchor) -> (u8, u8, u8) {
             );
             (
                 selection,
-                u8::from(variable.fixed() == Some(true)),
+                u8::from(variable.fixed() == Fixity::Fixed),
                 singleton_aggregate,
             )
         }

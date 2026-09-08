@@ -1,57 +1,6 @@
 use super::*;
 
-pub(super) fn static_refresh_parameter_indices<'a>(
-    implicit: &PreparedScalarProgramBlock,
-    plans: impl IntoIterator<Item = &'a solve::RefreshPlan>,
-    program_rows: &FxHashMap<solve::RefreshScalarProgramSource, usize>,
-) -> Box<[usize]> {
-    let mut row_indices = BTreeSet::new();
-    for plan in plans {
-        row_indices.extend(
-            plan.static_causal_rows()
-                .iter()
-                .filter_map(|row| program_rows.get(&row.source()).copied()),
-        );
-        for stage in &plan.value_stages {
-            match stage {
-                solve::RefreshStage::CausalSeedSweep { static_rows, .. }
-                | solve::RefreshStage::ExactAssignments { static_rows, .. } => {
-                    row_indices.extend(
-                        plan.selected_rows(static_rows)
-                            .iter()
-                            .filter_map(|row| program_rows.get(&row.source()).copied()),
-                    );
-                }
-                solve::RefreshStage::ProjectionBlock { .. } => {}
-            }
-        }
-    }
-    let mut parameters = BTreeSet::new();
-    for row in row_indices {
-        if let Some(indices) = implicit.row_parameter_indices(row) {
-            parameters.extend(indices.iter().copied());
-        }
-    }
-    parameters
-        .into_iter()
-        .collect::<Vec<_>>()
-        .into_boxed_slice()
-}
-
 impl SolveRuntime {
-    pub(super) fn refresh_program_row(
-        &self,
-        row: &solve::AlgebraicRefreshRow,
-    ) -> Result<usize, RuntimeSolveError> {
-        self.refresh_program_rows
-            .get(&row.source())
-            .copied()
-            .ok_or_else(|| {
-                RuntimeSolveError::solve_ir(
-                    "construction-issued refresh program has no final scalar projection",
-                )
-            })
-    }
     pub(super) fn refresh_derivative_dependencies(
         &self,
         t: f64,
@@ -121,16 +70,16 @@ impl SolveRuntime {
                 certify_coordinates: true,
             },
         )?;
-        for (clock_index, relation) in self.clock_event_refresh_after_event.iter().enumerate() {
+        for (clock_index, refresh) in self.clock_event_refresh_after_event.iter().enumerate() {
             let owner = self
                 .model
-                .problem
-                .clocks
+                .problem()
+                .clocks()
                 .periodic_clock_id(clock_index)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("invalid event refresh clock"))?;
             if self.periodic_clock_active(owner, t, "event refresh")? {
                 self.refresh_slots_with_plan(
-                    relation.remainder(),
+                    refresh,
                     RefreshSlotArgs {
                         t,
                         solver_y: &mut *solver_y,
@@ -168,10 +117,11 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        prepared: &PreparedRefreshPlan,
         mut args: RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
-        if plan.rows.is_empty() && plan.simultaneous_plan.is_empty() {
+        let plan = &prepared.plan;
+        if plan.rows().is_empty() && plan.simultaneous_plan().is_empty() {
             return Ok(());
         }
         self.validate_refresh_inputs(args.solver_y, args.params)?;
@@ -181,36 +131,17 @@ impl SolveRuntime {
             args.solver_y,
             "algebraic projection snapshot",
         )?;
-        // A dependency-complete causal schedule already proves the value
-        // solution.  Executing the staged projection schedule as well would
-        // replay every exact singleton after the complete causal seed sweep.
-        // Apart from being redundant, that doubles the dominant continuous
-        // callback work for fully explicit models.
-        if plan.causal_solution_certified {
-            let result = self.refresh_causal_seed_rows(plan, &mut args);
-            if result.is_err() {
-                args.solver_y.copy_from_slice(&incoming);
+        let result = match &prepared.execution {
+            PreparedRefreshExecution::CertifiedCausal => {
+                self.refresh_causal_seed_rows(prepared, &mut args)
             }
-            return result;
-        }
-        if self.value_stage_schedule_is_certified(plan) {
-            let result = self.refresh_slots_with_stages(plan, &mut args, &incoming);
-            if result.is_err() {
-                args.solver_y.copy_from_slice(&incoming);
+            PreparedRefreshExecution::CertifiedStages(stages) => {
+                self.refresh_slots_with_stages(prepared, stages, &mut args)
             }
-            return result;
-        }
-        let mut causal_seed_failed = false;
-        if !plan.causal_seed_rows.is_empty() {
-            match self.refresh_causal_seed_rows(plan, &mut args) {
-                Ok(()) => {}
-                Err(error) => {
-                    restore_after_causal_seed_error(error, args.solver_y, &incoming)?;
-                    causal_seed_failed = true;
-                }
+            PreparedRefreshExecution::FullProjection => {
+                self.project_refresh_slots(plan, &mut args, true)
             }
-        }
-        let result = self.project_refresh_slots(plan, &mut args, causal_seed_failed);
+        };
         if result.is_err() {
             args.solver_y.copy_from_slice(&incoming);
         }
@@ -219,19 +150,19 @@ impl SolveRuntime {
 
     fn refresh_causal_seed_rows(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &PreparedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
     ) -> Result<(), RuntimeSolveError> {
         self.refresh_parameter_static_seed_rows(
             plan.static_causal_rows(),
-            plan.static_causal_sequence,
+            plan.static_causal_sequence(),
             args.t,
             args.solver_y,
             args.params,
         )?;
         self.refresh_slots_once(
             plan.dynamic_causal_rows(),
-            plan.dynamic_causal_sequence,
+            plan.dynamic_causal_sequence(),
             args.t,
             args.solver_y,
             args.params,
@@ -240,7 +171,7 @@ impl SolveRuntime {
 
     fn refresh_parameter_static_seed_rows(
         &self,
-        rows: solve::RefreshRows<'_>,
+        rows: PreparedRefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
@@ -281,7 +212,7 @@ impl SolveRuntime {
 
     pub(super) fn refresh_prepared_static_rows(
         &self,
-        rows: solve::RefreshRows<'_>,
+        rows: PreparedRefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
@@ -315,19 +246,19 @@ impl SolveRuntime {
 
     pub(super) fn project_refresh_slots(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &solve::IssuedRefreshPlan,
         args: &mut RefreshSlotArgs<'_>,
         use_complete_plan: bool,
     ) -> Result<(), RuntimeSolveError> {
         let projection_plan = if use_complete_plan {
-            &plan.simultaneous_plan
+            plan.simultaneous_plan()
         } else {
-            &plan.value_projection_plan
+            plan.value_projection_plan()
         };
         let projection_model = RefreshProjectionModel {
             runtime: self,
             plan: projection_plan,
-            block_indices: &plan.simultaneous_block_indices,
+            block_indices: plan.simultaneous_block_indices(),
             plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverY {
                 block: &self.implicit_projection_jacobian_v,
@@ -337,7 +268,7 @@ impl SolveRuntime {
         let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
             time: args.t,
-            state_count: self.state_count,
+            state_count: self.state_count(),
             tolerance: args.tol,
         };
         if args.certify_coordinates {
@@ -374,7 +305,7 @@ impl SolveRuntime {
             solver_y,
             params,
             t,
-            self.state_count,
+            self.state_count(),
             tol,
         )
     }
@@ -388,9 +319,9 @@ impl SolveRuntime {
     pub fn requires_state_manifold_projection(&self) -> bool {
         !self
             .model
-            .problem
-            .continuous
-            .manifold_projection_plan
+            .problem()
+            .continuous()
+            .manifold_projection_plan()
             .is_empty()
     }
 
@@ -413,13 +344,14 @@ impl SolveRuntime {
 
     fn eval_refresh_row(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        selected_arm: &ExactAssignmentPermit,
+        row: PreparedRefreshRow<'_>,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
         let index = row.target_index();
-        let value = self.eval_refresh_row_value(row, t, solver_y, params)?;
+        let value = self.eval_refresh_row_value(selected_arm, row, t, solver_y, params)?;
         // Catch non-finite results here (where the variable is known) and raise
         // a spanned diagnostic; otherwise a NaN slips through the iteration (the
         // `delta > max_delta` check is false for NaN) and only surfaces later as
@@ -432,9 +364,9 @@ impl SolveRuntime {
 
     /// Solver slot name for diagnostics.
     pub(super) fn solver_name(&self, index: usize) -> &str {
-        self.model
-            .problem
-            .solve_layout
+        self.model()
+            .problem()
+            .solve_layout()
             .solver_maps
             .names
             .get(index)
@@ -446,8 +378,8 @@ impl SolveRuntime {
     pub(super) fn non_finite_value_error(&self, index: usize, value: f64) -> RuntimeSolveError {
         let name = self
             .model
-            .problem
-            .solve_layout
+            .problem()
+            .solve_layout()
             .solver_maps
             .names
             .get(index)
@@ -461,27 +393,28 @@ impl SolveRuntime {
     pub(super) fn solver_source_span(&self, index: usize) -> Option<rumoca_core::Span> {
         let name = self
             .model
-            .problem
-            .solve_layout
+            .problem()
+            .solve_layout()
             .solver_maps
             .names
             .get(index)?;
-        self.model
-            .variable_meta
-            .iter()
+        self.model()
+            .variable_meta()
+            .into_iter()
             .find(|meta| &meta.name == name)
             .map(|meta| meta.source_span)
     }
 
     fn eval_refresh_row_value(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        selected_arm: &ExactAssignmentPermit,
+        row: PreparedRefreshRow<'_>,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
         let index = row.target_index();
-        let program_row = self.refresh_program_row(row)?;
+        let program_row = row.program_row();
         // The assignment fast path is only valid when this plan entry updates
         // the row's own implicit target; for a cross-paired row (a coupled
         // block solved a residual row for one of its other unknowns) the
@@ -497,40 +430,41 @@ impl SolveRuntime {
                         y: solver_y,
                         p: params,
                         t,
-                        context: self.row_eval_context(),
+                        context: selected_arm.row_eval_context(self),
                     },
                 )?
         {
             return Ok(value);
         }
-        let residual = self.refresh_row_residual(row, t, solver_y, params)?;
-        self.solve_refresh_residual_row(row, residual, t, solver_y, params)
+        let residual = self.refresh_row_residual(selected_arm, row, t, solver_y, params)?;
+        self.solve_refresh_residual_row(selected_arm, row, residual, t, solver_y, params)
     }
 
     /// Evaluate one scalar view of the canonical implicit residual system.
     fn refresh_row_residual(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        selected_arm: &ExactAssignmentPermit,
+        row: PreparedRefreshRow<'_>,
         t: f64,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<f64, RuntimeSolveError> {
-        let program_row = self.refresh_program_row(row)?;
         self.implicit_scalar_rhs
             .eval_row_output_unchecked_with_context(
-                program_row,
+                row.program_row(),
                 row.output_offset(),
                 solver_y,
                 params,
                 t,
-                self.row_eval_context(),
+                selected_arm.row_eval_context(self),
             )
             .map_err(Into::into)
     }
 
     fn solve_refresh_residual_row(
         &self,
-        row: &solve::AlgebraicRefreshRow,
+        selected_arm: &ExactAssignmentPermit,
+        row: PreparedRefreshRow<'_>,
         residual: f64,
         t: f64,
         solver_y: &[f64],
@@ -543,7 +477,7 @@ impl SolveRuntime {
         reserve_runtime_vec_capacity(&mut probe_y, solver_y.len(), "refresh residual probe")?;
         probe_y.extend_from_slice(solver_y);
         probe_y[index] = current + 1.0;
-        let probe_residual = self.refresh_row_residual(row, t, &probe_y, params)?;
+        let probe_residual = self.refresh_row_residual(selected_arm, row, t, &probe_y, params)?;
         let slope = probe_residual - residual;
         if slope.is_finite() && slope.abs() > 1.0e-12 {
             return Ok(current - residual / slope);
@@ -561,25 +495,51 @@ impl SolveRuntime {
 
     pub(super) fn refresh_slots_once(
         &self,
-        plan: solve::RefreshRows<'_>,
+        plan: PreparedRefreshRows<'_>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        if self.try_native_assignment_refresh(sequence, t, solver_y, params)? {
-            self.validate_refresh_values(plan, solver_y, params)?;
+        if plan.is_empty() {
             return Ok(());
         }
+        let arm = self
+            .execution_plan
+            .exact_assignments
+            .get(&sequence)
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir(
+                    "refresh sequence has no preparation-issued execution arm",
+                )
+            })?;
+        match arm {
+            ExecutionArm::Native(compiled) => {
+                self.run_native_assignment_refresh(compiled, sequence, t, solver_y, params)?;
+                self.validate_refresh_values(plan, solver_y, params)
+            }
+            ExecutionArm::Interpreter(selected_arm) => {
+                self.run_interpreted_assignment_refresh(selected_arm, plan, t, solver_y, params)
+            }
+        }
+    }
+
+    fn run_interpreted_assignment_refresh(
+        &self,
+        selected_arm: &ExactAssignmentPermit,
+        plan: PreparedRefreshRows<'_>,
+        t: f64,
+        solver_y: &mut [f64],
+        params: &[f64],
+    ) -> Result<(), RuntimeSolveError> {
         if self.can_batch_assignment_refresh(plan) {
             self.implicit_scalar_rhs
                 .apply_target_assignment_rows_unchecked_with_context(
-                    plan.iter(),
-                    |row| self.refresh_program_rows.get(&row.source()).copied(),
+                    plan.iter().map(|row| (row.row(), row.program_row())),
                     solver_y,
                     params,
                     t,
-                    self.row_eval_context(),
+                    selected_arm.row_eval_context(self),
                 )
                 .map_err(RuntimeSolveError::from)?;
             self.validate_refresh_values(plan, solver_y, params)?;
@@ -588,114 +548,81 @@ impl SolveRuntime {
         let mut row_outputs = Vec::new();
         let mut row_pos = 0usize;
         while row_pos < plan.len() {
-            if let Some(next_pos) =
-                self.try_refresh_tensor_output_segment(plan, row_pos, t, solver_y, params)?
-            {
-                row_pos = next_pos;
-                continue;
-            }
-            if let Some(next_pos) = self.try_refresh_shapeless_output_segment(
+            if let Some(next_pos) = self.try_refresh_tensor_output_segment(
+                selected_arm,
                 plan,
                 row_pos,
                 t,
                 solver_y,
                 params,
+            )? {
+                row_pos = next_pos;
+                continue;
+            }
+            if let Some(next_pos) = self.try_refresh_shapeless_output_segment(
+                selected_arm,
+                plan,
+                row_pos,
+                super::refresh_batch::RefreshSegmentEvaluation {
+                    t,
+                    solver_y: &mut *solver_y,
+                    params,
+                },
                 &mut row_outputs,
             )? {
                 row_pos = next_pos;
                 continue;
             }
-            let refresh_row = &plan[row_pos];
+            let refresh_row = plan
+                .get(row_pos)
+                .expect("prepared refresh iteration stays inside its checked selection");
             let index = refresh_row.target_index();
-            let value = self.eval_refresh_row(refresh_row, t, solver_y, params)?;
+            let value = self.eval_refresh_row(selected_arm, refresh_row, t, solver_y, params)?;
             solver_y[index] = value;
             row_pos += 1;
         }
         Ok(())
     }
 
-    fn try_native_assignment_refresh(
+    fn run_native_assignment_refresh(
         &self,
+        compiled: &Rc<dyn CompiledSolveAssignmentSchedule>,
         sequence: solve::RefreshSequenceId,
         t: f64,
         solver_y: &mut [f64],
         params: &[f64],
-    ) -> Result<bool, RuntimeSolveError> {
-        let Some(backend) = self.execution_backend.as_ref() else {
-            return Ok(false);
-        };
-        let Some(compiled) = self.compiled_assignment_schedule(backend.as_ref(), sequence) else {
-            return Ok(false);
-        };
-        if compiled
-            .call(solver_y, params, t, self.model.external_tables.as_slice())
-            .is_ok()
-        {
-            return Ok(true);
-        }
-        self.compiled_assignment_schedules
-            .borrow_mut()
-            .insert(sequence, None);
-        Ok(false)
-    }
-
-    fn compiled_assignment_schedule(
-        &self,
-        backend: &dyn SolveExecutionBackend,
-        sequence: solve::RefreshSequenceId,
-    ) -> Option<Rc<dyn CompiledSolveAssignmentSchedule>> {
-        if let Some(cached) = self
-            .compiled_assignment_schedules
-            .borrow()
-            .get(&sequence)
-            .cloned()
-        {
-            return cached;
-        }
-        let owners = &self.model.problem.continuous.refresh_owners;
-        let Some(schedule) = owners.exact_assignment_schedule(sequence) else {
-            self.compiled_assignment_schedules
-                .borrow_mut()
-                .insert(sequence, None);
-            return None;
-        };
-        let compiled = backend
-            .compile_assignment_schedule(
-                &self.model.problem.continuous.implicit_rhs,
-                owners,
-                schedule,
+    ) -> Result<(), RuntimeSolveError> {
+        let mut scratch = self.native_assignment_scratch.borrow_mut();
+        copy_runtime_values_into(
+            &mut scratch,
+            solver_y,
+            "native exact-assignment transaction",
+        )?;
+        compiled.call(&mut scratch, params, t).map_err(|reason| {
+            RuntimeSolveError::native_call(
+                NativeExecutionOwner::ExactAssignment { sequence },
+                reason,
             )
-            .map_err(|error| {
-                tracing::debug!(
-                    target: "rumoca_solver::native_execution",
-                    programs = schedule.program_ids().len(),
-                    targets = schedule
-                        .program_ids()
-                        .iter()
-                        .filter_map(|id| owners.exact_assignment_program(*id))
-                        .map(|program| program.target_indices().len())
-                        .sum::<usize>(),
-                    %error,
-                    "failed to compile assignment schedule"
-                );
-            })
-            .ok();
-        self.compiled_assignment_schedules
-            .borrow_mut()
-            .insert(sequence, compiled.clone());
-        compiled
+        })?;
+        if scratch.len() != solver_y.len() {
+            return Err(RuntimeSolveError::solve_ir(
+                "native exact-assignment transaction changed solver-vector length",
+            ));
+        }
+        solver_y.copy_from_slice(&scratch);
+        Ok(())
     }
 
     fn validate_refresh_values(
         &self,
-        plan: solve::RefreshRows<'_>,
+        plan: PreparedRefreshRows<'_>,
         solver_y: &[f64],
         params: &[f64],
     ) -> Result<(), RuntimeSolveError> {
         for row in plan.iter() {
             let value = solver_y[row.target_index()];
             if tracing::enabled!(target: "rumoca_solver::refresh_values", tracing::Level::TRACE) {
-                self.trace_refresh_value(row, value, params);
+                self.trace_refresh_value(row.row(), value, params);
             }
             if !value.is_finite() {
                 return Err(self.non_finite_value_error(row.target_index(), value));
@@ -708,7 +635,14 @@ impl SolveRuntime {
         let source = row.source();
         let source_operations = usize::try_from(source.node())
             .ok()
-            .and_then(|node| self.model.problem.continuous.implicit_rhs.nodes.get(node))
+            .and_then(|node| {
+                self.model()
+                    .problem()
+                    .continuous()
+                    .implicit_rhs()
+                    .nodes
+                    .get(node)
+            })
             .and_then(|node| match node {
                 solve::ComputeNode::ScalarPrograms(programs) => usize::try_from(source.program())
                     .ok()
@@ -735,7 +669,7 @@ impl SolveRuntime {
             equation_index = row.equation_index(),
             output_offset = row.output_offset(),
             operations = ?source_operations,
-            immutable_parameter_count = self.model.problem.solve_layout.parameter_count,
+            immutable_parameter_count = self.model().problem().solve_layout().parameter_count,
             parameter_dependencies = ?parameter_dependencies,
             value,
             "refresh assignment value"

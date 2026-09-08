@@ -855,11 +855,21 @@ fn push_scalar_program_block_fallback_rows(
         Some(block_span),
     )?;
     let mut output_ordinal = 0usize;
-    for (program, program_span) in block.programs().iter().zip(block.program_spans()) {
+    for (program_index, (program, program_span)) in block
+        .programs()
+        .iter()
+        .zip(block.program_spans())
+        .enumerate()
+    {
         let row_index = partition.fallback_programs.len();
         push_program_output_fallback_rows(
             &mut partition.scalar_fallback_rows,
-            program,
+            block
+                .stored_output_count_for_program(program_index)
+                .ok_or_else(|| rumoca_eval_solve::ScalarizeError::ShapeContract {
+                    message: "missing retained scalar fallback output width".to_string(),
+                    span: Some(*program_span),
+                })?,
             row_index,
             output_indices,
             &mut output_ordinal,
@@ -872,13 +882,12 @@ fn push_scalar_program_block_fallback_rows(
 
 fn push_program_output_fallback_rows(
     rows: &mut Vec<RenderScalarFallbackRow>,
-    program: &[solve::LinearOp],
+    output_count: usize,
     row_index: usize,
     output_indices: &[usize],
     output_ordinal: &mut usize,
     span: rumoca_core::Span,
 ) -> Result<(), rumoca_eval_solve::ScalarizeError> {
-    let output_count = solve::ScalarProgramBlock::program_output_count(program);
     for program_output_ordinal in 0..output_count {
         let output_index = *output_indices.get(*output_ordinal).ok_or_else(|| {
             rumoca_eval_solve::ScalarizeError::ShapeContract {

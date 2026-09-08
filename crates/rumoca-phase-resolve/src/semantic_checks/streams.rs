@@ -227,7 +227,7 @@ pub(super) fn run_stream_builtin_semantic_checks(def: &StoredDefinition) -> Vec<
         class_path: Vec::new(),
         diags: &mut diags,
     };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 

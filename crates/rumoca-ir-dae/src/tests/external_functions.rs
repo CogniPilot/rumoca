@@ -65,6 +65,35 @@ fn external_fixture_with_purity(purity: FunctionPurity) -> Dae {
     .expect("a checked external interface defines its reserved function")
 }
 
+const ZERO_RESULT_EXTERNAL_SYMBOL: &str = "wire_zero_result_external_symbol";
+
+fn zero_result_external_fixture() -> (Dae, DaeProvenance) {
+    let source = TestSource::new(
+        "impure function notify external \"C\" wire_zero_result_external_symbol(); end notify;",
+    );
+    let function_at = source.source("impure function notify", 0);
+    let external_at = source.source("external \"C\" wire_zero_result_external_symbol()", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        dae.function(
+            FunctionSignature::new(VarName::new("notify"), [], [], function_at),
+            |dae, reservation| {
+                let body = ExternalFunctionBody::new(
+                    FunctionPurity::Impure,
+                    ExternalLanguage::C,
+                    VarName::new(ZERO_RESULT_EXTERNAL_SYMBOL),
+                    [],
+                    None,
+                    ExternalLinkage::new([], None, None, None),
+                );
+                dae.functions(|functions| functions.define_external(reservation, body, external_at))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("a zero-result impure external constructs");
+    (dae, external_at)
+}
+
 #[test]
 fn pure_external_interface_is_a_checked_purity_bearing_callable() {
     let dae = external_fixture();
@@ -117,16 +146,90 @@ fn external_interface_round_trips_through_the_checked_wire() {
     let function = canonical["storage"]["functions"][0]
         .as_object()
         .expect("functions serialize as records");
-    assert!(
-        function["statements"].as_array().unwrap().is_empty(),
-        "an external body owns no Modelica statement"
+    assert_eq!(
+        function["body"].as_object().unwrap().len(),
+        1,
+        "one closed body discriminant is serialized"
     );
-    let external = function["external"]
+    let external = function["body"]["external"]["body"]
         .as_object()
         .expect("an external body serializes its interface");
     assert_eq!(external["symbol"], serde_json::json!("my_func"));
     assert_eq!(external["purity"], serde_json::json!("pure"));
     assert_eq!(external["language"], serde_json::json!("c"));
+}
+
+#[test]
+fn zero_result_zero_argument_external_has_one_required_wire_body() {
+    let (dae, external_at) = zero_result_external_fixture();
+    let canonical = serde_json::to_value(&dae).expect("checked external serializes");
+    let body = &canonical["storage"]["functions"][0]["body"];
+    assert_eq!(body.as_object().unwrap().len(), 1);
+    assert!(body.get("external").is_some());
+    assert!(body.get("modelica").is_none());
+
+    let replayed: Dae = serde_json::from_value(canonical).expect("external body replays");
+    replayed.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        let external = function.external().expect("the external tag is retained");
+        assert_eq!(external.purity(), FunctionPurity::Impure);
+        assert_eq!(external.argument_count(), 0);
+        assert!(external.result().is_none());
+        assert_eq!(external.provenance(), external_at);
+    });
+
+    let binary = bincode::serialize(&dae).expect("zero-result external serializes");
+    let replayed: Dae = bincode::deserialize(&binary).expect("zero-result external reconstructs");
+    replayed.inspect(|view| {
+        let function = view.function(view.function_id(0).unwrap()).unwrap();
+        assert_eq!(function.external().unwrap().provenance(), external_at);
+    });
+    assert_eq!(bincode::serialize(&replayed).unwrap(), binary);
+}
+
+#[test]
+fn zero_result_external_wire_rejects_body_omission_and_retagging() {
+    let (dae, _) = zero_result_external_fixture();
+    let canonical = serde_json::to_value(&dae).expect("checked external serializes");
+
+    let mut omitted = canonical.clone();
+    omitted["storage"]["functions"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("body");
+    assert!(
+        serde_json::from_value::<Dae>(omitted).is_err(),
+        "the sole body field is required even when the function has no result"
+    );
+
+    let mut retagged = canonical;
+    let body = retagged["storage"]["functions"][0]["body"]
+        .as_object_mut()
+        .unwrap();
+    let external = body.remove("external").unwrap();
+    body.insert("modelica".to_owned(), external);
+    assert!(
+        serde_json::from_value::<Dae>(retagged).is_err(),
+        "changing only the body tag cannot reinterpret an external payload"
+    );
+
+    let mut binary = bincode::serialize(&dae).expect("zero-result external serializes");
+    let symbol = ZERO_RESULT_EXTERNAL_SYMBOL.as_bytes();
+    let symbol_start = binary
+        .windows(symbol.len())
+        .rposition(|window| window == symbol)
+        .expect("the external symbol is present in the binary wire");
+    // Bincode's default encoding places three four-byte enum tags (body,
+    // purity, and language) and one eight-byte string length before the bytes.
+    let tag_start = symbol_start
+        .checked_sub(20)
+        .expect("the body tag precedes purity, language, and the symbol length");
+    assert_eq!(&binary[tag_start..tag_start + 4], &1_u32.to_le_bytes());
+    binary[tag_start..tag_start + 4].copy_from_slice(&0_u32.to_le_bytes());
+    assert!(
+        bincode::deserialize::<Dae>(&binary).is_err(),
+        "the external payload cannot be retagged as a Modelica body"
+    );
 }
 
 /// Replay reconstructs the declared purity, it does not re-derive one.
@@ -150,7 +253,7 @@ fn an_impure_external_interface_replays_as_impure() {
     let encoded = serde_json::to_string(&dae).expect("checked DAE serializes");
     let canonical: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
-        canonical["storage"]["functions"][0]["external"]["purity"],
+        canonical["storage"]["functions"][0]["body"]["external"]["body"]["purity"],
         serde_json::json!("impure")
     );
 
@@ -176,15 +279,13 @@ fn an_impure_external_interface_replays_as_impure() {
 }
 
 #[test]
-fn wire_rejects_an_external_body_that_also_claims_statements() {
+fn wire_rejects_a_body_with_two_discriminants() {
     let dae = external_fixture();
     let mut wire = serde_json::to_value(&dae).expect("checked DAE serializes");
-    wire["storage"]["functions"][0]["statements"] = serde_json::json!([{
-        "assignment": { "target": 0, "rhs": 0, "provenance": { "source": { "span": null } } }
-    }]);
+    wire["storage"]["functions"][0]["body"]["modelica"] = serde_json::json!({ "statements": [] });
     assert!(
         serde_json::from_value::<Dae>(wire).is_err(),
-        "a function cannot own both a Modelica body and an external interface"
+        "the required body enum rejects two discriminants"
     );
 }
 
@@ -192,7 +293,8 @@ fn wire_rejects_an_external_body_that_also_claims_statements() {
 fn wire_rejects_a_forged_external_output_identity() {
     let dae = external_fixture();
     let mut wire = serde_json::to_value(&dae).expect("checked DAE serializes");
-    wire["storage"]["functions"][0]["external"]["arguments"] = serde_json::json!([{ "output": 7 }]);
+    wire["storage"]["functions"][0]["body"]["external"]["body"]["arguments"] =
+        serde_json::json!([{ "output": 7 }]);
     assert!(
         serde_json::from_value::<Dae>(wire).is_err(),
         "an external argument cannot name a value the function never declared"
@@ -203,7 +305,7 @@ fn wire_rejects_a_forged_external_output_identity() {
 fn wire_rejects_an_external_interface_that_leaves_an_output_unproduced() {
     let dae = external_fixture();
     let mut wire = serde_json::to_value(&dae).expect("checked DAE serializes");
-    wire["storage"]["functions"][0]["external"]
+    wire["storage"]["functions"][0]["body"]["external"]["body"]
         .as_object_mut()
         .expect("the external interface is a record")
         .remove("result");
@@ -351,6 +453,7 @@ fn external_construction_rejects_a_model_coordinate_argument() {
         let parameter = dae.variables(|variables| {
             variables.parameter(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 variable_at,
                 VariableAttributes::default(),

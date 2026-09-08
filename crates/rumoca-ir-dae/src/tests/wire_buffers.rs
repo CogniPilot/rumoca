@@ -173,7 +173,7 @@ fn wire_replays_ordered_equation_owner_operations_without_global_body_state() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_owned(),
                         lower: 1,
                         upper: 2,

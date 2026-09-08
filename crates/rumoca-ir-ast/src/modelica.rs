@@ -114,9 +114,11 @@ fn redeclare_assignment_to_string(expr: &Expression) -> Option<String> {
             let (instance_name, lhs_mods) = class_mod_target_with_mods(lhs)?;
             (instance_name, lhs_mods, rhs.as_ref(), false)
         }
-        Expression::Modification { target, value, .. } => {
-            (target.to_string(), None, value.as_ref(), true)
-        }
+        Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => (target.to_string(), None, value.as_ref(), true),
         _ => return None,
     };
 

@@ -1,6 +1,7 @@
 //! LSP server implementation (native only, behind "server" feature).
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,8 +9,9 @@ use std::time::Instant;
 
 use rumoca_compile::compile::{
     CompilePhaseTimingSnapshot, Document, ParsedSourceRootLoad, Session, SessionCacheStatsSnapshot,
-    SessionChange, SessionConfig, SessionSnapshot, SourceRootKind, compile_phase_timing_stats,
-    session_cache_stats, source_span_location,
+    SessionChange, SessionConfig, SessionSnapshot, SourceRootApplyDisposition, SourceRootKind,
+    SourceRootLoadReservation, compile_phase_timing_stats, session_cache_stats,
+    source_span_location,
 };
 use rumoca_compile::parsing::{
     ast, collect_compile_unit_source_files, collect_model_names, parse_source_to_ast,
@@ -22,15 +24,16 @@ use rumoca_compile::scenario::{
     write_source_roots_for_model_task,
 };
 use rumoca_compile::source_roots::{
-    PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, canonical_path_key,
-    classify_configured_source_root_kind, merge_source_root_paths, parse_source_root_with_cache,
-    plan_source_root_loads, render_source_root_indexing_failed_message,
-    render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
-    render_source_root_status_message, source_root_paths_changed, source_root_source_set_key,
+    PackageLayoutError, SourceRootCacheStatus, SourceRootCacheTiming, SourceRootDiscoveryError,
+    SourceRootLoadPlan, canonical_path_key, classify_configured_source_root_kind,
+    merge_source_root_paths, parse_source_root_with_cache, plan_source_root_loads,
+    render_source_root_indexing_failed_message, render_source_root_indexing_finished_message,
+    render_source_root_indexing_started_message, render_source_root_status_message,
+    source_root_paths_changed, source_root_source_set_key,
 };
 use rumoca_compile::workspace::WorkspaceConfig;
 use rumoca_sim::{SimOptions, SimSolverMode};
-use rumoca_sim::{SimulationDiagnosticError, simulate_dae_with_diagnostics};
+use rumoca_sim::{SimulationDiagnosticError, simulate_dae};
 use rumoca_sim::{
     SimulationRequestSummary, SimulationRunMetrics, build_simulation_metrics_value,
     build_simulation_payload, build_tunable_parameter_meta,
@@ -41,6 +44,77 @@ use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
+
+#[derive(Debug)]
+enum SourceRootPreparationError {
+    Discovery(SourceRootDiscoveryError),
+    Load(Vec<String>),
+    Reservation {
+        source_root_path: String,
+        disposition: SourceRootLoadReservation,
+    },
+    Apply {
+        source_root_path: String,
+        disposition: SourceRootApplyDisposition,
+    },
+    Configuration {
+        operation: &'static str,
+        path: PathBuf,
+        source: anyhow::Error,
+    },
+}
+
+impl fmt::Display for SourceRootPreparationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(error) => fmt::Display::fmt(error, formatter),
+            Self::Load(errors) => write!(
+                formatter,
+                "source-root loading failed: {}",
+                errors.join("; ")
+            ),
+            Self::Reservation {
+                source_root_path,
+                disposition,
+            } => write!(
+                formatter,
+                "source-root reservation for {source_root_path} did not acquire ownership: {disposition:?}"
+            ),
+            Self::Apply {
+                source_root_path,
+                disposition,
+            } => write!(
+                formatter,
+                "source-root apply for {source_root_path} was rejected: {disposition:?}"
+            ),
+            Self::Configuration {
+                operation,
+                path,
+                source,
+            } => write!(
+                formatter,
+                "failed to {operation} at {}: {source}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SourceRootPreparationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Discovery(error) => Some(error),
+            Self::Configuration { source, .. } => Some(source.as_ref()),
+            Self::Load(_) | Self::Reservation { .. } | Self::Apply { .. } => None,
+        }
+    }
+}
+
+impl From<SourceRootDiscoveryError> for SourceRootPreparationError {
+    fn from(error: SourceRootDiscoveryError) -> Self {
+        Self::Discovery(error)
+    }
+}
 
 #[cfg(test)]
 use crate::completion_metrics::extract_import_completion_prefix;
@@ -597,24 +671,24 @@ impl ModelicaLanguageServer {
         uri_path: &str,
         settings: &SimulationRequestSettings,
         request_token: AnalysisRequestToken,
-    ) -> AnalysisRequestToken {
+    ) -> std::result::Result<AnalysisRequestToken, SourceRootPreparationError> {
         let loaded_source_roots = if settings.source_root_paths.is_empty() {
             let source_root_paths = self.source_root_paths.read().await.clone();
             self.ensure_source_roots_loaded_with_paths(source, uri_path, &source_root_paths)
-                .await
+                .await?
         } else {
             self.ensure_source_roots_loaded_with_paths(
                 source,
                 uri_path,
                 &settings.source_root_paths,
             )
-            .await
+            .await?
         };
-        if loaded_source_roots {
+        Ok(if loaded_source_roots {
             self.refresh_analysis_request_revision(request_token).await
         } else {
             request_token
-        }
+        })
     }
 
     async fn simulation_focus_for_uri(
@@ -755,9 +829,13 @@ impl ModelicaLanguageServer {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
 
-        request_token = self
+        request_token = match self
             .ensure_simulation_source_roots_loaded(&source, &uri_path, &settings, request_token)
-            .await;
+            .await
+        {
+            Ok(request_token) => request_token,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
         if let Some(response) = self.stale_simulation_response(request_token).await {
             return Some(response);
         }
@@ -851,9 +929,13 @@ impl ModelicaLanguageServer {
                     parameter_overrides: Vec::new(),
                 }
             });
-        let request_token = self
+        let request_token = match self
             .ensure_simulation_source_roots_loaded(&source, &uri_path, &settings, request_token)
-            .await;
+            .await
+        {
+            Ok(request_token) => request_token,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
         if let Some(response) = self.stale_simulation_response(request_token).await {
             return Some(response);
         }
@@ -870,17 +952,15 @@ impl ModelicaLanguageServer {
         };
         let opts = Self::simulation_options_from_settings(&settings, &compiled.compiled);
         match rumoca_sim::lower_dae_for_simulation(&compiled.compiled.dae, &opts) {
-            Ok(solve_model) => {
-                match build_tunable_parameter_meta(&compiled.compiled.dae, &solve_model) {
-                    Ok(parameters) => Some(json!({
-                        "ok": true,
-                        "parameters": parameters,
-                    })),
-                    Err(error) => Some(Self::simulation_error_value(format!(
-                        "failed to construct parameter metadata: {error}",
-                    ))),
-                }
-            }
+            Ok(solve_model) => match build_tunable_parameter_meta(&solve_model) {
+                Ok(parameters) => Some(json!({
+                    "ok": true,
+                    "parameters": parameters,
+                })),
+                Err(error) => Some(Self::simulation_error_value(format!(
+                    "failed to construct parameter metadata: {error}",
+                ))),
+            },
             Err(error) => Some(Self::simulation_error_value(format!(
                 "failed to lower parameter metadata model: {error}",
             ))),
@@ -892,11 +972,11 @@ impl ModelicaLanguageServer {
         source: &str,
         position: Position,
         current_document_path: &str,
-    ) {
+    ) -> std::result::Result<(), SourceRootPreparationError> {
         let Some(completion_prefix) = extract_namespace_completion_prefix(source, position) else {
             maybe_log_completion_debug(&self.client, "no namespace completion prefix detected")
                 .await;
-            return;
+            return Ok(());
         };
         maybe_log_completion_debug(
             &self.client,
@@ -912,22 +992,20 @@ impl ModelicaLanguageServer {
             ),
         )
         .await;
-        let (progress_messages, load_errors) = self
+        let progress_messages = self
             .load_completion_source_roots(&source_root_paths, current_document_path)
-            .await;
+            .await?;
         for message in progress_messages {
             self.client.log_message(MessageType::INFO, message).await;
         }
-        for err in load_errors {
-            self.client.log_message(MessageType::WARNING, err).await;
-        }
+        Ok(())
     }
 
     async fn load_completion_source_roots(
         &self,
         source_root_paths: &[String],
         current_document_path: &str,
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> std::result::Result<Vec<String>, SourceRootPreparationError> {
         let (already_loaded, mut source_root_state_epoch) = {
             let session = self.session.read().await;
             (
@@ -935,7 +1013,7 @@ impl ModelicaLanguageServer {
                 session.source_root_state_epoch(),
             )
         };
-        let load_plan = plan_source_root_loads(source_root_paths, &already_loaded);
+        let load_plan = plan_source_root_loads(source_root_paths, &already_loaded)?;
         let mut progress_messages = load_plan
             .duplicate_root_skips
             .iter()
@@ -946,23 +1024,19 @@ impl ModelicaLanguageServer {
                 )
             })
             .collect::<Vec<_>>();
-        let mut load_errors = Vec::new();
-
         for source_root_path in &load_plan.load_paths {
             if let Some(message) = self
                 .load_completion_source_root(
                     source_root_path,
                     current_document_path,
                     &mut source_root_state_epoch,
-                    &mut load_errors,
                 )
-                .await
+                .await?
             {
                 progress_messages.push(message);
             }
         }
-
-        (progress_messages, load_errors)
+        Ok(progress_messages)
     }
 
     async fn load_completion_source_root(
@@ -970,8 +1044,7 @@ impl ModelicaLanguageServer {
         source_root_path: &str,
         current_document_path: &str,
         source_root_state_epoch: &mut u64,
-        load_errors: &mut Vec<String>,
-    ) -> Option<String> {
+    ) -> std::result::Result<Option<String>, SourceRootPreparationError> {
         let path_key = canonical_path_key(source_root_path);
         maybe_log_completion_debug(&self.client, format!("loading {source_root_path}")).await;
         let source_set_id = source_root_source_set_key(source_root_path);
@@ -986,23 +1059,22 @@ impl ModelicaLanguageServer {
             )
             .await
         {
-            Ok(Some(loaded)) => loaded,
-            Ok(None) => {
+            Ok(SourceRootLoadDisposition::Loaded(loaded)) => loaded,
+            Ok(SourceRootLoadDisposition::AlreadyLoaded) => {
                 maybe_log_completion_debug(
                     &self.client,
-                    format!("load for {source_root_path} returned no-op"),
+                    format!("source root {source_root_path} was already loaded"),
                 )
                 .await;
-                return None;
+                return Ok(None);
             }
-            Err(err) => {
+            Err(error) => {
                 maybe_log_completion_debug(
                     &self.client,
-                    format!("load for {source_root_path} failed: {err}"),
+                    format!("load for {source_root_path} failed: {error}"),
                 )
                 .await;
-                load_errors.push(err);
-                return None;
+                return Err(error);
             }
         };
         maybe_log_completion_debug(
@@ -1014,10 +1086,10 @@ impl ModelicaLanguageServer {
         )
         .await;
         *source_root_state_epoch = self.session.read().await.source_root_state_epoch();
-        Some(completion_source_root_progress_message(
+        Ok(Some(completion_source_root_progress_message(
             source_root_path,
             &loaded,
-        ))
+        )))
     }
 
     async fn should_reload_config_for_document(&self, uri: &Url, uri_path: &str) -> bool {
@@ -1094,7 +1166,15 @@ impl LanguageServer for ModelicaLanguageServer {
             });
         let workspace_root_ms = workspace_root_started.elapsed().as_millis() as u64;
         *self.workspace_root.write().await = workspace_root;
-        let reload_timing = self.reload_scenario_config_with_timing().await;
+        let reload_timing = match self.reload_scenario_config_with_timing().await {
+            Ok(timing) => timing,
+            Err(error) => {
+                self.client
+                    .log_message(MessageType::ERROR, error.to_string())
+                    .await;
+                return Err(tower_lsp::jsonrpc::Error::internal_error());
+            }
+        };
         let total_ms = initialize_started.elapsed().as_millis() as u64;
         let startup_timing_path = self.startup_timing_path.read().await.clone();
         write_startup_timing_summary(
@@ -1343,102 +1423,7 @@ impl LanguageServer for ModelicaLanguageServer {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        let completion_started = Instant::now();
-        let mut request_token = self.begin_analysis_request().await;
-        let uri = &params.text_document_position.text_document.uri;
-        let uri_path = session_document_uri_key(uri);
-        let pos = params.text_document_position.position;
-        let doc_snapshot = self.document_snapshot(&uri_path).await;
-        let source = doc_snapshot
-            .as_ref()
-            .map(|doc| doc.content.clone())
-            .unwrap_or_default();
-        let has_namespace_prefix = extract_namespace_completion_prefix(&source, pos).is_some();
-        if has_namespace_prefix {
-            self.wait_for_source_root_read_prewarm_if_pending().await;
-        }
-        let stats_before = session_cache_stats();
-        let ast = doc_snapshot
-            .as_ref()
-            .and_then(|doc| doc.recovered().or(doc.parsed()));
-        let preparation = self
-            .prepare_completion(&source, pos, &uri_path, request_token.mutation_epoch)
-            .await;
-
-        let mut session_snapshot = None;
-        let mut class_name_count_after_ensure = 0usize;
-        let _interactive_lane = if preparation.request_was_stale {
-            None
-        } else {
-            Some(self.work_lanes.interactive.lock().await)
-        };
-        if !preparation.request_was_stale {
-            request_token = self.refresh_analysis_request_revision(request_token).await;
-            let snapshot = if has_namespace_prefix {
-                self.session_snapshot().await
-            } else if let Some(snapshot) = self.document_lightweight_snapshot(&uri_path).await {
-                snapshot
-            } else {
-                self.session_snapshot().await
-            };
-            class_name_count_after_ensure = Self::cached_completion_class_name_count(
-                &snapshot,
-                preparation.completion_prefix.as_deref(),
-            );
-            session_snapshot = Some(snapshot);
-        }
-        maybe_log_completion_debug(
-            &self.client,
-            format!(
-                "cached class names after ensure={}",
-                class_name_count_after_ensure
-            ),
-        )
-        .await;
-        let doc_source = doc_snapshot
-            .as_ref()
-            .map(|doc| doc.content.as_ref())
-            .unwrap_or("");
-        let completion_handler_started = Instant::now();
-        let mut completion_response = None;
-        let mut semantic_layer = "stale".to_string();
-        if !preparation.request_was_stale {
-            let completion_result = handlers::handle_completion_with_snapshot_and_provenance(
-                doc_source,
-                ast,
-                session_snapshot.as_ref(),
-                Some(&uri_path),
-                pos.line,
-                pos.character,
-            );
-            semantic_layer = completion_result.semantic_layer.label().to_string();
-            completion_response = Some(CompletionResponse::Array(completion_result.items));
-        }
-        let completion_handler_ms = completion_handler_started.elapsed().as_millis() as u64;
-        let total_ms = completion_started.elapsed().as_millis() as u64;
-        let stats_after = session_cache_stats();
-        let session_cache_delta = stats_after.delta_since(stats_before);
-        let request_was_stale =
-            preparation.request_was_stale || self.analysis_request_is_stale(request_token).await;
-        if request_was_stale {
-            completion_response = None;
-            semantic_layer = "stale".to_string();
-        }
-        let completion_timing_path = self.completion_timing_path.read().await.clone();
-        let timing_summary = build_completion_timing_summary(
-            preparation,
-            CompletionTimingContext {
-                request_edit_epoch: request_token.mutation_epoch,
-                uri: uri_path,
-                semantic_layer,
-                completion_handler_ms,
-                total_ms,
-                class_name_count_after_ensure,
-                session_cache_delta,
-            },
-        );
-        write_completion_timing_summary(&timing_summary, completion_timing_path.as_deref());
-        Ok(completion_response)
+        self.handle_completion_request(params).await
     }
 
     async fn document_symbol(
@@ -1505,7 +1490,6 @@ impl LanguageServer for ModelicaLanguageServer {
                     &snapshot,
                     &uri_path,
                     &info.declaration_location,
-                    uri,
                 );
             }
             if response.is_none()
@@ -1517,7 +1501,6 @@ impl LanguageServer for ModelicaLanguageServer {
                     &snapshot,
                     &info.target_uri,
                     &info.declaration_location,
-                    uri,
                 );
             }
         }
@@ -1679,12 +1662,19 @@ impl LanguageServer for ModelicaLanguageServer {
         let source = doc_snapshot.content.clone();
         let source_root_paths = self.source_root_paths.read().await.clone();
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
-        if rumoca_compile::source_roots::source_requires_unloaded_source_roots(
+        match rumoca_compile::source_roots::source_requires_unloaded_source_roots(
             &source,
             &source_root_paths,
             &loaded_source_roots,
         ) {
-            return Ok(None);
+            Ok(true) => return Ok(None),
+            Ok(false) => {}
+            Err(error) => {
+                self.client
+                    .log_message(MessageType::ERROR, error.to_string())
+                    .await;
+                return Ok(None);
+            }
         }
 
         let doc = doc_snapshot;
@@ -1717,24 +1707,41 @@ impl LanguageServer for ModelicaLanguageServer {
         } else {
             settings.source_root_paths
         };
-        let loaded_any = self
+        let loaded_any = match self
             .ensure_source_roots_loaded_with_paths(
                 &doc_snapshot.content,
                 &uri_path,
                 &source_root_paths,
             )
-            .await;
+            .await
+        {
+            Ok(loaded_any) => loaded_any,
+            Err(error) => {
+                self.client
+                    .log_message(MessageType::ERROR, error.to_string())
+                    .await;
+                return Ok(params);
+            }
+        };
         if loaded_any {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
-        if self.analysis_request_is_stale(request_token).await
-            || rumoca_compile::source_roots::source_requires_unloaded_source_roots(
+        let requires_source_roots =
+            match rumoca_compile::source_roots::source_requires_unloaded_source_roots(
                 &doc_snapshot.content,
                 &source_root_paths,
                 &loaded_source_roots,
-            )
-        {
+            ) {
+                Ok(requires_source_roots) => requires_source_roots,
+                Err(error) => {
+                    self.client
+                        .log_message(MessageType::ERROR, error.to_string())
+                        .await;
+                    return Ok(params);
+                }
+            };
+        if self.analysis_request_is_stale(request_token).await || requires_source_roots {
             return Ok(params);
         }
         let tool_options = self.tool_options_for_document_or_default(&uri_path).await;

@@ -127,10 +127,16 @@ fn add_function_to_context(
     if !ctx.functions.contains_key(&resolved_name) {
         ctx.functions.insert(resolved_name.clone(), func.clone());
     }
-    if ctx
-        .functions
-        .get(&request.name)
-        .is_none_or(|existing| existing.name.as_str() != request.name)
+    // A record constructor has exactly one exposure, the record itself: the
+    // retained layout check admits a constructor only under the record's own
+    // qualified name, so a clone renamed to the use-site spelling could never
+    // pass it. The call still restates its use-site path to that qualified
+    // name during canonicalization.
+    if !func.is_constructor
+        && ctx
+            .functions
+            .get(&request.name)
+            .is_none_or(|existing| existing.name.as_str() != request.name)
     {
         insert_requested_exposure(
             &mut ctx.functions,

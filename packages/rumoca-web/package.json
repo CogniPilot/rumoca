@@ -20,7 +20,6 @@
     "./results-mount": "./viz/results_mount.js",
     "./runtime": "./runtime/rumoca_runtime.js",
     "./modelica-language": "./runtime/modelica_language.js",
-    "./gpu": "./runtime/rumoca_gpu.js",
     "./worker": "./runtime/rumoca_worker.js",
     "./parse-worker": "./runtime/parse_worker.js",
     "./diffsol": "./runtime/rumoca_diffsol.js"

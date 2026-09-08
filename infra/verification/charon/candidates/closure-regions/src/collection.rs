@@ -7,6 +7,7 @@ use rustc_hir::def_id::{DefPathHash, LocalDefId};
 use rustc_middle::queries::mir_borrowck::ProvidedValue;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::util::Providers;
+use serde::{Deserialize, Serialize};
 
 use crate::{ClosureRegionFacts, FactError};
 
@@ -23,7 +24,7 @@ struct CollectionState {
 // owns this registration; records contain no rustc-lifetime values or pointers.
 static ACTIVE: Mutex<Option<Arc<CollectionState>>> = Mutex::new(None);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CollectionError {
     AlreadyActive,
     Poisoned,

@@ -2,6 +2,7 @@ use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
 use super::solve_ops::write_clock_activation_params;
+use super::solve_runtime::DynamicTimeEventsPermit;
 
 use crate::{
     EventActionOutcome, RuntimeEventStop, RuntimeSolveError, SolveStopSchedule,
@@ -9,18 +10,40 @@ use crate::{
 };
 use rumoca_eval_solve::{PreparedScalarProgramBlock, RowEvalContext};
 
-pub fn next_runtime_event_stop(
-    model: &solve::SolveModel,
-    runtime_state: &solve_eval::SimulationRuntimeState,
-    y: &[f64],
-    params: &[f64],
-    stop_schedule: &mut SolveStopSchedule,
-    current_t: f64,
-    target: f64,
+pub(super) struct RuntimeEventStopRequest<'a> {
+    pub(super) execution: DynamicTimeEventsPermit,
+    pub(super) model: &'a solve::SolveModel,
+    pub(super) runtime_state: &'a solve_eval::SimulationRuntimeState,
+    pub(super) y: &'a [f64],
+    pub(super) params: &'a [f64],
+    pub(super) stop_schedule: &'a mut SolveStopSchedule,
+    pub(super) current_t: f64,
+    pub(super) target: f64,
+}
+
+pub(super) fn next_runtime_event_stop(
+    request: RuntimeEventStopRequest<'_>,
 ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
+    let RuntimeEventStopRequest {
+        execution,
+        model,
+        runtime_state,
+        y,
+        params,
+        stop_schedule,
+        current_t,
+        target,
+    } = request;
     let (static_stop, static_event) = stop_schedule.next_stop(current_t, target);
-    let Some(dynamic_stop) =
-        next_dynamic_time_event(model, runtime_state, y, params, current_t, target)?
+    let Some(dynamic_stop) = next_dynamic_time_event(
+        execution,
+        model,
+        runtime_state,
+        y,
+        params,
+        current_t,
+        target,
+    )?
     else {
         return Ok((static_stop, static_event));
     };
@@ -43,7 +66,8 @@ pub fn next_runtime_event_stop(
     Ok((static_stop, static_event))
 }
 
-pub fn current_dynamic_time_event_stop(
+pub(super) fn current_dynamic_time_event_stop(
+    execution: DynamicTimeEventsPermit,
     model: &solve::SolveModel,
     runtime_state: &solve_eval::SimulationRuntimeState,
     y: &[f64],
@@ -51,12 +75,13 @@ pub fn current_dynamic_time_event_stop(
     current_t: f64,
 ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
     let named_events = model
-        .problem
-        .events
+        .problem()
+        .events()
         .dynamic_time_event_names
         .iter()
         .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let row_events = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
+    let row_events =
+        dynamic_time_event_row_values(execution, model, runtime_state, y, params, current_t)?;
     if named_events
         .chain(row_events)
         .any(|event_t| sample_time_match_with_tol(event_t, current_t))
@@ -74,8 +99,7 @@ pub fn visible_values_with_context(
     context: RowEvalContext<'_>,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
     model
-        .visible_names
-        .iter()
+        .visible_names()
         .enumerate()
         .map(|(idx, name)| visible_value_with_context(model, idx, name, y, params, t, context))
         .collect()
@@ -100,7 +124,7 @@ pub(crate) fn event_eval_params_with_relation_overrides(
 ) -> Result<Vec<f64>, RuntimeSolveError> {
     let mut event_eval_p = runtime_event_copy_values(p, "event relation override parameters")?;
     for (root_idx, value) in root_relation_overrides {
-        let Some(Some(solve::ScalarSlot::P { index, .. })) =
+        let Some(Some(solve::ScalarSlot::P { index })) =
             root_relation_memory_targets.get(*root_idx).copied()
         else {
             continue;
@@ -120,7 +144,7 @@ pub fn eval_event_actions_with_context(
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<EventActionOutcome, RuntimeSolveError> {
-    let events = &model.problem.events;
+    let events = &model.problem().events();
     let mut action_p = event_action_params(events, p, event_pre_p)?;
     write_clock_activation_params(model, &mut action_p, t);
     match solve_eval::eval_event_action_request(events, y, &action_p, t, context)? {
@@ -165,18 +189,24 @@ fn visible_value_with_context(
     t: f64,
     context: RowEvalContext<'_>,
 ) -> Result<f64, RuntimeSolveError> {
-    if model.visible_value_rows.len() == model.visible_names.len() {
-        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows.clone())?;
+    if model.visible_value_rows().len() == model.visible_name_count() {
+        let evaluator = PreparedScalarProgramBlock::new(model.visible_value_rows().clone())?;
         return evaluator
             .eval_row_with_context(visible_idx, y, params, t, context)
             .map_err(Into::into);
     }
-    if let Some(idx) = runtime_parameter_index(&model.problem.solve_layout, name) {
+    if let Some(idx) = runtime_parameter_index(model.problem().solve_layout(), name) {
         return params.get(idx).copied().ok_or_else(|| {
             RuntimeSolveError::solve_ir(format!("runtime slot `{name}` is out of range"))
         });
     }
-    if let Some(idx) = model.problem.solve_layout.solver_maps.name_to_idx.get(name) {
+    if let Some(idx) = model
+        .problem()
+        .solve_layout()
+        .solver_maps
+        .name_to_idx
+        .get(name)
+    {
         return y.get(*idx).copied().ok_or_else(|| {
             RuntimeSolveError::solve_ir(format!("solver slot `{name}` is out of range"))
         });
@@ -187,6 +217,7 @@ fn visible_value_with_context(
 }
 
 fn next_dynamic_time_event(
+    execution: DynamicTimeEventsPermit,
     model: &solve::SolveModel,
     runtime_state: &solve_eval::SimulationRuntimeState,
     y: &[f64],
@@ -195,12 +226,13 @@ fn next_dynamic_time_event(
     target: f64,
 ) -> Result<Option<f64>, RuntimeSolveError> {
     let named_events = model
-        .problem
-        .events
+        .problem()
+        .events()
         .dynamic_time_event_names
         .iter()
         .filter_map(|name| dynamic_time_event_value(model, params, name));
-    let mut candidates = dynamic_time_event_row_values(model, runtime_state, y, params, current_t)?;
+    let mut candidates =
+        dynamic_time_event_row_values(execution, model, runtime_state, y, params, current_t)?;
     candidates.extend(named_events);
     candidates.retain(|event_t| event_time_in_window(*event_t, current_t, target));
     Ok(canonical_dynamic_time_event(&candidates))
@@ -220,13 +252,14 @@ fn canonical_dynamic_time_event(candidates: &[f64]) -> Option<f64> {
 }
 
 fn dynamic_time_event_row_values(
+    execution: DynamicTimeEventsPermit,
     model: &solve::SolveModel,
     runtime_state: &solve_eval::SimulationRuntimeState,
     y: &[f64],
     params: &[f64],
     current_t: f64,
 ) -> Result<Vec<f64>, RuntimeSolveError> {
-    let block = &model.problem.events.dynamic_time_event_rhs;
+    let block = &model.problem().events().dynamic_time_event_rhs;
     if block.is_empty() {
         return Ok(Vec::new());
     }
@@ -236,18 +269,14 @@ fn dynamic_time_event_row_values(
         y,
         params,
         current_t,
-        RowEvalContext {
-            external_tables: Some(model.external_tables.as_slice()),
-            runtime_state: Some(runtime_state),
-            ..Default::default()
-        },
+        execution.row_eval_context_for_model(model, runtime_state),
         &mut values,
     )?;
     Ok(values)
 }
 
 fn dynamic_time_event_value(model: &solve::SolveModel, params: &[f64], name: &str) -> Option<f64> {
-    runtime_parameter_index(&model.problem.solve_layout, name)
+    runtime_parameter_index(model.problem().solve_layout(), name)
         .and_then(|idx| params.get(idx).copied())
 }
 
@@ -282,7 +311,10 @@ fn runtime_event_vec_with_capacity<T>(
 
 #[cfg(test)]
 mod tests {
+    use super::super::solve_runtime::dynamic_time_events_permit_for_test;
     use super::*;
+
+    use crate::test_support::empty_binary64_first_product_model;
 
     fn periodic(period: f64, phase: f64) -> solve::PeriodicEventSchedule {
         solve::PeriodicEventSchedule::new(
@@ -295,27 +327,50 @@ mod tests {
     fn coincident_periodic_and_dynamic_deadline_uses_reached_instant() {
         let period = 0.001;
         let dynamic_deadline = 9.0 * period;
-        let mut model = solve::SolveModel::default();
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
-        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
-        model
-            .problem
-            .clocks
-            .periodic_event_schedules
-            .push(periodic(period, 0.0));
-        model.parameters = vec![dynamic_deadline];
-        let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, 0.02);
+        let base = empty_binary64_first_product_model();
+        let solve_layout = solve::SolveLayout {
+            compiled_parameter_len: 2,
+            discrete_real_scalar_names: vec!["next".to_string()],
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition {
+            dynamic_time_event_names: vec!["next".to_string()],
+            ..Default::default()
+        };
+        let clocks = solve::SolveClockPartition {
+            periodic_event_schedules: vec![periodic(period, 0.0)],
+            activation_parameter_indices: vec![1],
+        };
+        let continuous = crate::test_support::ContinuousSystemFixture::empty();
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("coincident deadline fixture satisfies the checked root contract"),
+            parameters: vec![dynamic_deadline, 0.0],
+            ..base
+        };
+        let mut schedule = SolveStopSchedule::new(model.problem(), 0.0, 0.02);
 
-        let (event_time, event) = next_runtime_event_stop(
-            &model,
-            &solve_eval::SimulationRuntimeState::new(),
-            &[],
-            &model.parameters,
-            &mut schedule,
-            0.008,
-            0.02,
-        )
+        let runtime_state = solve_eval::SimulationRuntimeState::new();
+        let (event_time, event) = next_runtime_event_stop(RuntimeEventStopRequest {
+            execution: dynamic_time_events_permit_for_test(),
+            model: &model,
+            runtime_state: &runtime_state,
+            y: &[],
+            params: model.parameters(),
+            stop_schedule: &mut schedule,
+            current_t: 0.008,
+            target: 0.02,
+        })
         .expect("coincident periodic and dynamic event should schedule");
 
         assert!(sample_time_match_with_tol(event_time, 0.009));
@@ -383,23 +438,49 @@ mod tests {
     #[test]
     fn coincident_dynamic_deadline_does_not_move_terminal_horizon() {
         let target = 1.0_f64;
-        let mut model = solve::SolveModel::default();
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.discrete_real_scalar_names = vec!["next".to_string()];
-        model.problem.events.dynamic_time_event_names = vec!["next".to_string()];
-        model.problem.events.has_terminal_event = true;
-        model.parameters = vec![target.next_up()];
-        let mut schedule = SolveStopSchedule::new(&model.problem, 0.0, target);
+        let base = empty_binary64_first_product_model();
+        let solve_layout = solve::SolveLayout {
+            compiled_parameter_len: 2,
+            discrete_real_scalar_names: vec!["next".to_string()],
+            terminal_event_parameter_index: Some(1),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition {
+            dynamic_time_event_names: vec!["next".to_string()],
+            has_terminal_event: true,
+            ..Default::default()
+        };
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture::empty();
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("terminal deadline fixture satisfies the checked root contract"),
+            parameters: vec![target.next_up(), 0.0],
+            ..base
+        };
+        let mut schedule = SolveStopSchedule::new(model.problem(), 0.0, target);
 
-        let (event_time, event) = next_runtime_event_stop(
-            &model,
-            &solve_eval::SimulationRuntimeState::new(),
-            &[],
-            &model.parameters,
-            &mut schedule,
-            0.9,
+        let runtime_state = solve_eval::SimulationRuntimeState::new();
+        let (event_time, event) = next_runtime_event_stop(RuntimeEventStopRequest {
+            execution: dynamic_time_events_permit_for_test(),
+            model: &model,
+            runtime_state: &runtime_state,
+            y: &[],
+            params: model.parameters(),
+            stop_schedule: &mut schedule,
+            current_t: 0.9,
             target,
-        )
+        })
         .expect("terminal horizon and coincident dynamic deadline should schedule");
 
         assert_eq!(event_time.to_bits(), target.to_bits());
@@ -410,14 +491,8 @@ mod tests {
     fn event_eval_params_with_relation_overrides_applies_p_targets() {
         let params = event_eval_params_with_relation_overrides(
             &[
-                Some(solve::ScalarSlot::P {
-                    index: 1,
-                    byte_offset: 8,
-                }),
-                Some(solve::ScalarSlot::Y {
-                    index: 0,
-                    byte_offset: 0,
-                }),
+                Some(solve::ScalarSlot::P { index: 1 }),
+                Some(solve::ScalarSlot::Y { index: 0 }),
             ],
             &[(0, 9.0), (1, 7.0), (4, 3.0)],
             &[1.0, 2.0, 3.0],

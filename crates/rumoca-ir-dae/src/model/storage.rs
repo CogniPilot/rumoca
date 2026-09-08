@@ -36,7 +36,8 @@ impl DeclaredEntry for ConditionEntry {
 }
 
 impl Storage {
-    pub(super) fn freeze(self) -> FrozenStorage {
+    pub(super) fn freeze(self, callable_inventory: CallableSourceInventory) -> FrozenStorage {
+        debug_assert!(self.pending_integer_subscript_bounds.is_empty());
         FrozenStorage {
             predefined_string_declaration: self.predefined_string_declaration,
             value_types: self.value_types.into_boxed_slice(),
@@ -76,6 +77,7 @@ impl Storage {
             previous_values: self.previous_values.into_boxed_slice(),
             terminals: self.terminals.into_boxed_slice(),
             delays: self.delays.into_boxed_slice(),
+            callable_inventory,
         }
     }
 
@@ -234,22 +236,63 @@ impl Storage {
     }
 
     pub(crate) fn static_integer(&self, expression: ExprId<'_>) -> Option<i64> {
-        let mut current = expression.index();
+        match self.static_integer_resolution(expression.index()) {
+            StaticIntegerResolution::Known(value) => Some(value),
+            StaticIntegerResolution::PendingParameter(_) | StaticIntegerResolution::Dynamic => None,
+        }
+    }
+
+    fn static_integer_resolution(&self, mut current: u32) -> StaticIntegerResolution {
         for _ in 0..=self.variables.len() {
-            match self.expressions.nodes.get(current as usize)? {
-                ExprNode::Literal(crate::DaeLiteral::Integer(value)) => return Some(*value),
-                ExprNode::Coordinate(crate::expression::Coordinate::Parameter(variable)) => {
-                    current = self
-                        .variables
-                        .get(*variable as usize)?
-                        .attributes
-                        .as_ref()?
-                        .binding?;
+            match self.expressions.nodes.get(current as usize) {
+                Some(ExprNode::Literal(crate::DaeLiteral::Integer(value))) => {
+                    return StaticIntegerResolution::Known(*value);
                 }
-                _ => return None,
+                Some(ExprNode::Coordinate(crate::expression::Coordinate::Parameter(variable))) => {
+                    match self.static_parameter_binding(*variable) {
+                        Ok(binding) => current = binding,
+                        Err(resolution) => return resolution,
+                    }
+                }
+                _ => return StaticIntegerResolution::Dynamic,
             }
         }
-        None
+        StaticIntegerResolution::Dynamic
+    }
+
+    fn static_parameter_binding(&self, variable: u32) -> Result<u32, StaticIntegerResolution> {
+        let entry = self
+            .variables
+            .get(variable as usize)
+            .ok_or(StaticIntegerResolution::Dynamic)?;
+        let attributes = entry
+            .attributes
+            .as_ref()
+            .ok_or(StaticIntegerResolution::PendingParameter(variable))?;
+        attributes.binding.ok_or(StaticIntegerResolution::Dynamic)
+    }
+
+    pub(crate) fn check_or_defer_integer_subscript_bound(
+        &mut self,
+        expression: ExprId<'_>,
+        axis_extent: u32,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        match self.static_integer_resolution(expression.index()) {
+            StaticIntegerResolution::Known(coordinate) => {
+                check_integer_subscript_bound(coordinate, axis_extent, provenance)
+            }
+            StaticIntegerResolution::PendingParameter(_) => {
+                self.pending_integer_subscript_bounds
+                    .push(PendingIntegerSubscriptBound {
+                        expression: expression.index(),
+                        axis_extent,
+                        provenance,
+                    });
+                Ok(())
+            }
+            StaticIntegerResolution::Dynamic => Ok(()),
+        }
     }
 
     pub(crate) fn expect_closed_expression(
@@ -714,10 +757,11 @@ impl Storage {
             + self.discrete_real_equations.len()
     }
 
-    pub(super) fn finish_construction(&self) -> Result<(), DaeConstructionError> {
+    pub(super) fn finish_construction(&mut self) -> Result<(), DaeConstructionError> {
         if self.unfilled_variables != 0 {
             return Err(self.incomplete_arena("variable", &self.variables));
         }
+        self.finish_integer_subscript_bounds()?;
         if self.unfilled_functions != 0 {
             return Err(self.incomplete_arena("function", &self.functions));
         }
@@ -760,6 +804,28 @@ impl Storage {
         Ok(())
     }
 
+    fn finish_integer_subscript_bounds(&mut self) -> Result<(), DaeConstructionError> {
+        let pending = std::mem::take(&mut self.pending_integer_subscript_bounds);
+        for obligation in pending {
+            match self.static_integer_resolution(obligation.expression) {
+                StaticIntegerResolution::Known(coordinate) => check_integer_subscript_bound(
+                    coordinate,
+                    obligation.axis_extent,
+                    obligation.provenance,
+                )?,
+                StaticIntegerResolution::PendingParameter(variable) => {
+                    return Err(DaeConstructionError::IncompleteDefinition {
+                        kind: "variable",
+                        index: variable,
+                        span: obligation.provenance.span(),
+                    });
+                }
+                StaticIntegerResolution::Dynamic => {}
+            }
+        }
+        Ok(())
+    }
+
     fn incomplete_arena<T: DeclaredEntry>(
         &self,
         kind: &'static str,
@@ -789,4 +855,17 @@ impl Storage {
             .get(raw as usize)
             .ok_or_else(|| unknown("value type", raw, at))
     }
+}
+
+fn check_integer_subscript_bound(
+    coordinate: i64,
+    axis_extent: u32,
+    provenance: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    if coordinate < 1 || i128::from(coordinate) > i128::from(axis_extent) {
+        return Err(DaeConstructionError::InvalidSubscript {
+            span: provenance.span(),
+        });
+    }
+    Ok(())
 }

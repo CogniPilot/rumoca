@@ -24,6 +24,7 @@ fn clocked_discrete_definition_lowers_with_exact_row_owner() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("d"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -90,6 +91,7 @@ fn periodic_clock_interval_lowers_to_an_exact_constant() {
         let variable = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -115,7 +117,7 @@ fn periodic_clock_interval_lowers_to_an_exact_constant() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert!(
@@ -154,6 +156,7 @@ fn clocked_tick_counter_model(lattice: rumoca_core::ClockLattice) -> dae::Dae {
         let counter = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("counter"),
+                rumoca_core::InstanceId::new(3),
                 integer,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -270,6 +273,7 @@ fn clock_owned_b1c_branch_lowers_its_value_instead_of_a_self_hold() {
         let initialized = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("initialized"),
+                rumoca_core::InstanceId::new(4),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -381,6 +385,7 @@ fn mixed_initial_and_clock_activation_needs_no_target_clock_owner() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -478,6 +483,7 @@ fn unclocked_clock_leaf_alias_is_proven_safe_for_observation_refresh() {
         let fresh = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("fresh"),
+                rumoca_core::InstanceId::new(6),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),

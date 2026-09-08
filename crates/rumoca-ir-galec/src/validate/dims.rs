@@ -21,22 +21,30 @@ use crate::ast::{
 use crate::diagnostic::{GalecError, PathSegment};
 
 use super::context::{
-    BlockContext, BodyView, Callee, Cursor, FunctionScope, PartDims, lexeme, reference_parts,
-    resolve, resolve_call,
+    BlockContext, BodyView, Cursor, FunctionScope, PartDims, lexeme, reference_parts, resolve,
 };
+use super::retained::{CallTarget, RetainedValidationBuilder, RetainedValidationError};
 
-pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
+pub(super) fn check(
+    ctx: &BlockContext<'_>,
+    retained: &RetainedValidationBuilder,
+    diags: &mut Vec<GalecError>,
+) -> Result<(), RetainedValidationError> {
     check_block_declarations(ctx, diags);
+    let mut index_error = None;
     for body in ctx.bodies() {
         let mut checker = DimChecker {
             ctx,
+            retained,
             scope: FunctionScope::new(&body),
             cursor: Cursor::for_body(ctx, &body),
             diags,
+            index_error: &mut index_error,
         };
         checker.declarations(&body);
         checker.statements(body.statements);
     }
+    index_error.map_or(Ok(()), Err)
 }
 
 /// Block-level (state entity and compartment entity) dimensions must be
@@ -100,9 +108,11 @@ fn check_declaration_dims(
 
 struct DimChecker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
+    retained: &'a RetainedValidationBuilder,
     scope: FunctionScope<'a>,
     cursor: Cursor,
     diags: &'d mut Vec<GalecError>,
+    index_error: &'d mut Option<RetainedValidationError>,
 }
 
 impl<'a> DimChecker<'a, '_> {
@@ -359,31 +369,50 @@ impl<'a> DimChecker<'a, '_> {
     }
 
     fn static_call(&mut self, call: &'a crate::ast::FunctionCall, context: &'static str) {
-        match resolve_call(self.ctx, &call.function) {
-            Some(Callee::User(_)) => self.diags.push(GalecError::NonStaticExpression {
-                location: self.cursor.here(),
-                context,
-                reason: "calls must be builtins",
-            }),
+        match self.retained.call_resolution(call) {
+            Ok(Some(resolution)) if matches!(resolution.target, CallTarget::Function(_)) => {
+                self.diags.push(GalecError::NonStaticExpression {
+                    location: self.cursor.here(),
+                    context,
+                    reason: "calls must be builtins",
+                });
+            }
             // §3.2.6 L-2: statically-evaluated expressions are applied at
             // Production-Code-generation time, where error signaling is not
             // permitted — signaling builtins (`integer`, the linear
             // solvers) are excluded.
-            Some(Callee::Builtin(builtin) | Callee::Lifted { base: builtin, .. })
-                if !builtin.signals.is_empty() =>
-            {
-                self.diags.push(GalecError::NonStaticExpression {
-                    location: self.cursor.here(),
-                    context,
-                    reason: "error-signaling builtins are not permitted in \
-                             statically-evaluated expressions",
-                });
+            Ok(Some(resolution)) => {
+                let CallTarget::Builtin { base, .. } = resolution.target else {
+                    return;
+                };
+                let Some(builtin) = crate::builtins::BUILTINS.get(base.index()) else {
+                    self.retain_index_error(RetainedValidationError::InconsistentFact {
+                        family: "call-target",
+                        index: base.ordinal(),
+                    });
+                    return;
+                };
+                if !builtin.signals.is_empty() {
+                    self.diags.push(GalecError::NonStaticExpression {
+                        location: self.cursor.here(),
+                        context,
+                        reason: "error-signaling builtins are not permitted in \
+                                 statically-evaluated expressions",
+                    });
+                }
             }
             // Unknown callees are reported by the type analysis.
-            Some(Callee::Builtin(_) | Callee::Lifted { .. }) | None => {}
+            Ok(None) => {}
+            Err(error) => self.retain_index_error(error),
         }
         for argument in &call.arguments {
             self.check_static(argument, context);
+        }
+    }
+
+    fn retain_index_error(&mut self, error: RetainedValidationError) {
+        if self.index_error.is_none() {
+            *self.index_error = Some(error);
         }
     }
 }

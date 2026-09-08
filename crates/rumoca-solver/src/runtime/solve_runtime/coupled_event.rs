@@ -3,12 +3,12 @@ use crate::{
 };
 use rumoca_ir_solve as solve;
 
-use super::SolveRuntime;
 use super::discrete_rows::StructuredDiscreteRowEvalInput;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
 };
 use super::guarded_assignments::guarded_target_at;
+use super::{InterpreterPermit, SolveRuntime};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CoupledEventUnknown {
@@ -117,9 +117,9 @@ impl SolveRuntime {
         };
         for block in &self
             .model
-            .problem
-            .continuous
-            .algebraic_projection_plan
+            .problem()
+            .continuous()
+            .algebraic_projection_plan()
             .blocks
         {
             if block.rows.len() != block.y_indices.len() {
@@ -139,8 +139,8 @@ impl SolveRuntime {
         }
         for (row, target) in self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .update_targets
             .iter()
             .copied()
@@ -152,8 +152,8 @@ impl SolveRuntime {
             if !self.discrete_row_active_at(row, t)? {
                 continue;
             }
-            let mode = crate::EventPreMode::from(self.model.problem.discrete.pre_modes[row]);
-            let clock_owned = self.model.problem.discrete.clock_owners[row].is_some();
+            let mode = crate::EventPreMode::from(self.model.problem().discrete().pre_modes[row]);
+            let clock_owned = self.model.problem().discrete().clock_owners[row].is_some();
             if !snapshot.row_filter.accepts(mode, clock_owned) {
                 continue;
             }
@@ -204,8 +204,8 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         for (program_index, owner) in self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .guarded_assignments
             .iter()
             .enumerate()
@@ -265,8 +265,8 @@ impl SolveRuntime {
 
     fn real_event_unknown(&self, target: solve::ScalarSlot) -> Option<CoupledEventUnknown> {
         match target {
-            solve::ScalarSlot::Y { index, .. } => Some(CoupledEventUnknown::Y(index)),
-            solve::ScalarSlot::P { index, .. } if self.is_discrete_real_parameter(index) => {
+            solve::ScalarSlot::Y { index } => Some(CoupledEventUnknown::Y(index)),
+            solve::ScalarSlot::P { index } if self.is_discrete_real_parameter(index) => {
                 Some(CoupledEventUnknown::P(index))
             }
             solve::ScalarSlot::Time
@@ -276,7 +276,7 @@ impl SolveRuntime {
     }
 
     fn is_discrete_real_parameter(&self, index: usize) -> bool {
-        let layout = &self.model.problem.solve_layout;
+        let layout = &self.model.problem().solve_layout();
         let start = layout.parameter_count + layout.input_scalar_names.len();
         let end = start + layout.discrete_real_scalar_names.len();
         (start..end).contains(&index)
@@ -338,7 +338,11 @@ impl CoupledEventSystem<'_> {
             y,
             p,
             self.t,
-            self.runtime.row_eval_context(),
+            self.runtime
+                .execution_plan
+                .interpreter
+                .continuous_refresh_rows
+                .row_eval_context(self.runtime),
             &mut implicit,
         )?;
         let mut eval_p_cache = EventEvalParamCache::default();
@@ -386,8 +390,8 @@ impl CoupledEventSystem<'_> {
         let target = self
             .runtime
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .update_targets
             .get(row)
             .copied()
@@ -415,8 +419,8 @@ impl CoupledEventSystem<'_> {
                         &self
                             .runtime
                             .model
-                            .problem
-                            .events
+                            .problem()
+                            .events()
                             .root_relation_memory_targets,
                         self.snapshot.root_relation_overrides,
                         row_p,
@@ -472,7 +476,7 @@ impl CoupledEventSystem<'_> {
 
     fn unknown_scale(&self, unknown: CoupledEventUnknown) -> f64 {
         match unknown {
-            CoupledEventUnknown::Y(index) => self.runtime.model.solver_variable_scale(index),
+            CoupledEventUnknown::Y(index) => self.runtime.model.solver_variable_scales()[index],
             CoupledEventUnknown::P(index) => self
                 .base_p
                 .get(index)
@@ -539,8 +543,8 @@ fn scalar_slot_value(
     p: &[f64],
 ) -> Result<f64, RuntimeSolveError> {
     match target {
-        solve::ScalarSlot::Y { index, .. } => indexed_value("y", y, index),
-        solve::ScalarSlot::P { index, .. } => indexed_value("p", p, index),
+        solve::ScalarSlot::Y { index } => indexed_value("y", y, index),
+        solve::ScalarSlot::P { index } => indexed_value("p", p, index),
         solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => Err(
             RuntimeSolveError::solve_ir("coupled event residual target is not a writable slot"),
         ),
@@ -608,11 +612,18 @@ mod tests {
     use super::*;
     use crate::runtime::solve_runtime::{EventUpdateRowFilter, ProjectedEventUpdateInput};
 
+    use crate::test_support::empty_binary64_first_product_model;
+
     fn fixture_span() -> rumoca_core::Span {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
     }
 
-    fn coupled_event_test_model() -> solve::SolveModel {
+    struct CoupledEventPrograms {
+        implicit: ScalarProgramBlock,
+        discrete: ScalarProgramBlock,
+    }
+
+    fn coupled_event_programs() -> CoupledEventPrograms {
         let implicit = ScalarProgramBlock::with_source_span(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
@@ -653,59 +664,159 @@ mod tests {
                 .expect("fixture span is source-backed"),
         )
         .expect("fixture program is computable");
-        solve::SolveModel {
-            problem: solve::SolveProblem {
-                solve_layout: solve::SolveLayout {
-                    solver_maps: solve::SolverNameIndexMaps {
-                        names: vec!["z".to_string()],
-                        ..Default::default()
-                    },
-                    algebraic_scalar_count: 1,
-                    discrete_real_scalar_names: vec!["d".to_string()],
-                    discrete_valued_scalar_names: vec!["mode".to_string()],
-                    ..Default::default()
-                },
-                continuous: solve::ContinuousSolveSystem {
-                    implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                    implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                    algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                        blocks: vec![solve::AlgebraicProjectionBlock {
-                            rows: vec![0],
-                            y_indices: vec![0],
-                            tearing: None,
-                        }],
-                    },
-                    ..Default::default()
-                },
-                discrete: solve::DiscreteSolveSystem {
-                    rhs: discrete,
-                    update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
-                    row_roles: vec![
-                        solve::DiscreteRowRole::Equation,
-                        solve::DiscreteRowRole::Equation,
-                    ],
-                    pre_modes: vec![
-                        solve::DiscreteEventPreMode::FollowCurrent,
-                        solve::DiscreteEventPreMode::FollowCurrent,
-                    ],
-                    observation_refresh: vec![false, false],
-                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
-                    clock_owners: vec![None, None],
-                    ..Default::default()
-                },
+        CoupledEventPrograms { implicit, discrete }
+    }
+
+    fn coupled_event_solve_layout() -> solve::SolveLayout {
+        solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["z".to_string()],
                 ..Default::default()
             },
-            initial_y: vec![0.0],
+            variable_storage_runs: vec![
+                solve::SolveVariableStorageRun {
+                    base: solve::SolveStorageCoordinate::P(0),
+                    scalar_count: 1,
+                    role: solve::SolveVariableStorageRole::DiscreteReal,
+                    value_kind: solve::SolveVariableValueKind::Real,
+                },
+                solve::SolveVariableStorageRun {
+                    base: solve::SolveStorageCoordinate::P(1),
+                    scalar_count: 1,
+                    role: solve::SolveVariableStorageRole::DiscreteValue,
+                    value_kind: solve::SolveVariableValueKind::Boolean,
+                },
+            ],
+            variable_declarations: vec![
+                solve::SolveVariableDeclaration::new(
+                    solve::SolveVariableStorageRole::DiscreteReal,
+                    solve::SolveVariableValueKind::Real,
+                ),
+                solve::SolveVariableDeclaration::new(
+                    solve::SolveVariableStorageRole::DiscreteValue,
+                    solve::SolveVariableValueKind::Boolean,
+                ),
+            ],
+            algebraic_scalar_count: 1,
+            compiled_parameter_len: 4,
+            discrete_real_scalar_names: vec!["d".to_string()],
+            discrete_valued_scalar_names: vec!["mode".to_string()],
+            pre_param_bindings: vec![
+                solve::PreParamBinding {
+                    dest_p_index: 2,
+                    source: solve::PreParamSource::P { index: 0 },
+                    clock_schedule: None,
+                },
+                solve::PreParamBinding {
+                    dest_p_index: 3,
+                    source: solve::PreParamSource::P { index: 1 },
+                    clock_schedule: None,
+                },
+            ],
             ..Default::default()
+        }
+    }
+
+    fn coupled_event_discrete_system(rhs: ScalarProgramBlock) -> solve::DiscreteSolveSystem {
+        solve::DiscreteSolveSystem {
+            rhs,
+            update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
+            row_roles: vec![
+                solve::DiscreteRowRole::Equation,
+                solve::DiscreteRowRole::Equation,
+            ],
+            pre_modes: vec![
+                solve::DiscreteEventPreMode::FollowCurrent,
+                solve::DiscreteEventPreMode::FollowCurrent,
+            ],
+            observation_refresh: vec![false, false],
+            integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
+            clock_owners: vec![None, None],
+            event_iteration_plan: solve::EventIterationPlan {
+                runs: vec![
+                    solve::EventIterationRun {
+                        variable: 0,
+                        pre_binding_start: 0,
+                        owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+                    },
+                    solve::EventIterationRun {
+                        variable: 1,
+                        pre_binding_start: 1,
+                        owner: solve::EventIterationOwner::ScalarRows { start_row: 1 },
+                    },
+                ],
+            },
+            ..Default::default()
+        }
+    }
+
+    fn coupled_event_test_model() -> solve::SolveModel {
+        let provenance = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("coupled_event_variables.mo"),
+            1,
+            2,
+        );
+        let CoupledEventPrograms { implicit, discrete } = coupled_event_programs();
+        let solve_layout = coupled_event_solve_layout();
+        let discrete = coupled_event_discrete_system(discrete);
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+            implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    tearing: None,
+                }],
+            },
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 1, 4),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("coupled event fixture satisfies the checked root contract"),
+            initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0; 4],
+            visible_value_rows: crate::test_support::direct_p_visible_rows([0, 1], provenance),
+            variable_entries: {
+                let mut entries = crate::test_support::explicit_real_scalar_catalog_entries(vec![
+                    crate::test_support::RealScalarVariableFixture::discrete_real(
+                        1, "d", 0, 0.0, provenance,
+                    ),
+                ]);
+                entries.extend(crate::test_support::explicit_boolean_scalar_catalog_entries(
+                    vec![crate::test_support::BooleanScalarVariableFixture {
+                        source_occurrence: crate::test_support::fixture_source_occurrence(2),
+                        name: "mode".to_string(),
+                        start: false,
+                        provenance,
+                    }],
+                ));
+                entries
+            },
+            ..empty_binary64_first_product_model()
         }
     }
 
     #[test]
     fn projected_event_update_recovers_picard_oscillation_with_coupled_newton() {
-        let runtime = SolveRuntime::new_fixture(&coupled_event_test_model())
-            .expect("event model should prepare");
+        let model = coupled_event_test_model();
+        let model = std::sync::Arc::new(model);
+        let runtime =
+            SolveRuntime::new(std::sync::Arc::clone(&model)).expect("event model should prepare");
         let mut y = vec![0.0];
-        let mut p = vec![0.0, 0.0];
+        let mut p = vec![0.0, 0.0, 0.0, 0.0];
         let event_pre_y = y.clone();
         let event_pre_p = p.clone();
 

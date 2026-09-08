@@ -19,30 +19,23 @@ pub(super) fn is_hover_preview_candidate(ast: &ast::StoredDefinition, word: &str
 /// in an unopened file falls back to the lexer's character columns.
 /// [`class_target_definition`] with the target file's text pulled from the
 /// session snapshot, which is where its UTF-16 columns are measured.
+/// Compiler-produced target identities are exact absolute paths for the current
+/// host; a foreign-platform path is not reinterpreted or relabelled.
 pub(super) fn class_target_definition_in_snapshot(
     snapshot: &SessionSnapshot,
     target_uri: &str,
     declaration_location: &rumoca_core::Location,
-    fallback_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     let source = snapshot.get_document(target_uri).map(|doc| doc.content);
-    class_target_definition(
-        target_uri,
-        declaration_location,
-        fallback_uri,
-        source.as_deref(),
-    )
+    class_target_definition(target_uri, declaration_location, source.as_deref())
 }
 
 pub(super) fn class_target_definition(
     target_uri: &str,
     declaration_location: &rumoca_core::Location,
-    fallback_uri: &Url,
     target_source: Option<&str>,
 ) -> Option<GotoDefinitionResponse> {
-    let target_uri = Url::from_file_path(target_uri)
-        .ok()
-        .unwrap_or_else(|| fallback_uri.clone());
+    let target_uri = Url::from_file_path(target_uri).ok()?;
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: target_uri,
         range: location_to_range_in_optional_source(target_source, declaration_location),

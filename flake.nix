@@ -109,7 +109,7 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         ciJulia = pkgs.julia_111;
-        ciPython = pkgs.python312.withPackages (ps: [
+        ciPythonPackages = ps: [
           ps.casadi
           ps.ipython
           (ps.jax.overridePythonAttrs (_: {
@@ -120,7 +120,45 @@
           ps.pip
           ps.sympy
           ps.virtualenv
-        ]);
+        ];
+        ciPython = pkgs.python312.withPackages ciPythonPackages;
+        # The FMI conformance checks require exactly FMPy 0.3.30 while
+        # nixpkgs tracks 0.3.27, so the pinned wheel is fetched by digest and
+        # the conformance toolchain resolves from the flake rather than being
+        # provisioned into the working tree at run time. Only the wheel's core
+        # requirements are propagated; the GUI extra is not used here.
+        fmpyPinned = pkgs.python312Packages.buildPythonPackage rec {
+          pname = "fmpy";
+          version = "0.3.30";
+          format = "wheel";
+          src = pkgs.fetchPypi {
+            pname = "fmpy";
+            inherit version format;
+            dist = "py3";
+            python = "py3";
+            hash = "sha256-wuLk+yt42vy1yXc/iUb84p8C9dDyxhaZwknPD+g5H5M=";
+          };
+          # FMPy ships no CMake project of its own: it invokes the `cmake`
+          # program to build FMU sources. Supply the real toolchain instead of
+          # the PyPI wrapper wheel, and keep CMake out of the build phases.
+          dontUseCmakeConfigure = true;
+          dontCheckRuntimeDeps = true;
+          propagatedBuildInputs = (
+            with pkgs.python312Packages;
+            [
+              attrs
+              jinja2
+              lark
+              lxml
+              msgpack
+              nbformat
+              numpy
+            ]
+          ) ++ [ pkgs.cmake ];
+          doCheck = false;
+          pythonImportsCheck = [ "fmpy" ];
+        };
+        fmiPython = pkgs.python312.withPackages (ps: ciPythonPackages ps ++ [ fmpyPinned ]);
         openModelicaCli = openmodelica.packages.${system}.default;
         mlirCpuTools = pkgs.symlinkJoin {
           name = "rumoca-mlir-cpu-tools-18";
@@ -186,13 +224,8 @@
         mlirCpuTestArgs = builtins.concatStringsSep " " [
           "--package rumoca-exec-mlir"
           "--features required-mlir-cpu"
-          "--test benchmark_matmul"
-          "--test compile_basic"
-          "--test implicit_euler"
-          "--test integrate"
-          "--test linsolve_mlir"
-          "--test multi_fn_mlir"
-          "--test options"
+          "--lib"
+          "--test suite_exec_mlir"
         ];
         mlirCpuTests =
           assert pkgs.lib.hasInfix ".#checks.x86_64-linux.mlir-cpu" (
@@ -268,7 +301,7 @@
         # graph so the shard / merge / ModelicaTest / pinned-library consumers
         # restore them from the CI producer instead of recompiling + re-LTO'ing
         # the workspace. A single
-        # derivation keeps rumoca-worker, rumoca-sim-worker, rumoca-msl-tools,
+        # derivation keeps rumoca-worker, rumoca-msl-tools,
         # the focused profile runner, and the libtest harness in one target
         # directory; separate derivations
         # rebuild the same workspace crates and made rumoca-worker a serial
@@ -284,7 +317,6 @@
                 -p rumoca-test-msl \
                 --features rumoca-test-msl/msl-full-test,rumoca-test-msl/msl-profile-bin \
                 --bin rumoca-worker \
-                --bin rumoca-sim-worker \
                 --bin rumoca-msl-tools \
                 --bin rumoca-msl-profile \
                 --test msl_tests
@@ -298,7 +330,6 @@
               test -n "$bin" || { echo "msl_tests test binary not found"; exit 1; }
               cp "$bin" $out/bin/msl_tests
               cp target/release/rumoca-worker $out/bin/rumoca-worker
-              cp target/release/rumoca-sim-worker $out/bin/rumoca-sim-worker
               cp target/release/rumoca-msl-tools $out/bin/rumoca-msl-tools
               cp target/release/rumoca-msl-profile $out/bin/rumoca-msl-profile
             '';
@@ -318,15 +349,19 @@
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.udev ]
           );
         };
+        commonDevPackages = [
+          pkgs.jq
+          pkgs.pkg-config
+        ];
         mkDevShell =
           extraPackages:
-          craneLib.devShell (commonDevShellArgs // { packages = [ pkgs.pkg-config ] ++ extraPackages; });
+          craneLib.devShell (commonDevShellArgs // { packages = commonDevPackages ++ extraPackages; });
         templateRuntimeShell =
           extraPackages:
           craneLib.devShell (
             commonDevShellArgs
             // {
-              packages = [ pkgs.pkg-config ] ++ extraPackages;
+              packages = commonDevPackages ++ extraPackages;
               LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
                 [
                   pkgs.gfortran.cc.lib
@@ -346,18 +381,27 @@
           ciPython
           pkgs.maturin
         ];
+        embeddedBenchmarkShell = templateRuntimeShell [
+          ciPython
+          pkgs.gcc-arm-embedded
+          pkgs.qemu
+          pkgs.util-linux
+        ];
         juliaShell = templateRuntimeShell (pkgs.lib.optionals pkgs.stdenv.isLinux [ ciJulia ]);
         modelicaShell = templateRuntimeShell (pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]);
+        # The external FMI conformance toolchain. Shared so `.#full` is a
+        # superset of `.#fmi` by construction rather than by coincidence.
+        fmiRuntimeTools = [
+          fmiPython
+          pkgs.cmake
+          pkgs.curl
+          pkgs.jre_headless
+          pkgs.libxml2
+          pkgs.nodejs_22
+          pkgs.unzip
+        ];
         fmiShell = templateRuntimeShell (
-          [
-            ciPython
-            pkgs.cmake
-            pkgs.curl
-            pkgs.jre_headless
-            pkgs.libxml2
-            pkgs.nodejs_22
-            pkgs.unzip
-          ]
+          fmiRuntimeTools
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ openModelicaCli ]
         );
         docsShell = mkDevShell [
@@ -371,18 +415,15 @@
             ciJulia
             openModelicaCli
           ]
+          ++ fmiRuntimeTools
           ++ [
-            ciPython
             pkgs.binaryen
             pkgs.cargo-expand
             pkgs.cargo-llvm-cov
             pkgs.cargo-nextest
             pkgs.hyperfine
-            pkgs.jq
-            pkgs.libxml2
             pkgs.maturin
             pkgs.mdbook
-            pkgs.nodejs_22
             pkgs.ripgrep
             pkgs.wasm-pack
           ]
@@ -438,6 +479,7 @@
         devShells.full = fullShell;
         devShells.wasm = wasmShell;
         devShells.python = pythonShell;
+        devShells.embedded-benchmark = embeddedBenchmarkShell;
         devShells.julia = juliaShell;
         devShells.modelica = modelicaShell;
         devShells.fmi = fmiShell;

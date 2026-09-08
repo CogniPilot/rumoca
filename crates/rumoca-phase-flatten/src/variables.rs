@@ -18,11 +18,15 @@ use crate::source_spans::required_location_span;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::Arc;
 
+type ImportRefusalMap = crate::pipeline::ImportRefusalMap;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VariableImportContext {
     pub(crate) declaration: Arc<ImportMap>,
+    pub(crate) declaration_refusals: Arc<ImportRefusalMap>,
     pub(crate) binding: Arc<ImportMap>,
-    pub(crate) attributes: FxHashMap<String, Arc<ImportMap>>,
+    pub(crate) binding_refusals: Arc<ImportRefusalMap>,
+    pub(crate) attributes: FxHashMap<String, (Arc<ImportMap>, Arc<ImportRefusalMap>)>,
     pub(crate) declaration_function_scope: Option<String>,
     pub(crate) binding_function_scope: Option<String>,
     pub(crate) attribute_function_scopes: FxHashMap<String, String>,
@@ -36,7 +40,15 @@ impl VariableImportContext {
     fn attribute_imports(&self, attr_name: &str) -> &ImportMap {
         self.attributes
             .get(attr_name)
-            .map_or(self.declaration.as_ref(), Arc::as_ref)
+            .map_or(self.declaration.as_ref(), |(imports, _)| imports.as_ref())
+    }
+
+    fn attribute_refusals(&self, attr_name: &str) -> &ImportRefusalMap {
+        self.attributes
+            .get(attr_name)
+            .map_or(self.declaration_refusals.as_ref(), |(_, refusals)| {
+                refusals.as_ref()
+            })
     }
 }
 
@@ -234,7 +246,7 @@ pub(crate) fn create_flat_variable(
         flow: instance.flow,
         stream: instance.stream,
         dims: instance.dims.clone(),
-        connected: false, // Will be set during connection processing
+        connected: flat::ConnectedDomain::unconnected(),
         start: attrs.start,
         fixed: instance.fixed,
         min: attrs.min,
@@ -251,10 +263,7 @@ pub(crate) fn create_flat_variable(
         is_discrete_type: instance.is_discrete_type,
         is_primitive: instance.is_primitive,
         from_expandable_connector: instance.from_expandable_connector,
-        is_overconstrained: instance.is_overconstrained,
         is_protected: instance.is_protected,
-        oc_record_path: instance.oc_record_path.clone(),
-        oc_eq_constraint_size: instance.oc_eq_constraint_size,
     })
 }
 
@@ -411,6 +420,11 @@ fn qualify_variable_attribute(
         .attribute_source_scopes
         .get(attr_name)
         .or(ctx.instance.declaration_source_scope.as_ref());
+    crate::pipeline::refuse_ambiguous_import_uses(
+        expr,
+        ctx.imports.attribute_refusals(attr_name),
+        None,
+    )?;
     let imports = imports_without_component_shadowing(
         ctx.imports.attribute_imports(attr_name),
         source_scope,
@@ -482,7 +496,7 @@ fn references_declaration_component(
         declarations: &declarations,
         found: false,
     };
-    let _ = rumoca_ir_ast::Visitor::visit_expression(&mut finder, expression);
+    let _visit_outcome = rumoca_ir_ast::Visitor::visit_expression(&mut finder, expression);
     finder.found
 }
 
@@ -515,6 +529,7 @@ fn qualify_modification_binding(
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     let mod_prefix = modification_binding_prefix(ctx.instance, ctx.tree)?;
+    crate::pipeline::refuse_ambiguous_import_uses(expr, &ctx.imports.binding_refusals, None)?;
     let imports = imports_without_component_shadowing(
         ctx.imports.binding_imports(),
         ctx.instance.binding_source_scope.as_ref(),
@@ -544,6 +559,7 @@ fn qualify_declaration_binding(
     ctx: VariableQualifyContext<'_, '_>,
     expr: &ast::Expression,
 ) -> Result<rumoca_core::Expression, FlattenError> {
+    crate::pipeline::refuse_ambiguous_import_uses(expr, &ctx.imports.declaration_refusals, None)?;
     let imports = imports_without_component_shadowing(
         &ctx.imports.declaration,
         ctx.instance.declaration_source_scope.as_ref(),
@@ -600,7 +616,7 @@ fn imports_without_component_shadowing(
         class_index,
         names: FxHashSet::default(),
     };
-    let _ = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expression);
+    let _visit_outcome = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expression);
     for name in collector.names {
         if filtered.get(&name).is_some_and(|target| target == &name) {
             filtered.remove(&name);

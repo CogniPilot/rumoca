@@ -82,18 +82,19 @@ fn assert_string_conversion_round_trip(dae: &Dae) {
                  significantDigits = digits)"
             )
         );
-        assert!(matches!(
-            conversions[0].operation(),
+        match conversions[0].operation() {
             ExpressionOperation::StringConversion {
                 declaration: STRING_DECLARATION,
-                format: StringConversionFormatView::Options {
-                    minimum_length: Some(_),
-                    left_justified: Some(_),
-                    significant_digits: Some(_),
-                },
+                format:
+                    StringConversionFormatView::Options {
+                        minimum_length: Some(width),
+                        left_justified: Some(left),
+                        significant_digits: Some(digits),
+                    },
                 ..
-            }
-        ));
+            } => assert_eq!([width.index(), left.index(), digits.index()], [1, 2, 3]),
+            _ => panic!("the first conversion retains its three checked option identities"),
+        }
         assert_eq!(
             view.source_text(conversions[1].provenance()),
             Some("String(i, format = format)")

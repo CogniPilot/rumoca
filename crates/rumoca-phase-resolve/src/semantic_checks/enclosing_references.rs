@@ -19,7 +19,7 @@ pub(super) fn run_enclosing_reference_checks(tree: &ast::ClassTree) -> Vec<Diagn
         current_class_is_short: false,
         diagnostics: Vec::new(),
     };
-    let _ = visitor.visit_stored_definition(&tree.definitions);
+    let _visit_outcome = visitor.visit_stored_definition(&tree.definitions);
     visitor.diagnostics
 }
 

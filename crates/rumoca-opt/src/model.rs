@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::OptError;
 use indexmap::IndexSet;
 use rumoca_ir_dae as dae;
@@ -102,13 +104,15 @@ impl DifferentiableModel {
         sim_options: &SimOptions,
         opt_options: OptOptions,
     ) -> Result<Self, OptError> {
-        let solve_model =
-            rumoca_sim::lower_for_differentiation_with_overrides(dae_model, sim_options)?;
+        let solve_model = Arc::new(rumoca_sim::lower_for_differentiation_with_overrides(
+            dae_model,
+            sim_options,
+        )?);
         validate_sensitivity_artifacts(&solve_model)?;
-        let state = solve_model.initial_y[..solve_model.state_scalar_count()].to_vec();
-        let params = solve_model.parameters.clone();
+        let state = solve_model.initial_y()[..solve_model.state_scalar_count()].to_vec();
+        let params = solve_model.parameters().to_vec();
         let parameters = collect_model_parameter_slots(dae_model, &solve_model);
-        let runtime = rumoca_solver::SolveRuntime::new(&solve_model)?;
+        let runtime = rumoca_solver::SolveRuntime::new(solve_model)?;
         Ok(Self {
             runtime,
             state,
@@ -128,7 +132,7 @@ impl DifferentiableModel {
 
     /// State names in solver state order.
     pub fn state_names(&self) -> &[String] {
-        &self.runtime.model.problem.solve_layout.solver_maps.names[..self.runtime.state_count]
+        self.runtime.model().state_names()
     }
 
     /// Current state vector used for objective evaluation.
@@ -180,7 +184,7 @@ impl DifferentiableModel {
 
     /// True when reverse-mode derivative VJP is exact for this model.
     pub fn supports_rhs_reverse_vjp(&self) -> bool {
-        self.runtime.solver_count == self.runtime.state_count
+        self.runtime.solver_count() == self.runtime.state_count()
     }
 
     pub(crate) fn runtime(&self) -> &rumoca_solver::SolveRuntime {
@@ -216,8 +220,8 @@ fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptEr
         return Ok(());
     }
     if model
-        .artifacts
-        .continuous
+        .artifacts()
+        .continuous()
         .full_jacobian_v
         .programs()
         .is_empty()
@@ -228,8 +232,8 @@ fn validate_sensitivity_artifacts(model: &solve::SolveModel) -> Result<(), OptEr
     }
     if model.solver_scalar_count() > model.state_scalar_count()
         && model
-            .artifacts
-            .continuous
+            .artifacts()
+            .continuous()
             .implicit_jacobian_v_scalar
             .programs()
             .is_empty()
@@ -335,7 +339,8 @@ fn write_trainable_parameter_slots(
         let scalar_name = variable
             .scalar_name(scalar)
             .expect("checked parameter scalar has a name");
-        if let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(&scalar_name)
+        if let Some(solve::ScalarSlot::P { index, .. }) =
+            model.problem().layout().binding(&scalar_name)
             && !scalar_name.starts_with("__")
             && seen_slots.insert(index)
         {

@@ -18,7 +18,8 @@
 //! that needs an out-of-band compaction counter, which SPEC_0032 §1 permits and
 //! records as a follow-up; it must not come back as IR state.
 
-use super::homogeneous_family_tests::{assert_overlays_equivalent, instantiate};
+use super::homogeneous_family_tests::{assert_overlays_equivalent, instantiation_outcome};
+use crate::InstantiationOutcome;
 use crate::array_expansion::domain_probe_tuples;
 
 fn domain(uppers: &[i64]) -> rumoca_core::StructuredIndexDomain {
@@ -27,7 +28,8 @@ fn domain(uppers: &[i64]) -> rumoca_core::StructuredIndexDomain {
             .iter()
             .enumerate()
             .map(|(position, upper)| rumoca_core::StructuredIndexBinder {
-                id: position,
+                id: rumoca_core::StructuredIndexBinderId::from_ordinal(position)
+                    .expect("test structured-domain rank must fit its typed binder identity"),
                 display_name: format!("i{position}"),
                 lower: 1,
                 upper: *upper,
@@ -90,8 +92,23 @@ fn nested_class_modification_keeps_scalar_expansion() {
             Cell c[3](sub(R = 2.0));
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
     for index in 1..=3 {
         let path = format!("c[{index}].sub.R");
         let data = compact
@@ -122,8 +139,23 @@ fn component_reference_modifier_to_an_array_keeps_scalar_expansion() {
             Cell c[3](R = Rs);
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -154,8 +186,23 @@ fn scalar_component_reference_modifier_stays_compact() {
             Cell c[3](R = Rref);
         end Stack;
     ";
-    let compact = instantiate(SOURCE, "Stack", true);
-    assert_overlays_equivalent(&compact, &instantiate(SOURCE, "Stack", false));
+    let compact = match instantiation_outcome(SOURCE, "Stack", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    assert_overlays_equivalent(
+        &compact,
+        &match instantiation_outcome(SOURCE, "Stack", false) {
+            InstantiationOutcome::Success(overlay) => overlay,
+            InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+        },
+    );
     for index in 1..=3 {
         let path = format!("c[{index}].R");
         let data = compact
@@ -195,8 +242,20 @@ fn enclosing_scope_modification_compacts_exactly_as_scalar_expansion_does() {
             Stack s(c(R = {1.0, 2.0, 3.0}));
         end Top;
     ";
-    let compact = instantiate(SOURCE, "Top", true);
-    let scalar = instantiate(SOURCE, "Top", false);
+    let compact = match instantiation_outcome(SOURCE, "Top", true) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
+    let scalar = match instantiation_outcome(SOURCE, "Top", false) {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     assert_overlays_equivalent(&compact, &scalar);
     for index in 1..=3 {
         let path = format!("s.c[{index}].R");

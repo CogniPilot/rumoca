@@ -40,13 +40,10 @@
 //!
 //! # Where the ceilings are enforced
 //!
-//! The Solve-IR ceiling is enforced wherever the harness itself serializes
-//! Solve IR (`rumoca-sim-worker`, which measures on every run whether or not an
-//! artifact was requested) and, post hoc, over any Solve-IR artifact a lane
-//! wrote to disk. The persistent model-worker lane keeps Solve-IR artifacts off
-//! for speed, so there it is the on-disk check that is vacuous and the worker's
-//! own memory ceiling that bounds the model; the compile-wall ceiling applies to
-//! every lane because every lane reports `compile_seconds`.
+//! The current persistent model-worker lane keeps Solve-IR artifacts off for
+//! speed, so its on-disk ceiling check is vacuous; its own memory ceiling bounds
+//! the model. The compile-wall ceiling applies to every lane because every lane
+//! reports `compile_seconds`.
 
 use std::io::{self, Write};
 

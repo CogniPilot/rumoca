@@ -26,20 +26,35 @@ use rumoca_ir_flat as flat;
 
 /// Parse, resolve, instantiate and flatten `source`, returning the flat model.
 fn flatten_source(source: &str, model: &str) -> flat::Model {
+    try_flatten_source(source, model).expect("model flattens")
+}
+
+fn try_flatten_source(
+    source: &str,
+    model: &str,
+) -> Result<flat::Model, Box<rumoca_phase_flatten::FlattenError>> {
     let file_name = "<structural_integer_dimensions>";
     let stored = rumoca_phase_parse::parse_to_ast(source, file_name).expect("source parses");
     let mut tree = ast::ClassTree::from_parsed(stored);
     tree.source_map.add(file_name, source);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let instanced =
-        rumoca_phase_instantiate::instantiate(resolved, model).expect("model instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+    let overlay =
+        match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model) {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
         .expect("instanced model typechecks");
-    // `flatten_ref` (not `flatten`) is the entry the driver uses: it carries the
+    // `flatten_typed` mirrors the production driver entry: it carries the
     // simulated root name, which enclosing-class constant injection needs.
-    rumoca_phase_flatten::flatten_ref(&tree, &overlay, model).expect("model flattens")
+    rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+        .map_err(Box::new)
 }
 
 /// Resolved dimensions of the flat variable named `name`.
@@ -183,4 +198,55 @@ fn replicated_array_elements_keep_their_structural_integer() {
             "derived element bank[{index}] lost its structural integer `nout`"
         );
     }
+}
+
+const MIXED_RECORD_SHAPE: &str = r#"
+    package Lib
+        record Mixed
+            Real values[2, :] = {{1, 2}, {3, 4}};
+        end Mixed;
+
+        model Top
+            Mixed mixed[7];
+        end Top;
+    end Lib;
+"#;
+
+const CONFLICTING_MIXED_RECORD_SHAPE: &str = r#"
+    package Lib
+        record Mixed
+            Real values[3, :] = {{1, 2}, {3, 4}};
+        end Mixed;
+
+        model Top
+            Mixed mixed;
+        end Top;
+    end Lib;
+"#;
+
+#[test]
+fn mixed_explicit_and_colon_axes_survive_expanded_record_elements() {
+    let model = flatten_source(MIXED_RECORD_SHAPE, "Lib.Top");
+    for index in 1..=7 {
+        assert_eq!(
+            dims_of(&model, &format!("mixed[{index}].values")),
+            vec![2, 2]
+        );
+    }
+}
+
+#[test]
+fn mixed_explicit_axis_must_agree_with_the_binding_shape() {
+    let error = try_flatten_source(CONFLICTING_MIXED_RECORD_SHAPE, "Lib.Top")
+        .expect_err("an explicit axis cannot be overwritten by whole-binding inference");
+    assert!(matches!(
+        *error,
+        rumoca_phase_flatten::FlattenError::ConflictingComponentDimension {
+            name,
+            axis: 1,
+            admitted: 3,
+            inferred: 2,
+            span,
+        } if name == "mixed.values" && !span.is_dummy()
+    ));
 }

@@ -57,8 +57,6 @@
     let __r{{ op.dst }}: f64 = y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     let __r{{ op.dst }}: f64 = p[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}
-    let __r{{ op.dst }}: f64 = p[{{ op.base }} + __r{{ op.index_ref }}.round().clamp(0.0, {{ op.count - 1 if op.count > 0 else 0 }} as f64) as usize];
 {%- elif op.kind == "Move" %}
     let __r{{ op.dst }}: f64 = __r{{ op.src }};
 {%- elif op.kind == "LinearSolveComponent" %}

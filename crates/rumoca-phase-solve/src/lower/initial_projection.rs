@@ -45,72 +45,74 @@
 //! unbound `fixed = false` parameters — and the equations are the initialization
 //! rows (initial equations, initial-algorithm residuals, and the transferred
 //! §8.6 values `initial_pins` could only place beside another stated one).
+//! Squareness is enforced in both directions by the matching itself: every
+//! unknown must receive one owning row, and every mandatory row (an initial
+//! equation or initial-algorithm residual) must receive one unknown to
+//! determine, with the stated-value agreement checks a structural
+//! equality-class proof minted as the only optional rows. A mandatory row no
+//! assignment can cover is a second equation for already-determined values and
+//! refuses construction at its own provenance ([`unmatched_row_role`]).
 //!
-//! ## What is deliberately not an unknown, and what that costs
+//! ## What is refused rather than planned
 //!
-//! A row reaching a coordinate outside that space is left unplanned. It stays in
-//! the residual block, so the complete-residual test at the end of the projection
-//! still evaluates it — but *what that evaluation proves* differs by kind, and
-//! [`solve::InitializationRowRole`] carries the difference to the runtime so a
-//! failure names the right defect instead of the friendliest one.
+//! A row reaching a coordinate outside that space refuses Solve construction
+//! at the row's own provenance. No executable product retains an unowned row:
+//! the [`solve::InitializationRowRole`] vocabulary is closed over solved rows
+//! and stated-value checks, so "retained but unproven" is not a representable
+//! state, and the unowned classification survives only inside the construction
+//! error ([`ExcludedCoordinate`]). Each refusal names the capability that
+//! would admit the shape:
 //!
-//! **Algebraic and output reads fail closed until the reduced solve owns them.**
-//! The runtime reconstructs those coordinates before evaluating the complete
-//! initialization residual, so declaration seeds cannot certify a wrong initial
-//! state. The projection still cannot move an algebraic or account for its total
-//! derivative through the continuous system, so a row that needs that coupled
-//! capability remains typed as unowned rather than being admitted unsoundly.
-//! The two historical failure modes were:
+//! **Algebraic and output reads** need the reduced solve to own the coordinate
+//! and its total derivative through the simultaneous continuous system. Until
+//! that owner exists, every row that reads one is refused, and so is the §8.6
+//! equation of a `fixed = true` algebraic/output (`initial_pins`), whose exact
+//! transitive incidence is likewise not yet computed: admitting it with an
+//! assumed universal incidence let an unrelated fixed-algebraic row match a
+//! `fixed = false` parameter and silently retain that parameter's start guess
+//! as the answer. The historical silent failure in the row direction:
+//! `a = 2*time + 5; der(x) = a - x;` with `initial equation der(x) = 0`
+//! simulated `x(0) = 0` where OpenModelica gives `5`. The consistent
+//! `initial equation x = 5; x = a;` on the same model is refused too, an
+//! over-refusal against OMC accepted until the coupled owner exists.
 //!
-//! * `a = 2*time + 5; der(x) = a - x;` with `initial equation der(x) = 0`
-//!   *silently simulates* `x(0) = 0` where OpenModelica gives `5`: the seeds
-//!   cancel, so the check passes and the stated initial condition vanishes.
-//! * the consistent `initial equation x = 5; x = a;` on the same model is
-//!   *refused* on the stale seed (`EX001`) where OpenModelica initializes.
+//! **Discrete reads** are refused as a named over-refusal: the coordinate
+//! holds a settled §8.6 value when initialization runs, but the row has no way
+//! to solve for the continuous coordinate it also reads. `x + q = 5;
+//! x = d + 2;` with `d(start = 0, fixed = true)` is satisfiable at
+//! `x = 2, q = 3`, which OpenModelica returns; admitting it needs discretes in
+//! the unknown space's *determined* half, task #44's event-machinery
+//! territory.
 //!
-//! The evaluation-local refresh closes the false-certificate hole without
-//! claiming the larger capability. The owner that makes the shape fully solvable
-//! remains algebraic refresh joining the initialization solve — folded into the
-//! projection loop, or the algebraics carried as unknowns over their own
-//! continuous rows with a checked total derivative.
-//!
-//! **Discrete reads: the check is honest, and the refusal is an over-refusal.** A
-//! discrete coordinate *is* at its §8.6 value when the residual runs — the runtime
-//! seeds and settles the discrete values before `settle_initialization_system`. So
-//! the row checks a real number; it simply has no way to solve for the state it
-//! also reads. `x + q = 5; x = d + 2;` with `d(start = 0, fixed = true)` is
-//! satisfiable at `x = 2, q = 3`, which is what OpenModelica returns, and rumoca
-//! reports `EX001` instead. That is an over-refusal against OMC, not merely an
-//! unplanned row, and admitting it needs discretes in the unknown space's
-//! *determined* half — task #44's event-machinery territory.
-//!
-//! **Shapes this walk cannot read per scalar** — an array state, a multi-scalar
+//! **Shapes this walk cannot read per scalar** (an array state, a multi-scalar
 //! initialization row, a derivative whose defining row is a structured family
-//! point — disqualify the row rather than claiming a coordinate the walk cannot
-//! prove the row reads. `Real x[2]; initial equation x[1] = 3; x[2] = 4;` is
-//! therefore unplanned where OpenModelica initializes it.
+//! point) are refused rather than claiming a coordinate the walk cannot prove
+//! the row reads. `Real x[2]; initial equation x[1] = 3; x[2] = 4;` is
+//! therefore refused where OpenModelica initializes it.
 //!
-//! ## Two choices this phase makes that the model does not
+//! **A `fixed = true` state start that transitively reads a projection-owned
+//! parameter** is refused
+//! ([`reject_projection_dependent_fixed_starts`]): the seed is evaluated
+//! before the projection solves that parameter and nothing re-applies the
+//! state's §8.6 equation afterward, so the stated initial value would silently
+//! keep the pre-solve guess. A start over literals, constants, and bound
+//! parameters that reach no projection unknown stays admitted.
 //!
-//! **Which under-determined state keeps its guess.** For `x + y = 5` over two
-//! guessed states, one equation cannot fix two coordinates. OpenModelica warns
-//! ("The initial conditions are not fully specified") and keeps `x`, solving
-//! `y = 5`; this planner takes the first augmenting assignment in solver-slot
-//! order and keeps `y`, solving `x = 2`. Nothing in §8.6 picks between them,
-//! because the model states nothing about it. The choice is pinned by
-//! `an_under_determined_state_component_keeps_the_remaining_start_guesses` so it
-//! stays a recorded fact rather than drift.
+//! ## Numerical root selection after structural ownership
 //!
-//! **Which root of a nonlinear initialization block.** §8.6 says the `start` value
+//! §8.6 says the `start` value
 //! "is used as a guess value", and Newton from that guess converges to whichever
 //! root it is nearest: `q*q = 4` from `start = 3` gives `q = 2`, from `start = -3`
 //! it gives `q = -2`. Both satisfy the model, both are legal §8.6 answers, and the
 //! declared `start` is the only thing that decides — so a model that cares must
 //! say so with its `start`, and a comparison against another tool is a comparison
-//! of guesses as much as of equations.
+//! of guesses as much as of equations. That numerical choice is available only
+//! after structural matching proves that every initialization unknown has an
+//! owning equation. A guess never substitutes for a missing equation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use rumoca_core::{Fixity, Span};
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
@@ -122,11 +124,9 @@ use crate::layout::LoweredLayout;
 
 /// One coordinate the initialization projection may own.
 ///
-/// The ordering is the planner's priority as well as its determinism: a
-/// `fixed = false` parameter has no value at all without an initialization
-/// equation (MLS §8.6), while an unmatched state falls back to the guess its
-/// `start` carries. Matching the parameters first is what makes the augmenting
-/// search spend its rows on the coordinates that cannot do without one.
+/// The ordering makes structural matching deterministic. Both variants require
+/// a distinct owning equation; neither a parameter nor a state may retain its
+/// numerical start guess as a substitute for one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 enum InitialUnknown {
     /// A `fixed = false` parameter scalar, named by its P-slot index.
@@ -143,18 +143,14 @@ impl InitialUnknown {
             Self::State(index) => solve::scalar_slot_y(index),
         }
     }
-
-    const fn is_parameter(self) -> bool {
-        matches!(self, Self::Parameter(_))
-    }
 }
 
 /// What determines one state coordinate at the initialization instant.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum StateInitialOwner {
     /// The projection: the declaration states only a guess, so the
     /// initialization rows are what determine it. Carries its Y-slot index.
-    Projection(usize),
+    Projection(Vec<usize>),
     /// The declaration itself: MLS §8.6 turns a `fixed = true` start into the
     /// equation `vc = startExpression`, and the structural phase may also have
     /// proved another declaration's stated value *defines* this coordinate
@@ -170,6 +166,13 @@ pub(super) struct InitializationUnknownSpace<'a, 'dae> {
     ownership: &'a InitializationParameterOwnership<'dae>,
     derivatives: &'a DerivativeRowIndex<'dae>,
     states: HashMap<u32, StateInitialOwner>,
+    origins: BTreeMap<InitialUnknown, InitialUnknownOrigin<'dae>>,
+}
+
+#[derive(Clone, Copy)]
+struct InitialUnknownOrigin<'dae> {
+    variable: dae::VariableView<'dae>,
+    scalar: usize,
 }
 
 /// Everything the initialization unknown space is assembled from.
@@ -192,12 +195,99 @@ pub(super) fn initialization_unknown_space<'a, 'dae>(
         derivatives,
         pins,
     } = inputs;
+    let states = state_initial_owners(view, layout, pins)?;
+    let origins = initial_unknown_origins(view, ownership, &states)?;
+    reject_projection_dependent_fixed_starts(view, ownership)?;
     Ok(InitializationUnknownSpace {
         view,
         ownership,
         derivatives,
-        states: state_initial_owners(view, layout, pins)?,
+        states,
+        origins,
     })
+}
+
+/// Refuse a `fixed = true` state whose `start` transitively reads a
+/// projection-owned parameter.
+///
+/// MLS 3.6 §8.6 turns such a start into the equation `x = startExpression`,
+/// and the runtime answers it by evaluating the declaration seed once, before
+/// the projection runs. A start that reads a `fixed = false` parameter, either
+/// directly or through any chain of parameter bindings, is therefore evaluated
+/// at that parameter's *guess*: the projection later solves the parameter and
+/// nothing re-applies the state's equation, so the stated initial value would
+/// silently keep the pre-solve number. Until seed evaluation joins the
+/// initialization solve with a proved ordering, the shape is refused at the
+/// declaration. A start over literals, constants, and bound parameters whose
+/// closure reaches no projection unknown is a settled value and stays
+/// admitted.
+fn reject_projection_dependent_fixed_starts<'dae>(
+    view: dae::DaeView<'dae>,
+    ownership: &InitializationParameterOwnership<'dae>,
+) -> Result<(), LowerError> {
+    for (_, variable) in view.variables() {
+        if variable.role() != dae::VariableRole::State || variable.fixed() != Fixity::Fixed {
+            continue;
+        }
+        let Some(start) = variable.start() else {
+            continue;
+        };
+        let Some(dependency) = projection_dependent_parameter(view, ownership, start) else {
+            continue;
+        };
+        let parameter = view
+            .variable_id(dependency as usize)
+            .and_then(|id| view.variable(id))
+            .map(|parameter| parameter.name().to_string());
+        return Err(LowerError::non_computable(
+            format!(
+                "the `fixed = true` start of state `{}` transitively reads {}, whose value the \
+                 initialization system itself solves (a `fixed = false` parameter, or a \
+                 parameter bound to one; MLS 3.6 §8.6); the seed would be evaluated at the \
+                 pre-solve guess and never re-applied after the solve, so the stated initial \
+                 value cannot be honored and the model is refused",
+                variable.name(),
+                match parameter {
+                    Some(name) => format!("`{name}`"),
+                    None => format!("parameter {dependency}"),
+                },
+            ),
+            variable.declaration().span(),
+        ));
+    }
+    Ok(())
+}
+
+/// The first parameter in one expression whose value the projection determines.
+///
+/// [`InitializationParameterOwnership`] has already computed the transitive
+/// closure this test needs: a parameter is projection-dependent exactly when
+/// the projection owns its slots directly, or when it is a bound dependent,
+/// which is precisely the parameters `substitution` carries a binding for.
+fn projection_dependent_parameter<'dae>(
+    view: dae::DaeView<'dae>,
+    ownership: &InitializationParameterOwnership<'dae>,
+    root: dae::ExprId<'dae>,
+) -> Option<u32> {
+    let mut found: Option<u32> = None;
+    dae::for_each_expression(view, root, |_, node| {
+        if found.is_some() {
+            return;
+        }
+        let dae::ExpressionOperation::Coordinate(dae::CoordinateView::Parameter(parameter)) =
+            node.operation()
+        else {
+            return;
+        };
+        if ownership
+            .projection_unknown_slots(parameter.index())
+            .is_some()
+            || ownership.substitution(parameter.index()).is_some()
+        {
+            found = Some(parameter.index());
+        }
+    });
+    found
 }
 
 impl<'dae> InitializationUnknownSpace<'_, 'dae> {
@@ -210,15 +300,76 @@ impl<'dae> InitializationUnknownSpace<'_, 'dae> {
     }
 
     fn all_projection_unknowns(&self) -> BTreeSet<InitialUnknown> {
-        self.ownership
-            .all_projection_unknown_slots()
-            .map(InitialUnknown::Parameter)
-            .chain(self.states.values().filter_map(|owner| match owner {
-                StateInitialOwner::Projection(index) => Some(InitialUnknown::State(*index)),
-                StateInitialOwner::Stated => None,
-            }))
-            .collect()
+        self.origins.keys().copied().collect()
     }
+
+    fn unmatched_error(
+        &self,
+        unknown: InitialUnknown,
+        source_rows: usize,
+        usable_rows: usize,
+        component_rows: usize,
+        component_unknowns: usize,
+    ) -> LowerError {
+        let Some(origin) = self.origins.get(&unknown).copied() else {
+            return LowerError::unspanned_non_computable(format!(
+                "initialization matching produced an unknown without construction provenance: \
+                 {unknown:?}"
+            ));
+        };
+        let name = match origin.variable.scalar_name(origin.scalar) {
+            Some(name) => name,
+            None => origin.variable.name().to_string(),
+        };
+        LowerError::non_computable(
+            format!(
+                "initialization cannot issue executable Solve IR: unknown `{name}` has no \
+                 distinct owning equation; structural matching found {component_rows} usable \
+                 row(s) for {component_unknowns} unknown coordinate(s) in its component \
+                 ({usable_rows} usable row(s) among {source_rows} initialization row(s) for {} \
+                 unknown coordinate(s) model-wide); a `start` value with `fixed = false` is a \
+                 numerical guess, not an equation",
+                self.origins.len(),
+            ),
+            origin.variable.declaration().span(),
+        )
+    }
+}
+
+fn initial_unknown_origins<'dae>(
+    view: dae::DaeView<'dae>,
+    ownership: &InitializationParameterOwnership<'dae>,
+    states: &HashMap<u32, StateInitialOwner>,
+) -> Result<BTreeMap<InitialUnknown, InitialUnknownOrigin<'dae>>, LowerError> {
+    let mut origins = BTreeMap::new();
+    for (id, variable) in view.variables() {
+        let unknowns: Vec<InitialUnknown> = match variable.role() {
+            dae::VariableRole::Parameter => ownership
+                .projection_unknown_slots(id.index())
+                .into_iter()
+                .flatten()
+                .copied()
+                .map(InitialUnknown::Parameter)
+                .collect(),
+            dae::VariableRole::State => match states.get(&id.index()) {
+                Some(StateInitialOwner::Projection(indices)) => {
+                    indices.iter().copied().map(InitialUnknown::State).collect()
+                }
+                Some(StateInitialOwner::Stated) | None => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        for (scalar, unknown) in unknowns.into_iter().enumerate() {
+            let previous = origins.insert(unknown, InitialUnknownOrigin { variable, scalar });
+            if previous.is_some() {
+                return Err(LowerError::contract(
+                    format!("initialization unknown slot {unknown:?} has multiple declarations"),
+                    variable.declaration().span(),
+                ));
+            }
+        }
+    }
+    Ok(origins)
 }
 
 /// Who determines each state coordinate, keyed by variable index.
@@ -242,23 +393,37 @@ fn state_initial_owners(
             continue;
         }
         let span = variable.declaration().span();
-        if variable.fixed() == Some(true) || defined.contains(&id.index()) {
+        if variable.fixed() == Fixity::Fixed || defined.contains(&id.index()) {
             owners.insert(id.index(), StateInitialOwner::Stated);
             continue;
         }
-        if variable.scalar_count() != 1 {
-            continue;
+        let mut indices = Vec::with_capacity(variable.scalar_count());
+        for scalar in 0..variable.scalar_count() {
+            let solve::ScalarSlot::Y { index, .. } =
+                variable_scalar_slot(layout, id.index(), scalar, span)?
+            else {
+                return Err(LowerError::contract(
+                    format!("state `{}` does not occupy solver storage", variable.name()),
+                    span,
+                ));
+            };
+            indices.push(index);
         }
-        let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(layout, id.index(), 0, span)?
-        else {
-            return Err(LowerError::contract(
-                format!("state `{}` does not occupy solver storage", variable.name()),
-                span,
-            ));
-        };
-        owners.insert(id.index(), StateInitialOwner::Projection(index));
+        if !indices.is_empty() {
+            owners.insert(id.index(), StateInitialOwner::Projection(indices));
+        }
     }
     Ok(owners)
+}
+
+/// One initialization row as the planner sees it: what it reads, and where in
+/// the source it came from.
+///
+/// The span is the row's own provenance, so a refusal names the equation or
+/// declaration that overdetermines the system rather than the whole model.
+pub(super) struct InitialRow<'dae> {
+    pub(super) incidence: InitialRowIncidence<'dae>,
+    pub(super) span: Span,
 }
 
 /// Where one initialization row's coordinate incidence is read from.
@@ -286,12 +451,6 @@ pub(super) enum InitialRowIncidence<'dae> {
     /// `Check` that failed to converge is therefore two declarations contradicting
     /// each other, not a coordinate nothing solved.
     CarriedValue(Vec<dae::ExprId<'dae>>),
-    /// A fixed algebraic/output checked after solving the simultaneous
-    /// continuous algebraic system. Its exact total incidence is implicit in
-    /// that solve, so it conservatively joins every initialization unknown;
-    /// zero numerical sensitivity can make the block fail, never certify a
-    /// wrong value.
-    ImplicitAlgebraic,
 }
 
 pub(super) struct InitialProjection {
@@ -304,22 +463,20 @@ pub(super) struct InitialProjection {
 /// Plan the initialization unknowns the initialization system itself determines.
 ///
 /// A block the runtime can solve has one equation per unknown, and the matching
-/// is what names those equations. A component with rows to spare is legal — MLS
-/// §8.6 lets a coordinate be determined by a declaration *and* be read by another
-/// initialization equation — so a surplus row whose every unknown some other row
-/// matched stays a consistency check the complete-residual test still has to
-/// satisfy. That reading holds only for such a row, and the module header records
-/// what an *unplanned* row's residual does and does not prove; every row is
-/// labelled with which case it is so the runtime never has to guess.
+/// is what names those equations. The pairing is a constrained bijection: every
+/// projection unknown gets exactly one owning row, and every mandatory row (an
+/// initial equation or initial-algorithm residual) gets exactly one unknown to
+/// determine, with the stated-value checks a structural proof minted as the
+/// only rows the matching may leave out ([`match_component`]). A mandatory row
+/// no assignment can cover is refused as overdetermination at its own
+/// provenance ([`overdetermined_row`]), a row that reads a coordinate the
+/// projection cannot own is refused with the capability that would admit it
+/// ([`unowned_row_error`]), and an unknown no row can determine is refused at
+/// its declaration.
 ///
-/// A component whose rows cannot cover every unknown is under-determined, and the
-/// two kinds of unknown answer that differently. A state falls back to the guess
-/// its `start` carries, which is the §8.6 default-`fixed` reading and the same
-/// value the runtime already seeds, so the rest of the component is still planned
-/// around it. A `fixed = false` parameter has no such fallback — §8.6 says "there
-/// must be additional equations for them" — so a component that cannot determine
-/// one is left entirely unplanned, keeping the typed residual failure rather than
-/// silently shipping the parameter's guess as its value.
+/// A component whose rows cannot cover every unknown is not executable. Solve
+/// construction rejects it here, before any start guess can become a selected
+/// answer and before runtime receives an incomplete projection plan.
 ///
 /// The matching is structural, so it is rank-blind: it takes the first augmenting
 /// assignment, which can pick a block whose Jacobian is numerically singular while
@@ -329,33 +486,60 @@ pub(super) struct InitialProjection {
 /// left implied.
 pub(super) fn plan_initialization_projection<'dae>(
     space: &InitializationUnknownSpace<'_, 'dae>,
-    rows: &[InitialRowIncidence<'dae>],
-) -> InitialProjection {
-    // Every row starts as a check between values the rest of the system fixed,
-    // and is downgraded or promoted below by what the walk and the matching find.
-    let mut row_roles = vec![solve::InitializationRowRole::SurplusCheck; rows.len()];
-    let mut incidence: Vec<(usize, BTreeSet<InitialUnknown>)> = Vec::new();
+    rows: &[InitialRow<'dae>],
+) -> Result<InitialProjection, LowerError> {
+    // No row holds a role until this planner proves one: a role is the outcome
+    // of the matching or the stated-value check a structural proof minted.
+    // There is no default role, and a row the walk cannot own is refused right
+    // here rather than typed.
+    let mut row_roles: Vec<Option<solve::InitializationRowRole>> = vec![None; rows.len()];
+    let mut incidence: Vec<IncidentRow> = Vec::new();
     for (row, source) in rows.iter().enumerate() {
-        match row_unknowns(space, source) {
+        match row_unknowns(space, &source.incidence) {
             RowIncidence::Owned(unknowns) if !unknowns.is_empty() => {
-                incidence.push((row, unknowns));
+                incidence.push(IncidentRow {
+                    row,
+                    mandatory: !matches!(source.incidence, InitialRowIncidence::CarriedValue(_)),
+                    unknowns,
+                });
             }
-            // Nothing this row reads is an unknown: it is exactly the §8.6
-            // consistency check the default role already names.
-            RowIncidence::Owned(_) => {}
+            // Nothing this row reads is an unknown, so no matching can ever
+            // pair it: it stands or is refused as an unmatched row right here.
+            RowIncidence::Owned(_) => {
+                row_roles[row] = Some(unmatched_row_role(source)?);
+            }
             RowIncidence::Unowned(kind) => {
-                row_roles[row] = solve::InitializationRowRole::UnownedCoordinate(kind);
+                return Err(unowned_row_error(kind, source.span));
             }
         }
+    }
+    let all_unknowns = space.all_projection_unknowns();
+    let incident_unknowns: BTreeSet<InitialUnknown> = incidence
+        .iter()
+        .flat_map(|entry| entry.unknowns.iter().copied())
+        .collect();
+    if let Some(unmatched) = all_unknowns.difference(&incident_unknowns).next().copied() {
+        return Err(space.unmatched_error(unmatched, rows.len(), incidence.len(), 0, 1));
     }
     let mut blocks = Vec::new();
     let mut unknowns = Vec::new();
     for component in connected_components(&incidence) {
-        let matched = match_component(&component).unwrap_or_default();
-        record_component_roles(&component, &matched, &mut row_roles);
-        if matched.is_empty() {
-            continue;
-        }
+        let matched = match match_component(&component) {
+            Ok(matched) => matched,
+            Err(UnmatchedEntity::Row(row)) => {
+                return Err(overdetermined_row(&rows[row]));
+            }
+            Err(UnmatchedEntity::Unknown(unmatched)) => {
+                return Err(space.unmatched_error(
+                    unmatched,
+                    rows.len(),
+                    incidence.len(),
+                    component.rows.len(),
+                    component.unknowns.len(),
+                ));
+            }
+        };
+        record_component_roles(&component, &matched, rows, &mut row_roles)?;
         let mut block_rows = Vec::with_capacity(matched.len());
         let mut block_unknowns = Vec::with_capacity(matched.len());
         for (row, unknown) in matched {
@@ -368,56 +552,122 @@ pub(super) fn plan_initialization_projection<'dae>(
             unknowns: block_unknowns,
         });
     }
-    for (row, source) in rows.iter().enumerate() {
-        if !matches!(source, InitialRowIncidence::ImplicitAlgebraic) {
-            continue;
-        }
-        row_roles[row] = match row_roles[row] {
-            solve::InitializationRowRole::Solved => {
-                solve::InitializationRowRole::SolvedThroughAlgebraicRefresh
-            }
-            solve::InitializationRowRole::SurplusCheck => {
-                solve::InitializationRowRole::SurplusAlgebraicCheck
-            }
-            role => role,
-        };
-    }
-    InitialProjection {
+    let row_roles = complete_row_roles(row_roles, rows)?;
+    Ok(InitialProjection {
         unknowns,
         plan: solve::InitializationProjectionPlan { blocks },
         row_roles,
+    })
+}
+
+/// Require the planner to have decided every row, so no role arrives by
+/// omission.
+///
+/// Every surviving row takes its role in exactly one place: the incidence loop
+/// decides rows with nothing left to determine, and [`record_component_roles`]
+/// decides every row of every component; rows the planner cannot own were
+/// already refused. A `None` left here is a planner defect, and it is refused
+/// rather than papered over with a role the planner never proved.
+fn complete_row_roles(
+    roles: Vec<Option<solve::InitializationRowRole>>,
+    rows: &[InitialRow<'_>],
+) -> Result<Vec<solve::InitializationRowRole>, LowerError> {
+    roles
+        .into_iter()
+        .enumerate()
+        .map(|(row, role)| match role {
+            Some(role) => Ok(role),
+            None => Err(LowerError::contract(
+                format!("initialization planning decided no role for residual row {row}"),
+                rows[row].span,
+            )),
+        })
+        .collect()
+}
+
+/// The only role an unmatched row may hold, or the refusal that names it.
+///
+/// A carried stated value is the one legitimate unmatched row: the structural
+/// phase minted it as a numeric agreement test between two declarations that
+/// state one coordinate's initial value (`initial_pins::class_pins` emits a
+/// `Check` only when `stated_agreement` is `Undecided`), so it restates a §8.6
+/// equation another declaration already contributes rather than adding one. The
+/// two stated values may still read parameters, so whether they coincide is a
+/// question the initialization instant answers with numbers.
+///
+/// Every other row is a mandatory initialization equation, and one the
+/// matching pairs with no unknown makes the §8.6 system overdetermined
+/// ([`overdetermined_row`]).
+fn unmatched_row_role(row: &InitialRow<'_>) -> Result<solve::InitializationRowRole, LowerError> {
+    match row.incidence {
+        InitialRowIncidence::CarriedValue(_) => Ok(solve::InitializationRowRole::StatedValueCheck),
+        InitialRowIncidence::Residual(_) | InitialRowIncidence::Opaque => {
+            Err(overdetermined_row(row))
+        }
     }
+}
+
+/// Refuse one mandatory initialization row left without an unknown to
+/// determine.
+///
+/// The row is a second equation for values other owners already fix: every
+/// coordinate it reads is determined by a `fixed = true` start, a binding, or
+/// another initialization row, or is claimed by the other rows of its
+/// component under every possible assignment. That makes the §8.6 system
+/// overdetermined, and it is refused here, at the row's own provenance, before
+/// it can reach the runtime as a residual no block owns.
+fn overdetermined_row(row: &InitialRow<'_>) -> LowerError {
+    LowerError::non_computable(
+        "initialization is overdetermined (MLS 3.6 §8.6): this initialization row has no \
+         unknown coordinate left to determine; every coordinate it reads is either determined \
+         by a `fixed = true` start, a binding, or another initialization row, or is claimed by \
+         the other initialization rows under every assignment, so the row is a second equation \
+         for already-determined values and cannot issue executable Solve IR",
+        row.span,
+    )
+}
+
+/// Refuse one initialization row that reads a coordinate the reduced
+/// projection cannot own.
+///
+/// The unowned classification survives only inside this construction error:
+/// the executable role vocabulary has no variant for a retained-but-unproven
+/// row, so the refusal happens at the row's own provenance and names the
+/// capability that would admit the shape (module header).
+fn unowned_row_error(kind: ExcludedCoordinate, span: Span) -> LowerError {
+    LowerError::non_computable(
+        format!(
+            "initialization cannot issue executable Solve IR: this initialization row reads {}, \
+             so the reduced initialization projection cannot own the row, and no executable \
+             product retains a row nothing proves",
+            kind.description(),
+        ),
+        span,
+    )
 }
 
 /// Say, per row of one component, what the projection ended up doing with it.
 ///
-/// A matched row is solved. An unmatched row is a *surplus check* only when every
-/// unknown it reads was matched by some other row — then the value it checks is
-/// one the block determined, which is the §8.6 shape that legitimately has more
-/// equations than unknowns. An unmatched row that still reads an unmatched
-/// coordinate is checking a number nothing solved, and saying "surplus check"
-/// about it would name the wrong defect.
+/// A matched row is solved. Reaching this function at all means
+/// [`match_component`] covered every unknown and every mandatory row of the
+/// component, so an unmatched row is always an optional carried stated value,
+/// and [`unmatched_row_role`] types it as the stated-value check; its `Err`
+/// arm survives only as defense against a matcher that broke that contract.
 fn record_component_roles(
     component: &ProjectionComponent,
     matched: &[(usize, InitialUnknown)],
-    row_roles: &mut [solve::InitializationRowRole],
-) {
+    rows: &[InitialRow<'_>],
+    row_roles: &mut [Option<solve::InitializationRowRole>],
+) -> Result<(), LowerError> {
     let solved_rows: BTreeSet<usize> = matched.iter().map(|(row, _)| *row).collect();
-    let solved_unknowns: BTreeSet<InitialUnknown> =
-        matched.iter().map(|(_, unknown)| *unknown).collect();
-    for (position, row) in component.rows.iter().copied().enumerate() {
-        if solved_rows.contains(&row) {
-            row_roles[row] = solve::InitializationRowRole::Solved;
-            continue;
-        }
-        if component.row_unknowns[position].is_subset(&solved_unknowns) {
-            row_roles[row] = solve::InitializationRowRole::SurplusCheck;
-            continue;
-        }
-        row_roles[row] = solve::InitializationRowRole::UnownedCoordinate(
-            solve::InitializationCoordinateKind::Unmatched,
-        );
+    for row in component.rows.iter().copied() {
+        row_roles[row] = Some(if solved_rows.contains(&row) {
+            solve::InitializationRowRole::Solved
+        } else {
+            unmatched_row_role(&rows[row])?
+        });
     }
+    Ok(())
 }
 
 /// The projection coordinates a row reads, or `None` when it also reads a
@@ -433,13 +683,10 @@ fn row_unknowns<'dae>(
 ) -> RowIncidence {
     let pending = match row {
         InitialRowIncidence::Opaque => {
-            return RowIncidence::Unowned(solve::InitializationCoordinateKind::Unreadable);
+            return RowIncidence::Unowned(ExcludedCoordinate::Unreadable);
         }
         InitialRowIncidence::Residual(residual) => vec![*residual],
         InitialRowIncidence::CarriedValue(terms) => terms.clone(),
-        InitialRowIncidence::ImplicitAlgebraic => {
-            return RowIncidence::Owned(space.all_projection_unknowns());
-        }
     };
     let mut incidence = InitialIncidence {
         unknowns: BTreeSet::new(),
@@ -448,14 +695,12 @@ fn row_unknowns<'dae>(
         expanded: BTreeSet::new(),
         pending,
     };
-    // One coordinate the projection cannot own already disqualifies the row, but
-    // *which* one decides what the runtime is told, and the algebraic reading is
+    // One coordinate the projection cannot own already refuses the row, but
+    // *which* one decides what the refusal names, and the algebraic reading is
     // the one worth reporting (see the module header). So the walk keeps going
     // until it has found an algebraic or run out of expressions to expand.
-    while !matches!(
-        incidence.excluded,
-        Some(solve::InitializationCoordinateKind::Algebraic)
-    ) && let Some(expression) = incidence.pending.pop()
+    while !matches!(incidence.excluded, Some(ExcludedCoordinate::Algebraic))
+        && let Some(expression) = incidence.pending.pop()
     {
         dae::for_each_expression(space.view, expression, |_, node| {
             let dae::ExpressionOperation::Coordinate(coordinate) = node.operation() else {
@@ -475,30 +720,65 @@ enum RowIncidence {
     /// The projection coordinates the row reads. May be empty: the row is then a
     /// check over coordinates the initialization instant has already determined.
     Owned(BTreeSet<InitialUnknown>),
-    /// The row reads a coordinate outside the planned unknown space, of this kind.
-    Unowned(solve::InitializationCoordinateKind),
+    /// The row reads a coordinate outside the planned unknown space, of this
+    /// kind, so the row refuses Solve construction.
+    Unowned(ExcludedCoordinate),
 }
 
-/// How loudly one exclusion kind deserves to be reported, largest first.
+/// Why one initialization row cannot join the planned unknown space.
 ///
-/// An algebraic read outranks the rest because it is the only kind whose residual
-/// says nothing either way — the others leave a row the runtime still checks
-/// against a determined value. Ranking also keeps the reported kind deterministic
-/// when a row reaches several, since the expression walk order is.
-const fn exclusion_rank(kind: solve::InitializationCoordinateKind) -> u8 {
-    match kind {
-        solve::InitializationCoordinateKind::Algebraic => 4,
-        solve::InitializationCoordinateKind::Discrete => 3,
-        solve::InitializationCoordinateKind::Unreadable => 2,
-        solve::InitializationCoordinateKind::Other => 1,
-        solve::InitializationCoordinateKind::Unmatched => 0,
+/// This classification survives only inside the construction error the planner
+/// refuses the row with; executable Solve IR has no representation for an
+/// unowned row. The rank orders how loudly a kind deserves to be reported: an
+/// algebraic read outranks the rest because it names the missing reduced-solve
+/// capability, and ranking keeps the reported kind deterministic when a row
+/// reaches several, since the expression walk order is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExcludedCoordinate {
+    Algebraic,
+    Discrete,
+    Unreadable,
+    Other,
+}
+
+impl ExcludedCoordinate {
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Algebraic => 3,
+            Self::Discrete => 2,
+            Self::Unreadable => 1,
+            Self::Other => 0,
+        }
+    }
+
+    const fn description(self) -> &'static str {
+        match self {
+            Self::Algebraic => {
+                "a continuous algebraic/output coordinate, whose simultaneous dependency and \
+                 total derivative through the continuous system the reduced initialization \
+                 projection does not yet own"
+            }
+            Self::Discrete => {
+                "a discrete-time coordinate or its `pre` value, which the initialization \
+                 projection cannot solve a continuous coordinate through"
+            }
+            Self::Unreadable => {
+                "a coordinate this lowering cannot read per scalar (an array state, an array \
+                 `fixed = false` parameter awaiting subscript-aware incidence, a multi-scalar \
+                 row, or a structured family point)"
+            }
+            Self::Other => {
+                "a coordinate outside the planned initialization unknown space (an input, a \
+                 delay, a `previous`, a relation memory, or a terminal)"
+            }
+        }
     }
 }
 
 /// The projection unknowns one initialization residual program reaches.
 struct InitialIncidence<'dae> {
     unknowns: BTreeSet<InitialUnknown>,
-    excluded: Option<solve::InitializationCoordinateKind>,
+    excluded: Option<ExcludedCoordinate>,
     /// Parameter bindings already followed, so a diamond is walked once.
     substituted: BTreeSet<u32>,
     /// State derivatives already followed, so a derivative that reads itself
@@ -522,7 +802,7 @@ impl<'dae> InitialIncidence<'dae> {
             // differentiate through or solve the simultaneous continuous
             // system, so the row remains outside the admitted reduced solve.
             dae::CoordinateView::Algebraic(_) => {
-                self.exclude(solve::InitializationCoordinateKind::Algebraic);
+                self.exclude(ExcludedCoordinate::Algebraic);
             }
             dae::CoordinateView::DiscreteReal(_)
             | dae::CoordinateView::DiscreteValue(_)
@@ -533,26 +813,23 @@ impl<'dae> InitialIncidence<'dae> {
             // the continuous coordinate it names. Grouping it here rather than
             // leaving it to the `_` arm below is the same planning outcome —
             // both exclude the row — and only changes the reported exclusion
-            // kind, which `exclusion_rank` ranks Discrete above Other.
+            // kind, which the exclusion rank orders Discrete above Other.
             | dae::CoordinateView::PreState(_)
             | dae::CoordinateView::PreAlgebraic(_) => {
-                self.exclude(solve::InitializationCoordinateKind::Discrete);
+                self.exclude(ExcludedCoordinate::Discrete);
             }
             // A domain binder and a clock interval are compile-time constants, and
             // `time` is the known initialization instant.
             dae::CoordinateView::Time
             | dae::CoordinateView::ClockInterval(_)
             | dae::CoordinateView::Binder(_) => {}
-            _ => self.exclude(solve::InitializationCoordinateKind::Other),
+            _ => self.exclude(ExcludedCoordinate::Other),
         }
     }
 
     /// Record why the row cannot be planned, keeping the loudest reason found.
-    fn exclude(&mut self, kind: solve::InitializationCoordinateKind) {
-        if self
-            .excluded
-            .is_none_or(|held| exclusion_rank(kind) > exclusion_rank(held))
-        {
+    fn exclude(&mut self, kind: ExcludedCoordinate) {
+        if self.excluded.is_none_or(|held| kind.rank() > held.rank()) {
             self.excluded = Some(kind);
         }
     }
@@ -563,8 +840,21 @@ impl<'dae> InitialIncidence<'dae> {
         parameter: dae::ParameterId<'dae>,
     ) {
         if let Some(indices) = space.ownership.projection_unknown_slots(parameter.index()) {
-            self.unknowns
-                .extend(indices.iter().copied().map(InitialUnknown::Parameter));
+            // A whole-expression walk cannot tell which scalar of an array
+            // parameter one occurrence reads. Claiming every scalar for every
+            // occurrence let two rows that both read `p[1]` appear to cover
+            // `p[1]` and `p[2]` between them, so the matching believed an
+            // unknown was determined when nothing read it. Until
+            // subscript-aware scalar incidence exists, only a one-scalar
+            // projection-owned parameter is readable; an array occurrence
+            // refuses the row instead (the same fail-closed shape as the
+            // multi-scalar state arm below).
+            match indices {
+                [index] => {
+                    self.unknowns.insert(InitialUnknown::Parameter(*index));
+                }
+                _ => self.exclude(ExcludedCoordinate::Unreadable),
+            }
             return;
         }
         if let Some(binding) = space.ownership.substitution(parameter.index())
@@ -580,12 +870,15 @@ impl<'dae> InitialIncidence<'dae> {
         state: dae::StateId<'dae>,
     ) {
         match space.states.get(&state.index()) {
-            Some(StateInitialOwner::Projection(index)) => {
-                self.unknowns.insert(InitialUnknown::State(*index));
+            Some(StateInitialOwner::Projection(indices)) if indices.len() == 1 => {
+                self.unknowns.insert(InitialUnknown::State(indices[0]));
             }
             // A stated value is a number the row may read, not an unknown.
+            Some(StateInitialOwner::Projection(_)) => {
+                self.exclude(ExcludedCoordinate::Unreadable);
+            }
             Some(StateInitialOwner::Stated) => {}
-            None => self.exclude(solve::InitializationCoordinateKind::Unreadable),
+            None => self.exclude(ExcludedCoordinate::Unreadable),
         }
     }
 
@@ -604,11 +897,11 @@ impl<'dae> InitialIncidence<'dae> {
             .variable(state.into())
             .map(dae::VariableView::scalar_count);
         if scalar != Some(1) {
-            self.exclude(solve::InitializationCoordinateKind::Unreadable);
+            self.exclude(ExcludedCoordinate::Unreadable);
             return;
         }
         let Some(definition) = space.derivatives.definition(state, 0) else {
-            self.exclude(solve::InitializationCoordinateKind::Other);
+            self.exclude(ExcludedCoordinate::Other);
             return;
         };
         // A family point carries binder values this walk does not substitute, and
@@ -616,7 +909,7 @@ impl<'dae> InitialIncidence<'dae> {
         // expression, so neither can be read per scalar.
         if definition.domain_point.is_some() || scalar_count(space.view, definition.expression) != 1
         {
-            self.exclude(solve::InitializationCoordinateKind::Unreadable);
+            self.exclude(ExcludedCoordinate::Unreadable);
             return;
         }
         if self.expanded.insert(state.index()) {
@@ -625,16 +918,21 @@ impl<'dae> InitialIncidence<'dae> {
     }
 }
 
-/// Assign each unknown of a component a distinct row that reads it.
+/// Assign rows to unknowns so that every unknown and every mandatory row is
+/// covered.
 ///
-/// Returns the matched `(row, unknown)` pairs, or `None` when a `fixed = false`
-/// parameter of the component is left without one. This is the Hungarian
-/// augmenting-path search over the row/unknown bipartite graph: each round either
-/// matches the next unknown to a free row or reroutes an already-matched row to
-/// make one free, and an unknown that neither reaches is one no row can determine.
-/// Augmenting never un-matches an unknown, so running the parameters first (their
-/// `InitialUnknown` ordering) guarantees the maximum number of them is covered.
-fn match_component(component: &ProjectionComponent) -> Option<Vec<(usize, InitialUnknown)>> {
+/// Two greedy phases of Kuhn's augmenting-path search over the row/unknown
+/// bipartite graph. Phase one augments from each mandatory row in row order:
+/// the simultaneously matchable row sets form a transversal matroid, so a
+/// mandatory row with no augmenting path proves no assignment covers every
+/// mandatory row, and the first such row is the refusal. Phase two augments
+/// from each still-free unknown over every row, the optional stated-value
+/// checks included. Augmenting reroutes but never unmatches a matched vertex
+/// on either side, so the phase-one cover survives phase two, and an optional
+/// row joins the plan only when some unknown has no other owner.
+fn match_component(
+    component: &ProjectionComponent,
+) -> Result<Vec<(usize, InitialUnknown)>, UnmatchedEntity> {
     let row_count = component.rows.len();
     let unknown_count = component.unknowns.len();
     let position: HashMap<InitialUnknown, usize> = component
@@ -643,11 +941,13 @@ fn match_component(component: &ProjectionComponent) -> Option<Vec<(usize, Initia
         .enumerate()
         .map(|(position, unknown)| (*unknown, position))
         .collect();
-    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); unknown_count];
+    let mut rows_of_unknown: Vec<Vec<usize>> = vec![Vec::new(); unknown_count];
+    let mut unknowns_of_row: Vec<Vec<usize>> = vec![Vec::new(); row_count];
     for (row, unknowns) in component.row_unknowns.iter().enumerate() {
         for unknown in unknowns {
             if let Some(unknown) = position.get(unknown) {
-                adjacency[*unknown].push(row);
+                rows_of_unknown[*unknown].push(row);
+                unknowns_of_row[row].push(*unknown);
             }
         }
     }
@@ -655,21 +955,35 @@ fn match_component(component: &ProjectionComponent) -> Option<Vec<(usize, Initia
         row_of_unknown: vec![None; unknown_count],
         unknown_of_row: vec![None; row_count],
     };
-    for start in 0..unknown_count {
-        if !matching.augment_from(start, &adjacency) && component.unknowns[start].is_parameter() {
-            return None;
+    for row in 0..row_count {
+        if component.mandatory[row]
+            && !matching.augment_row(row, &unknowns_of_row, &mut vec![false; unknown_count])
+        {
+            return Err(UnmatchedEntity::Row(component.rows[row]));
         }
     }
-    Some(
-        matching
-            .row_of_unknown
-            .iter()
-            .enumerate()
-            .filter_map(|(unknown, row)| {
-                Some((component.rows[(*row)?], component.unknowns[unknown]))
-            })
-            .collect(),
-    )
+    for unknown in 0..unknown_count {
+        if matching.row_of_unknown[unknown].is_none()
+            && !matching.augment_unknown(unknown, &rows_of_unknown, &mut vec![false; row_count])
+        {
+            return Err(UnmatchedEntity::Unknown(component.unknowns[unknown]));
+        }
+    }
+    Ok(matching
+        .row_of_unknown
+        .iter()
+        .enumerate()
+        .filter_map(|(unknown, row)| Some((component.rows[(*row)?], component.unknowns[unknown])))
+        .collect())
+}
+
+/// Which side of the row/unknown matching could not be covered.
+enum UnmatchedEntity {
+    /// A mandatory row, by model-level equation index, that no assignment can
+    /// give an unknown to determine.
+    Row(usize),
+    /// An unknown no row can determine.
+    Unknown(InitialUnknown),
 }
 
 /// A partial assignment of component rows to the unknowns they determine.
@@ -679,86 +993,78 @@ struct RowUnknownMatching {
 }
 
 impl RowUnknownMatching {
-    /// Grow the matching by one, starting the alternating search at `start`.
+    /// Give `row` an unknown, rerouting matched rows onto alternatives.
     ///
-    /// Returns whether an augmenting path was found. `adjacency` lists, per
-    /// unknown, the component-local rows that read it.
-    fn augment_from(&mut self, start: usize, adjacency: &[Vec<usize>]) -> bool {
-        let mut search = AlternatingSearch {
-            visited_row: vec![false; self.unknown_of_row.len()],
-            visited_unknown: vec![false; self.row_of_unknown.len()],
-            reached_from: vec![None; self.unknown_of_row.len()],
-            queue: VecDeque::from([start]),
-        };
-        search.visited_unknown[start] = true;
-        while let Some(unknown) = search.queue.pop_front() {
-            let Some(free_row) = self.reach_rows_of(unknown, adjacency, &mut search) else {
+    /// One depth-first alternating search of Kuhn's algorithm; the visit set
+    /// guards a single search. Returns whether `row` ends the search matched.
+    fn augment_row(
+        &mut self,
+        row: usize,
+        unknowns_of_row: &[Vec<usize>],
+        visited_unknown: &mut [bool],
+    ) -> bool {
+        for unknown in unknowns_of_row[row].iter().copied() {
+            if visited_unknown[unknown] {
                 continue;
+            }
+            visited_unknown[unknown] = true;
+            let claimable = match self.row_of_unknown[unknown] {
+                None => true,
+                Some(holder) => self.augment_row(holder, unknowns_of_row, visited_unknown),
             };
-            self.flip_path_to(free_row, &search.reached_from);
-            return true;
+            if claimable {
+                self.row_of_unknown[unknown] = Some(row);
+                self.unknown_of_row[row] = Some(unknown);
+                return true;
+            }
         }
         false
     }
 
-    /// Visit every not-yet-reached row this unknown occurs in.
+    /// Give `unknown` a row, rerouting matched unknowns onto alternatives.
     ///
-    /// Returns the first row that no unknown holds yet — the end of an
-    /// augmenting path. A row that is already matched instead enqueues the
-    /// unknown holding it, which is how the search looks for a reroute.
-    fn reach_rows_of(
-        &self,
+    /// The mirror image of [`Self::augment_row`], searched over every row so
+    /// an optional row can be drawn in when it is the only owner left.
+    fn augment_unknown(
+        &mut self,
         unknown: usize,
-        adjacency: &[Vec<usize>],
-        search: &mut AlternatingSearch,
-    ) -> Option<usize> {
-        for row in adjacency[unknown].iter().copied() {
-            if search.visited_row[row] {
+        rows_of_unknown: &[Vec<usize>],
+        visited_row: &mut [bool],
+    ) -> bool {
+        for row in rows_of_unknown[unknown].iter().copied() {
+            if visited_row[row] {
                 continue;
             }
-            search.visited_row[row] = true;
-            search.reached_from[row] = Some(unknown);
-            let Some(matched) = self.unknown_of_row[row] else {
-                return Some(row);
+            visited_row[row] = true;
+            let claimable = match self.unknown_of_row[row] {
+                None => true,
+                Some(holder) => self.augment_unknown(holder, rows_of_unknown, visited_row),
             };
-            if !search.visited_unknown[matched] {
-                search.visited_unknown[matched] = true;
-                search.queue.push_back(matched);
+            if claimable {
+                self.unknown_of_row[row] = Some(unknown);
+                self.row_of_unknown[unknown] = Some(row);
+                return true;
             }
         }
-        None
-    }
-
-    /// Walk the alternating path back to its free unknown, flipping each edge.
-    ///
-    /// Every row on the path is reassigned to the unknown that reached it, and
-    /// the unknown it displaced takes the row *it* had reached — so the path
-    /// ends at the search's starting unknown, which had no row, and the matching
-    /// grows by exactly one.
-    fn flip_path_to(&mut self, free_row: usize, reached_from: &[Option<usize>]) {
-        let mut row = free_row;
-        while let Some(unknown) = reached_from[row] {
-            let displaced = self.row_of_unknown[unknown];
-            self.row_of_unknown[unknown] = Some(row);
-            self.unknown_of_row[row] = Some(unknown);
-            let Some(displaced) = displaced else {
-                return;
-            };
-            row = displaced;
-        }
+        false
     }
 }
 
-/// Breadth-first state of one alternating-path search.
-struct AlternatingSearch {
-    visited_row: Vec<bool>,
-    visited_unknown: Vec<bool>,
-    reached_from: Vec<Option<usize>>,
-    queue: VecDeque<usize>,
+/// One initialization row offered to the matching.
+struct IncidentRow {
+    /// Model-level equation index.
+    row: usize,
+    /// Whether the matching must give this row an unknown: true for an initial
+    /// equation or initial-algorithm residual, false for an optional carried
+    /// stated-value check.
+    mandatory: bool,
+    unknowns: BTreeSet<InitialUnknown>,
 }
 
 struct ProjectionComponent {
     rows: Vec<usize>,
+    /// Whether each entry of `rows` must be matched, positionally paired.
+    mandatory: Vec<bool>,
     /// The unknowns each entry of `rows` reads, positionally paired with it.
     row_unknowns: Vec<BTreeSet<InitialUnknown>>,
     unknowns: Vec<InitialUnknown>,
@@ -769,32 +1075,34 @@ struct ProjectionComponent {
 /// Two rows that read the same unknown must be solved together, so the components
 /// of the row/unknown bipartite graph are the coarsest blocks that stay
 /// independent.
-fn connected_components(
-    incidence: &[(usize, BTreeSet<InitialUnknown>)],
-) -> Vec<ProjectionComponent> {
+fn connected_components(incidence: &[IncidentRow]) -> Vec<ProjectionComponent> {
     let mut sets = DisjointSets::new(incidence.len());
     let mut owner: HashMap<InitialUnknown, usize> = HashMap::new();
-    for (position, (_, unknowns)) in incidence.iter().enumerate() {
-        for unknown in unknowns {
+    for (position, entry) in incidence.iter().enumerate() {
+        for unknown in &entry.unknowns {
             let first = *owner.entry(*unknown).or_insert(position);
             sets.union(first, position);
         }
     }
     let mut grouped: Vec<ProjectionComponent> = Vec::new();
     let mut group_of: BTreeMap<usize, usize> = BTreeMap::new();
-    for (position, (row, unknowns)) in incidence.iter().enumerate() {
+    for (position, entry) in incidence.iter().enumerate() {
         let root = sets.find(position);
         let group = *group_of.entry(root).or_insert_with(|| {
             grouped.push(ProjectionComponent {
                 rows: Vec::new(),
+                mandatory: Vec::new(),
                 row_unknowns: Vec::new(),
                 unknowns: Vec::new(),
             });
             grouped.len() - 1
         });
-        grouped[group].rows.push(*row);
-        grouped[group].row_unknowns.push(unknowns.clone());
-        grouped[group].unknowns.extend(unknowns.iter().copied());
+        grouped[group].rows.push(entry.row);
+        grouped[group].mandatory.push(entry.mandatory);
+        grouped[group].row_unknowns.push(entry.unknowns.clone());
+        grouped[group]
+            .unknowns
+            .extend(entry.unknowns.iter().copied());
     }
     for component in &mut grouped {
         component.unknowns.sort_unstable();

@@ -29,10 +29,12 @@ chains. Two things are deliberately *not* done yet:
   `initial()` are still expression nodes; their semantic lowering is the
   DAE phase's job.
 
-Flat is the right level for flat-Modelica export and for structural
-transformations that preserve Modelica expression form.
+Flat is the right level for structural transformations that preserve Modelica
+expression form. Its current exact inspection product is JSON; a textual
+Modelica export requires stronger equation-body construction first.
 
-Dump it: `--emit flat-mo` / `flat-json`.
+Dump it: `--emit flat-json`. The retained `--emit flat-mo` spelling returns
+`unsupported-feature:flat-modelica-text-export` instead of lossy text.
 
 ## DAE (`rumoca-ir-dae`)
 

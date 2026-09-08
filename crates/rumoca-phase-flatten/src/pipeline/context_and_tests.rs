@@ -1,7 +1,3 @@
-use super::context_import_shadowing::{
-    EffectiveExpressionContext, imports_without_shadowed_aliases,
-    qualify_expression_with_effective_imports,
-};
 use super::enum_dimensions::{enum_type_dimension, infer_enum_range_dimensions};
 use super::function_overrides_and_dims::*;
 use super::*;
@@ -21,7 +17,3 @@ pub(crate) use alias_lookup::*;
 pub(crate) use class_instance::*;
 pub(crate) use component_instance::*;
 pub(crate) use qualification::*;
-
-pub(super) fn resolved_path_has_import_alias(resolved_path: &str, alias: &str) -> bool {
-    rumoca_core::top_level_last_segment(resolved_path) == alias
-}

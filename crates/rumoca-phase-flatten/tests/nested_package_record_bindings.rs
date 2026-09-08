@@ -58,14 +58,25 @@ fn nested_package_record_binding_uses_concrete_record_instance_scope() {
     tree.source_map.add("nested-package-record.mo", SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("fixture resolves");
-    let ast::InstancedTree { tree, mut overlay } =
-        rumoca_phase_instantiate::instantiate(resolved, "P.Controller")
-            .expect("fixture instantiates");
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "P.Controller")
-        .expect("fixture typechecks");
-    let source_map = tree.source_map.clone();
-    let flat = rumoca_phase_flatten::flatten_ref(&tree, &overlay, "P.Controller")
-        .expect("fixture flattens");
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        "P.Controller",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let typed =
+        rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "P.Controller")
+            .expect("fixture typechecks");
+    let source_map = resolved.inner().source_map.clone();
+    let flat =
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("fixture flattens");
 
     let binding = flat.variables[&rumoca_core::VarName::new("vehicle.weight")]
         .binding
@@ -83,7 +94,7 @@ fn nested_package_record_binding_uses_concrete_record_instance_scope() {
     assert_eq!(lhs.as_str(), "vehicle.mass");
     assert_eq!(rhs.as_str(), "vehicle.gravity");
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the scoped record binding lowers to checked DAE");
 }
 
@@ -96,14 +107,28 @@ fn same_package_record_binding_uses_concrete_record_instance_scope() {
         .add("same-package-record.mo", SAME_PACKAGE_SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("fixture resolves");
-    let ast::InstancedTree { tree, mut overlay } =
-        rumoca_phase_instantiate::instantiate(resolved, "P.Components.Controller")
-            .expect("fixture instantiates");
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "P.Components.Controller")
-        .expect("fixture typechecks");
-    let source_map = tree.source_map.clone();
-    let flat = rumoca_phase_flatten::flatten_ref(&tree, &overlay, "P.Components.Controller")
-        .expect("fixture flattens");
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        "P.Components.Controller",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(
+        &resolved,
+        overlay,
+        "P.Components.Controller",
+    )
+    .expect("fixture typechecks");
+    let source_map = resolved.inner().source_map.clone();
+    let flat =
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("fixture flattens");
 
     let binding = flat.variables[&rumoca_core::VarName::new("vehicle.weight")]
         .binding
@@ -121,6 +146,6 @@ fn same_package_record_binding_uses_concrete_record_instance_scope() {
     assert_eq!(lhs.as_str(), "vehicle.mass");
     assert_eq!(rhs.as_str(), "vehicle.gravity");
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the scoped record binding lowers to checked DAE");
 }

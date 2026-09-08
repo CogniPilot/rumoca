@@ -5,22 +5,21 @@ DRAFT
 
 ## Summary
 
-Compiler IR makes invalid stage values unrepresentable. `Dae::construct` and
-future `flat::Model::construct` use sequential semantic-owner closures over one
-private aggregate without weaker or duplicate storage.
+Compiler IR makes invalid stage values unrepresentable. Construction uses
+sequential semantic-owner closures over private aggregates without weaker
+storage.
 
 ## Specification
 
 ### Scope
 
-This stays `DRAFT` until AST proofs, `flat::Model`, `Dae`, `SolveProblem`, and
-`SolveAlgorithmBlock` hide invariant fields/root validators. Solve sparsity follows
+This stays `DRAFT` until AST proofs and compiler roots hide invariant fields and
+root validators. Solve sparsity follows
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
 
-Milestone acceptance rows, reservation owners, canonical arenas, equation
-contracts, and enforcement evidence are catalogued in
-[SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md). Every row there is normative by
-reference from the section that links it.
+Normative milestone, owner, equation, and evidence catalogs are in
+[SPEC_0043](SPEC_0043_CONSTRUCTION_CATALOG.md) and linked by their owning
+sections.
 
 ### DAE Milestone Acceptance
 
@@ -56,14 +55,24 @@ evidence constructs `Restart` instead.
 
 ### Solve Algorithm Block Construction
 
-`SolveAlgorithmBlock::construct` is the sole construction authority for the
-GALEC-derived executable root. Its typed program, storage, lifecycle, aggregate,
-call, effect, provenance, and serialization rules are
+`SolveAlgorithmBlock::construct` is implemented as the sole authority allowed
+to authenticate package-branded Algorithm Code subjects through the narrow
+`rumoca-ir-solve` → `rumoca-ir-galec` refinement dependency. It consumes one
+non-cloneable `AlgorithmCodePackage`, derives executable arithmetic only from
+the complete normalized numeric profile retained by that package, and returns
+one non-cloneable co-emission product retaining the package and sealed
+executable root. No second arithmetic input or mismatch state exists. Failure
+exposes neither a partial root nor a second construction route. Algorithm Code
+rendering borrows only the retained package; Production C/H borrows only the
+block. The registered readiness-zero route currently admits only a narrow
+scalar subset; unsupported calls, loops, tensors, branches, effects, and ABI
+cases reject, and Production-C conformance remains pending. Detailed
+obligations are
 [SPEC_0043 §9](SPEC_0043_CONSTRUCTION_CATALOG.md#9-solve-algorithm-block-construction-catalog).
-Construction consumes one checked `AlgorithmCodePackage` and one explicit
-arithmetic profile; failure exposes no partial root. A template view may borrow
-the completed root but cannot select an operation, storage class, local scope,
-shape, alias rule, call ABI, or failure behavior.
+Package-rooted refinement consumes and cites each package-issued Real
+`MatrixMultiply` occurrence contract. It cannot select, default, restate, or
+override accumulator format, seed, primitive rounding, order, contraction,
+special-value, subnormal, or floating-status semantics.
 
 The shared causal-discrete structural result derives target identity,
 current-value dependencies, and deterministic orientation from one branded DAE
@@ -79,14 +88,26 @@ declaration proof.
 rules are
 [SPEC_0043 §7](SPEC_0043_CONSTRUCTION_CATALOG.md#7-flat-aggregate-construction-catalog-spec_0036-flat-aggregate).
 
-Declarations retain exact spans. Per SPEC_0032 §1, Instance IR keeps no record
-of array compaction at all; per-element instance entries own Instance
-semantics. `flat::Model` owns only
-the flattened structured families, whose scalar views/counts derive.
-Drafts, public invariant fields, repair, compatibility, unchecked insertion,
-finalized mutation, and alternate constructors are prohibited.
+Declarations retain exact spans. Instance IR retains per-element semantics, not
+array-compaction history; Flat owns structured families and derived scalar
+views. Record function values stay nominal aggregates through Flat/DAE.
+Connections construct from typed Instance source groups through a build-local
+topology plan and one atomic final projection. Drafts, public invariant fields,
+repair, compatibility, unchecked insertion, finalized mutation, and alternate
+constructors are prohibited.
+
+Occurrence ordinals are storage/diagnostic data, never authority. Instance and
+Flat construction MUST satisfy the opaque origin-capability and replay rules in
+[SPEC_0043 §7](SPEC_0043_CONSTRUCTION_CATALOG.md#7-flat-aggregate-construction-catalog-spec_0036-flat-aggregate),
+normative by reference; numeric IDs cannot establish cross-root identity.
 
 ### Storage and Forward References
+
+Solve catalog storage is a logical Y/P column and scalar index/count, never
+`Time`, a constant operand, or an independently supplied byte displacement.
+Logical construction checks index arithmetic and owning-column bounds, not a
+fixed element byte width; the obsolete index-times-eight bound is retired.
+Concrete displacement widths and overflow belong to target/execution layout.
 
 Storage shape and the entries permitted to reserve are
 [SPEC_0043 §2](SPEC_0043_CONSTRUCTION_CATALOG.md#2-reservation-owner-catalog-spec_0036-storage-and-forward-references).
@@ -102,6 +123,12 @@ Construction is O(nodes + operands + total rank); insertion is amortized O(1)
 plus operand/rank work. Views borrow, derived indexes build once, proof
 transitions do not deep-clone IR.
 
+Prepared guards are affine, `#[must_use]`, commit only by consuming `self`, and
+leave the transaction unchanged when abandoned. The exact compiler/lint/attribute
+backstops and their non-proof boundary are
+[SPEC_0043 §5](SPEC_0043_CONSTRUCTION_CATALOG.md#5-enforcement-evidence-catalog),
+normative by reference; successful construction still requires owner close.
+
 ### Canonical Arenas, Systems, and Environments
 
 The aggregate owns exactly the arenas, systems, and environments listed in
@@ -110,18 +137,9 @@ each with its required storage.
 
 ### Type and Variable Identity
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Effective Flat `TypeId` keys DAE types; `DefId` is provenance | `TypeArena` | Instances may differ |
-| Nonprimitives use typed IDs | Value grammar | No name identity |
-| Fields/enums use owner-local typed ordinals; enums are one-based | `TypeArena` | Unique MLS order |
-| Operator records retain canonical bases | `TypeArena` | Explicit compatibility |
-| External lifecycle uses typed functions | Function construction | No raw `DefId` |
-| Variable identity differs from display; roles are typed and causality-orthogonal | `VariableArena` | No text identity |
-| Proven parameter-variable families become calculated parameters atomically | ToDAE analysis/construction | One computable owner |
-| Calculated-parameter bindings require finite shape and acyclic dependency proofs | ToDAE analysis | Reject unsafe promotion |
-| Element type includes shape; shape products use checked multiplication | All constructors | Overflow fails |
-| Attributes are checked on attachment | Variable construction | No drift |
+Type and variable identity MUST satisfy every row in
+[SPEC_0043 §11](SPEC_0043_CONSTRUCTION_CATALOG.md#11-type-and-variable-identity-catalog),
+normative by reference.
 
 Coordinates are primitive/enumeration rectangular values; function values may
 include checked aggregates/external objects. Finite, inspectable proofs
@@ -160,6 +178,18 @@ initialization-settled coordinates, and rejects a second owner for the same
 target. The claimed Flat row therefore cannot also enter the numeric
 initialization residual system.
 
+Executable Solve construction issues an initialization projection only after a
+complete structural matching assigns one distinct usable initialization row to
+every unpinned state scalar and every unbound `fixed = false` parameter scalar.
+The matching is over compiler-issued storage identities and retains declaration
+provenance for every unknown. A coordinate absent from the supported incidence
+graph or left unmatched rejects construction at its declaration with the exact
+source-row, usable-row, component-row, and unknown counts plus the reasons rows
+were unusable. A `start` value with effective `fixed = false` becomes a
+numerical root-selection guess only after this ownership proof; it never fills
+a missing equation. No partial projection or guess-retention fallback is
+representable in executable Solve IR.
+
 Each non-input `m` has exactly one B.1c definition owner. A source
 `when`/`elsewhen` chain becomes one atomic, source-priority-ordered conditional
 definition of the branch target set; independent `when` owners cannot define
@@ -186,18 +216,9 @@ domain, clock, scalar-row, or policy table exists.
 
 ### Conditions, Events, Clocks, and Temporal State
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| `RelationId` and non-root `ConditionId` identify one relation and B.1 `c` | Condition system | Separate policy |
-| Conditions compose relations/discrete operands | Condition expressions | Boolean composition |
-| Relation/condition counts are independent; continuous relations intern once | `ConditionSystem` | Sharing is legal |
-| Root activation is closed/typed; synthetic surfaces have root IDs | `RootArena` | No index identity |
-| Coincident time events retain IDs | `EventSystem` | Preserve semantics |
-| Actions own trigger, branch guard, action, provenance | `EventSystem` | Preserve edge and branch semantics |
-| Clocks are typed; variables have one owner; exact `ClockLattice` is authoritative | `ClockSystem` | No rounded identity |
-| Pre pairs with a current `z`/`m`, or with a continuous `x`/`w` (the when-clause-body restriction on the latter is a phase-dae analysis rule, not an IR invariant) | `TemporalSystem` | Explicit coordinates |
-| Solve may slot typed history coordinates | Solve lowering | Slots are not parameters |
-| Previous retains its clock; terminal/delay coordinates are typed | `TemporalSystem` | No generated names |
+Condition, event, clock, and temporal-state ownership MUST satisfy every row in
+[SPEC_0043 §12](SPEC_0043_CONSTRUCTION_CATALOG.md#12-condition-event-clock-and-temporal-catalog),
+normative by reference.
 
 Only continuously monitored closed activations receive roots. Clock-domain
 environments filter typed capabilities without owning expressions. Delay
@@ -230,33 +251,29 @@ Only the current wire identified by `rumoca_ir_dae::DAE_SCHEMA_VERSION` exists;
 older/pre-versioned payloads, adapters, migration readers, and dual writes are
 prohibited. The code constant is the single version authority.
 
-| Rule | Owner/Where | Brief Justification |
-|---|---|---|
-| Current wire records are private and deny unknown fields | DAE serde | Wire is not IR |
-| Operands travel on the operation that consumes them, never in a positional side table | DAE serde | One reading order |
-| Facts a construction operation produces are absent and re-issued by replay | Private wire types | Results cannot be forged |
-| Required collections are explicit, including empty | Private wire types | Omission is not ambiguity |
-| Decode calls the same provenance-requiring operations | DAE serde | Deserialization is construction |
-| Provenance serializes identity/range/origin only | DAE wire | Source text stays canonical |
-| IDs project to deterministic wire-local ordinals; arenas to ordered arrays | DAE serde | Process IDs never leak |
-| Non-dense key duplicates fail before insertion | DAE serde | Maps cannot hide malformed input |
-| Derived counts and indexes are absent from wire | Private wire types | Caches cannot be forged |
-| Invariant-bearing children have no fieldwise `Deserialize` | IR serde | Bytes cannot bypass checks |
+Every current-wire storage/replay rule in
+[SPEC_0043 §10](SPEC_0043_CONSTRUCTION_CATALOG.md#10-current-wire-replay-catalog)
+is normative by reference from this section.
 
-Across `flat::Model`, `Dae`, and `SolveProblem`, a root may implement custom
-`Deserialize` only by decoding private current-version records through checked
-construction. Children cannot implement or derive fieldwise `Deserialize`.
+Root `Deserialize` decodes private current-version records through checked
+construction; invariant children have no fieldwise `Deserialize`.
 
 ### Other IR Boundaries
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Parse preserves recovered syntax | Parse AST | Diagnostics |
+| Recovery-shaped enums in `rumoca-core` and `rumoca-ir-*` do not derive or implement `Default`; there are no exceptions | Core and IR crates | Construction cannot invent semantic or source syntax |
+| Semantic construction inputs, executable-semantics profiles, semantic stage aggregates, successful checked roots, and closed proof/plan carriers do not derive or implement `Default`; every policy selection enters its semantic phase as an explicit constructor argument, while intentionally empty structure uses an explicitly named constructor. SPEC_0043 names the exact current compiler-enforced frontier and does not claim that its handwritten list proves the category exhaustive. Every newly introduced public type is classified in the same change and, when it belongs to this category, added to that exact compiler assertion. Source candidate discovery is a drift backstop only. Value-preserving presentation/configuration records are not covered by this row | Semantic phase boundaries and checked IR owners | Generic construction cannot silently choose executable meaning or mint success, while an exact enforcement list cannot masquerade as whole-category proof |
+| `GalecOptions::new` requires the value-affecting `AlgorithmCodeArithmeticProfile`; Algorithm Code construction has no representation-policy input and always retains the structurally reviewable form | GALEC calling boundary | DAE-to-GALEC lowering cannot reshape the auditor-facing reference; value-preserving representation optimization belongs only to checked Solve refinement |
+| `StrictCompilation` issues the sole SPEC_0008 artifact stem and artifact-identity model frames from its resolved qualified model identity; consumers cannot supply or derive either | Target construction; SPEC_0043 §5 | Model identity cannot drift |
+| Recovery-only nodes persist for diagnostics; no success proof is minted over them | AST phase boundary | Partial trees cannot forge proofs |
+| Consuming rewrites never install a sentinel placeholder | AST rewrite | No transient invalid tree |
 | Success returns opaque proofs | AST phases | Completed proof |
 | Partial work gets no proof | AST phases | No forgery |
 | `ParsedTree → ResolvedTree` has one mint | Resolve phase | One authority |
-| `ResolvedTree → InstancedTree` has one mint | Instantiate phase | One authority |
-| `InstancedTree → TypedInstancedTree` has one mint | Typecheck phase | One authority |
+| Raw `&ClassTree → InstanceOverlay` remains the explicit Instantiate migration boundary | Instantiate phase | No unlanded proof claim |
+| `ResolvedTree + raw InstanceOverlay → TypedInstancedTree` has one mint | Typecheck phase | Current closed Typecheck authority |
 | `TypedInstancedTree → flat::Model` consumes by value and has one mint | Flatten phase | Closed proof chain |
 | Proof fields/constructors are private; no `DerefMut`/mutable overlay | Owning phase | No forgery |
 | Invariant fields private | `flat::Model`/`Dae`/`SolveProblem` | No bypass |
@@ -264,11 +281,31 @@ construction. Children cannot implement or derive fieldwise `Deserialize`.
 | Unchecked builders prohibited | `flat::Model`/`Dae`/`SolveProblem` | No weaker value |
 | Sparsity patterns derived, not claimed | Solve construction | No unsafe under-approximation |
 
-Instantiation applies modifications and builds its overlay; post-instance
-typechecking sees those results; flattening expands checked connections. No raw
-tree/overlay enters flattening. Consuming a proof transfers its unique phase
-capability, not necessarily its immutable payload; payload sharing is allowed
-when it cannot forge or mutate a proof.
+Only `TypedInstancedTree` enters flattening; consuming its proof transfers the
+unique phase capability. Immutable payload sharing cannot forge or mutate it:
+a `Clone`-able read-only projection may share the proof's immutable payload
+for caching and diagnostics, but no projection is accepted in a proof input
+position and no unchecked/direct conversion adopts one as a proof. A caller
+can clone the raw overlay view and rerun the sole Typecheck mint, producing a
+fresh checked proof rather than recovering the original. The Typecheck mint also
+retains an opaque read-only projection of the exact `ResolvedTree` root it
+checked. Flatten accepts no caller-selected tree and obtains its sole tree view
+from the consumed proof, so a proof minted over root A cannot flatten root B.
+This guarantee does not yet bind the raw `InstanceOverlay` to its originating
+Resolve root: an overlay derived from tree A can still be presented with
+`ResolvedTree` B at the Typecheck mint. That CE-3 pairing remains explicit
+migration debt until Instantiate publishes a root-stamped proof.
+
+The standalone resolved-tree typecheck entry is a diagnostics query, not a
+mint: it returns checked data plus diagnostics, and no downstream phase
+accepts its output as phase evidence.
+
+Compile-time evaluation selects called functions only by Resolve-issued
+identity. The sole delimited exception is the pre-identity structural
+category: modifier and binding expressions that Resolve does not annotate,
+evaluated under an evaluation environment whose category is an explicit
+constructor selection, never a default. In an identity-requiring environment
+an identity-free call reference selects nothing and folds nothing.
 
 ### Refinement Obligations
 
@@ -281,10 +318,18 @@ proofs enforce order; the following obligations establish semantic correctness:
 | Preserve semantic identity, ordering, provenance, and supported behavior | `R_phase` | Refinement |
 | Fail unsupported input at its first owner with typed provenance | `R_phase` | No false success |
 | Use explicit producer-owned cross-stage ID maps | Phase transition | No ordinal assumptions |
+| Every finalized DAE variable, including a standalone synthetic fixture, carries one mandatory nonzero root-relative source occurrence; unset and duplicate occurrences fail DAE construction, so no `Outstanding`, optional, default, or fallback identity is nameable in the finalized root. The carrier survives structural replay and enters the Solve catalog separately from presentation data. The private correlated lowering product retains the exact prepared DAE beside the Solve root, and one independent exhaustive checker consumes the producer's explicit occurrence-to-catalog mapping before proof admission. The checker accepts only eagerly materialized, closed name-free fact arrays from those two roots and consumes construction-issued occurrence uniqueness (SOLVE-C60), independently proving ordered total coverage, role, causality, effective Modelica `fixed`, the Solve state-initialization class independently derived from DAE role and fixity, Solve variability independently derived from DAE variability/tunability, exact tunability, value kind, exact compact dimensions/scalar count, and storage association. The Solve projection exposes only the exact role and value-kind fields consumed by this relation, not the whole declaration or its equation-derived time domain; neither projection contains display names, scalar labels, provenance, spans, start/runtime values, or root access. The private non-Clone/non-Default/non-wire receipt is a mandatory field recording successful checking of this live construction; the architecture gate admits only the exact checker as a crate-visible mint, globally permits exactly one receipt struct literal inside that checker, forbids receipt aliases, and proves the propagated receipt binding is unique, immutable, unshadowed, unrebound, and installed directly by the sole `LoweredSolveModel` literal. The receipt does not cover start/runtime values or equation/program semantics and does not close AS-043's cross-root or persisted-identity debt | Flat-to-DAE construction, structural replay, DAE-to-Solve lowering, and proof admission | Missing identity is unrepresentable after DAE construction and the bounded live-product proof cannot certify a same-named, reordered, causality-changed, fixity-changed, state-initialization-changed, variability-changed, tunability-changed, or ordinal-paired foreign coordinate while avoiding a false claim that root-global identity is already solved |
 
 Runtime proof capabilities are erased and add no serialized receipts or
 duplicate IR. Compile-fail tests cover proof forgery/cross-stage use; property,
 differential, and refinement tests exercise each relation.
+
+Architecture gates prove either a Rust-level impossibility or coverage of a
+review catalog; no gate is evidence that a constructed value is semantically
+valid. For protected roots, the compiler and compile-fail API tests carry
+privacy, trait, brand, sealing, and affine-use claims. Syntax-aware scans only
+enumerate candidate types and public construction/mutation/check routes for
+classification; they do not infer whether a route is checked.
 
 ### Enforcement
 

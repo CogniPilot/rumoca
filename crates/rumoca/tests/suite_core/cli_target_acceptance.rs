@@ -43,7 +43,6 @@ fn permissive_capabilities(ir: &str) -> String {
          continuous_states = true\n\
          residual_equations = true\n\
          external_functions = true\n\
-         external_tables = true\n\
          random = true\n\
          initialization = true\n\
          events = true\n\

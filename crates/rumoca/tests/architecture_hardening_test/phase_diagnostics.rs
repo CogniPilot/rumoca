@@ -101,7 +101,8 @@ fn test_galec_target_errors_own_their_phase_diagnostics() {
         .expect("read GALEC WASM consumer");
     assert!(
         wasm.contains("error.to_diagnostic()")
-            && wasm.contains("source_span_location(source_map, label.span)"),
+            && wasm.contains(".map(|label| label.span)")
+            && wasm.contains("source_span_location(source_map, span)"),
         "the GALEC WASM boundary must preserve the shared diagnostic code and source span"
     );
 }

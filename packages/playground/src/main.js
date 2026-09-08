@@ -180,7 +180,7 @@ let outlineBranchKeys = [];
 let selectedExplorerPath = '';
 let sidebarContextActions = [];
 const EXPLORER_ROOT_SELECTION = '.';
-const DEFAULT_CODEGEN_TARGET_ID = 'c-ode';
+const DEFAULT_CODEGEN_TARGET_ID = 'fmi3';
 const PLAYGROUND_THEME_STORAGE_KEY = 'rumoca-playground-theme';
 const PLAYGROUND_THEME_IDS = new Set(['system', 'light', 'rust', 'coal', 'navy', 'ayu']);
 const systemThemeMedia = typeof window.matchMedia === 'function'
@@ -421,7 +421,7 @@ function collectCustomCodegenTarget(targetPath) {
 // GALEC codegen targets (all ir = "dae") are served by the SEPARATE, lazily
 // loaded GALEC addon — never the core render_target/DAE-JSON path, which drops
 // the flat model the projection needs. The worker loads the addon on demand.
-const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+const GALEC_CODEGEN_TARGETS = new Set(['galec']);
 
 async function renderGalecCodegenSelection(modelName, workspaceSources, target) {
     const rendered = await sendWorkspaceCommand('rumoca.workspace.renderGalec', {

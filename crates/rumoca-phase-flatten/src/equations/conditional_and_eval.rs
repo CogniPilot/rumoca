@@ -127,7 +127,6 @@ pub(super) struct ConditionalEquationContext<'a> {
     pub(super) span: rumoca_core::Span,
     pub(super) origin: &'a rumoca_ir_flat::EquationOrigin,
     pub(super) imports: &'a crate::qualify::ImportMap,
-    pub(super) def_map: Option<&'a crate::ResolveDefMap>,
 }
 
 pub(super) fn create_conditional_equation_from_simple(
@@ -174,11 +173,10 @@ pub(super) fn create_conditional_equation_from_simple(
         eq_idx,
         context.span,
     )?;
-    let residual = qualify_expression_imports_with_def_map_ctx(
+    let residual = qualify_expression_imports_ctx(
         &conditional_residual,
         context.prefix,
         context.imports,
-        context.def_map,
         context.ctx,
         None,
     )?;
@@ -262,36 +260,44 @@ fn build_conditional_residual_from_simple(
 /// Flatten a simple equation within a constant-branch list, including empty range
 /// elimination (MLS §10.5).
 fn flatten_simple_in_list(
-    ctx: &Context,
+    request: &EquationFlatteningContext<'_>,
     lhs: &ast::Expression,
     rhs: &ast::Expression,
-    prefix: &QualifiedName,
-    span: rumoca_core::Span,
-    origin: &rumoca_ir_flat::EquationOrigin,
-    def_map: Option<&crate::ResolveDefMap>,
-    operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     // MLS §10.5: Skip equations with empty range subscripts
-    if has_empty_range_subscript(ctx, lhs, prefix, operators)?
-        || has_empty_range_subscript(ctx, rhs, prefix, operators)?
+    if has_empty_range_subscript(request.ctx, lhs, request.prefix, request.operators)?
+        || has_empty_range_subscript(request.ctx, rhs, request.prefix, request.operators)?
     {
         return Ok(FlattenedEquations::default());
     }
 
     // Keep array comprehensions in equations by expanding structural ranges.
-    let lhs = expand_array_comprehensions_in_expression(ctx, lhs, prefix, span, operators)?;
-    let rhs = expand_array_comprehensions_in_expression(ctx, rhs, prefix, span, operators)?;
+    let lhs = expand_array_comprehensions_in_expression(
+        request.ctx,
+        lhs,
+        request.prefix,
+        request.span,
+        request.operators,
+    )?;
+    let rhs = expand_array_comprehensions_in_expression(
+        request.ctx,
+        rhs,
+        request.prefix,
+        request.span,
+        request.operators,
+    )?;
 
-    let residual = make_residual(ctx, &lhs, &rhs, prefix, def_map, None)?;
-    let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, prefix, ctx);
+    let residual = make_residual(request.ctx, &lhs, &rhs, request.prefix, None)?;
+    let scalar_count = infer_simple_equation_scalar_count(&lhs, &rhs, request.prefix, request.ctx);
     if scalar_count == 0 {
         return Ok(FlattenedEquations::default());
     }
-    let equation_dims = infer_simple_equation_dims(&lhs, &rhs, prefix, ctx, scalar_count);
+    let equation_dims =
+        infer_simple_equation_dims(&lhs, &rhs, request.prefix, request.ctx, scalar_count);
     let equation = if scalar_count == 1 {
-        flat::Equation::new(residual, span, origin.clone())
+        flat::Equation::new(residual, request.span, request.origin.clone())
     } else {
-        flat::Equation::new_array(residual, span, origin.clone(), scalar_count)
+        flat::Equation::new_array(residual, request.span, request.origin.clone(), scalar_count)
     };
     let structured_equations = if is_tuple_receiver_equation_lhs(&lhs) {
         Vec::new()
@@ -315,38 +321,25 @@ pub(super) fn flatten_equations_list(
     prefix: &QualifiedName,
     span: rumoca_core::Span,
     origin: &rumoca_ir_flat::EquationOrigin,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<FlattenedEquations, FlattenError> {
     let mut result = FlattenedEquations::default();
+    let request = EquationFlatteningContext::new(ctx, prefix, span, origin, operators);
     for eq in equations {
         match eq {
             ast::Equation::Simple { lhs, rhs } => {
-                let equations = flatten_simple_in_list(
-                    ctx, lhs, rhs, prefix, span, origin, def_map, operators,
-                )?;
+                let equations = flatten_simple_in_list(&request, lhs, rhs)?;
                 result.append(equations);
             }
             ast::Equation::For { indices, equations } => {
-                let expanded = expand_for_equation(
-                    ctx, indices, equations, prefix, span, origin, def_map, operators,
-                )?;
+                let expanded = expand_for_equation(&request, indices, equations)?;
                 result.append(expanded);
             }
             ast::Equation::If {
                 cond_blocks,
                 else_block,
             } => {
-                let expanded = expand_if_equation(
-                    ctx,
-                    cond_blocks,
-                    else_block,
-                    prefix,
-                    span,
-                    origin,
-                    def_map,
-                    operators,
-                )?;
+                let expanded = expand_if_equation(&request, cond_blocks, else_block)?;
                 result.append(expanded);
             }
             ast::Equation::Assert {
@@ -356,18 +349,12 @@ pub(super) fn flatten_equations_list(
             } => {
                 let imports = &ctx.current_imports;
                 let assert_eq = AssertEquation::new(
-                    qualify_expression_imports_with_def_map_ctx(
-                        condition, prefix, imports, def_map, ctx, None,
-                    )?,
-                    qualify_expression_imports_with_def_map_ctx(
-                        message, prefix, imports, def_map, ctx, None,
-                    )?,
+                    qualify_expression_imports_ctx(condition, prefix, imports, ctx, None)?,
+                    qualify_expression_imports_ctx(message, prefix, imports, ctx, None)?,
                     level
                         .as_ref()
                         .map(|expr| {
-                            qualify_expression_imports_with_def_map_ctx(
-                                expr, prefix, imports, def_map, ctx, None,
-                            )
+                            qualify_expression_imports_ctx(expr, prefix, imports, ctx, None)
                         })
                         .transpose()?,
                     span,
@@ -386,14 +373,12 @@ pub(super) fn flatten_equations_list(
                 // MLS §8.3.3/§8.3.5: When-equations inside for-loops are allowed.
                 // Flatten each when-block with the current prefix (which includes for-loop indices)
                 let chain = crate::when_equations::flatten_when_blocks(
-                    ctx, blocks, prefix, span, def_map, operators,
+                    ctx, blocks, prefix, span, operators,
                 )?;
                 result.when_chains.push(chain);
             }
             ast::Equation::FunctionCall { comp, args, .. } => {
-                let flattened = flatten_function_call_equation(
-                    ctx, comp, args, prefix, span, def_map, origin, operators,
-                )?;
+                let flattened = flatten_function_call_equation(&request, comp, args)?;
                 if flattened.is_empty() && !is_side_effect_only_function(comp, operators) {
                     return Err(FlattenError::unsupported_equation(
                         format!(
@@ -504,17 +489,10 @@ fn eval_required_range_integer(
         return Ok(Some(value));
     }
 
-    let flat_expr = qualify_expression_imports_with_def_map_ctx(
-        expr,
-        prefix,
-        &ctx.current_imports,
-        None,
-        ctx,
-        None,
-    )?;
+    let flat_expr = qualify_expression_imports_ctx(expr, prefix, &ctx.current_imports, ctx, None)?;
     match crate::constant_eval::evaluate_optional(
         &flat_expr,
-        ctx.eval_fallback_context(),
+        ctx.eval_fallback_context()?,
         "evaluating a required structural range integer",
         owner_span,
     )? {
@@ -753,14 +731,15 @@ pub(super) fn has_empty_range_subscript(
         ast::Expression::Unary { rhs, .. } => {
             has_empty_range_subscript(ctx, rhs, prefix, operators)
         }
+        ast::Expression::DerivativeCall { args, .. } => {
+            Ok(args.iter().any(|argument| matches!(argument, ast::Expression::ComponentReference(cr) if cr_has_empty_range_subscript(ctx, cr, prefix))))
+        }
         ast::Expression::FunctionCall { args, .. } => {
             // Don't recurse into function call arguments.  A function
             // can legitimately accept an empty‐range array and return
             // a well‐formed result (e.g. cat(1, {u}, {}) = {u},
             // previous({}) = {}).  Only direct component references
             // with empty ranges should trigger equation elimination.
-            // However, we still check the first argument for common
-            // patterns like der(x[2:1]) where the function is der.
             Ok(args.iter().any(|a| matches!(a, ast::Expression::ComponentReference(cr) if cr_has_empty_range_subscript(ctx, cr, prefix))))
         }
         ast::Expression::Parenthesized { inner, .. } => {
@@ -1273,6 +1252,10 @@ pub(crate) fn substitute_index_in_expression(
         return substituted;
     }
     match expr {
+        ast::Expression::DerivativeCall { args, span } => ast::Expression::DerivativeCall {
+            args: substitute_index_in_expression_list(args, var_name, value),
+            span: *span,
+        },
         ast::Expression::FunctionCall {
             comp,
             args,
@@ -1312,7 +1295,7 @@ pub(crate) fn substitute_index_in_expression(
             span,
         } => substitute_index_in_modification_expression(
             target,
-            modification,
+            modification.as_deref(),
             *span,
             var_name,
             value,
@@ -1388,18 +1371,20 @@ fn substitute_index_in_named_argument_expression(
 
 fn substitute_index_in_modification_expression(
     target: &ComponentReference,
-    modification: &ast::Expression,
+    modification: Option<&ast::Expression>,
     span: rumoca_core::Span,
     var_name: &str,
     value: i64,
 ) -> ast::Expression {
     ast::Expression::Modification {
         target: substitute_index_in_component_ref(target, var_name, value),
-        value: Arc::new(substitute_index_in_expression(
-            modification,
-            var_name,
-            value,
-        )),
+        value: modification.map(|modification| {
+            Arc::new(substitute_index_in_expression(
+                modification,
+                var_name,
+                value,
+            ))
+        }),
         span,
     }
 }
@@ -1632,12 +1617,18 @@ fn substitute_index_in_subscript(
 /// while still leveraging the parameter values collected during flattening.
 ///
 /// If a ClassTree is provided, functions will be looked up on-demand during evaluation.
-pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> EvalContext {
+pub(crate) fn build_eval_context(
+    ctx: &Context,
+    tree: Option<&ClassTree>,
+) -> Result<EvalContext, rumoca_eval_flat::constant::EvalError> {
     let parameter_capacity = ctx.parameter_values.len()
         + ctx.boolean_parameter_values.len()
         + ctx.enum_parameter_values.len()
         + ctx.array_dimensions.len();
-    let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
+    let mut eval_ctx = EvalContext::structural_preidentity_with_capacity(
+        parameter_capacity,
+        ctx.functions.len() * 2,
+    );
 
     // Add integer parameters
     for (name, value) in &ctx.parameter_values {
@@ -1651,14 +1642,7 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
 
     // Add enum parameters
     for (name, value) in &ctx.enum_parameter_values {
-        // The value is a qualified enum literal like "Type.Literal"
-        // Parse it into type and literal parts
-        if let Some((type_name, literal)) = crate::path_utils::scope_split(value) {
-            eval_ctx.add_parameter(
-                name.clone(),
-                Value::Enum(type_name.to_string(), literal.to_string()),
-            );
-        }
+        eval_ctx.add_parameter(name.clone(), Value::ResolvedEnum(value.clone()));
     }
 
     // Shape metadata may answer size()/ndims(), but it is not an element value.
@@ -1669,9 +1653,7 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
     }
 
     // Add functions from flatten context (pre-collected)
-    for func in ctx.functions.values() {
-        eval_ctx.add_function(func.clone());
-    }
+    try_issue_eval_function_facts(&mut eval_ctx, ctx.functions.values())?;
 
     // If ClassTree is available, look up additional functions that might be called
     // during evaluation. This enables lazy function lookup for user-defined functions.
@@ -1681,7 +1663,32 @@ pub(crate) fn build_eval_context(ctx: &Context, tree: Option<&ClassTree>) -> Eva
         // We could pre-scan expressions here, but lazy lookup is simpler.
     }
 
-    eval_ctx
+    Ok(eval_ctx)
+}
+
+pub(crate) fn try_issue_eval_function_facts<'a>(
+    eval_ctx: &mut EvalContext,
+    functions: impl IntoIterator<Item = &'a rumoca_core::Function>,
+) -> Result<(), rumoca_eval_flat::constant::EvalError> {
+    let mut issued: rustc_hash::FxHashMap<
+        rumoca_core::FunctionInstanceId,
+        &'a rumoca_core::Function,
+    > = rustc_hash::FxHashMap::default();
+    for function in functions {
+        if let Some(instance_id) = function.instance_id {
+            if issued
+                .get(&instance_id)
+                .is_some_and(|existing| *existing == function)
+            {
+                // Alias maps can repeat the exact same semantic definition.
+                // This is one fact seen twice, not a second catalog entry.
+                continue;
+            }
+            issued.entry(instance_id).or_insert(function);
+        }
+        eval_ctx.try_add_function(function.clone())?;
+    }
+    Ok(())
 }
 
 /// Evaluate an AST expression using the rumoca_eval_const crate.
@@ -1695,20 +1702,18 @@ fn try_eval_with_rumoca_eval_const(
 ) -> Option<i64> {
     let fallback_start = crate::maybe_start_timer();
     // Convert AST expression to qualified ast::Expression
-    let Ok(flat_expr) = qualify_expression_imports_with_def_map_ctx(
-        expr,
-        prefix,
-        &ctx.current_imports,
-        None,
-        ctx,
-        None,
-    ) else {
+    let Ok(flat_expr) =
+        qualify_expression_imports_ctx(expr, prefix, &ctx.current_imports, ctx, None)
+    else {
         return None;
     };
 
     // Reuse the per-flatten base evaluation context to avoid rebuilding
     // parameter/function maps on every complex-expression fallback.
-    let eval_ctx = ctx.eval_fallback_context();
+    let Ok(eval_ctx) = ctx.eval_fallback_context() else {
+        crate::maybe_record_eval_fallback_timing(fallback_start);
+        return None;
+    };
 
     // This is deliberately a non-authoritative recognizer: its callers use an
     // absent value only to decline an optional structural optimization. The

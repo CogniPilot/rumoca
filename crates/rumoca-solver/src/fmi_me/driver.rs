@@ -8,10 +8,9 @@ use super::session::{
     MeAdvanceOutcome, MeOutputCursor, MeSessionError, MeSessionOptions, MeSessionOptionsInput,
     MeSimulationSession,
 };
-use crate::timeline::try_build_output_times;
 
-/// How the host derives a root-scan resolution when a caller supplies only an
-/// output cadence.
+/// How the host derives a root-scan resolution when a caller supplies an
+/// experiment scale but no explicit scan policy.
 ///
 /// SPEC_0044 §6 keeps event fidelity independent of trace density, so the
 /// default is a fixed fraction of the experiment's own scale rather than the
@@ -19,15 +18,21 @@ use crate::timeline::try_build_output_times;
 /// coarsening it must not coarsen the event search.
 const DEFAULT_SCAN_FRACTION: f64 = 1.0 / 8.0;
 
-/// The default adjacent-sample bound for an experiment of the given width.
-#[must_use]
-pub fn default_root_scan_resolution(experiment_width: f64) -> f64 {
-    let width = experiment_width.abs();
-    if width.is_finite() && width > 0.0 {
-        (width * DEFAULT_SCAN_FRACTION).max(f64::MIN_POSITIVE)
-    } else {
-        1.0e-3
+/// Derive the default adjacent-sample bound from a checked experiment width.
+pub fn default_root_scan_resolution(experiment_width: f64) -> Result<f64, MeSessionError> {
+    if !experiment_width.is_finite() || experiment_width < 0.0 {
+        return Err(MeSessionError::Options {
+            reason: format!(
+                "the root-scan experiment width must be finite and nonnegative, got \
+                 {experiment_width}"
+            ),
+        });
     }
+    // A zero-duration batch never scans, but the checked session vocabulary
+    // intentionally represents every numeric resolution as positive. The
+    // smallest positive value is therefore the exact representational lower
+    // bound, not a guessed replacement scale.
+    Ok((experiment_width * DEFAULT_SCAN_FRACTION).max(f64::MIN_POSITIVE))
 }
 
 /// The default bracket width a located root is refined to.
@@ -40,16 +45,15 @@ pub fn default_root_location_tolerance(scan_resolution: f64, absolute_tolerance:
 
 /// The checked session options a defined experiment implies.
 pub fn batch_session_options(
-    start_time: f64,
     stop_time: f64,
+    scan_scale: f64,
     relative_tolerance: f64,
     absolute_tolerance: f64,
     output_interval: f64,
     max_wall_seconds: Option<f64>,
 ) -> Result<MeSessionOptions, MeSessionError> {
-    let scan_resolution = default_root_scan_resolution(stop_time - start_time);
+    let scan_resolution = default_root_scan_resolution(scan_scale)?;
     MeSessionOptions::new(MeSessionOptionsInput {
-        start_time,
         stop_time: Some(stop_time),
         relative_tolerance,
         absolute_tolerance,
@@ -72,15 +76,18 @@ pub fn batch_session_options(
 /// horizon. `scan_scale` is the coordinate span the
 /// default scan resolution is derived from; it is not an experiment end.
 pub fn live_session_options(
-    start_time: f64,
     relative_tolerance: f64,
     absolute_tolerance: f64,
     scan_scale: f64,
     max_wall_seconds: Option<f64>,
 ) -> Result<MeSessionOptions, MeSessionError> {
-    let scan_resolution = default_root_scan_resolution(scan_scale);
+    if scan_scale <= 0.0 {
+        return Err(MeSessionError::Options {
+            reason: "an open session requires a positive root-scan experiment scale".to_owned(),
+        });
+    }
+    let scan_resolution = default_root_scan_resolution(scan_scale)?;
     MeSessionOptions::new(MeSessionOptionsInput {
-        start_time,
         stop_time: None,
         relative_tolerance,
         absolute_tolerance,
@@ -96,21 +103,6 @@ pub fn live_session_options(
         max_wall_seconds,
         records_trace: false,
     })
-}
-
-/// The soft output schedule a defined experiment requests.
-///
-/// An unbuildable grid stays typed host-option data; it is never rendered into
-/// a component contract failure.
-pub fn batch_output_cursor(options: &MeSessionOptions) -> Result<MeOutputCursor, MeSessionError> {
-    let stop = options.stop_time().ok_or_else(|| MeSessionError::Options {
-        reason: "a batch experiment requires a defined stop time".to_owned(),
-    })?;
-    let times = try_build_output_times(options.start_time(), stop, options.output_interval())
-        .map_err(|error| MeSessionError::Options {
-            reason: error.to_string(),
-        })?;
-    MeOutputCursor::new(times)
 }
 
 /// Advance a live session to `target_time` without a soft output schedule.
@@ -129,23 +121,21 @@ mod tests {
     #[test]
     fn a_live_session_never_carries_defined_stop_metadata() {
         let options =
-            live_session_options(0.0, 1.0e-6, 1.0e-6, 1.0, None).expect("live options are checked");
+            live_session_options(1.0e-6, 1.0e-6, 1.0, None).expect("live options are checked");
         assert_eq!(options.stop_time(), None);
         assert!(!options.records_trace());
     }
 
     #[test]
     fn the_scan_resolution_does_not_follow_the_output_cadence() {
-        let coarse = batch_session_options(0.0, 1.0, 1.0e-6, 1.0e-6, 0.5, None)
+        let coarse = batch_session_options(1.0, 1.0, 1.0e-6, 1.0e-6, 0.5, None)
             .expect("coarse cadence is legal");
-        let fine = batch_session_options(0.0, 1.0, 1.0e-6, 1.0e-6, 1.0e-3, None)
+        let fine = batch_session_options(1.0, 1.0, 1.0e-6, 1.0e-6, 1.0e-3, None)
             .expect("fine cadence is legal");
 
         // The two experiments differ only in trace density.
-        let coarse_rows = batch_output_cursor(&coarse)
-            .expect("coarse grid")
-            .remaining();
-        let fine_rows = batch_output_cursor(&fine).expect("fine grid").remaining();
+        let coarse_rows = (1.0 / coarse.output_interval()).ceil() as usize + 1;
+        let fine_rows = (1.0 / fine.output_interval()).ceil() as usize + 1;
         assert!(fine_rows > coarse_rows);
 
         // Event fidelity is therefore identical: a denser trace neither refines
@@ -161,19 +151,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unbuildable_output_grid_is_typed_host_option_data() {
-        let options =
-            batch_session_options(0.0, 1.0, 1.0e-6, 1.0e-6, 0.1, None).expect("checked options");
-        assert!(batch_output_cursor(&options).is_ok());
-        let live = live_session_options(0.0, 1.0e-6, 1.0e-6, 1.0, None).expect("live options");
-        assert!(matches!(
-            batch_output_cursor(&live),
-            Err(MeSessionError::Options { .. })
-        ));
+    fn batch_and_live_options_carry_no_second_start_coordinate() {
+        let batch =
+            batch_session_options(1.0, 1.0, 1.0e-6, 1.0e-6, 0.1, None).expect("checked options");
+        assert_eq!(batch.stop_time(), Some(1.0));
+        let live = live_session_options(1.0e-6, 1.0e-6, 1.0, None).expect("live options");
+        assert_eq!(live.stop_time(), None);
     }
 
     #[test]
-    fn a_backward_experiment_is_rejected_before_a_session_exists() {
-        assert!(batch_session_options(1.0, 0.0, 1.0e-6, 1.0e-6, 0.1, None).is_err());
+    fn a_non_finite_defined_stop_is_rejected_before_a_session_exists() {
+        assert!(batch_session_options(f64::NAN, 1.0, 1.0e-6, 1.0e-6, 0.1, None).is_err());
+    }
+
+    #[test]
+    fn an_invalid_scan_scale_is_rejected_and_zero_duration_uses_the_type_bound() {
+        for scale in [f64::NAN, f64::INFINITY, -1.0] {
+            assert!(live_session_options(1.0e-6, 1.0e-6, scale, None).is_err());
+        }
+        assert!(live_session_options(1.0e-6, 1.0e-6, 0.0, None).is_err());
+        assert_eq!(
+            default_root_scan_resolution(0.0)
+                .expect("a zero-duration experiment never scans")
+                .to_bits(),
+            f64::MIN_POSITIVE.to_bits()
+        );
     }
 }

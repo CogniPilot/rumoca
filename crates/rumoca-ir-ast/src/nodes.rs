@@ -923,6 +923,14 @@ pub enum Expression {
         span: Span,
     },
     ComponentReference(ComponentReference),
+    /// The grammar-reserved derivative operator.
+    ///
+    /// Its identity is the expression arm itself. Ordinary component-reference
+    /// calls cannot acquire derivative semantics from their spelling.
+    DerivativeCall {
+        args: Vec<Expression>,
+        span: Span,
+    },
     FunctionCall {
         comp: ComponentReference,
         args: Vec<Expression>,
@@ -961,8 +969,13 @@ pub enum Expression {
     Modification {
         /// The target being modified (e.g., "x" or "x.start")
         target: ComponentReference,
-        /// The modification value
-        value: Arc<Expression>,
+        /// The modification value. `None` is the value-less element
+        /// modification MLS §18.2 permits (`annotation(Dialog)`): the name
+        /// alone is the modifier. Absence is spelled by the type rather than
+        /// by a placeholder expression so that `Expression::Empty`, which is
+        /// only ever a parser-recovery node, can never be read as an omitted
+        /// value and an omitted value can never be mistaken for a recovery.
+        value: Option<Arc<Expression>>,
         span: Span,
     },
     Array {
@@ -1038,6 +1051,7 @@ impl Debug for Expression {
                 .field("end", end)
                 .finish(),
             Expression::ComponentReference(comp) => write!(f, "{:?}", comp),
+            Expression::DerivativeCall { args, .. } => write!(f, "DerivativeCall({args:?})"),
             Expression::FunctionCall {
                 comp,
                 args,
@@ -1177,6 +1191,7 @@ impl Expression {
             | Expression::Unary { span, .. }
             | Expression::Binary { span, .. }
             | Expression::Terminal { span, .. }
+            | Expression::DerivativeCall { span, .. }
             | Expression::FunctionCall { span, .. }
             | Expression::ClassModification { span, .. }
             | Expression::NamedArgument { span, .. }
@@ -1203,6 +1218,9 @@ impl Expression {
             Expression::Terminal { token, .. } => Some(&token.location),
             Expression::ComponentReference(comp) => {
                 comp.parts.first().map(|part| &part.ident.location)
+            }
+            Expression::DerivativeCall { args, .. } => {
+                args.first().and_then(Expression::get_location)
             }
             Expression::FunctionCall { comp, .. } => {
                 comp.parts.first().map(|part| &part.ident.location)
@@ -1256,6 +1274,9 @@ impl std::fmt::Display for Expression {
                 _ => write!(f, "{}", token.text),
             },
             Expression::ComponentReference(comp) => write!(f, "{}", comp),
+            Expression::DerivativeCall { args, .. } => {
+                write!(f, "der({})", format_display_list(args))
+            }
             Expression::FunctionCall {
                 comp,
                 args,
@@ -1277,7 +1298,16 @@ impl std::fmt::Display for Expression {
                 write!(f, "{}({})", target, format_display_list(modifications))
             }
             Expression::NamedArgument { name, value, .. } => write!(f, "{} = {}", name.text, value),
-            Expression::Modification { target, value, .. } => write!(f, "{} = {}", target, value),
+            Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => write!(f, "{} = {}", target, value),
+            Expression::Modification {
+                target,
+                value: None,
+                ..
+            } => write!(f, "{}", target),
             Expression::Array { elements, .. } => {
                 write!(f, "{{{}}}", format_display_list(elements))
             }

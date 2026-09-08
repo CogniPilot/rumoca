@@ -328,7 +328,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .and_then(|owners| owners.borrow().owners.get(key).cloned())
         });
         if let Some(cached) = cached {
-            if cached.program.target_widths().as_ref() != target_widths.as_slice() {
+            if cached.program.target_widths() != target_widths.as_slice() {
                 return Err(LowerError::contract(
                     "function-conditional owner target layout changed across exact call frames",
                     span,
@@ -448,7 +448,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                 .and_then(|owners| owners.borrow().owners.get(key).cloned())
         });
         if let Some(cached) = cached {
-            if cached.program.target_widths().as_ref() != [result_count] {
+            if cached.program.target_widths() != [result_count] {
                 return Err(LowerError::contract(
                     "function-conditional expression owner result layout changed",
                     span,

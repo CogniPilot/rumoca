@@ -268,7 +268,7 @@ fn lower_only(model: &dae::Dae) -> Vec<gast::UserFunction> {
             view,
             &definitions,
             HashSet::from([function.index()]),
-            EmissionFacts::structured(),
+            positive_zero_arithmetic(),
         )
         .expect("checked function projects")
     })

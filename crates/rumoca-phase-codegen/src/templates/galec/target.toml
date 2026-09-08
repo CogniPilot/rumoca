@@ -1,5 +1,4 @@
 version = 1
-ir = "algorithm-code"
 name = "galec"
 # Conformance ladder (SPEC_0034 GAL-021): this target earns rung 2, the
 # "eFMI Algorithm Code export" claim — a schema-valid eFMU container
@@ -7,11 +6,11 @@ name = "galec"
 # checksums recomputed from the exact written bytes, fresh brace-wrapped
 # UUIDs, strict UTC timestamps), machine-checked in CI by full-container
 # XSD validation and checksum recomputation (crates/rumoca/tests/
-# cli_target_galec.rs). The emitted GALEC also meets "GALEC language
+# tests/suite_galec_fmu/cli_target_galec.rs). The emitted GALEC also meets "GALEC language
 # conformance": it round-trip parses (print∘parse∘print idempotence,
 # rumoca-phase-parse-galec roundtrip tests). "eFMI Production Code export" is the
-# galec-production target's claim, not this one's.
-description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with Model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
+# future efmu target's claim, not this one's.
+description = "eFMI Algorithm Code export: eFMU container (__content.xml + schemas/ + Algorithm Code representation with model.alg + manifest.xml) for fixed-sample discrete models, in directory and .efmu zip forms"
 execution_mode = "packaged"
 # deployment_class is the deployment FAMILY axis of `rumoca targets`, not a
 # conformance claim; the
@@ -24,15 +23,259 @@ completion_message = """eFMI Algorithm Code eFMU written to: {{ out_dir }}
 Conformance: "eFMI Algorithm Code export" (SPEC_0034 GAL-021 rung 2) — schema-valid
 eFMU with SHA-1 checksums computed from the written bytes; the emitted GALEC also
 round-trip parses ("GALEC language conformance"). Not claimed by this target:
-eFMI Production Code export (see --target galec-production)."""
+eFMI Production Code export (the future mixed-root product is --target efmu)."""
 
-[integer]
-minimum = -2147483648
-maximum = 2147483647
+[arithmetic]
+source_real = "binary64"
+source_integer = "i32"
+real_matrix_multiply = "separate_mul_add_ascending_positive_zero"
 
 [package]
 root = "{{ model_name }}"
 required_files = ["__content.xml"]
+
+[[package.members]]
+kind = "file"
+file = "alg"
+
+[[package.members]]
+kind = "file"
+file = "ac_manifest"
+
+[[package.members]]
+kind = "file"
+file = "content"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/efmiAlgorithmCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/efmiVariable.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiBehavioralModelManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiClocks.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiCsvMappings.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiScenarios.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiTolerancesSetups.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiVariables.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBinaryCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBinaryContainerInfoFileReferences.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBuildInformation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiModules.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiObjectFile.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiRunTimeComplianceInformation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "LICENSE"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiCodeFiles.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiDimensions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiFunctions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiIncludes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiLogicalData.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiMacros.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiProductionCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiSupportedLanguages.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiSupportedPlatforms.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTargetTypes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTechnicalLookUps.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTypeDefs.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiVariables.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "README.md"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiAnnotation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiCompilerOptions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiContainerManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiFiles.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiFloatingPointPrecision.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiIdentifierType.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiLinkerOptions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiManifestAttributes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiManifestReferences.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiModelRepresentationKind.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiUnits.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiWildcard.xsd"
+
 
 [package.archive]
 path = "{{ model_name }}.efmu"
@@ -45,10 +288,10 @@ root = "flat"
 # (GAL-025). Clocked when-edge updates are the target's core, so `events`
 # and `clocks` stay true; runtime event *iteration* is not provided.
 [capabilities]
+scalar_fallback = false
 continuous_states = false
 residual_equations = false
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = true
@@ -67,11 +310,12 @@ host_callbacks = false
 # declaration is the SOLE mechanism that installs the schemas: the generic
 # declarative build step (contract §4b) copies this bundle, and there is no
 # separate typed schema-install path — removing this bundle ships a schema-less
-# eFMU. `galec-production` borrows this same bundle with `shared_from`, so this
+# eFMU. The future `efmu` target borrows this same bundle with `shared_from`, so this
 # directory is the only vendored copy in the tree.
 [[assets]]
 source = "schemas"
 dest = "schemas/"
+product_role = "schema"
 
 # `model.alg.jinja` renders the checked semantic view and is round-trip checked
 # through `rumoca-phase-parse-galec` (GAL-009); the XML templates are the real
@@ -88,22 +332,22 @@ dest = "schemas/"
 # rendered `manifest.xml` bytes (`ac_manifest_sha1`). The build step renders
 # each producer first, hashes its exact bytes, and threads the digest into the
 # consumer's context (no placeholder ever, contract §4c).
-#
-# `shared_as` additionally publishes the two Algorithm Code templates to the
-# shared render environment: the galec-production target's AlgorithmCode/
-# representation is the same representation, so its templates `{% include %}`
-# these exact files instead of copying them.
 [[files]]
 id = "alg"
-path = "AlgorithmCode/{{ model_name }}.alg"
+artifact_kind = "algorithm-code"
+semantic_context = "galec"
+product_role = "algorithm-code-source"
+path = "AlgorithmCode/model.alg"
 template = "model.alg.jinja"
-shared_as = "algorithm-code-source.jinja"
 
 [[files]]
 id = "ac_manifest"
+artifact_kind = "xml"
+semantic_context = "galec"
+product_role = "algorithm-code-manifest"
 path = "AlgorithmCode/manifest.xml"
 template = "manifest.xml.jinja"
-shared_as = "algorithm-code-manifest.jinja"
+required_artifact_identities = ["ac_manifest"]
   # File/@checksum edge: the manifest embeds the SHA-1 of the `.alg` bytes.
   [[files.checksums]]
   of = "alg"
@@ -112,8 +356,12 @@ shared_as = "algorithm-code-manifest.jinja"
 
 [[files]]
 id = "content"
+artifact_kind = "xml"
+semantic_context = "galec"
+product_role = "package-manifest"
 path = "__content.xml"
 template = "__content.xml.jinja"
+required_artifact_identities = ["ac_manifest", "content"]
   # ModelRepresentation/@checksum edge: __content.xml embeds the SHA-1 of the
   # Algorithm Code manifest bytes for the one registered representation.
   [[files.checksums]]

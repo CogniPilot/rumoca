@@ -15,14 +15,14 @@ fn instanced_string_concatenation_accepts_subscripted_string_operands() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree.definitions.classes.get("Test").expect("Test class");
     let mut overlay = InstanceOverlay::new();
     for (name, component) in &test.components {
         add_test_instance(&mut overlay, name, component, component.binding.clone());
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("subscripted String operands should concatenate");
 }
 
@@ -39,14 +39,14 @@ fn instanced_cat_accepts_range_slices() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree.definitions.classes.get("Test").expect("Test class");
     let mut overlay = InstanceOverlay::new();
     for (name, component) in &test.components {
         add_test_instance(&mut overlay, name, component, component.binding.clone());
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("range subscripts retain array rank in cat arguments");
 }
 
@@ -72,13 +72,13 @@ fn instanced_component_references_find_inherited_members() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree.definitions.classes.get("Test").expect("Test class");
     let filter = test.components.get("filter").expect("filter component");
     let mut overlay = InstanceOverlay::new();
     add_test_instance(&mut overlay, "filter", filter, None);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("component references should resolve members inherited by their class");
 }
 
@@ -114,13 +114,13 @@ fn instanced_unknown_builtin_result_does_not_capture_user_overload() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree.definitions.classes.get("Test").expect("Test class");
     let pressure = test.components.get("pressure").expect("pressure component");
     let mut overlay = InstanceOverlay::new();
     add_test_instance(&mut overlay, "pressure", pressure, pressure.binding.clone());
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("unknown builtin element types must not capture a same-name user overload");
 }
 
@@ -136,7 +136,7 @@ fn instanced_identity_has_integer_elements_and_requires_an_integer_extent() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
 
     let accepted = tree
         .definitions
@@ -152,7 +152,7 @@ fn instanced_identity_has_integer_elements_and_requires_an_integer_extent() {
             component.binding.clone(),
         );
     }
-    typecheck_instanced(&tree, &mut accepted_overlay, "Accepted")
+    typecheck_instanced_test_projection(&tree, &mut accepted_overlay, "Accepted")
         .expect("identity returns an Integer matrix");
 
     let rejected = tree
@@ -169,7 +169,7 @@ fn instanced_identity_has_integer_elements_and_requires_an_integer_extent() {
             component.binding.clone(),
         );
     }
-    let diagnostics = typecheck_instanced(&tree, &mut rejected_overlay, "Rejected")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut rejected_overlay, "Rejected")
         .expect_err("a Real identity extent must be rejected");
     assert!(
         diagnostics
@@ -192,7 +192,7 @@ fn typecheck_instanced_model(
     for (name, component) in &model.components {
         add_test_instance(&mut overlay, name, component, component.binding.clone());
     }
-    typecheck_instanced(tree, &mut overlay, model_name)
+    typecheck_instanced_test_projection(tree, &mut overlay, model_name)
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn instanced_cross_requires_two_numeric_three_vectors_and_has_exact_result_shape
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
 
     typecheck_instanced_model(&tree, "Accepted")
         .expect("cross accepts compatible numeric 3-vectors and returns a 3-vector");

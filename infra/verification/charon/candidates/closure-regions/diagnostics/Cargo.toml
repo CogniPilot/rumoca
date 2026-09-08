@@ -1,0 +1,21 @@
+[package]
+name = "closure-region-diagnostics"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+closure-region-facts = { path = ".." }
+
+[[bin]]
+name = "collection-driver"
+path = "../collection-driver.rs"
+
+[[bin]]
+name = "consumer-probe"
+path = "../../../fixtures/closure-lifetimes/consumer-probe.rs"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

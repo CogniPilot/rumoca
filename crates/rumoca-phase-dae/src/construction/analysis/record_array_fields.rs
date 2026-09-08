@@ -27,8 +27,8 @@ pub(in crate::construction) enum RecordArrayFieldPlan {
 /// lower and type-check before selecting the retained field ordinal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::construction) struct StructuralRecordFieldPlan {
-    pub(in crate::construction) owners: Box<[rumoca_core::DefId]>,
-    pub(in crate::construction) field: rumoca_core::DefId,
+    owners: Box<[rumoca_core::DefId]>,
+    field: rumoca_core::DefId,
     pub(in crate::construction) ordinal: usize,
     pub(in crate::construction) name: VarName,
     shape: Box<[i64]>,
@@ -42,9 +42,22 @@ pub(in crate::construction) struct StructuralRecordFieldPlan {
 /// an identity over the call expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::construction) struct FunctionResultFieldPlan {
-    pub(in crate::construction) function: rumoca_core::DefId,
-    pub(in crate::construction) result: rumoca_core::DefId,
-    pub(in crate::construction) name: VarName,
+    function: rumoca_core::DefId,
+    result: rumoca_core::DefId,
+    name: VarName,
+}
+
+pub(in crate::construction) enum FieldAccessDisposition<'a> {
+    FunctionResult {
+        base: &'a Expression,
+    },
+    Structural {
+        base: &'a Expression,
+        plan: &'a StructuralRecordFieldPlan,
+    },
+    Materialized(&'a RecordArrayFieldPlan),
+    Projection(&'a RecordArrayFieldPlan),
+    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,7 +67,7 @@ struct StructuralRecordFieldKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::construction) enum RecordArrayFieldPlanKey {
+enum RecordArrayFieldPlanKey {
     Materialized {
         occurrence: Span,
         scope: rumoca_core::InstanceId,
@@ -157,6 +170,30 @@ impl<'flat> CoordinateCandidates<'flat> {
 }
 
 impl RecordArrayFieldPlans {
+    pub(in crate::construction) fn classify_field_access<'a>(
+        &'a self,
+        expression: &'a Expression,
+    ) -> FieldAccessDisposition<'a> {
+        let Expression::FieldAccess { base, .. } = expression else {
+            return FieldAccessDisposition::Unsupported;
+        };
+        if self.function_result(expression).is_some() {
+            return FieldAccessDisposition::FunctionResult { base };
+        }
+        if let Some(plan) = self.structural(expression) {
+            return FieldAccessDisposition::Structural { base, plan };
+        }
+        match self.get(expression) {
+            Some(plan @ RecordArrayFieldPlan::MaterializedCoordinate { .. }) => {
+                FieldAccessDisposition::Materialized(plan)
+            }
+            Some(plan @ RecordArrayFieldPlan::Projection { .. }) => {
+                FieldAccessDisposition::Projection(plan)
+            }
+            None => FieldAccessDisposition::Unsupported,
+        }
+    }
+
     pub(in crate::construction) fn get(
         &self,
         expression: &Expression,
@@ -371,6 +408,7 @@ fn plan_function_result_field(
     let Expression::FunctionCall {
         name,
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         ..
     } = base.as_ref()
     else {
@@ -932,7 +970,7 @@ fn materialized_variable<'flat>(
     Ok(matched)
 }
 
-fn reference_declarations(
+pub(super) fn reference_declarations(
     reference: &rumoca_core::ComponentReference,
 ) -> Box<[rumoca_core::DefId]> {
     reference

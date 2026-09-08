@@ -109,7 +109,7 @@ impl ValueType {
     }
 
     pub fn dimensions(&self) -> &[u32] {
-        &self.dimensions
+        std::ops::Deref::deref(&self.dimensions)
     }
 
     pub fn is_scalar(&self) -> bool {
@@ -120,9 +120,7 @@ impl ValueType {
         if self.scalar == ScalarType::Record {
             return None;
         }
-        self.dimensions
-            .iter()
-            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
+        rumoca_core::checked_extent_product(self.dimensions())
     }
 
     pub fn scalar_subscripts(&self, flat_index: usize) -> Option<Vec<u32>> {

@@ -4,7 +4,7 @@ use super::*;
 fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 2,
@@ -12,39 +12,23 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
         }],
     };
     let span = test_span("structured_discrete_runtime.mo");
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 2),
-            solve_layout: solve::SolveLayout {
-                parameter_count: 2,
-                compiled_parameter_len: 2,
-                ..Default::default()
-            },
-            ..Default::default()
+    let discrete = solve::DiscreteSolveSystem {
+        structured_rhs: solve::ComputeBlock {
+            nodes: vec![solve::ComputeNode::Map {
+                output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                    .expect("two-point output map is valid"),
+                domain: domain.clone(),
+                base_ops: vec![
+                    solve::LinearOp::Const { dst: 0, value: 7.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: solve::TensorNodeMetadata::default(),
+                span,
+            }],
         },
-        parameters: vec![0.0; 2],
-        ..Default::default()
-    };
-    model.problem.discrete.structured_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::Map {
-            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
-                .expect("two-point output map is valid"),
-            domain: domain.clone(),
-            base_ops: vec![
-                solve::LinearOp::Const { dst: 0, value: 7.0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-            load_strides: Vec::new(),
-            const_strides: Vec::new(),
-            metadata: solve::TensorNodeMetadata::default(),
-            span,
-        }],
-    };
-    model
-        .problem
-        .discrete
-        .structured_updates
-        .push(solve::StructuredDiscreteUpdate {
+        structured_updates: vec![solve::StructuredDiscreteUpdate {
             node_index: 0,
             target: solve::StructuredDiscreteTargetMap {
                 base: solve::scalar_slot_p(0),
@@ -56,12 +40,31 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
             observation_refresh: false,
             integrator_history_effect: solve::IntegratorHistoryEffect::Preserve,
             clock_owner: None,
-        });
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("compact structured update satisfies the Solve contract");
-    let runtime = SolveRuntime::new_fixture(&model).expect("structured runtime should prepare");
+        }],
+        ..Default::default()
+    };
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, 2),
+            solve::SolveLayout {
+                parameter_count: 2,
+                static_parameter_names: vec!["p0".to_string(), "p1".to_string()],
+                compiled_parameter_len: 2,
+                ..Default::default()
+            },
+                crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            solve::SolveEventPartition::default(),
+            solve::SolveClockPartition::default(),
+        )
+        .expect("compact structured update satisfies the checked root contract"),
+        parameters: vec![0.0; 2],
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("structured runtime should prepare");
     let mut y = Vec::new();
     let mut p = vec![0.0; 2];
     let event_pre_p = p.clone();
@@ -84,7 +87,7 @@ fn structured_discrete_map_updates_every_target_through_the_runtime_adapter() {
         .expect("structured discrete fixed point should settle");
 
     assert_eq!(p, vec![7.0, 7.0]);
-    assert!(model.problem.discrete.rhs.is_empty());
+    assert!(model.problem().discrete().rhs.is_empty());
 }
 
 #[test]
@@ -121,8 +124,8 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
     let conditional =
         solve::FunctionConditionalProgram::checked(0, [2], [(condition, selected)], fallback)
             .expect("guarded fixture conditional is checked");
-    let owner = solve::GuardedAssignmentProgram::checked(
-        vec![
+    let owner = solve::GuardedAssignmentProgram::checked(solve::GuardedAssignmentProgramInput {
+        program: vec![
             solve::LinearOp::FunctionConditional {
                 dst_start: 0,
                 capture_start: 0,
@@ -134,38 +137,46 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
                 stride: 1,
             },
         ],
-        span.require_provenance("guarded runtime fixture")
+        provenance: span
+            .require_provenance("guarded runtime fixture")
             .expect("fixture provenance"),
-        [(solve::scalar_slot_p(0), 2)],
-        solve::DiscreteRowRole::EventAction,
-        solve::DiscreteEventPreMode::FollowCurrent,
-        false,
-        solve::IntegratorHistoryEffect::Preserve,
-        None,
-    )
+        target_ranges: vec![(solve::scalar_slot_p(0), 2)],
+        role: solve::DiscreteRowRole::EventAction,
+        pre_mode: solve::DiscreteEventPreMode::FollowCurrent,
+        observation_refresh: false,
+        integrator_history_effect: solve::IntegratorHistoryEffect::Preserve,
+        clock_owner: None,
+    })
     .expect("guarded owner is checked");
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 3),
-            solve_layout: solve::SolveLayout {
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, 3),
+            solve::SolveLayout {
                 parameter_count: 3,
+                static_parameter_names: vec![
+                    "p0".to_string(),
+                    "p1".to_string(),
+                    "condition".to_string(),
+                ],
                 compiled_parameter_len: 3,
                 ..Default::default()
             },
-            discrete: solve::DiscreteSolveSystem {
+                crate::test_support::ContinuousSystemFixture::empty(),
+            solve::InitializationSolveSystem::empty(),
+            solve::DiscreteSolveSystem {
                 guarded_assignments: vec![owner],
                 ..Default::default()
             },
-            ..Default::default()
-        },
+            solve::SolveEventPartition::default(),
+            solve::SolveClockPartition::default(),
+        )
+        .expect("guarded range satisfies the checked root contract"),
         parameters: vec![0.0; 3],
-        ..Default::default()
+        ..empty_binary64_first_product_model()
     };
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("guarded range satisfies the Solve contract");
-    let runtime = SolveRuntime::new_fixture(&model).expect("guarded runtime should prepare");
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("guarded runtime should prepare");
     assert!(runtime.discrete_rhs.is_empty());
     assert_eq!(runtime.guarded_assignment_programs.len(), 1);
     assert_eq!(runtime.guarded_assignment_programs[0].output_count(), 2);
@@ -184,8 +195,58 @@ fn guarded_assignment_range_stays_compact_until_the_runtime_write_boundary() {
     assert_eq!(p, vec![7.0, 8.0, 1.0]);
 }
 
-#[test]
-fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+fn typed_root_override_solve_layout() -> solve::SolveLayout {
+    solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["reported".to_string(), "cascade".to_string()],
+            ..Default::default()
+        },
+        variable_storage_runs: vec![solve::SolveVariableStorageRun {
+            base: solve::SolveStorageCoordinate::P(2),
+            scalar_count: 1,
+            role: solve::SolveVariableStorageRole::DiscreteValue,
+            value_kind: solve::SolveVariableValueKind::Boolean,
+        }],
+        variable_declarations: vec![solve::SolveVariableDeclaration::new(
+            solve::SolveVariableStorageRole::DiscreteValue,
+            solve::SolveVariableValueKind::Boolean,
+        )],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
+        compiled_parameter_len: 4,
+        relation_memory_parameter_indices: vec![0, 1],
+        discrete_valued_scalar_names: vec!["mode".to_string()],
+        pre_param_bindings: vec![solve::PreParamBinding {
+            dest_p_index: 3,
+            source: solve::PreParamSource::P { index: 2 },
+            clock_schedule: None,
+        }],
+        ..Default::default()
+    }
+}
+
+fn typed_root_override_discrete(rhs: solve::ScalarProgramBlock) -> solve::DiscreteSolveSystem {
+    solve::DiscreteSolveSystem {
+        event_iteration_plan: solve::EventIterationPlan {
+            runs: vec![solve::EventIterationRun {
+                variable: 0,
+                pre_binding_start: 0,
+                owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+            }],
+        },
+        rhs,
+        update_targets: vec![solve::scalar_slot_p(2)],
+        row_roles: vec![solve::DiscreteRowRole::Equation],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+        observation_refresh: vec![false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+        clock_owners: vec![None],
+        ..Default::default()
+    }
+}
+
+fn typed_root_override_model() -> solve::SolveModel {
+    let provenance = test_span("typed_root_cascade_variables.mo");
     let roots = spanned_block(
         vec![
             vec![
@@ -206,54 +267,87 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         ]],
         "typed_root_cascade_discrete.mo",
     );
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["reported".to_string(), "cascade".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 2,
-                compiled_parameter_len: 3,
-                relation_memory_parameter_indices: vec![0, 1],
-                discrete_valued_scalar_names: vec!["mode".to_string()],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: roots,
-                root_relation_memory_targets: vec![
-                    Some(solve::scalar_slot_p(0)),
-                    Some(solve::scalar_slot_p(1)),
-                ],
-                root_zero_domains: vec![
-                    solve::RootZeroDomain::Previous,
-                    solve::RootZeroDomain::Previous,
-                ],
-                root_relation_refresh_roles: vec![
-                    solve::RootRelationRefreshRole::Frozen,
-                    solve::RootRelationRefreshRole::AlgebraicDependent,
-                ],
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                rhs: discrete,
-                update_targets: vec![solve::scalar_slot_p(2)],
-                row_roles: vec![solve::DiscreteRowRole::Equation],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
-                observation_refresh: vec![false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![None],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        initial_y: vec![0.0, 1.0],
-        parameters: vec![0.0, 0.0, 0.0],
+    let solve_layout = typed_root_override_solve_layout();
+    let discrete = typed_root_override_discrete(discrete);
+    let events = solve::SolveEventPartition {
+        root_conditions: roots,
+        root_relation_memory_targets: vec![
+            Some(solve::scalar_slot_p(0)),
+            Some(solve::scalar_slot_p(1)),
+        ],
+        root_zero_domains: vec![
+            solve::RootZeroDomain::Previous,
+            solve::RootZeroDomain::Previous,
+        ],
+        root_relation_refresh_roles: vec![
+            solve::RootRelationRefreshRole::Frozen,
+            solve::RootRelationRefreshRole::AlgebraicDependent,
+        ],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new_fixture(&model).expect("root cascade runtime should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let clocks = solve::SolveClockPartition::default();
+    let root_cascade_implicit_span = test_span("typed_root_cascade_implicit.mo")
+        .require_provenance("typed root cascade implicit fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![shifted_variable_residual_row(1, -1.0)],
+                vec![root_cascade_implicit_span.into()],
+                vec![1],
+            )
+            .expect("typed root cascade implicit row is computable"),
+        ),
+        implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("typed_root_cascade_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 2, 4),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("root-cascade fixture satisfies the checked root contract"),
+        initial_y: vec![0.0, 1.0],
+        solver_nominals: vec![1.0; 2],
+        parameters: vec![0.0, 0.0, 0.0, 0.0],
+        visible_value_rows: crate::test_support::direct_p_visible_rows([2], provenance),
+        variable_entries: crate::test_support::explicit_boolean_scalar_catalog_entries(vec![
+            crate::test_support::BooleanScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(1),
+                name: "mode".to_string(),
+                start: false,
+                provenance,
+            },
+        ]),
+        ..empty_binary64_first_product_model()
+    }
+}
+
+#[test]
+fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
+    let model = typed_root_override_model();
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("root cascade runtime should prepare");
+    let mut y = model.initial_y().to_vec();
+    let mut p = model.parameters().to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -278,63 +372,71 @@ fn typed_root_override_keeps_other_relations_in_the_event_fixed_point() {
         )
         .expect("a typed root must allow a second relation to join the same event");
 
-    assert_eq!(p, vec![1.0, 1.0, 1.0]);
+    assert_eq!(p, vec![1.0, 1.0, 1.0, 1.0]);
 }
 
 #[test]
 fn event_iteration_advances_discrete_pre_before_the_next_whole_equation_pass() {
+    let provenance = test_span("whole_event_pass_variables.mo");
     let relation_row = whole_event_relation_row();
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 5),
-            solve_layout: whole_event_solve_layout(),
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadY { dst: 0, index: 0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    "whole_event_pass_implicit.mo",
-                )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![0],
-                        y_indices: vec![0],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
-            discrete: whole_event_discrete_system(relation_row),
-            events: solve::SolveEventPartition {
-                root_conditions: spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadY { dst: 0, index: 0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    "whole_event_pass_root.mo",
-                ),
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(4))],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                root_relation_refresh_roles: vec![
-                    solve::RootRelationRefreshRole::AlgebraicDependent,
-                ],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        initial_y: vec![1.0],
-        parameters: vec![0.0; 5],
+    let solve_layout = whole_event_solve_layout();
+    let discrete = whole_event_discrete_system(relation_row);
+    let events = solve::SolveEventPartition {
+        root_conditions: spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "whole_event_pass_root.mo",
+        ),
+        root_relation_memory_targets: vec![Some(solve::scalar_slot_p(4))],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::AlgebraicDependent],
         ..Default::default()
     };
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("the typed event-iteration fixture is complete");
-    let runtime = SolveRuntime::new_fixture(&model).expect("the event fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "whole_event_pass_implicit.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 1, 5),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("whole-event fixture satisfies the checked root contract"),
+        initial_y: vec![1.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0; 5],
+        visible_value_rows: crate::test_support::direct_p_visible_rows([0, 1], provenance),
+        variable_entries: whole_event_variable_entries(provenance),
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("the event fixture should prepare");
+    let mut y = model.initial_y().to_vec();
+    let mut p = model.parameters().to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -415,7 +517,7 @@ fn whole_event_solve_layout() -> solve::SolveLayout {
             },
         ],
         variable_storage_runs: vec![solve::SolveVariableStorageRun {
-            base: solve::scalar_slot_p(0),
+            base: solve::SolveStorageCoordinate::P(0),
             scalar_count: 2,
             role: solve::SolveVariableStorageRole::DiscreteValue,
             value_kind: solve::SolveVariableValueKind::Boolean,
@@ -463,6 +565,30 @@ fn whole_event_discrete_system(relation_row: Vec<solve::LinearOp>) -> solve::Dis
     }
 }
 
+fn whole_event_variable_entries(
+    provenance: rumoca_core::Span,
+) -> Vec<solve::SolveVariableCatalogSourceEntry> {
+    vec![(
+        solve::SolveVariableSource::new(
+            rumoca_core::SourceOccurrenceId::try_from(rumoca_core::InstanceId::new(1))
+                .expect("fixture source occurrence is explicitly nonzero"),
+            "mode_pair".to_string(),
+            vec![2],
+            vec!["mode".to_string(), "off".to_string()],
+            provenance,
+        ),
+        solve::SolveVariableSourceAttributes::new(
+            solve::SolveVariableCausality::Local,
+            solve::SolveVariableVariability::Discrete,
+            false,
+            None,
+            None,
+            rumoca_core::Fixity::Free,
+        ),
+        solve::SolveVariableEvaluatedValues::new(Some(vec![0.0, 0.0]), None, None, None),
+    )]
+}
+
 fn mixed_pre_solve_layout() -> solve::SolveLayout {
     solve::SolveLayout {
         solver_maps: solve::SolverNameIndexMaps {
@@ -471,19 +597,19 @@ fn mixed_pre_solve_layout() -> solve::SolveLayout {
         },
         variable_storage_runs: vec![
             solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_p(0),
+                base: solve::SolveStorageCoordinate::P(0),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::DiscreteValue,
                 value_kind: solve::SolveVariableValueKind::Boolean,
             },
             solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_p(1),
+                base: solve::SolveStorageCoordinate::P(1),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::DiscreteValue,
                 value_kind: solve::SolveVariableValueKind::Boolean,
             },
             solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_y(0),
+                base: solve::SolveStorageCoordinate::Y(0),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::State,
                 value_kind: solve::SolveVariableValueKind::Real,
@@ -527,6 +653,120 @@ fn mixed_pre_solve_layout() -> solve::SolveLayout {
     }
 }
 
+fn mixed_pre_visible_rows() -> solve::ScalarProgramBlock {
+    spanned_block(
+        vec![
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "mixed_discrete_continuous_pre_visible.mo",
+    )
+}
+
+fn mixed_pre_variable_entries() -> Vec<solve::SolveVariableCatalogSourceEntry> {
+    let provenance = test_span("mixed_discrete_continuous_pre_variables.mo");
+    let mut entries = crate::test_support::explicit_boolean_scalar_catalog_entries(vec![
+        crate::test_support::BooleanScalarVariableFixture {
+            source_occurrence: crate::test_support::fixture_source_occurrence(1),
+            name: "trigger".to_string(),
+            start: false,
+            provenance,
+        },
+        crate::test_support::BooleanScalarVariableFixture {
+            source_occurrence: crate::test_support::fixture_source_occurrence(2),
+            name: "result".to_string(),
+            start: false,
+            provenance,
+        },
+    ]);
+    entries.extend(crate::test_support::explicit_real_scalar_catalog_entries(
+        vec![crate::test_support::RealScalarVariableFixture::state(
+            3, "x", 0, 1.0, 1.0, true, provenance,
+        )],
+    ));
+    entries
+}
+
+fn mixed_pre_model(mixed_pre_row: Vec<solve::LinearOp>) -> solve::SolveModel {
+    let solve_layout = mixed_pre_solve_layout();
+    let discrete = solve::DiscreteSolveSystem {
+        event_iteration_plan: solve::EventIterationPlan {
+            runs: vec![
+                solve::EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+                },
+                solve::EventIterationRun {
+                    variable: 1,
+                    pre_binding_start: 1,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: 1 },
+                },
+            ],
+        },
+        rhs: spanned_block(
+            vec![
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 1.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                mixed_pre_row,
+            ],
+            "mixed_discrete_continuous_pre.mo",
+        ),
+        update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
+        row_roles: vec![solve::DiscreteRowRole::Equation; 2],
+        pre_modes: vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::EventEntry,
+        ],
+        observation_refresh: vec![false; 2],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
+        clock_owners: vec![None; 2],
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("mixed_pre_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    }
+    .seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 1, 5),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("mixed-pre fixture satisfies the checked root contract"),
+        initial_y: vec![1.0],
+        solver_nominals: vec![1.0],
+        // The continuous pre lane is deliberately stale. Pass zero must seed
+        // it from event_pre_y before projection mutates live y.
+        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0],
+        visible_value_rows: mixed_pre_visible_rows(),
+        variable_entries: mixed_pre_variable_entries(),
+        ..empty_binary64_first_product_model()
+    }
+}
+
 #[test]
 fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre() {
     // Appendix B advances pre(trigger) after the first whole event pass, while
@@ -556,61 +796,12 @@ fn event_iteration_mixes_advanced_discrete_pre_with_event_entry_continuous_pre()
         },
         solve::LinearOp::StoreOutput { src: 4 },
     ];
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 5),
-            solve_layout: mixed_pre_solve_layout(),
-            discrete: solve::DiscreteSolveSystem {
-                event_iteration_plan: solve::EventIterationPlan {
-                    runs: vec![
-                        solve::EventIterationRun {
-                            variable: 0,
-                            pre_binding_start: 0,
-                            owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
-                        },
-                        solve::EventIterationRun {
-                            variable: 1,
-                            pre_binding_start: 1,
-                            owner: solve::EventIterationOwner::ScalarRows { start_row: 1 },
-                        },
-                    ],
-                },
-                rhs: spanned_block(
-                    vec![
-                        vec![
-                            solve::LinearOp::Const { dst: 0, value: 1.0 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                        mixed_pre_row,
-                    ],
-                    "mixed_discrete_continuous_pre.mo",
-                ),
-                update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
-                row_roles: vec![solve::DiscreteRowRole::Equation; 2],
-                pre_modes: vec![
-                    solve::DiscreteEventPreMode::FollowCurrent,
-                    solve::DiscreteEventPreMode::EventEntry,
-                ],
-                observation_refresh: vec![false; 2],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
-                clock_owners: vec![None; 2],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        initial_y: vec![1.0],
-        // The continuous pre lane is deliberately stale. Pass zero must seed
-        // it from event_pre_y before projection mutates live y.
-        parameters: vec![0.0, 0.0, 0.0, 0.0, -1.0],
-        ..Default::default()
-    };
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("the mixed-pre fixture satisfies the Solve contract");
-    let runtime = SolveRuntime::new_fixture(&model).expect("the mixed-pre fixture should prepare");
-    let mut y = model.initial_y.clone();
-    let mut p = model.parameters.clone();
+    let model = mixed_pre_model(mixed_pre_row);
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("the mixed-pre fixture should prepare");
+    let mut y = model.initial_y().to_vec();
+    let mut p = model.parameters().to_vec();
     let event_pre_y = y.clone();
     let event_pre_p = p.clone();
 
@@ -643,13 +834,13 @@ fn clock_first_pass_solve_layout() -> solve::SolveLayout {
     solve::SolveLayout {
         variable_storage_runs: vec![
             solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_p(0),
+                base: solve::SolveStorageCoordinate::P(0),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::DiscreteValue,
                 value_kind: solve::SolveVariableValueKind::Boolean,
             },
             solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_p(1),
+                base: solve::SolveStorageCoordinate::P(1),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::DiscreteValue,
                 value_kind: solve::SolveVariableValueKind::Boolean,
@@ -683,8 +874,8 @@ fn clock_first_pass_solve_layout() -> solve::SolveLayout {
     }
 }
 
-#[test]
-fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
+fn clock_first_pass_model() -> solve::SolveModel {
+    let provenance = test_span("clock_first_whole_pass_variables.mo");
     let schedule = solve::PeriodicEventSchedule::new(
         rumoca_core::ClockLattice::from_seconds(0.1, 0.0).expect("positive phase-zero lattice"),
     )
@@ -696,72 +887,95 @@ fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
     let clock = clocks
         .periodic_clock_id(0)
         .expect("inserted clock has typed identity");
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 5),
-            solve_layout: clock_first_pass_solve_layout(),
-            clocks,
-            discrete: solve::DiscreteSolveSystem {
-                event_iteration_plan: solve::EventIterationPlan {
-                    runs: vec![
-                        solve::EventIterationRun {
-                            variable: 0,
-                            pre_binding_start: 0,
-                            owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
-                        },
-                        solve::EventIterationRun {
-                            variable: 1,
-                            pre_binding_start: 1,
-                            owner: solve::EventIterationOwner::ScalarRows { start_row: 1 },
-                        },
-                    ],
+    let solve_layout = clock_first_pass_solve_layout();
+    let discrete = solve::DiscreteSolveSystem {
+        event_iteration_plan: solve::EventIterationPlan {
+            runs: vec![
+                solve::EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
                 },
-                rhs: spanned_block(
-                    vec![
-                        vec![
-                            solve::LinearOp::Const { dst: 0, value: 1.0 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                        vec![
-                            solve::LinearOp::LoadP { dst: 0, index: 1 },
-                            solve::LinearOp::Const { dst: 1, value: 1.0 },
-                            solve::LinearOp::Binary {
-                                dst: 2,
-                                op: solve::BinaryOp::Add,
-                                lhs: 0,
-                                rhs: 1,
-                            },
-                            solve::LinearOp::StoreOutput { src: 2 },
-                        ],
-                    ],
-                    "clock_first_whole_pass.mo",
-                ),
-                update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
-                row_roles: vec![solve::DiscreteRowRole::Equation; 2],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; 2],
-                observation_refresh: vec![false; 2],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
-                clock_owners: vec![None, Some(clock)],
-                // SOLVE-C57: every clock-owned producer carries its issued
-                // same-tick step; construction validates exact coverage.
-                clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
-                    start_row: 1,
-                    count: 1,
-                }],
-                ..Default::default()
-            },
-            ..Default::default()
+                solve::EventIterationRun {
+                    variable: 1,
+                    pre_binding_start: 1,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: 1 },
+                },
+            ],
         },
-        parameters: vec![0.0; 5],
+        rhs: spanned_block(
+            vec![
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 1.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 1 },
+                    solve::LinearOp::Const { dst: 1, value: 1.0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Add,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::StoreOutput { src: 2 },
+                ],
+            ],
+            "clock_first_whole_pass.mo",
+        ),
+        update_targets: vec![solve::scalar_slot_p(0), solve::scalar_slot_p(1)],
+        row_roles: vec![solve::DiscreteRowRole::Equation; 2],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; 2],
+        observation_refresh: vec![false; 2],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
+        clock_owners: vec![None, Some(clock)],
+        clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
+            start_row: 1,
+            count: 1,
+        }],
         ..Default::default()
     };
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("clock-first-pass fixture satisfies the Solve contract");
-    let runtime =
-        SolveRuntime::new_fixture(&model).expect("clock-first-pass fixture should prepare");
-    let mut p = model.parameters.clone();
+    let events = solve::SolveEventPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, 5),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("clock-first-pass fixture satisfies the checked root contract"),
+        parameters: vec![0.0; 5],
+        visible_value_rows: crate::test_support::direct_p_visible_rows([0, 1], provenance),
+        variable_entries: crate::test_support::explicit_boolean_scalar_catalog_entries(vec![
+            crate::test_support::BooleanScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(1),
+                name: "trigger".to_string(),
+                start: false,
+                provenance,
+            },
+            crate::test_support::BooleanScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(2),
+                name: "clocked_result".to_string(),
+                start: false,
+                provenance,
+            },
+        ]),
+        ..empty_binary64_first_product_model()
+    }
+}
+
+#[test]
+fn clock_owned_equation_executes_only_on_the_first_whole_event_pass() {
+    let model = clock_first_pass_model();
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("clock-first-pass fixture should prepare");
+    let mut p = model.parameters().to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -807,7 +1021,7 @@ fn phase_zero_clock_partition() -> (solve::SolveClockPartition, solve::PeriodicC
 fn clock_relation_solve_layout() -> solve::SolveLayout {
     solve::SolveLayout {
         variable_storage_runs: vec![solve::SolveVariableStorageRun {
-            base: solve::scalar_slot_p(1),
+            base: solve::SolveStorageCoordinate::P(1),
             scalar_count: 1,
             role: solve::SolveVariableStorageRole::DiscreteValue,
             value_kind: solve::SolveVariableValueKind::Boolean,
@@ -830,67 +1044,81 @@ fn clock_relation_solve_layout() -> solve::SolveLayout {
 
 #[test]
 fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
+    let provenance = test_span("clock_reads_relation_variables.mo");
     let (clocks, clock) = phase_zero_clock_partition();
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 4),
-            solve_layout: clock_relation_solve_layout(),
-            clocks,
-            events: solve::SolveEventPartition {
-                root_conditions: spanned_block(
-                    vec![vec![
-                        solve::LinearOp::Const {
-                            dst: 0,
-                            value: -1.0,
-                        },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    "clock_reads_relation_root.mo",
-                ),
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                event_iteration_plan: solve::EventIterationPlan {
-                    runs: vec![solve::EventIterationRun {
-                        variable: 0,
-                        pre_binding_start: 0,
-                        owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
-                    }],
+    let solve_layout = clock_relation_solve_layout();
+    let events = solve::SolveEventPartition {
+        root_conditions: spanned_block(
+            vec![vec![
+                solve::LinearOp::Const {
+                    dst: 0,
+                    value: -1.0,
                 },
-                rhs: spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadP { dst: 0, index: 0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    "clock_reads_relation_value.mo",
-                ),
-                update_targets: vec![solve::scalar_slot_p(1)],
-                row_roles: vec![solve::DiscreteRowRole::Equation],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
-                observation_refresh: vec![false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![Some(clock)],
-                clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
-                    start_row: 0,
-                    count: 1,
-                }],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        parameters: vec![0.0; 4],
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "clock_reads_relation_root.mo",
+        ),
+        root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
         ..Default::default()
     };
-    model
-        .problem
-        .validate_shape_contract()
-        .expect("clock/relation ordering fixture satisfies the Solve contract");
-    let runtime =
-        SolveRuntime::new_fixture(&model).expect("clock/relation ordering fixture should prepare");
-    let mut p = model.parameters.clone();
+    let discrete = solve::DiscreteSolveSystem {
+        event_iteration_plan: solve::EventIterationPlan {
+            runs: vec![solve::EventIterationRun {
+                variable: 0,
+                pre_binding_start: 0,
+                owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+            }],
+        },
+        rhs: spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "clock_reads_relation_value.mo",
+        ),
+        update_targets: vec![solve::scalar_slot_p(1)],
+        row_roles: vec![solve::DiscreteRowRole::Equation],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+        observation_refresh: vec![false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+        clock_owners: vec![Some(clock)],
+        clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
+            start_row: 0,
+            count: 1,
+        }],
+        ..Default::default()
+    };
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, 4),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("clock/relation fixture satisfies the checked root contract"),
+        parameters: vec![0.0; 4],
+        visible_value_rows: crate::test_support::direct_p_visible_rows([1], provenance),
+        variable_entries: crate::test_support::explicit_boolean_scalar_catalog_entries(vec![
+            crate::test_support::BooleanScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(1),
+                name: "clocked_result".to_string(),
+                start: false,
+                provenance,
+            },
+        ]),
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("clock/relation fixture should prepare");
+    let mut p = model.parameters().to_vec();
     let event_pre_p = p.clone();
 
     runtime
@@ -920,45 +1148,113 @@ fn clock_owner_observes_projected_relation_memory_on_its_only_event_pass() {
     );
 }
 
-#[test]
-fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["surface".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                compiled_parameter_len: 2,
-                // The first relation is scheduled/non-root; only the second
-                // relation owns the continuously monitored root below.
-                relation_memory_parameter_indices: vec![0, 1],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadY { dst: 0, index: 0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    "root_relation_owner.mo",
-                ),
-                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(1))],
-                root_zero_domains: vec![solve::RootZeroDomain::Previous],
-                ..Default::default()
-            },
+fn invalid_root_relation_owner_error() -> String {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["surface".to_string()],
             ..Default::default()
         },
-        initial_y: vec![-1.0],
-        parameters: vec![0.0, 0.0],
+        state_scalar_count: 1,
+        compiled_parameter_len: 2,
+        relation_memory_parameter_indices: vec![0, 1],
         ..Default::default()
     };
-    let runtime = SolveRuntime::new_fixture(&model).expect("typed root target is a valid runtime");
-    let mut params = model.parameters.clone();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition {
+        root_conditions: spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "invalid_root_relation_owner.mo",
+        ),
+        root_relation_memory_targets: vec![Some(solve::scalar_slot_y(0))],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+        ..Default::default()
+    };
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("invalid_root_relation_owner_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    }
+    .seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(IndexMap::new(), 1, 2),
+        solve_layout,
+        continuous,
+        solve::InitializationSolveSystem::empty(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect_err("a relation-memory root cannot seal with continuous storage")
+    .to_string()
+}
+
+#[test]
+fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["surface".to_string()],
+            ..Default::default()
+        },
+        state_scalar_count: 1,
+        compiled_parameter_len: 2,
+        // The first relation is scheduled/non-root; only the second
+        // relation owns the continuously monitored root below.
+        relation_memory_parameter_indices: vec![0, 1],
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition {
+        root_conditions: spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "root_relation_owner.mo",
+        ),
+        root_relation_memory_targets: vec![Some(solve::scalar_slot_p(1))],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+        ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("root_relation_owner_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 1, 2),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("root-owner fixture satisfies the checked root contract"),
+        initial_y: vec![-1.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0, 0.0],
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("typed root target is a valid runtime");
+    let mut params = model.parameters().to_vec();
 
     runtime
-        .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
+        .update_relation_memory_from_state(0.0, model.initial_y(), &mut params, 1.0e-12, 4)
         .expect("root relation memory refresh should succeed");
 
     assert_eq!(
@@ -967,100 +1263,116 @@ fn root_refresh_uses_the_root_owned_relation_target_not_global_relation_order() 
         "the root's aligned target owns the update; an earlier non-root relation must remain intact"
     );
 
-    model.problem.events.root_relation_memory_targets = vec![Some(solve::scalar_slot_y(0))];
-    let runtime = SolveRuntime::new_fixture(&model).expect("the root target shape remains aligned");
-    let error = runtime
-        .update_relation_memory_from_state(0.0, &model.initial_y, &mut params, 1.0e-12, 4)
-        .expect_err("a relation-memory root cannot write continuous solver storage");
+    let error = invalid_root_relation_owner_error();
     assert!(
-        error.to_string().contains("not a parameter slot"),
+        error.to_string().contains("not a P slot"),
         "the invalid typed target must fail closed: {error}"
     );
 }
 
-#[test]
-fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        vec![
-                            solve::LinearOp::Const { dst: 0, value: 0.0 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                        vec![
-                            solve::LinearOp::Const {
-                                dst: 0,
-                                value: -1.0,
-                            },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                    ],
-                    "algebraic_relation_assignment.mo",
-                )),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string(), "algebraic".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                compiled_parameter_len: 2,
-                relation_memory_parameter_indices: vec![0, 1],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                root_conditions: spanned_block(
-                    vec![
-                        vec![
-                            solve::LinearOp::LoadP { dst: 0, index: 0 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                        vec![
-                            solve::LinearOp::LoadY { dst: 0, index: 1 },
-                            solve::LinearOp::StoreOutput { src: 0 },
-                        ],
-                    ],
-                    "algebraic_relation_partition.mo",
-                ),
-                root_relation_memory_targets: vec![
-                    Some(solve::scalar_slot_p(0)),
-                    Some(solve::scalar_slot_p(1)),
-                ],
-                root_zero_domains: vec![
-                    solve::RootZeroDomain::Previous,
-                    solve::RootZeroDomain::Previous,
-                ],
-                root_relation_refresh_roles: vec![
-                    solve::RootRelationRefreshRole::Frozen,
-                    solve::RootRelationRefreshRole::AlgebraicDependent,
-                ],
-                ..Default::default()
-            },
+fn post_commit_coupling_model() -> solve::SolveModel {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["state".to_string(), "algebraic".to_string()],
             ..Default::default()
         },
-        initial_y: vec![0.0, -1.0],
-        parameters: vec![-1.0, 0.0],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
+        compiled_parameter_len: 2,
+        relation_memory_parameter_indices: vec![0, 1],
         ..Default::default()
     };
-    let runtime =
-        SolveRuntime::new_fixture(&model).expect("typed relation partition should prepare");
-    let mut params = model.parameters.clone();
+    let events = solve::SolveEventPartition {
+        root_conditions: spanned_block(
+            vec![
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            "algebraic_relation_partition.mo",
+        ),
+        root_relation_memory_targets: vec![
+            Some(solve::scalar_slot_p(0)),
+            Some(solve::scalar_slot_p(1)),
+        ],
+        root_zero_domains: vec![
+            solve::RootZeroDomain::Previous,
+            solve::RootZeroDomain::Previous,
+        ],
+        root_relation_refresh_roles: vec![
+            solve::RootRelationRefreshRole::Frozen,
+            solve::RootRelationRefreshRole::AlgebraicDependent,
+        ],
+        ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let clocks = solve::SolveClockPartition::default();
+    let implicit_span = test_span("algebraic_relation_assignment.mo");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![vec![
+                    solve::LinearOp::Const {
+                        dst: 0,
+                        value: -1.0,
+                    },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                vec![implicit_span],
+                vec![1],
+            )
+            .expect("algebraic relation assignment fixture is computable"),
+        ),
+        implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("post_commit_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 2, 2),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("post-commit coupling fixture satisfies the checked root contract"),
+        initial_y: vec![0.0, -1.0],
+        solver_nominals: vec![1.0; 2],
+        parameters: vec![-1.0, 0.0],
+        ..empty_binary64_first_product_model()
+    }
+}
+
+#[test]
+fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
+    let model = post_commit_coupling_model();
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model))
+        .expect("typed relation partition should prepare");
+    let mut params = model.parameters().to_vec();
 
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
             0.0,
-            &model.initial_y,
+            model.initial_y(),
             &mut params,
             &[],
         )
@@ -1071,60 +1383,63 @@ fn post_commit_coupling_refreshes_only_algebraic_relation_roots() {
         "parameter-only relation memory stays fixed while the algebraic root joins the coupled closure"
     );
 
-    let mut overridden = model.parameters.clone();
+    let mut overridden = model.parameters().to_vec();
     runtime
         .update_algebraic_relation_memory_from_solver_y_except_overrides(
             0.0,
-            &model.initial_y,
+            model.initial_y(),
             &mut overridden,
             &[(1, 0.0)],
         )
         .expect("a typed located-root override should remain authoritative");
-    assert_eq!(overridden, model.parameters);
+    assert_eq!(overridden, model.parameters());
 }
 
 #[test]
-fn refresh_plan_does_not_let_residual_target_shadow_assignment_row() {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "y".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 2,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        non_assignment_targeted_residual_row(),
-                        assignment_residual_row(),
-                    ],
-                    "refresh_shadow.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(1)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                ..Default::default()
-            },
+fn construction_rejects_residual_target_shadowing_an_assignment_row() {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "y".to_string()],
             ..Default::default()
         },
+        algebraic_scalar_count: 2,
         ..Default::default()
     };
-    set_complete_test_projection_plan(&mut model);
-    let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
-            .expect("valid implicit RHS should prepare");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![
+                non_assignment_targeted_residual_row(),
+                assignment_residual_row(),
+            ],
+            "refresh_shadow.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(1)), Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1],
+                y_indices: vec![0, 1],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let error = crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(IndexMap::new(), 2, 0),
+        solve_layout,
+        continuous,
+        solve::InitializationSolveSystem::empty(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect_err("a residual target cannot shadow another assignment owner");
 
-    let plan = valid_algebraic_refresh_plan(&model, &block);
-
-    assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].source().program(), 1);
-    assert_eq!(plan.rows[0].target_index(), 1);
-    assert!(!plan.causal_solution_certified);
-    assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
-    assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![0, 1]);
-    assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![0, 1]);
+    assert!(
+        error.to_string().contains("explicit row/target pairs"),
+        "the constructor should report the conflicting target ownership: {error}"
+    );
 }

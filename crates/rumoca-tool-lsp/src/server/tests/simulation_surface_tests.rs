@@ -359,7 +359,7 @@ fn compile_model_for_simulation_ignores_unreferenced_library_typecheck_errors() 
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let compiled = server
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
@@ -424,7 +424,7 @@ fn compile_model_for_simulation_ignores_sibling_pulled_library_typecheck_errors(
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let compiled = server
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
@@ -477,7 +477,7 @@ fn compile_model_for_simulation_handles_real_examples_ball_with_msl_root() {
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let compiled = server
             .compile_model_for_simulation("Ball", &focus.to_string_lossy())
@@ -533,7 +533,7 @@ fn compile_model_for_simulation_still_fails_models_that_use_broken_library_alias
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let error = server
             .compile_model_for_simulation("UsesClocked", &focus.to_string_lossy())
@@ -690,7 +690,7 @@ fn render_target_command_renders_compiled_open_document_model() {
                         .expect("file uri")
                         .to_string(),
                     "model": "Decay",
-                    "target": "c-ode",
+                    "target": "rust-ode",
                 })],
                 work_done_progress_params: WorkDoneProgressParams::default(),
             })
@@ -707,9 +707,9 @@ fn render_target_command_renders_compiled_open_document_model() {
                 .get("files")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|files| files.iter().any(|file| {
-                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_ode.c")
+                    file.get("path").and_then(serde_json::Value::as_str) == Some("Decay_ode.rs")
                 })),
-            "render target command should return the checked ODE RHS C model file"
+            "render target command should return the checked ODE RHS model file"
         );
     });
 }
@@ -774,50 +774,6 @@ fn rendered_target_content<'a>(response: &'a serde_json::Value, path: &str) -> &
 }
 
 #[test]
-fn render_target_command_renders_manifest_declared_embedded_c_galec_sources() {
-    run_async_test(async {
-        let response =
-            render_sampled_galec_target("embedded-c-galec", "render-target-embedded-c-galec").await;
-
-        assert_eq!(
-            response.get("ok").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "GALEC-derived C codegen should succeed: {response}"
-        );
-        assert_eq!(
-            rendered_target_paths(&response),
-            [
-                "rumoca_galec_kernels.h",
-                "rumoca_galec_kernels.c",
-                "Sampler.h",
-                "Sampler.c",
-            ],
-            "the non-eFMI GAL-024 target emits every manifest-declared code source"
-        );
-        let kernel_version_macro = ["RUM", "OCA_GALEC_KERNELS_VERSION"].concat();
-        assert!(
-            rendered_target_content(&response, "rumoca_galec_kernels.h")
-                .contains(&kernel_version_macro),
-            "the shared kernel header must carry its checked ABI version"
-        );
-        assert!(
-            rendered_target_content(&response, "rumoca_galec_kernels.c")
-                .contains("rumoca_galec_fill_real"),
-            "the shared kernel source must contain the declared array kernels"
-        );
-        assert!(
-            rendered_target_content(&response, "Sampler.h").contains("} SamplerState;"),
-            "the declared header artifact must contain the checked block state"
-        );
-        assert!(
-            rendered_target_content(&response, "Sampler.c")
-                .contains("void Sampler_dostep(SamplerState *self)"),
-            "the declared source artifact must contain the checked DoStep implementation"
-        );
-    });
-}
-
-#[test]
 fn render_target_command_renders_manifest_declared_galec_algorithm_source() {
     run_async_test(async {
         let response = render_sampled_galec_target("galec", "render-target-galec").await;
@@ -839,7 +795,7 @@ fn render_target_command_renders_manifest_declared_galec_algorithm_source() {
 }
 
 #[test]
-fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
+fn render_target_command_rejects_relative_raw_jinja_from_rum_scenario() {
     run_async_test(async {
         let temp = new_temp_dir("render-target-raw-jinja-scenario");
         let model_dir = temp.join("models");
@@ -893,22 +849,12 @@ fn render_target_command_renders_relative_raw_jinja_from_rum_scenario() {
 
         assert_eq!(
             response.get("ok").and_then(serde_json::Value::as_bool),
-            Some(true),
-            "raw Jinja render target command should report success: {response:#?}"
+            Some(false),
+            "a standalone Jinja file has no checked manifest plan and must reject: {response:#?}"
         );
-        let files = response
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .expect("render response should include files");
         assert!(
-            files.iter().any(|file| {
-                file.get("path").and_then(serde_json::Value::as_str) == Some("custom.py")
-                    && file
-                        .get("content")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|content| content.contains("model=Decay"))
-            }),
-            "render target command should return rendered raw template output: {response:#?}"
+            response.get("files").is_none(),
+            "a rejected standalone template must return no artifacts: {response:#?}"
         );
     });
 }
@@ -944,7 +890,6 @@ continuous_states = true
 residual_equations = true
 structured_equation_families = true
 external_functions = true
-external_tables = true
 random = true
 initialization = true
 events = true
@@ -1435,7 +1380,7 @@ fn isolated_simulation_session_skips_loaded_source_roots_for_local_only_models()
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let uris = server
             .isolated_simulation_document_uris_for_focus(&focus.to_string_lossy())
@@ -1495,7 +1440,7 @@ fn isolated_simulation_session_keeps_loaded_source_roots_when_referenced() {
             )
             .await
             .expect("source-root load should succeed")
-            .expect("source root should load");
+            .require_loaded();
 
         let uris = server
             .isolated_simulation_document_uris_for_focus(&focus.to_string_lossy())

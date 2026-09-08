@@ -25,7 +25,7 @@ use crate::equations::{
     expand_range_indices, substitute_index_in_equation,
 };
 use crate::errors::FlattenError;
-use crate::{Context, qualify_expression_imports_with_def_map_ctx};
+use crate::{Context, qualify_expression_imports_ctx};
 
 type DefinitionMap = flat::VarNameIndexMap<rumoca_core::Span>;
 
@@ -34,14 +34,13 @@ pub(crate) fn flatten_when_equation(
     ctx: &Context,
     inst_eq: &ast::InstanceEquation,
     prefix: &ast::QualifiedName,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Option<flat::WhenChain>, FlattenError> {
     let span = inst_eq.span;
 
     match &inst_eq.equation {
         ast::Equation::When(blocks) => {
-            flatten_when_blocks(ctx, blocks, prefix, span, def_map, operators).map(Some)
+            flatten_when_blocks(ctx, blocks, prefix, span, operators).map(Some)
         }
         _ => Ok(None),
     }
@@ -57,7 +56,6 @@ pub(crate) fn flatten_when_blocks(
     blocks: &[ast::EquationBlock],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<flat::WhenChain, FlattenError> {
     let Some((first, else_when)) = blocks.split_first() else {
@@ -66,12 +64,10 @@ pub(crate) fn flatten_when_blocks(
             span,
         ));
     };
-    let first = flatten_when_block(ctx, first, prefix, span, def_map, operators)?;
+    let first = flatten_when_block(ctx, first, prefix, span, operators)?;
     let mut chain = flat::WhenChain::new(first, span);
     for block in else_when {
-        chain.push_else_when(flatten_when_block(
-            ctx, block, prefix, span, def_map, operators,
-        )?);
+        chain.push_else_when(flatten_when_block(ctx, block, prefix, span, operators)?);
     }
 
     validate_when_branch_targets(ctx, blocks, &chain, prefix, span, operators)?;
@@ -84,24 +80,17 @@ pub(crate) fn flatten_when_block(
     block: &ast::EquationBlock,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<flat::WhenBranch, FlattenError> {
     // Qualify the condition expression
-    let condition = qualify_expression_imports_with_def_map_ctx(
-        &block.cond,
-        prefix,
-        &ctx.current_imports,
-        def_map,
-        ctx,
-        None,
-    )?;
+    let condition =
+        qualify_expression_imports_ctx(&block.cond, prefix, &ctx.current_imports, ctx, None)?;
 
     let mut branch = flat::WhenBranch::new(condition, block.cond.span());
 
     // Flatten each equation in the block
     for eq in &block.eqs {
-        let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map, operators)?;
+        let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, operators)?;
         for weq in when_eqs {
             branch.add_equation(weq);
         }
@@ -127,17 +116,16 @@ fn flatten_when_body_equation(
     eq: &ast::Equation,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
     match eq {
         ast::Equation::Simple { lhs, rhs } => {
-            flatten_when_simple_equation(ctx, lhs, rhs, prefix, span, &ctx.current_imports, def_map)
+            flatten_when_simple_equation(ctx, lhs, rhs, prefix, span, &ctx.current_imports)
                 .map(|opt| opt.into_iter().collect())
         }
 
         ast::Equation::FunctionCall { comp, args, .. } => {
-            flatten_when_function_call(ctx, comp, args, prefix, span, &ctx.current_imports, def_map)
+            flatten_when_function_call(ctx, comp, args, prefix, span, &ctx.current_imports)
                 .map(|opt| opt.into_iter().collect())
         }
 
@@ -151,7 +139,6 @@ fn flatten_when_body_equation(
                 prefix,
                 span,
                 imports: &ctx.current_imports,
-                def_map,
             },
             condition,
             message,
@@ -162,15 +149,7 @@ fn flatten_when_body_equation(
         ast::Equation::If {
             cond_blocks,
             else_block,
-        } => flatten_when_if_equation(
-            ctx,
-            cond_blocks,
-            else_block,
-            prefix,
-            span,
-            def_map,
-            operators,
-        ),
+        } => flatten_when_if_equation(ctx, cond_blocks, else_block, prefix, span, operators),
 
         ast::Equation::When(_) => {
             // MLS §8.3.5: Nested when-equations are not allowed (EQN-005)
@@ -183,7 +162,7 @@ fn flatten_when_body_equation(
         ast::Equation::For { indices, equations } => {
             // For-equations inside when-equations: expand to multiple assignments
             // This is valid per MLS §8.3.5 when the for-equation contains allowed content
-            flatten_when_for_equation(ctx, indices, equations, prefix, span, def_map, operators)
+            flatten_when_for_equation(ctx, indices, equations, prefix, span, operators)
         }
 
         ast::Equation::Empty => Err(FlattenError::invalid_ast_recovery(
@@ -216,7 +195,6 @@ fn flatten_when_if_equation(
     else_block: &Option<Vec<ast::Equation>>,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
     if cond_blocks.is_empty() {
@@ -228,25 +206,19 @@ fn flatten_when_if_equation(
     if let StructuralWhenSelection::Selected(active) =
         select_structural_when_branch(ctx, cond_blocks, else_block, prefix, operators)?
     {
-        return flatten_when_equation_sequence(ctx, active, prefix, span, def_map, operators);
+        return flatten_when_equation_sequence(ctx, active, prefix, span, operators);
     }
 
     let mut branches = Vec::new();
 
     // Process each if/elseif branch
     for block in cond_blocks {
-        let condition = qualify_expression_imports_with_def_map_ctx(
-            &block.cond,
-            prefix,
-            &ctx.current_imports,
-            def_map,
-            ctx,
-            None,
-        )?;
+        let condition =
+            qualify_expression_imports_ctx(&block.cond, prefix, &ctx.current_imports, ctx, None)?;
         let mut branch_eqs = Vec::new();
 
         for eq in &block.eqs {
-            let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map, operators)?;
+            let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, operators)?;
             branch_eqs.extend(when_eqs);
         }
 
@@ -256,7 +228,7 @@ fn flatten_when_if_equation(
     let else_eqs = if let Some(else_equations) = else_block {
         let mut eqs = Vec::new();
         for eq in else_equations {
-            let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, def_map, operators)?;
+            let when_eqs = flatten_when_body_equation(ctx, eq, prefix, span, operators)?;
             eqs.extend(when_eqs);
         }
         Some(eqs)
@@ -355,13 +327,12 @@ fn flatten_when_equation_sequence(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
     let mut flattened = Vec::new();
     for equation in equations {
         flattened.extend(flatten_when_body_equation(
-            ctx, equation, prefix, span, def_map, operators,
+            ctx, equation, prefix, span, operators,
         )?);
     }
     Ok(flattened)
@@ -534,7 +505,6 @@ fn flatten_when_simple_equation(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &crate::qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     let target_span = lhs.span();
     // Check for tuple assignment (multi-output function call)
@@ -556,8 +526,7 @@ fn flatten_when_simple_equation(
         }
 
         // Qualify the function call expression
-        let function =
-            qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
+        let function = qualify_expression_imports_ctx(rhs, prefix, imports, ctx, None)?;
         let origin = format!(
             "when equation multi-output assignment to ({})",
             outputs
@@ -577,8 +546,7 @@ fn flatten_when_simple_equation(
 
     // Simple single-target assignment
     let target = extract_assignment_target(lhs, prefix)?;
-    let value =
-        qualify_expression_imports_with_def_map_ctx(rhs, prefix, imports, def_map, ctx, None)?;
+    let value = qualify_expression_imports_ctx(rhs, prefix, imports, ctx, None)?;
     let origin = format!("when equation assignment to {}", target);
     Ok(Some(flat::WhenEquation::assign(
         target,
@@ -596,7 +564,6 @@ fn flatten_when_function_call(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &crate::qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     let first_part = comp.parts.first().ok_or_else(|| {
         FlattenError::unsupported_equation("invalid function call in when-equation", span)
@@ -613,9 +580,9 @@ fn flatten_when_function_call(
         .join(".");
     // Check for known functions (by first part or full qualified name)
     match &**func_name {
-        "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports, def_map),
-        "assert" => flatten_assert_call(ctx, args, prefix, span, imports, def_map),
-        "terminate" => flatten_terminate_call(ctx, args, prefix, span, imports, def_map),
+        "reinit" => flatten_reinit_call(ctx, args, prefix, span, imports),
+        "assert" => flatten_assert_call(ctx, args, prefix, span, imports),
+        "terminate" => flatten_terminate_call(ctx, args, prefix, span, imports),
         "print" => Err(FlattenError::unsupported_equation(
             "print() in a when-equation requires a typed checked event-call owner",
             span,
@@ -683,18 +650,9 @@ fn flatten_when_for_equation(
     equations: &[ast::Equation],
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
-    expand_when_for_indices(
-        ctx,
-        indices,
-        equations.to_vec(),
-        prefix,
-        span,
-        def_map,
-        operators,
-    )
+    expand_when_for_indices(ctx, indices, equations.to_vec(), prefix, span, operators)
 }
 
 fn expand_when_for_indices(
@@ -703,14 +661,13 @@ fn expand_when_for_indices(
     equations: Vec<ast::Equation>,
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<Vec<flat::WhenEquation>, FlattenError> {
     let Some((index, rest)) = indices.split_first() else {
         let mut all_when_eqs = Vec::new();
         for eq in &equations {
             all_when_eqs.extend(flatten_when_body_equation(
-                ctx, eq, prefix, span, def_map, operators,
+                ctx, eq, prefix, span, operators,
             )?);
         }
         return Ok(all_when_eqs);
@@ -731,7 +688,6 @@ fn expand_when_for_indices(
             substituted,
             prefix,
             span,
-            def_map,
             operators,
         )?);
     }
@@ -746,7 +702,6 @@ fn flatten_assert_call(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &crate::qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     let decoded = decode_assert_arguments(args, span)?;
     flatten_when_assert_equation(
@@ -755,7 +710,6 @@ fn flatten_assert_call(
             prefix,
             span,
             imports,
-            def_map,
         },
         decoded.condition,
         decoded.message,
@@ -770,7 +724,6 @@ struct WhenAssertLowering<'a> {
     prefix: &'a ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &'a crate::qualify::ImportMap,
-    def_map: Option<&'a crate::ResolveDefMap>,
 }
 
 fn flatten_when_assert_equation(
@@ -779,29 +732,26 @@ fn flatten_when_assert_equation(
     message: &ast::Expression,
     level: Option<&ast::Expression>,
 ) -> Result<flat::WhenEquation, FlattenError> {
-    let condition = qualify_expression_imports_with_def_map_ctx(
+    let condition = qualify_expression_imports_ctx(
         condition,
         lowering.prefix,
         lowering.imports,
-        lowering.def_map,
         lowering.ctx,
         None,
     )?;
-    let message = qualify_expression_imports_with_def_map_ctx(
+    let message = qualify_expression_imports_ctx(
         message,
         lowering.prefix,
         lowering.imports,
-        lowering.def_map,
         lowering.ctx,
         None,
     )?;
     let level = level
         .map(|level| {
-            qualify_expression_imports_with_def_map_ctx(
+            qualify_expression_imports_ctx(
                 level,
                 lowering.prefix,
                 lowering.imports,
-                lowering.def_map,
                 lowering.ctx,
                 None,
             )
@@ -823,11 +773,9 @@ fn flatten_terminate_call(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &crate::qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     let message = decode_terminate_arguments(args, span)?;
-    let message =
-        qualify_expression_imports_with_def_map_ctx(message, prefix, imports, def_map, ctx, None)?;
+    let message = qualify_expression_imports_ctx(message, prefix, imports, ctx, None)?;
     let origin = "terminate in when-clause".to_string();
 
     Ok(Some(flat::WhenEquation::terminate(message, span, origin)))
@@ -840,7 +788,6 @@ fn flatten_reinit_call(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
     imports: &crate::qualify::ImportMap,
-    def_map: Option<&crate::ResolveDefMap>,
 ) -> Result<Option<flat::WhenEquation>, FlattenError> {
     if args.len() != 2 {
         return Err(FlattenError::unsupported_equation(
@@ -850,8 +797,7 @@ fn flatten_reinit_call(
     }
 
     let state = extract_assignment_target(&args[0], prefix)?;
-    let value =
-        qualify_expression_imports_with_def_map_ctx(&args[1], prefix, imports, def_map, ctx, None)?;
+    let value = qualify_expression_imports_ctx(&args[1], prefix, imports, ctx, None)?;
     let origin = format!("reinit({})", state);
     let target_span = args[0].span();
 

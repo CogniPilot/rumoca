@@ -110,12 +110,13 @@ fn record_alias_canonicalization_visits_when_chains_and_algorithms() {
 }
 
 #[test]
-fn invalid_field_access_drop_handles_indexed_bases() {
+fn invalid_field_access_binding_is_rejected_without_erasure() {
     let mut model = flat::Model::new();
     model.add_variable(
         rumoca_core::VarName::new("someArray[1].existing"),
         flat::Variable {
             name: rumoca_core::VarName::new("someArray[1].existing"),
+            component_ref: Some(component_ref("someArray")),
             ..flat::Variable::empty_with_span(test_span())
         },
     );
@@ -140,13 +141,49 @@ fn invalid_field_access_drop_handles_indexed_bases() {
         },
     );
 
-    drop_invalid_field_access_bindings(&mut model);
+    let error = reject_invalid_field_access_bindings(&model)
+        .expect_err("a dangling binding target must fail instead of disappearing");
+    assert!(matches!(error, FlattenError::UndefinedVariable { .. }));
 
     assert!(
         model
             .variables
             .get(&rumoca_core::VarName::new("y"))
             .and_then(|var| var.binding.as_ref())
-            .is_none()
+            .is_some(),
+        "rejection must leave the candidate binding intact for diagnostics"
     );
+}
+
+#[test]
+fn invalid_field_access_without_provenance_fails_explicitly() {
+    let mut model = flat::Model::new();
+    model.add_variable(
+        rumoca_core::VarName::new("root.existing"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("root.existing"),
+            ..flat::Variable::empty_with_span(test_span())
+        },
+    );
+    model.add_variable(
+        rumoca_core::VarName::new("y"),
+        flat::Variable {
+            name: rumoca_core::VarName::new("y"),
+            binding: Some(rumoca_core::Expression::FieldAccess {
+                base: Box::new(rumoca_core::Expression::VarRef {
+                    name: "root".into(),
+                    subscripts: Vec::new(),
+                    span: Span::DUMMY,
+                }),
+                field: "missing".to_string(),
+                field_def_id: fixture_def_id("missing"),
+                span: Span::DUMMY,
+            }),
+            ..flat::Variable::empty_with_span(Span::DUMMY)
+        },
+    );
+
+    let error = reject_invalid_field_access_bindings(&model)
+        .expect_err("a forged dangling binding must not acquire a dummy diagnostic span");
+    assert!(matches!(error, FlattenError::MissingSourceContext { .. }));
 }

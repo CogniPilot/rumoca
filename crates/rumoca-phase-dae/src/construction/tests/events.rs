@@ -82,7 +82,7 @@ fn terminal_activation_owns_one_typed_terminal_coordinate() {
     );
 
     let dae = construct(&model, source.map).expect("terminal has a checked DAE owner");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.terminal_count(), 1);
         assert!((0..view.condition_count()).any(|index| {
             let condition = view
@@ -151,7 +151,7 @@ fn time_relation_in_discrete_binding_owns_its_scheduled_instant() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.time_event_count(), 1);
         assert_eq!(view.root_count(), 0);
         let instant = view
@@ -196,7 +196,7 @@ fn every_time_ordering_owns_a_scheduled_instant_and_no_root() {
         let model = when_activation_model(&source, condition, span);
 
         let dae = construct(&model, source.map).unwrap();
-        dae.inspect(|view| {
+        dae.dae().inspect(|view| {
             assert_eq!(
                 view.time_event_count(),
                 1,
@@ -262,7 +262,15 @@ fn compound_activation_splits_the_instant_from_the_state_crossing() {
             op: OpBinary::Sub,
             lhs: Box::new(Expression::BuiltinCall {
                 function: BuiltinFunction::Der,
-                args: vec![variable_reference(&source, "x", "der(x)", 0, Vec::new())],
+                args: vec![Expression::VarRef {
+                    name: rumoca_core::Reference::with_component_reference(
+                        "x",
+                        test_component_reference("x", source.span("x", 1)),
+                    )
+                    .with_instance_id(test_instance_id("x")),
+                    subscripts: Vec::new(),
+                    span: source.span("x", 1),
+                }],
                 span: source.span("der(x)", 0),
             }),
             rhs: Box::new(Expression::Literal {
@@ -278,7 +286,7 @@ fn compound_activation_splits_the_instant_from_the_state_crossing() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(
             view.time_event_count(),
             1,
@@ -339,7 +347,7 @@ fn parameter_threshold_still_resolves_to_an_exact_instant() {
     }
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.time_event_count(), 1);
         assert_eq!(view.root_count(), 0);
         let instant = view
@@ -383,7 +391,7 @@ fn event_dependent_threshold_owns_a_dynamic_time_event() {
     let model = when_activation_model(&source, condition, condition_span);
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.time_event_count(), 1);
         assert_eq!(view.root_count(), 0);
         let event = view
@@ -502,7 +510,7 @@ fn each_instance_of_a_replicated_activation_owns_its_own_instant() {
     }
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let mut instants = (0..view.time_event_count())
             .map(|index| {
                 view.time_event(view.time_event_id(index).unwrap())
@@ -592,7 +600,7 @@ fn each_instance_of_a_replicated_sample_owns_its_own_schedule() {
     }
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let mut periods = (0..view.clock_count())
             .map(|index| {
                 let clock = view.clock(view.clock_id(index).unwrap()).unwrap();
@@ -620,7 +628,7 @@ fn each_instance_of_a_replicated_sample_owns_its_own_schedule() {
 fn exact_sample_alias_chain_lowers_to_the_periodic_clock_leaf() {
     let (model, source, condition_span) = exact_sample_alias_model();
     let dae = construct(&model, source.map).expect("sample alias ownership is checked");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 1, "aliases reuse one typed schedule");
         let condition = (0..view.condition_count())
             .filter_map(|index| view.condition(view.condition_id(index)?))
@@ -759,7 +767,7 @@ fn an_instant_at_the_start_is_left_to_its_crossing() {
         let model = when_activation_model(&source, condition, span);
 
         let dae = construct(&model, source.map).unwrap();
-        dae.inspect(|view| {
+        dae.dae().inspect(|view| {
             assert_eq!(
                 view.time_event_count(),
                 0,
@@ -883,7 +891,7 @@ fn a_sample_start_settled_by_the_start_instant_keeps_its_runtime_anchor() {
     let model = deferred_start_sample_model(&source, settling, "sample(t0, 0.25)");
 
     let dae = construct(&model, source.map).expect("start-relative schedules are representable");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let clock = view
             .clock(view.clock_id(0).expect("one periodic clock"))
             .expect("clock identity resolves");

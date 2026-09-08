@@ -1,212 +1,88 @@
-use crate::{TypeCheckError, TypeCheckResult};
-use rumoca_core::{DefId, SourceMap, TypeId};
-use rumoca_ir_ast::{ClassTree, Component, TypeTable};
-use std::collections::{HashMap, HashSet};
+use rumoca_core::{ComponentPath, DefId, TypeId};
+use rumoca_ir_ast::{ClassDef, ClassTree, Component, WildcardMember};
+use std::collections::HashMap;
 
-pub(crate) fn build_component_modifier_targets(
-    tree: &ClassTree,
-) -> HashMap<DefId, HashSet<String>> {
-    let mut cache = HashMap::new();
-    let mut visiting = HashSet::new();
-    for def_id in tree.def_map.keys().copied() {
-        let _ = collect_component_modifier_targets(tree, def_id, &mut cache, &mut visiting);
-    }
-    cache
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModifierMember {
+    Typed(TypeId),
+    Ambiguous,
+    UnresolvedType,
 }
 
-pub(crate) fn build_component_modifier_member_types(
+pub(crate) type ModifierMemberCatalog = HashMap<DefId, HashMap<ComponentPath, ModifierMember>>;
+
+/// Project Resolve's exact direct-and-inherited member view into the type
+/// identities needed for modifier-path traversal.
+///
+/// The ScopeTree remains the sole inheritance/name authority: this projection
+/// preserves its ambiguity verdicts and never walks `extends` or rebuilds
+/// declaration identity from rendered names.
+pub(crate) fn build_modifier_member_catalog(
     tree: &ClassTree,
-    type_table: &TypeTable,
     type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    source_map: &SourceMap,
-) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>> {
-    let mut cache = HashMap::new();
-    let mut visiting = HashSet::new();
-    let ctx = ComponentModifierMemberTypeContext {
-        tree,
-        type_table,
-        type_ids_by_def_id,
-        source_map,
-    };
-    for def_id in tree.def_map.keys().copied() {
-        let _ = collect_component_modifier_member_types(&ctx, def_id, &mut cache, &mut visiting)?;
-    }
-    Ok(cache)
-}
-
-pub(crate) fn build_component_modifier_member_types_for_def_ids<I>(
-    tree: &ClassTree,
-    type_table: &TypeTable,
-    type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    source_map: &SourceMap,
-    root_def_ids: I,
-) -> TypeCheckResult<HashMap<DefId, HashMap<String, TypeId>>>
-where
-    I: IntoIterator<Item = DefId>,
-{
-    let mut cache = HashMap::new();
-    let mut visiting = HashSet::new();
-    let ctx = ComponentModifierMemberTypeContext {
-        tree,
-        type_table,
-        type_ids_by_def_id,
-        source_map,
-    };
-    for def_id in root_def_ids {
-        let _ = collect_component_modifier_member_types(&ctx, def_id, &mut cache, &mut visiting)?;
-    }
-    Ok(cache)
-}
-
-fn collect_component_modifier_targets(
-    tree: &ClassTree,
-    def_id: DefId,
-    cache: &mut HashMap<DefId, HashSet<String>>,
-    visiting: &mut HashSet<DefId>,
-) -> Option<HashSet<String>> {
-    if let Some(existing) = cache.get(&def_id) {
-        return Some(existing.clone());
-    }
-    if !visiting.insert(def_id) {
-        return Some(HashSet::new());
-    }
-
-    let class = tree.get_class_by_def_id(def_id)?;
-    let mut names: HashSet<String> = class
-        .components
+) -> ModifierMemberCatalog {
+    let components = component_declarations_by_def_id(tree);
+    tree.def_map
         .keys()
-        .cloned()
-        .chain(class.classes.keys().cloned())
-        .collect();
-
-    for ext in &class.extends {
-        let Some(base_def_id) = ext.base_def_id else {
-            continue;
-        };
-        if let Some(base_names) =
-            collect_component_modifier_targets(tree, base_def_id, cache, visiting)
-        {
-            names.extend(base_names);
-        }
-        for break_name in &ext.break_names {
-            names.remove(break_name);
-        }
-    }
-
-    visiting.remove(&def_id);
-    cache.insert(def_id, names.clone());
-    Some(names)
-}
-
-struct ComponentModifierMemberTypeContext<'a> {
-    tree: &'a ClassTree,
-    type_table: &'a TypeTable,
-    type_ids_by_def_id: &'a HashMap<DefId, TypeId>,
-    source_map: &'a SourceMap,
-}
-
-fn collect_component_modifier_member_types(
-    ctx: &ComponentModifierMemberTypeContext<'_>,
-    def_id: DefId,
-    cache: &mut HashMap<DefId, HashMap<String, TypeId>>,
-    visiting: &mut HashSet<DefId>,
-) -> TypeCheckResult<Option<HashMap<String, TypeId>>> {
-    if let Some(existing) = cache.get(&def_id) {
-        return Ok(Some(existing.clone()));
-    }
-    if !visiting.insert(def_id) {
-        return Ok(Some(HashMap::new()));
-    }
-
-    let Some(class) = ctx.tree.get_class_by_def_id(def_id) else {
-        return Ok(None);
-    };
-    let mut member_types = HashMap::<String, TypeId>::new();
-
-    for ext in &class.extends {
-        let Some(base_def_id) = ext.base_def_id else {
-            continue;
-        };
-        if let Some(base_member_types) =
-            collect_component_modifier_member_types(ctx, base_def_id, cache, visiting)?
-        {
-            member_types.extend(base_member_types);
-        }
-        for break_name in &ext.break_names {
-            member_types.remove(break_name);
-        }
-    }
-
-    for (member_name, member_comp) in &class.components {
-        let member_type_id = resolve_component_type_for_modifier_members(
-            member_comp,
-            ctx.type_table,
-            ctx.type_ids_by_def_id,
-            ctx.source_map,
-        )?;
-        if let Some(member_type_id) = member_type_id {
-            member_types.insert(member_name.clone(), member_type_id);
-        }
-    }
-
-    visiting.remove(&def_id);
-    cache.insert(def_id, member_types.clone());
-    Ok(Some(member_types))
-}
-
-fn resolve_component_type_for_modifier_members(
-    component: &Component,
-    type_table: &TypeTable,
-    type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    source_map: &SourceMap,
-) -> TypeCheckResult<Option<TypeId>> {
-    if let Some(type_def_id) = component.type_def_id
-        && let Some(type_id) = type_ids_by_def_id.get(&type_def_id)
-    {
-        return Ok(Some(*type_id));
-    }
-    if component.type_def_id.is_none()
-        && component.type_name.name.len() > 1
-        && component.type_name.def_id.is_some()
-    {
-        return Ok(None);
-    }
-
-    let type_name = component.type_name.to_string();
-    let span = name_span(source_map, &component.type_name)?;
-    type_table
-        .lookup(&type_name)
-        .map(Some)
-        .ok_or_else(|| Box::new(TypeCheckError::undefined_type(type_name, span)))
-}
-
-fn name_span(
-    source_map: &SourceMap,
-    name: &rumoca_ir_ast::Name,
-) -> TypeCheckResult<rumoca_core::Span> {
-    let Some(first) = name.name.first() else {
-        return Err(Box::new(TypeCheckError::missing_source_context(
-            "component modifier member type name has no source path segments",
-        )));
-    };
-    let last = name.name.last().unwrap_or(first);
-    let source = if first.location.source != rumoca_core::SourceId::DUMMY {
-        first.location.source
-    } else {
-        last.location.source
-    };
-    source_map
-        .try_span(
-            source,
-            first.location.start as usize,
-            last.location.end as usize,
-        )
-        .ok_or_else(|| {
-            let file_name = source_map
-                .name(source)
-                .unwrap_or(crate::UNKNOWN_SOURCE_DISPLAY_NAME);
-            Box::new(TypeCheckError::missing_source_context(format!(
-                "source file `{file_name}` for component modifier member type name was not found"
-            )))
+        .filter_map(|&class_def_id| {
+            let class = tree.get_class_by_def_id(class_def_id)?;
+            let scope = class.scope_id?;
+            let members = tree
+                .scope_tree
+                .importable_members(scope)
+                .into_iter()
+                .map(|(name, member)| {
+                    let member = match member {
+                        WildcardMember::Unique(member_def_id) => {
+                            modifier_member_type(member_def_id, &components, type_ids_by_def_id)
+                        }
+                        WildcardMember::AmbiguousInherited => ModifierMember::Ambiguous,
+                    };
+                    (name, member)
+                })
+                .collect();
+            Some((class_def_id, members))
         })
+        .collect()
+}
+
+fn modifier_member_type(
+    member_def_id: DefId,
+    components: &HashMap<DefId, &Component>,
+    type_ids_by_def_id: &HashMap<DefId, TypeId>,
+) -> ModifierMember {
+    if let Some(type_id) = type_ids_by_def_id.get(&member_def_id) {
+        return ModifierMember::Typed(*type_id);
+    }
+    let Some(component) = components.get(&member_def_id) else {
+        return ModifierMember::UnresolvedType;
+    };
+    component
+        .type_def_id
+        .and_then(|type_def_id| type_ids_by_def_id.get(&type_def_id))
+        .copied()
+        .map_or(ModifierMember::UnresolvedType, ModifierMember::Typed)
+}
+
+fn component_declarations_by_def_id(tree: &ClassTree) -> HashMap<DefId, &Component> {
+    let mut components = HashMap::new();
+    for class in tree.definitions.classes.values() {
+        collect_component_declarations(class, &mut components);
+    }
+    components
+}
+
+fn collect_component_declarations<'a>(
+    class: &'a ClassDef,
+    components: &mut HashMap<DefId, &'a Component>,
+) {
+    components.extend(
+        class
+            .components
+            .values()
+            .filter_map(|component| component.def_id.map(|def_id| (def_id, component))),
+    );
+    for nested in class.classes.values() {
+        collect_component_declarations(nested, components);
+    }
 }

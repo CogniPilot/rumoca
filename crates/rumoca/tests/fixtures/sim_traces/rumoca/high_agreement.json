@@ -1,5 +1,7 @@
 {
   "model_name": "Modelica.Fixture.HighAgreement",
+  "variable_meta": null,
+  "certification_profile": null,
   "times": [0.0, 0.5, 1.0],
   "names": ["x"],
   "data": [

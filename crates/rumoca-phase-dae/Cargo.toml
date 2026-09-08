@@ -19,5 +19,8 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

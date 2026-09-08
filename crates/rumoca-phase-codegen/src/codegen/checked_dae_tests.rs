@@ -1,4 +1,5 @@
 use rumoca_core::{ClockLattice, ClockRational, SourceMap, Span, TypeId, VarName};
+use std::sync::Arc;
 
 use super::*;
 
@@ -57,6 +58,7 @@ fn dae_template_preserves_rank_three_transpose_axis_semantics() {
         let input = dae.variables(|variables| {
             variables.input(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 tensor,
                 dae::InputVariability::Continuous,
                 at,
@@ -139,6 +141,7 @@ fn checked_modelica_distinguishes_omitted_and_explicit_unit_range_steps() {
         model.variables(|variables| {
             variables.parameter(
                 VarName::new("a"),
+                rumoca_core::InstanceId::new(2),
                 integers,
                 at("parameter Integer a[3]", 0),
                 dae::VariableAttributes {
@@ -148,6 +151,7 @@ fn checked_modelica_distinguishes_omitted_and_explicit_unit_range_steps() {
             )?;
             variables.parameter(
                 VarName::new("b"),
+                rumoca_core::InstanceId::new(3),
                 integers,
                 at("parameter Integer b[3]", 0),
                 dae::VariableAttributes {
@@ -216,6 +220,7 @@ fn dae_modelica_target_walks_the_checked_expression_arena() {
         let parameter = dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 at("parameter Real p = 2"),
                 dae::VariableAttributes {
@@ -227,6 +232,7 @@ fn dae_modelica_target_walks_the_checked_expression_arena() {
         let state = dae.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 at("Real x"),
                 dae::VariableAttributes::default(),
@@ -287,6 +293,7 @@ fn dae_modelica_target_renders_typed_periodic_clock_interval() {
         let y = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(6),
                 real,
                 at("Real y"),
                 dae::VariableAttributes::default(),
@@ -378,6 +385,7 @@ fn dae_modelica_target_fails_closed_on_unowned_array_update() {
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("a"),
+                rumoca_core::InstanceId::new(7),
                 integers,
                 at("parameter Integer a[2]"),
                 dae::VariableAttributes {
@@ -454,6 +462,7 @@ fn dae_modelica_target_rejects_nonprimary_function_output() {
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(8),
                 real,
                 at("parameter Real p"),
                 dae::VariableAttributes {
@@ -631,6 +640,7 @@ fn checked_dae_rejects_record_coordinate_before_codegen() {
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(9),
                 pair,
                 at("parameter Pair p"),
                 dae::VariableAttributes {
@@ -869,7 +879,7 @@ fn checked_fold_fixture() -> (dae::Dae, FoldSource) {
                 domains.structured(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
-                            id: 0,
+                            id: rumoca_core::StructuredIndexBinderId::new(0),
                             display_name: "k".to_owned(),
                             lower: 1,
                             upper: 2,
@@ -1001,9 +1011,67 @@ fn dae_template_projects_function_folds_by_definition_identity() {
 
 #[test]
 fn symbolic_ode_targets_use_checked_declarations_and_solve_programs() {
-    let dae = empty_checked_dae();
-    let problem = solve::SolveProblem::default();
-    let artifacts = solve::SolveArtifacts::default();
+    let solve_layout = super::codegen_test_support::solve_layout_with_names(
+        solve::SolveLayout {
+            state_scalar_count: 2,
+            parameter_count: 3,
+            compiled_parameter_len: 3,
+            static_parameter_names: vec!["gain[1]".into(), "gain[2]".into(), "bias".into()],
+            ..solve::SolveLayout::default()
+        },
+        ["x[1]".into(), "x[2]".into()],
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 3);
+    let derivative_rhs = solve::ComputeBlock::from_scalar_program_block(
+        solve::ScalarProgramBlock::with_source_span(
+            vec![
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 0.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::Const { dst: 0, value: 0.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            Span::from_offsets(
+                rumoca_core::SourceId::from_source_name("checked_defaults_fixture.mo"),
+                1,
+                2,
+            )
+            .require_provenance("checked defaults fixture")
+            .expect("fixture span is source-backed"),
+        )
+        .expect("fixture derivative programs are checked"),
+    );
+    let continuous = super::codegen_test_support::continuous_system_with_derivative(
+        &solve_layout,
+        derivative_rhs,
+    );
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let problem = solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract");
+    let artifacts = super::codegen_test_support::solve_artifacts(&problem);
+    let model = super::codegen_test_support::solve_model_with_values(
+        problem,
+        artifacts,
+        vec![-0.0, 4.25],
+        vec![1.0; 2],
+        vec![-0.0, 2.5, 7.0],
+    );
+    let renderer = PreparedSolveModelRendering::new_for_test(Arc::new(model), "CheckedDefaults")
+        .expect("checked Solve context constructs");
 
     for (target, template_name, marker) in [
         ("casadi-ode", "casadi_ode.py.jinja", "import casadi as ca"),
@@ -1011,13 +1079,19 @@ fn symbolic_ode_targets_use_checked_declarations_and_solve_programs() {
     ] {
         let template = crate::templates::builtin_template_source(target, template_name)
             .expect("checked Solve template exists");
-        let rendered = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, &dae)
-            .expect("checked Solve context constructs")
+        let rendered = renderer
             .render(template)
             .expect("checked Solve target renders");
 
         assert!(rendered.contains(marker));
-        assert!(rendered.contains("PARAM_NAMES = []"));
-        assert!(!template.contains("dae.p"));
+        assert!(rendered.contains("STATE_NAMES = ['x[1]', 'x[2]']"));
+        assert!(rendered.contains("PARAM_NAMES = ['gain[1]', 'gain[2]', 'bias']"));
+        assert!(rendered.contains("DEFAULT_X = [-0.0, 4.25]"));
+        assert!(rendered.contains("DEFAULT_P = [-0.0, 2.5, 7.0]"));
+        assert!(!template.contains("dae."));
     }
+
+    renderer
+        .render("{{ dae.variables | length }}")
+        .expect_err("pure Solve render context must not expose a DAE side channel");
 }

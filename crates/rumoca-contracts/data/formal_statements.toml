@@ -1017,12 +1017,12 @@ quote = 'a literal subscript that selects no expanded element'
 quote_source = 'crates/rumoca-phase-typecheck/src/semantic_scope.rs'
 pin_kind = 'Test'
 pin_file = 'crates/rumoca-contracts/tests/arr_contracts.rs'
-pin_anchor = 'arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named'
+pin_anchor = 'arr_026_over_subscripted_record_member_is_rejected_before_equation_erasure'
 pin_polarity = 'PinsDivergence'
 status = 'Unimplemented'
 contracts = ['ARR-026']
 related_sections = ['§10.5.1']
-note = 'The count rule is enforced wherever the shape lookup answers, which `arr_026_a_member_array_is_still_rejected_when_over_subscripted` holds it to. It is not enforced when the reference reaches the member through a prefix the instance-shape index cannot resolve, because the identity walk filters candidate instances by the very subscripts being validated: an over-long subscript list selects no expanded element, the walk reports absence, and FS-ARR-008 then abstains. The pin records what happens instead, and it is worse than an unnamed rejection: the binding equation is dropped from the DAE entirely, so `Cx yy = c.i[1, 2]` surfaces as `unbalanced model: 3 equations, 4 unknowns` spanned on the enclosing model rather than on the subscript. omc names it (`Wrong number of subscripts in c.i[1, 2] (2 subscripts for 1 dimensions)`). The model is still rejected, so this is a diagnostic and blame-target gap rather than an admissibility one. The fix is to stop filtering the final prefix part by its own subscripts in the shape query; that is a change to identity resolution, not to the abstention, and is deliberately not folded into it. Index-bounds checking (§10.5.1) is a separate statement and is not covered by this row or its pin.'
+note = 'The count rule is enforced wherever the shape lookup answers, which `arr_026_a_member_array_is_still_rejected_when_over_subscripted` holds it to. It is not enforced when the reference reaches the member through a prefix the instance-shape index cannot resolve, because the identity walk filters candidate instances by the very subscripts being validated: an over-long subscript list selects no expanded element, the walk reports absence, and FS-ARR-008 then abstains. The pin records the remaining divergence: flattening rejects the unresolved target as `undefined variable: c.i[1,2].re` before DAE construction, so the binding is no longer silently erased, but the diagnostic still does not name the subscript-count rule. omc names it (`Wrong number of subscripts in c.i[1, 2] (2 subscripts for 1 dimensions)`). The model is rejected early without semantic loss, but the blame taxonomy remains less precise. The ARR-026 fix is to stop filtering the final prefix part by its own subscripts in the shape query; that is a change to identity resolution, not to the fail-closed flatten guard. Index-bounds checking (§10.5.1) is a separate statement and is not covered by this row or its pin.'
 
 # ---------------------------------------------------------------------------
 # INST / PKG — scoping and class occurrences (MLS §5.3.1, §7.1, §13.2)
@@ -1281,19 +1281,3 @@ pin_polarity = 'Asserts'
 status = 'Enforced'
 contracts = ['EQN-035']
 note = 'The BDF path already took this snapshot after initialization. The FMI 3 ME kernel took it before settle_initialization_system, so a state moved from start = 0 to x = 5 still exposed pre(x) = 0 to when initial(); this row pins both hosts to the same section 8.6 ordering.'
-
-[[statements]]
-id = 'FS-SIM-019'
-statement = 'A structured initial-equation family determines every scalar coordinate selected by its compact domain before integration starts.'
-tier = 'SpecSourced'
-edition = '3.6'
-section = '§8.6'
-quote_kind = 'Paraphrase'
-quote = 'The initialization problem contains all initial equations and solves the variables they determine before integration starts.'
-quote_source = 'crates/rumoca-bind-wasm/src/tests/simulation_runtime_tests.rs'
-pin_kind = 'Test'
-pin_file = 'crates/rumoca-bind-wasm/src/tests/simulation_runtime_tests.rs'
-pin_anchor = 'test_prepare_gpu_simulation_refuses_unowned_structured_initial_equations'
-pin_polarity = 'PinsDivergence'
-status = 'Unimplemented'
-note = 'The checked DAE preserves the compact two-dimensional initial-equation family, but the initialization projection plan does not yet assign each family point to its state coordinate. Runtime preparation now refuses that incomplete ownership proof instead of publishing declared zero starts as though the initial equations had settled.'

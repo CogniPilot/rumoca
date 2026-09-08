@@ -33,35 +33,6 @@ pub(super) fn validate_algebraic_projection_plan(
     Ok(())
 }
 
-pub(super) fn validate_initial_projection_plan(
-    plan: &solve::AlgebraicProjectionPlan,
-    residual_count: usize,
-    solver_count: usize,
-) -> Result<(), RuntimeSolveError> {
-    let mut row_seen = vec![false; residual_count];
-    let mut y_seen = vec![false; solver_count];
-    for block in &plan.blocks {
-        require_square_projection_block(block.rows.len(), block.y_indices.len(), "initial")?;
-        mark_projection_indices(
-            &block.rows,
-            0,
-            residual_count,
-            &mut row_seen,
-            "initial projection",
-            "residual row",
-        )?;
-        mark_projection_indices(
-            &block.y_indices,
-            0,
-            solver_count,
-            &mut y_seen,
-            "initial projection",
-            "unknown",
-        )?;
-    }
-    Ok(())
-}
-
 pub(super) fn require_square_projection_block(
     row_count: usize,
     unknown_count: usize,

@@ -250,10 +250,13 @@ pub(super) fn prepare_row_output_metadata(
     let mut offsets =
         prepared_vec_with_capacity(offset_count, "prepared row output offsets", span)?;
     offsets.push(0usize);
-    for row in block.programs() {
+    for program_index in 0..block.row_count() {
+        let count = block
+            .stored_output_count_for_program(program_index)
+            .ok_or_else(|| invalid_prepared_row("missing retained program output width"))?;
         let next = checked_prepared_sum(
             *offsets.last().unwrap_or(&0),
-            ScalarProgramBlock::program_output_count(row),
+            count,
             "prepared row stored output count",
             span,
         )?;
@@ -350,7 +353,6 @@ pub(crate) fn non_causal_linear_op(op: &LinearOp) -> bool {
     matches!(
         op,
         LinearOp::LoadSeed { .. }
-            | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
             | LinearOp::RandomState { .. }

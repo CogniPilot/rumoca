@@ -65,7 +65,6 @@ impl WasmSimulationSession {
 
     /// Advance the simulation to an absolute target time in seconds.
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), WasmError> {
-        self.session.ensure_end_time(target_time);
         self.session
             .advance_to(target_time)
             .map_err(|e| WasmError::new(format!("Advance error: {e}")))
@@ -73,7 +72,6 @@ impl WasmSimulationSession {
 
     /// Advance the simulation by a relative time step in seconds.
     pub fn step(&mut self, dt: f64) -> Result<(), WasmError> {
-        self.session.ensure_end_time(self.session.time() + dt);
         self.session
             .step(dt)
             .map_err(|e| WasmError::new(format!("Step error: {e}")))
@@ -119,7 +117,7 @@ impl WasmSimulationSession {
     /// Reset the simulation to initial conditions.
     pub fn reset(&mut self) -> Result<(), WasmError> {
         self.session
-            .reset(0.0)
+            .reset()
             .map_err(|e| WasmError::new(format!("Reset failed: {e}")))?;
         Ok(())
     }

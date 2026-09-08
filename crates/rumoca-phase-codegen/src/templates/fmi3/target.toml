@@ -1,5 +1,4 @@
 version = 1
-ir = "fmi"
 name = "fmi3"
 description = "FMI 3.0.2 source-code ME+CS FMU with native tensor variables"
 execution_mode = "packaged"
@@ -14,6 +13,18 @@ Advertised profiles: FMI 3 Model Exchange and Co-Simulation."""
 root = "{{ model_name }}"
 required_files = ["modelDescription.xml", "sources/buildDescription.xml", "sources/model.c"]
 
+[[package.members]]
+kind = "file"
+file = "fmu"
+
+[[package.members]]
+kind = "file"
+file = "build_description"
+
+[[package.members]]
+kind = "file"
+file = "model_source"
+
 [package.archive]
 path = "{{ model_name }}.fmu"
 format = "zip"
@@ -25,7 +36,6 @@ residual_equations = false
 exact_algebraic_assignments = true
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -50,14 +60,28 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+id = "fmu"
+artifact_kind = "xml"
+semantic_context = "solve"
+view = "fmi-component"
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
-id = "fmu"
+required_artifact_identities = ["fmu"]
 
 [[files]]
+id = "build_description"
+artifact_kind = "xml"
+semantic_context = "solve"
+view = "fmi-component"
 path = "sources/buildDescription.xml"
 template = "buildDescription.xml.jinja"
+required_artifact_identities = ["fmu"]
 
 [[files]]
+id = "model_source"
+artifact_kind = "c-source"
+semantic_context = "solve"
+view = "fmi-component"
 path = "sources/model.c"
 template = "model.c.jinja"
+required_artifact_identities = ["fmu"]

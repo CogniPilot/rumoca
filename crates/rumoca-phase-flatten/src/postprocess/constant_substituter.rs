@@ -124,13 +124,16 @@ impl KnownConstantSubstituter<'_> {
         else_branch: &rumoca_core::Expression,
         span: rumoca_core::Span,
     ) -> Result<rumoca_core::Expression, FlattenError> {
-        let evaluation = rumoca_eval_flat::constant::EvalContext::new();
+        let evaluation = rumoca_eval_flat::constant::EvalContext::resolved_empty();
         let mut retained = Vec::with_capacity(branches.len());
         for (condition, value) in branches {
             let condition = self.rewrite_expression(condition)?;
-            let constant = rumoca_eval_flat::constant::eval_expr(&condition, &evaluation)
-                .ok()
-                .and_then(|value| value.as_bool());
+            let constant = crate::constant_eval::evaluate_optional_boolean(
+                &condition,
+                &evaluation,
+                "folding a structural if-expression condition",
+                span,
+            )?;
             match constant {
                 Some(false) => {}
                 Some(true) if retained.is_empty() => return self.rewrite_expression(value),
@@ -206,6 +209,7 @@ impl KnownConstantSubstituter<'_> {
             name,
             args,
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             ..
         } = &rewritten_base
         {

@@ -530,35 +530,43 @@ fn reserve_wire_variable<'dae>(
     ty: ValueTypeId<'dae>,
 ) -> Result<(VariableId<'dae>, VariableReservation<'dae>), DaeConstructionError> {
     let name = variable.name.clone();
+    let source_occurrence = variable.source_occurrence.instance_id();
     let declaration = variable.declaration;
     let pair = match variable.role {
         VariableRole::Parameter => {
-            let (id, reservation) = variables.reserve_parameter(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_parameter(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::Constant => {
-            let (id, reservation) = variables.reserve_constant(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_constant(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::Input => reserve_wire_input(variables, variable, ty)?,
         VariableRole::State => {
-            let (id, reservation) = variables.reserve_state(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_state(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::Algebraic => {
-            let (id, reservation) = variables.reserve_algebraic(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_algebraic(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::Output => {
-            let (id, reservation) = variables.reserve_output(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_output(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::DiscreteReal => {
-            let (id, reservation) = variables.reserve_discrete_real(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_discrete_real(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
         VariableRole::DiscreteValue => {
-            let (id, reservation) = variables.reserve_discrete_value(name, ty, declaration)?;
+            let (id, reservation) =
+                variables.reserve_discrete_value(name, source_occurrence, ty, declaration)?;
             (VariableId::from_raw(id.index()), reservation)
         }
     };
@@ -580,8 +588,13 @@ fn reserve_wire_input<'dae>(
             });
         }
     };
-    let (id, reservation) =
-        variables.reserve_input(variable.name.clone(), ty, variability, variable.declaration)?;
+    let (id, reservation) = variables.reserve_input(
+        variable.name.clone(),
+        variable.source_occurrence.instance_id(),
+        ty,
+        variability,
+        variable.declaration,
+    )?;
     Ok((VariableId::from_raw(id.index()), reservation))
 }
 
@@ -1344,7 +1357,9 @@ fn define_variables<'dae>(
             component_ref: attributes.component_ref.clone(),
             binding: attributes.binding.map(mapped_expression).transpose()?,
             start: attributes.start.map(mapped_expression).transpose()?,
-            fixed: attributes.fixed,
+            // The wire already carries the total value; replay passes it as
+            // the explicit spelling so re-definition preserves it verbatim.
+            fixed: Some(attributes.fixed),
             min: attributes.min.map(mapped_expression).transpose()?,
             max: attributes.max.map(mapped_expression).transpose()?,
             nominal: attributes.nominal.map(mapped_expression).transpose()?,

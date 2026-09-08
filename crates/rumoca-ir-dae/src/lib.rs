@@ -4,6 +4,15 @@
 //! semantic-owner capabilities one generatively branded aggregate and returns
 //! an immutable DAE only after every permitted forward definition is complete.
 //!
+//! The successful root has no externally writable representation surface:
+//!
+//! ```compile_fail
+//! # use rumoca_core::SourceMap;
+//! # use rumoca_ir_dae::Dae;
+//! # let dae = Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
+//! let _ = dae.storage;
+//! ```
+//!
 //! ```compile_fail
 //! # use rumoca_core::SourceMap;
 //! # use rumoca_ir_dae::Dae;
@@ -158,15 +167,25 @@ pub use expression::{
 pub use ids::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DelayId, DiscreteRealEquationId, DiscreteRealId, DiscreteValueId, DiscreteValueOwnerId,
-    DomainBinderId, DomainId, EventActionId, ExprId, FunctionDefinitionId, FunctionFoldId,
-    FunctionId, FunctionParameterId, FunctionValueId, InitialDiscreteValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
-    ParameterId, PeriodicClockId, PreviousId, RelationId, RootId, StateId, StructuredRootId,
-    TerminalId, TimeEventId, ValueTypeId, VariableId,
+    DomainBinderId, DomainId, EventActionId, ExprId, FunctionAssertionId, FunctionCallId,
+    FunctionConditionalId, FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId,
+    FunctionValueId, InitialDiscreteValueId, InitializationEquationId, InitializationFamilyId,
+    InputId, ModelEventTransactionId, ParameterId, PeriodicClockId, PreviousId, RelationId, RootId,
+    StateId, StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
 };
 pub use model::{
-    ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae, DaeConstruction, DaeView,
-    DomainView, Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
+    CallableAssertionOccurrence, CallableCallOccurrence, CallableCallProjectionOccurrence,
+    CallableCallProjectionUseOccurrence, CallableCallUseId, CallableCallUseOccurrence,
+    CallableCaptureOccurrence, CallableCaptureSource, CallableConditionalOccurrence,
+    CallableConditionalRegionSource, CallableConditionalRegionsOccurrence,
+    CallableDefinitionOccurrence, CallableExpressionConditionalRegionsOccurrence,
+    CallableExpressionOccurrence, CallableExpressionUseId, CallableExpressionUseOccurrence,
+    CallableExternalBodyOccurrence, CallableFoldBodyOccurrence, CallableFoldOccurrence,
+    CallableFunctionOccurrence, CallableMapBodyOccurrence, CallableSourceInventoryView,
+    CallableSourceRegionActivation, CallableSourceRegionId, CallableSourceRegionKind,
+    CallableSourceRegionOccurrence, ContinuousOwnerView, CoordinateView, DAE_SCHEMA_VERSION, Dae,
+    DaeConstruction, DaeVariableRefinementEntry, DaeVariableRefinementView, DaeView, DomainView,
+    Domains, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
     ExternalArgument, ExternalArgumentView, ExternalFunctionBody, ExternalFunctionView,
     ExternalLanguage, ExternalLinkage, FunctionBody, FunctionConditionalView,
     FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView, FunctionLoop,

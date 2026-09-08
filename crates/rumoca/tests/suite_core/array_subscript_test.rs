@@ -3,10 +3,10 @@
 //! MLS §10.1: Array subscripts are part of the variable identity.
 
 use rumoca_ir_ast as ast;
-use rumoca_phase_flatten::flatten_ref;
+use rumoca_phase_flatten::{FlattenOptions, flatten_typed};
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
-use rumoca_phase_typecheck::typecheck_instanced;
+use rumoca_phase_typecheck::typecheck_instanced_tree;
 
 #[test]
 fn test_array_subscripts_in_variable_names() {
@@ -56,15 +56,16 @@ end ArrayTest;
     let model = "ArrayTest.TestArray";
     let tree = resolved.inner();
 
-    let mut overlay = match instantiate_model_with_outcome(tree, model) {
+    let overlay = match instantiate_model_with_outcome(tree, model) {
         InstantiationOutcome::Success(overlay) => overlay,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
         }
         InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
     };
-    typecheck_instanced(&resolved, &mut overlay, model).expect("typecheck should succeed");
-    let flat = flatten_ref(tree, &overlay, model).expect("flatten should succeed");
+    let typed =
+        typecheck_instanced_tree(&resolved, overlay, model).expect("typecheck should succeed");
+    let flat = flatten_typed(typed, FlattenOptions::default()).expect("flatten should succeed");
 
     let variable_names = flat
         .variables

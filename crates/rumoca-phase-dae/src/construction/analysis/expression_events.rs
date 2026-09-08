@@ -63,6 +63,197 @@ pub(in crate::construction) enum DynamicTimeEventOperand {
     Rhs,
 }
 
+/// Exact source tree and event-owner certificates for one model-algorithm
+/// condition.  Construction receives this product, never an expression plus
+/// an independently addressable event-plan table.
+pub(in crate::construction) enum AlgorithmConditionProduct<'flat> {
+    Initial {
+        source: &'flat Expression,
+        span: Span,
+    },
+    Not {
+        source: &'flat Expression,
+        span: Span,
+        rhs: Box<Self>,
+    },
+    Binary {
+        source: &'flat Expression,
+        span: Span,
+        lhs: Box<Self>,
+        rhs: Box<Self>,
+        disjunction: bool,
+    },
+    Vector {
+        source: &'flat Expression,
+        span: Span,
+        elements: Box<[Self]>,
+    },
+    Sample {
+        source: &'flat Expression,
+        span: Span,
+        schedule: PeriodicClockSchedule,
+    },
+    SampleAlias {
+        source: &'flat Expression,
+        span: Span,
+        schedule: PeriodicClockSchedule,
+    },
+    Relation {
+        source: &'flat Expression,
+        span: Span,
+        owner: AlgorithmRelationOwner,
+    },
+    Discrete {
+        source: &'flat Expression,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::construction) enum AlgorithmRelationOwner {
+    Root,
+    Scheduled(ClockRational),
+    Dynamic(DynamicTimeEventOperand),
+}
+
+impl<'flat> AlgorithmConditionProduct<'flat> {
+    pub(in crate::construction) fn source(&self) -> &'flat Expression {
+        match self {
+            Self::Initial { source, .. }
+            | Self::Not { source, .. }
+            | Self::Binary { source, .. }
+            | Self::Vector { source, .. }
+            | Self::Sample { source, .. }
+            | Self::SampleAlias { source, .. }
+            | Self::Relation { source, .. }
+            | Self::Discrete { source, .. } => source,
+        }
+    }
+
+    pub(in crate::construction) fn span(&self) -> Span {
+        match self {
+            Self::Initial { span, .. }
+            | Self::Not { span, .. }
+            | Self::Binary { span, .. }
+            | Self::Vector { span, .. }
+            | Self::Sample { span, .. }
+            | Self::SampleAlias { span, .. }
+            | Self::Relation { span, .. }
+            | Self::Discrete { span, .. } => *span,
+        }
+    }
+}
+
+pub(super) fn issue_algorithm_condition<'flat>(
+    expression: &'flat Expression,
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+    constants: &EvalContext,
+    sample_aliases: &HashMap<VarName, PeriodicClockSchedule>,
+) -> Result<AlgorithmConditionProduct<'flat>, ToDaeError> {
+    let scope = EventScope {
+        flat,
+        roles,
+        constants,
+    };
+    issue_algorithm_condition_in_scope(expression, &scope, sample_aliases)
+}
+
+fn issue_algorithm_condition_in_scope<'flat>(
+    expression: &'flat Expression,
+    scope: &EventScope<'_>,
+    sample_aliases: &HashMap<VarName, PeriodicClockSchedule>,
+) -> Result<AlgorithmConditionProduct<'flat>, ToDaeError> {
+    let source_span = expression_span(expression)?;
+    let product = match expression {
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Initial,
+            ..
+        } => AlgorithmConditionProduct::Initial {
+            source: expression,
+            span: source_span,
+        },
+        Expression::Unary {
+            op: OpUnary::Not,
+            rhs,
+            ..
+        } => AlgorithmConditionProduct::Not {
+            source: expression,
+            span: source_span,
+            rhs: Box::new(issue_algorithm_condition_in_scope(
+                rhs,
+                scope,
+                sample_aliases,
+            )?),
+        },
+        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
+            AlgorithmConditionProduct::Binary {
+                source: expression,
+                span: source_span,
+                lhs: Box::new(issue_algorithm_condition_in_scope(
+                    lhs,
+                    scope,
+                    sample_aliases,
+                )?),
+                rhs: Box::new(issue_algorithm_condition_in_scope(
+                    rhs,
+                    scope,
+                    sample_aliases,
+                )?),
+                disjunction: matches!(op, OpBinary::Or),
+            }
+        }
+        Expression::Array { elements, .. } => AlgorithmConditionProduct::Vector {
+            source: expression,
+            span: source_span,
+            elements: elements
+                .iter()
+                .map(|element| issue_algorithm_condition_in_scope(element, scope, sample_aliases))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_boxed_slice(),
+        },
+        Expression::BuiltinCall {
+            function: BuiltinFunction::Sample,
+            args,
+            span,
+        } => AlgorithmConditionProduct::Sample {
+            source: expression,
+            span: source_span,
+            schedule: evaluate_sample_schedule(args, scope.constants, *span)?,
+        },
+        Expression::VarRef {
+            name, subscripts, ..
+        } if subscripts.is_empty()
+            && let Some(schedule) = sample_aliases.get(name.var_name()).copied() =>
+        {
+            AlgorithmConditionProduct::SampleAlias {
+                source: expression,
+                span: source_span,
+                schedule,
+            }
+        }
+        Expression::Binary { op, lhs, rhs, .. } if op.is_relational() => {
+            let owner = if let Some(instant) = time_event_instant(op, lhs, rhs, scope.constants) {
+                AlgorithmRelationOwner::Scheduled(instant)
+            } else if let Some(operand) = dynamic_time_event_operand(op, lhs, rhs, scope) {
+                AlgorithmRelationOwner::Dynamic(operand)
+            } else {
+                AlgorithmRelationOwner::Root
+            };
+            AlgorithmConditionProduct::Relation {
+                source: expression,
+                span: source_span,
+                owner,
+            }
+        }
+        _ => AlgorithmConditionProduct::Discrete {
+            source: expression,
+            span: source_span,
+        },
+    };
+    Ok(product)
+}
+
 /// One collected owner: the operands that name it, and the plan proved for them.
 struct PlannedOccurrence {
     operands: Vec<Expression>,
@@ -226,10 +417,24 @@ pub(super) fn analyze_expression_events(
             collect_activation_time_events(&branch.condition, &scope, &mut plans)?;
         }
     }
-    for algorithm in &flat.algorithms {
-        collect_statement_activation_time_events(&algorithm.statements, &scope, &mut plans)?;
-    }
     Ok(plans)
+}
+
+pub(super) fn analyze_expression_event_ownership(
+    equations: &ModelEquationSequence<'_>,
+    roles: &HashMap<VarName, PlannedRole>,
+    constants: &EvalContext,
+) -> Result<
+    (
+        ExpressionEventPlans,
+        HashMap<VarName, PeriodicClockSchedule>,
+    ),
+    ToDaeError,
+> {
+    let flat = equations.model();
+    let events = analyze_expression_events(flat, roles, constants)?;
+    let aliases = analyze_sample_aliases(equations, roles, &events);
+    Ok((events, aliases))
 }
 
 /// Collect the exactly scheduled MLS §8.5 owners of a `when` activation.
@@ -292,50 +497,6 @@ fn collect_activation_time_events(
             }
         }
         _ => {}
-    }
-    Ok(())
-}
-
-/// The same collection over the `when` statements of a model algorithm section.
-///
-/// `lower_algorithm_when` lowers each guarded block's condition through the very
-/// same `lower_condition_tree`, so an algorithm `when time > 0.5` owns its
-/// instant exactly like the equation form. `if` statements are deliberately
-/// skipped: their conditions are ordinary continuous guards, not event
-/// activations.
-fn collect_statement_activation_time_events(
-    statements: &[rumoca_core::Statement],
-    scope: &EventScope<'_>,
-    plans: &mut ExpressionEventPlans,
-) -> Result<(), ToDaeError> {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::When { blocks, .. } => {
-                for block in blocks {
-                    collect_activation_time_events(&block.cond, scope, plans)?;
-                    collect_statement_activation_time_events(&block.stmts, scope, plans)?;
-                }
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                for block in cond_blocks {
-                    collect_statement_activation_time_events(&block.stmts, scope, plans)?;
-                }
-                if let Some(else_block) = else_block {
-                    collect_statement_activation_time_events(else_block, scope, plans)?;
-                }
-            }
-            rumoca_core::Statement::For { equations, .. } => {
-                collect_statement_activation_time_events(equations, scope, plans)?;
-            }
-            rumoca_core::Statement::While { block, .. } => {
-                collect_statement_activation_time_events(&block.stmts, scope, plans)?;
-            }
-            _ => {}
-        }
     }
     Ok(())
 }

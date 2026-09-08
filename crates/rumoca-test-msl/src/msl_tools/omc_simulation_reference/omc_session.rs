@@ -116,8 +116,8 @@ impl OmcSession {
             Some(path) => path,
             None => {
                 let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
+                let _already_exited = child.kill();
+                let _reap_error = child.wait();
                 return Err(anyhow!(
                     "omc session port file for suffix '{suffix}' did not appear within {:.1}s",
                     startup_timeout.as_secs_f64()
@@ -154,7 +154,9 @@ impl OmcSession {
         }
         // Drain any accumulated load-time diagnostics so they do not leak into
         // the first model's error string.
-        let _ = session.eval("getErrorString()", load_timeout);
+        session
+            .eval("getErrorString()", load_timeout)
+            .map_err(|error| anyhow!("failed to drain OMC load diagnostics: {error}"))?;
         Ok(session)
     }
 
@@ -203,9 +205,9 @@ impl OmcSession {
     /// Kill the underlying process. Used before respawning after a hang.
     pub(super) fn kill(&mut self) {
         self.kill_process_group();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.port_file);
+        let _already_exited = self.child.kill();
+        let _reap_error = self.child.wait();
+        let _port_file_removal_error = std::fs::remove_file(&self.port_file);
     }
 
     /// SIGKILL the whole process group (omc plus any simulation executables it
@@ -214,7 +216,7 @@ impl OmcSession {
     fn kill_process_group(&self) {
         #[cfg(unix)]
         if let Ok(pid) = i32::try_from(self.child.id()) {
-            let _ = nix::sys::signal::killpg(
+            let _already_exited = nix::sys::signal::killpg(
                 nix::unistd::Pid::from_raw(pid),
                 nix::sys::signal::Signal::SIGKILL,
             );
@@ -226,11 +228,11 @@ impl Drop for OmcSession {
     fn drop(&mut self) {
         // Best-effort graceful quit, then ensure the process group is gone
         // (omc + any simulation executables it spawned).
-        let _ = self.eval("quit()", Duration::from_millis(500));
+        let _graceful_quit_error = self.eval("quit()", Duration::from_millis(500));
         self.kill_process_group();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_file(&self.port_file);
+        let _already_exited = self.child.kill();
+        let _reap_error = self.child.wait();
+        let _port_file_removal_error = std::fs::remove_file(&self.port_file);
     }
 }
 

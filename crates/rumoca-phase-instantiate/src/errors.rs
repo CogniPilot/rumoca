@@ -28,6 +28,9 @@
 //! | EI032 | InvalidTypeAttribute | §4.4.4 |
 //! | EI033 | MissingResolvedIdentity | compiler phase-order invariant |
 //! | EI034 | TypeNotFound | type lookup |
+//! | EI035 | UnsupportedConnectionSubscript | §9.3 |
+//! | EI036 | InvalidEqualityConstraintExposure | §9.4.1 |
+//! | EI037 | InvalidInstanceOccurrence | compiler construction invariant |
 //! | EI098 | MissingSourceContext | compiler provenance invariant |
 //!
 //! Uses miette for rich diagnostic output with error codes and help text.
@@ -41,7 +44,7 @@ use rumoca_core::{
 use thiserror::Error;
 
 /// Type alias for instantiation results with boxed errors.
-pub type InstantiateResult<T> = BoxedResult<T, InstantiateError>;
+pub(crate) type InstantiateResult<T> = BoxedResult<T, InstantiateError>;
 
 /// Non-fatal diagnostics owned by the instantiate phase.
 #[derive(Debug, Clone, Error, Diagnostic)]
@@ -349,6 +352,56 @@ pub enum InstantiateError {
         span: Span,
     },
 
+    /// An expression names an import the lookup authority refused (MLS §5.3.1).
+    #[error("ambiguous imported name `{name}`: {reason}")]
+    #[diagnostic(code(rumoca::instantiate::EI039))]
+    AmbiguousImportedName {
+        name: String,
+        reason: String,
+        #[label("ambiguous imported name")]
+        span: Span,
+    },
+
+    /// A connection selector cannot be preserved by instance extraction.
+    #[error("connection endpoint subscript {selector} cannot be instantiated: {reason}")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI035),
+        help(
+            "use an evaluable scalar selector or explicit evaluable range; whole-dimension `:` connections are not yet supported"
+        )
+    )]
+    UnsupportedConnectionSubscript {
+        selector: String,
+        reason: String,
+        #[label("unsupported connection selector")]
+        span: Span,
+    },
+
+    /// An effective overdetermined record occurrence cannot construct its
+    /// exact equalityConstraint exposure (MLS §9.4.1).
+    #[error("invalid equalityConstraint exposure for `{record}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::instantiate::EI036),
+        help(
+            "the effective equalityConstraint must have two non-array inputs of this exact effective record type and one predefined Real[n] output with constant Integer n >= 0"
+        )
+    )]
+    InvalidEqualityConstraintExposure {
+        record: String,
+        reason: String,
+        #[label("invalid effective equalityConstraint exposure")]
+        span: Span,
+    },
+
+    /// Instance construction attempted to reuse or mismatch an occurrence ID.
+    #[error("invalid instance occurrence: {reason}")]
+    #[diagnostic(code(rumoca::instantiate::EI037))]
+    InvalidInstanceOccurrence {
+        reason: String,
+        #[label("invalid occurrence construction")]
+        span: Span,
+    },
+
     /// Required source provenance was missing from instantiation metadata.
     #[error("missing source context: {reason}")]
     #[diagnostic(code(rumoca::instantiate::EI098))]
@@ -453,6 +506,31 @@ impl InstantiateError {
         missing_resolved_identity,
         MissingResolvedIdentity { name: String }
     );
+    error_constructor!(
+        ambiguous_imported_name,
+        AmbiguousImportedName {
+            name: String,
+            reason: String
+        }
+    );
+    error_constructor!(
+        unsupported_connection_subscript,
+        UnsupportedConnectionSubscript {
+            selector: String,
+            reason: String
+        }
+    );
+    error_constructor!(
+        invalid_equality_constraint_exposure,
+        InvalidEqualityConstraintExposure {
+            record: String,
+            reason: String
+        }
+    );
+    error_constructor!(
+        invalid_instance_occurrence,
+        InvalidInstanceOccurrence { reason: String }
+    );
 
     pub fn instantiation_depth_limit(
         path: impl Into<String>,
@@ -498,7 +576,11 @@ impl PhaseError for InstantiateError {
             | Self::InstantiationDepthLimit { span, .. }
             | Self::InstantiationCycle { span, .. }
             | Self::InvalidTypeAttribute { span, .. }
-            | Self::MissingResolvedIdentity { span, .. } => std::slice::from_ref(span),
+            | Self::MissingResolvedIdentity { span, .. }
+            | Self::AmbiguousImportedName { span, .. }
+            | Self::UnsupportedConnectionSubscript { span, .. }
+            | Self::InvalidEqualityConstraintExposure { span, .. }
+            | Self::InvalidInstanceOccurrence { span, .. } => std::slice::from_ref(span),
             Self::ModelNotFound(_) | Self::MissingSourceContext { .. } => &[],
         };
         miette_phase_error_to_diagnostic(self, source_spans)
@@ -513,6 +595,7 @@ impl PhaseError for InstantiateError {
 /// MLS §5.4: Models with `outer` components need matching `inner` declarations
 /// from an enclosing scope. These are not failures - they're models designed
 /// to be used within systems that provide the inner declarations.
+#[must_use = "instantiation outcomes must be handled exhaustively"]
 #[derive(Debug)]
 pub enum InstantiationOutcome {
     /// Model instantiated successfully.
@@ -532,49 +615,6 @@ pub enum InstantiationOutcome {
 
     /// Actual instantiation error (not context-dependent).
     Error(Box<InstantiateError>),
-}
-
-impl InstantiationOutcome {
-    /// Returns true if this is an actual error (not context-dependent).
-    pub fn is_error(&self) -> bool {
-        matches!(self, Self::Error(_))
-    }
-
-    /// Get the overlay if successful or partially instantiated.
-    pub fn overlay(&self) -> Option<&rumoca_ir_ast::InstanceOverlay> {
-        match self {
-            Self::Success(o) => Some(o),
-            Self::NeedsInner {
-                partial_overlay, ..
-            } => Some(partial_overlay),
-            Self::Error(_) => None,
-        }
-    }
-
-    /// Convert to Result, treating NeedsInner as an error for compatibility.
-    /// Use this when you need the old behavior of treating missing inners as errors.
-    pub fn into_result(self) -> InstantiateResult<rumoca_ir_ast::InstanceOverlay> {
-        match self {
-            Self::Success(overlay) => Ok(overlay),
-            Self::NeedsInner {
-                missing_inners,
-                missing_spans,
-                ..
-            } => {
-                let names = missing_inners.join(", ");
-                let Some(span) = missing_spans.first().copied() else {
-                    return Err(Box::new(InstantiateError::missing_source_context(
-                        "a missing outer declaration had no source span",
-                    )));
-                };
-                Err(Box::new(InstantiateError::MissingInner {
-                    name: names,
-                    span,
-                }))
-            }
-            Self::Error(e) => Err(e),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -616,6 +656,36 @@ mod tests {
         let help = err.help().map(|h| h.to_string());
         assert!(help.is_some());
         assert!(help.unwrap().contains("MLS §5.6"));
+    }
+
+    #[test]
+    fn unsupported_connection_subscript_has_stable_public_diagnostic() {
+        let err = InstantiateError::unsupported_connection_subscript(
+            "`:`",
+            "whole-dimension selection is not yet represented",
+            Span::DUMMY,
+        );
+        assert!(format!("{err}").contains("connection endpoint subscript `:`"));
+
+        use miette::Diagnostic;
+        assert_eq!(
+            err.code().map(|code| code.to_string()),
+            Some("rumoca::instantiate::EI035".to_string())
+        );
+    }
+
+    #[test]
+    fn invalid_instance_occurrence_has_stable_public_diagnostic() {
+        let error = InstantiateError::invalid_instance_occurrence(
+            "component occurrence InstanceId(4) is already registered",
+            Span::DUMMY,
+        );
+
+        use miette::Diagnostic;
+        assert_eq!(
+            error.code().map(|code| code.to_string()),
+            Some("rumoca::instantiate::EI037".to_string())
+        );
     }
 
     #[test]

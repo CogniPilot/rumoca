@@ -47,7 +47,7 @@ let init;
 let wasm_init;
 let get_version;
 let get_builtin_targets;
-let compile_to_json;
+let compile;
 let compile_with_workspace_sources;
 let sync_workspace_sources;
 let workspace_effective_source_roots;
@@ -91,7 +91,6 @@ let lower_model_to_solve_json = null;
 let model_parameter_metadata = null;
 let model_parameter_metadata_with_workspace_sources = null;
 let model_parameter_metadata_with_source_roots = null;
-let prepare_gpu_simulation = null;
 let wasmRuntimeModule = null;
 let wasmModuleLoaded = false;
 let activeRequestId = null;
@@ -109,7 +108,7 @@ async function loadWasmModule() {
     wasm_init = mod.wasm_init;
     get_version = mod.get_version;
     get_builtin_targets = mod.get_builtin_targets;
-    compile_to_json = mod.compile_to_json;
+    compile = mod.compile;
     compile_with_workspace_sources = mod.compile_with_workspace_sources;
     sync_workspace_sources = mod.sync_workspace_sources;
     workspace_effective_source_roots = mod.workspace_effective_source_roots;
@@ -163,18 +162,14 @@ async function loadWasmModule() {
     if (typeof mod.model_parameter_metadata_with_source_roots === 'function') {
         model_parameter_metadata_with_source_roots = mod.model_parameter_metadata_with_source_roots;
     }
-    if (typeof mod.prepare_gpu_simulation === 'function') {
-        prepare_gpu_simulation = mod.prepare_gpu_simulation;
-    }
     wasmRuntimeModule = {
-        compile: compile_to_json,
+        compile,
         lower_model_to_solve_json,
         merge_parsed_source_roots_binary,
         model_parameter_metadata,
         model_parameter_metadata_with_source_roots,
         model_parameter_metadata_with_workspace_sources,
         prime_source_root_completion_cache,
-        prepare_gpu_simulation,
         render_target,
         simulate_model,
     };
@@ -517,22 +512,6 @@ self.onmessage = async (e) => {
                             sourceRootCacheUrl: payload.sourceRootCacheUrl || '',
                         });
                         break;
-                    case 'rumoca.scenario.prepareGpuSimulation':
-                        await ensureParsedSourceRootCache(
-                            wasmRuntimeModule,
-                            payload.sourceRootCacheUrl || '',
-                        );
-                        if (typeof payload.source !== 'string') {
-                            throw new Error('prepareGpuSimulation requires source text');
-                        }
-                        if (typeof prepare_gpu_simulation !== 'function') {
-                            throw new Error('prepare_gpu_simulation missing in this WASM build');
-                        }
-                        result = prepare_gpu_simulation(
-                            payload.source || '',
-                            payload.modelName || 'Model',
-                        );
-                        break;
                     default:
                         throw new Error(`Unknown scenario command: ${command}`);
                 }
@@ -548,7 +527,7 @@ self.onmessage = async (e) => {
                         result = get_builtin_targets();
                         break;
                     case 'rumoca.workspace.compile':
-                        result = compile_to_json(payload.source || '', payload.modelName || 'Model');
+                        result = compile(payload.source || '', payload.modelName || 'Model');
                         break;
                     case 'rumoca.workspace.compileWithWorkspaceSources':
                         result = compile_with_workspace_sources(
@@ -599,8 +578,7 @@ self.onmessage = async (e) => {
                         );
                         break;
                     case 'rumoca.workspace.renderGalec':
-                        // GALEC codegen ('galec' / 'galec-production' /
-                        // 'embedded-c-galec') is served by the SEPARATE, lazily
+                        // GALEC Algorithm Code (`galec`) is served by the separate, lazily
                         // imported GALEC addon — never the core render_target
                         // (DAE-JSON) path, which drops the flat model the
                         // projection needs. The addon wasm loads only on this

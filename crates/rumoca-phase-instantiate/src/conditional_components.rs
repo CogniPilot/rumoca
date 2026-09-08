@@ -53,6 +53,14 @@ impl InstantiateContext {
         self.outer_reference_values(effective_components, &self.known_real_params)
     }
 
+    /// Integer values reachable through this class's `outer` components (MLS §5.4).
+    pub(crate) fn outer_reference_int_values(
+        &self,
+        effective_components: &IndexMap<String, ast::Component>,
+    ) -> rustc_hash::FxHashMap<String, i64> {
+        self.outer_reference_values(effective_components, &self.known_int_params)
+    }
+
     /// Re-key `known` under each `outer` component of this class (MLS §5.4).
     ///
     /// An `outer` element denotes the nearest enclosing `inner` element of the same
@@ -130,13 +138,15 @@ fn collect_under<T: Copy>(
 pub(crate) struct ConditionScope<'a> {
     pub(crate) tree: &'a ast::ClassTree,
     pub(crate) effective_components: &'a IndexMap<String, ast::Component>,
+    /// Integer values reachable through this class's `outer` components (MLS §5.4).
+    pub(crate) outer_ints: &'a rustc_hash::FxHashMap<String, i64>,
     /// Boolean values reachable through this class's `outer` components (MLS §5.4).
     pub(crate) outer_bools: &'a rustc_hash::FxHashMap<String, bool>,
     /// Real values reachable through this class's `outer` components (MLS §5.4).
     pub(crate) outer_reals: &'a rustc_hash::FxHashMap<String, f64>,
-    /// Import aliases visible in this class (MLS §13.2), so a condition may name
-    /// an imported package constant by its short spelling.
-    pub(crate) imports: &'a [(String, String)],
+    /// Rewrite vocabulary of the condition's declaring class (MLS §13.2), so a
+    /// condition may name an imported package constant by its short spelling.
+    pub(crate) imports: crate::dims::ImportRewrite<'a>,
 }
 
 /// Record `name` as disabled when its condition evaluates to false (MLS §4.4.5).
@@ -167,7 +177,7 @@ pub(crate) fn mark_disabled_component_if_needed(
         effective_components: scope.effective_components,
         resolve_class_components: resolve_effective_components_for_eval,
     };
-    let Some(condition_value) = decide_condition(&eval_ctx, cond, scope) else {
+    let Some(condition_value) = decide_condition(&eval_ctx, cond, scope)? else {
         return Err(Box::new(InstantiateError::conditional_error(
             name,
             cond.span(),
@@ -201,16 +211,21 @@ fn decide_condition(
     eval_ctx: &InstantiateEvalCtx<'_>,
     cond: &ast::Expression,
     scope: ConditionScope<'_>,
-) -> Option<bool> {
-    let outer_values = OuterValues::new(scope.outer_bools, scope.outer_reals);
+) -> InstantiateResult<Option<bool>> {
+    let outer_values =
+        OuterValues::from_all(scope.outer_ints, scope.outer_bools, scope.outer_reals);
     if let Some(value) =
         evaluate_component_condition_with_outer_values(eval_ctx, cond, outer_values)
     {
-        return Some(value);
+        return Ok(Some(value));
     }
     if !crate::dims::expr_mentions_import_alias(cond, scope.imports) {
-        return None;
+        return Ok(None);
     }
-    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, cond, scope.imports);
-    evaluate_component_condition_with_outer_values(eval_ctx, &qualified, outer_values)
+    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, cond, scope.imports)?;
+    Ok(evaluate_component_condition_with_outer_values(
+        eval_ctx,
+        &qualified,
+        outer_values,
+    ))
 }

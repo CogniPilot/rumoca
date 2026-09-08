@@ -73,14 +73,14 @@ fn collect_y_load_indices(program: &[LinearOp], indices: &mut BTreeSet<usize>) {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_y_load_indices(&program.update, indices);
+                collect_y_load_indices(program.update(), indices);
             }
             LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_y_load_indices(&arm.condition, indices);
-                    collect_y_load_indices(&arm.result, indices);
+                for arm in program.arms() {
+                    collect_y_load_indices(arm.condition(), indices);
+                    collect_y_load_indices(arm.result(), indices);
                 }
-                collect_y_load_indices(&program.fallback, indices);
+                collect_y_load_indices(program.fallback(), indices);
             }
             _ => {}
         }

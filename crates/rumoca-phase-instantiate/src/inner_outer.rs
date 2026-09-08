@@ -3,26 +3,33 @@
 //! Extracted from the instantiate facade so the phase entry points stay within
 //! the SPEC_0021 file-size budget.
 
+#[cfg(test)]
+mod prescan_tests;
+
 use super::{
-    ComponentImports, ComponentInstantiationScope, IndexMap, InnerDeclaration, InstantiateContext,
-    InstantiateError, InstantiateEvalCtx, InstantiateOptions, InstantiateResult, MissingInnerInfo,
-    OuterValues, TypeOverrideMap, ast, component_declaration_source_scope,
+    ClassOccurrenceConstruction, ComponentImports, ComponentInstantiationScope, IndexMap,
+    InnerDeclaration, InstantiateContext, InstantiateError, InstantiateEvalCtx, InstantiateOptions,
+    InstantiateResult, MissingInnerInfo, OuterValues, TypeOverrideMap, ast,
+    component_allows_structural_evaluation, component_declaration_source_scope,
     description_tokens_to_string, evaluate_component_condition_with_outer_values,
-    extract_bool_params_with_mods, extract_real_params_with_mods, find_class_in_tree,
-    get_or_compute_template, instantiate_class, instantiate_component,
-    is_type_compatible_with_def_id, location_to_span, path_utils,
-    resolve_effective_components_for_eval, try_eval_real_expr,
+    expression_source_scope, find_class_in_tree, get_or_compute_template, instantiate_class,
+    instantiate_component, is_type_compatible_with_def_id, issue_selected_component_types,
+    location_to_span, path_utils, resolve_effective_components_for_eval, try_eval_integer_expr,
+    try_eval_real_expr,
 };
+use rumoca_eval_ast::eval_instantiate::{AstScalarKind, canonical_scalar_kind};
 use rustc_hash::FxHashMap;
 
 /// Error type for synthetic inner retry attempts.
 pub(crate) enum SyntheticInnerError {
     /// Some missing inners could not be resolved (type not found or transitive outers).
-    StillMissing { names: Vec<String> },
-    /// Synthetic declaration construction failed because required source context was missing.
-    SourceContext(Box<InstantiateError>),
-    /// The retry instantiation itself failed.
-    InstantiationFailed,
+    StillMissing {
+        missing_inners: Vec<String>,
+        missing_spans: Vec<rumoca_core::Span>,
+        partial_overlay: Box<ast::InstanceOverlay>,
+    },
+    /// The exact phase error raised while constructing or instantiating the retry.
+    Error(Box<InstantiateError>),
 }
 
 /// Create a minimal synthetic inner `ast::Component` for a missing inner declaration.
@@ -64,6 +71,7 @@ pub(crate) fn create_synthetic_inner_component(
 /// so their sub-components exist in the overlay before the main model references them.
 pub(crate) fn retry_with_synthetic_inners(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     model: &ast::ClassDef,
     missing: &[MissingInnerInfo],
     options: InstantiateOptions,
@@ -86,7 +94,7 @@ pub(crate) fn retry_with_synthetic_inners(
         };
 
         let synthetic = create_synthetic_inner_component(mi, inner_class, &tree.source_map)
-            .map_err(SyntheticInnerError::SourceContext)?;
+            .map_err(SyntheticInnerError::Error)?;
 
         let qn = ast::QualifiedName::from_ident(&mi.name);
 
@@ -96,8 +104,17 @@ pub(crate) fn retry_with_synthetic_inners(
         // Instantiate the synthetic inner component at root level
         let empty_siblings = IndexMap::default();
         let empty_type_overrides = TypeOverrideMap::new();
+        let mut synthetic_declaration = IndexMap::default();
+        synthetic_declaration.insert(mi.name.clone(), synthetic.clone());
+        let selected_component_types = issue_selected_component_types(
+            tree,
+            &synthetic_declaration,
+            &empty_type_overrides,
+            None,
+        )
+        .map_err(SyntheticInnerError::Error)?;
         ctx.push_path(&mi.name);
-        if instantiate_component(
+        instantiate_component(
             tree,
             &synthetic,
             &mut ctx,
@@ -106,34 +123,37 @@ pub(crate) fn retry_with_synthetic_inners(
                 owner_class_id: Some(root_instance_id),
                 effective_components: &empty_siblings,
                 type_overrides: &empty_type_overrides,
-                imports: ComponentImports::EMPTY,
+                selected_component_types: &selected_component_types,
+                imports: ComponentImports {
+                    class_index,
+                    overriding_constants: &[],
+                    enclosing_constants: &[],
+                    class_imports: None,
+                },
             },
         )
-        .is_err()
-        {
-            return Err(SyntheticInnerError::InstantiationFailed);
-        }
+        .map_err(SyntheticInnerError::Error)?;
         ctx.pop_path();
     }
 
     // Re-run the main model instantiation with inners now available
-    if instantiate_class(
+    instantiate_class(
         tree,
+        class_index,
         model,
-        None,
-        Some(root_instance_id),
+        ClassOccurrenceConstruction::ReservedRoot(root_instance_id),
         &mut ctx,
         &mut overlay,
     )
-    .is_err()
-    {
-        return Err(SyntheticInnerError::InstantiationFailed);
-    }
+    .map_err(SyntheticInnerError::Error)?;
 
     // Check if there are still missing inners (transitive)
     if ctx.has_missing_inners() {
+        let (missing_inners, missing_spans) = ctx.unique_missing_inner_summary();
         return Err(SyntheticInnerError::StillMissing {
-            names: ctx.missing_inner_names(),
+            missing_inners,
+            missing_spans,
+            partial_overlay: Box::new(overlay),
         });
     }
 
@@ -156,35 +176,83 @@ pub(crate) fn handle_inner_outer(
         .get(&resolved_type_name)
         .copied()
         .or(comp.type_def_id);
+    let inner_decl = comp.inner.then(|| InnerDeclaration {
+        qualified_name: qualified_name.clone(),
+        type_name: resolved_type_name.clone(),
+        type_def_id: resolved_type_def_id,
+    });
+    let pending_resolutions = if let Some(inner_decl) = inner_decl.as_ref() {
+        Some(plan_pending_outer_refs_for_inner(
+            tree, ctx, &comp.name, inner_decl,
+        )?)
+    } else {
+        None
+    };
+
+    let outer_span = if comp.outer {
+        Some(location_to_span(
+            &comp.location,
+            &tree.source_map,
+            "outer component",
+        )?)
+    } else {
+        None
+    };
+    let matching_inner = if comp.outer {
+        // MLS §5.4: For `inner outer`, find the PARENT's inner (skip self).
+        // For pure `outer`, find the nearest inner (may be self if inner outer).
+        let candidate = if comp.inner {
+            ctx.find_parent_inner(&comp.name)
+        } else {
+            ctx.find_inner(&comp.name)
+        };
+        candidate.cloned()
+    } else {
+        None
+    };
+    if let (Some(inner), Some(span)) = (matching_inner.as_ref(), outer_span) {
+        let types_compatible = is_type_compatible_with_def_id(
+            tree,
+            &resolved_type_name,
+            resolved_type_def_id,
+            &inner.type_name,
+            inner.type_def_id,
+            span,
+        )?;
+        if !types_compatible {
+            return Err(Box::new(InstantiateError::inner_outer_type_mismatch(
+                &comp.name,
+                &resolved_type_name,
+                &inner.type_name,
+                span,
+            )));
+        }
+    }
+
+    // All identity and type evidence is proven before committing any context
+    // or overlay mutation, so an error cannot leave a partial inner/outer map.
     if comp.inner || comp.outer {
         // MLS §5.4 registrations are path-dependent; record the event so
         // compact array replication can refuse to derive the other elements.
         ctx.inner_outer_events += 1;
     }
-    if comp.inner {
-        let inner_decl = InnerDeclaration {
-            qualified_name: qualified_name.clone(),
-            type_name: resolved_type_name.clone(),
-            type_def_id: resolved_type_def_id,
-        };
+    if let Some(inner_decl) = inner_decl.as_ref() {
         ctx.register_inner(
             &comp.name,
             qualified_name.clone(),
             &resolved_type_name,
             resolved_type_def_id,
         );
-        resolve_pending_outer_refs_for_inner(tree, ctx, overlay, &comp.name, &inner_decl);
+        apply_pending_outer_resolutions(
+            ctx,
+            overlay,
+            inner_decl,
+            pending_resolutions.expect("inner declaration has a pending-resolution plan"),
+        );
     }
     if comp.outer {
-        let span = location_to_span(&comp.location, &tree.source_map, "outer component")?;
-        // MLS §5.4: For `inner outer`, find the PARENT's inner (skip self).
-        // For pure `outer`, find the nearest inner (may be self if inner outer).
-        let inner_result = if comp.inner {
-            ctx.find_parent_inner(&comp.name)
-        } else {
-            ctx.find_inner(&comp.name)
-        };
-        if let Some(inner_decl) = inner_result {
+        let span = outer_span.expect("outer declaration has a checked source span");
+        if let Some(inner_decl) = matching_inner {
             let outer_path = qualified_name.to_component_path();
             let inner_path = inner_decl.qualified_name.to_component_path();
             // MLS §5.4: Record prefix mapping for flatten-phase redirection.
@@ -197,21 +265,6 @@ pub(crate) fn handle_inner_outer(
             };
             if outer_path != inner_path {
                 target_map.insert(outer_path, inner_path);
-            }
-            let types_compatible = is_type_compatible_with_def_id(
-                tree,
-                &resolved_type_name,
-                resolved_type_def_id,
-                &inner_decl.type_name,
-                inner_decl.type_def_id,
-            );
-            if !types_compatible {
-                return Err(Box::new(InstantiateError::inner_outer_type_mismatch(
-                    &comp.name,
-                    &resolved_type_name,
-                    &inner_decl.type_name,
-                    span,
-                )));
             }
         } else {
             ctx.record_missing_inner(MissingInnerInfo {
@@ -239,12 +292,14 @@ pub(crate) fn handle_inner_outer(
 /// shape is conditional on `world.enableAnimation`) before `inner world`, which
 /// left the MLS §4.4.5 condition undecidable.
 ///
-/// The pre-pass also records the inner class's Boolean parameter values so those
-/// conditions can be decided. Nothing is invented: a modifier this scope cannot
-/// evaluate drops the parameter instead of falling back to the class default, and
-/// the authoritative values still overwrite these when the inner is instantiated.
+/// The pre-pass also records the inner class's scalar structural values so nested
+/// conditions, dimensions, and connection domains can be decided. Nothing is
+/// invented: a modifier this scope cannot evaluate drops that occurrence and its
+/// dependents instead of falling back to the class default. Authoritative values
+/// still overwrite the prescan when the inner is instantiated.
 pub(crate) fn preregister_class_inners(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     effective_components: &IndexMap<String, ast::Component>,
     ctx: &mut InstantiateContext,
 ) -> InstantiateResult<()> {
@@ -278,6 +333,7 @@ pub(crate) fn preregister_class_inners(
         );
         preregister_inner_params(
             tree,
+            class_index,
             InnerParamPrescan {
                 comp,
                 resolved_type_name: &resolved_type_name,
@@ -298,7 +354,7 @@ struct InnerParamPrescan<'a> {
     parent_components: &'a IndexMap<String, ast::Component>,
 }
 
-/// Record the Boolean and Real parameter values of a not-yet-instantiated `inner`.
+/// Record the scalar structural parameter values of a not-yet-instantiated `inner`.
 ///
 /// Class defaults come from the inner class's own declarations; a modifier written
 /// in this scope (`inner World world(enableAnimation=animation)`) overrides them and
@@ -311,96 +367,398 @@ struct InnerParamPrescan<'a> {
 /// `sphereDiameter` is bound to the inner world's `defaultBodyDiameter`.
 fn preregister_inner_params(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     prescan: InnerParamPrescan<'_>,
     ctx: &mut InstantiateContext,
 ) -> InstantiateResult<()> {
-    let Some(inner_class) = find_class_in_tree(tree, prescan.resolved_type_name) else {
-        return Ok(());
-    };
-    let template = get_or_compute_template(tree, inner_class, &mut ctx.template_cache)?;
-    let class_scope = ast::ModificationEnvironment::new();
-    let inner_ctx = InstantiateEvalCtx {
-        tree,
-        mod_env: &class_scope,
-        effective_components: &template.effective_components,
-        resolve_class_components: resolve_effective_components_for_eval,
-    };
-    let mut bools = extract_bool_params_with_mods(&template.effective_components, &class_scope);
-    let class_reals = extract_real_params_with_mods(&inner_ctx, &FxHashMap::default());
-    let eval_ctx = InstantiateEvalCtx {
+    let parent_eval_ctx = InstantiateEvalCtx {
         tree,
         mod_env: ctx.mod_env(),
         effective_components: prescan.parent_components,
         resolve_class_components: resolve_effective_components_for_eval,
     };
-    let mut real_overrides = FxHashMap::default();
-    for (param, decl) in &template.effective_components {
-        let Some(modifier) = inner_bool_modifier(eval_ctx.mod_env, prescan.comp, param) else {
-            continue;
-        };
-        if is_boolean_parameter(decl) {
-            match evaluate_component_condition_with_outer_values(
-                &eval_ctx,
-                modifier,
-                OuterValues::default(),
-            ) {
-                Some(value) => bools.insert(param.clone(), value),
-                None => bools.remove(param),
-            };
-        } else if class_reals.contains_key(param) {
-            // A Real parameter this scope overrides with an expression that cannot
-            // be decided here poisons every declaration derived from it, so no Real
-            // is registered at all rather than some keeping a replaced class default.
-            let Some(value) = try_eval_real_expr(&eval_ctx, modifier) else {
-                ctx.register_known_bool_params(prescan.instance_path, &bools);
-                return Ok(());
-            };
-            real_overrides.insert(param.clone(), value);
-        }
-    }
-    ctx.register_known_bool_params(prescan.instance_path, &bools);
-    ctx.register_known_real_params(
-        prescan.instance_path,
-        &applied_real_params(&inner_ctx, class_reals, real_overrides),
+    let inner_occurrence_allows = !matches!(
+        prescan.comp.variability,
+        rumoca_core::Variability::Parameter(_)
+    ) || component_allows_structural_evaluation(
+        &prescan.comp.name,
+        prescan.comp,
+        &parent_eval_ctx,
     );
+    if ctx.structural_evaluation_blocked() || !inner_occurrence_allows {
+        return Ok(());
+    }
+    let Some(inner_class) = find_class_in_tree(tree, prescan.resolved_type_name) else {
+        return Ok(());
+    };
+    let template = get_or_compute_template(tree, inner_class, &mut ctx.template_cache)?;
+    let effective_components = occurrence_effective_components(
+        tree,
+        class_index,
+        &template.effective_components,
+        &prescan,
+        ctx,
+    )?;
+    let params = fold_inner_structural_params(tree, &effective_components);
+    ctx.register_known_bool_params(prescan.instance_path, &params.bools);
+    ctx.register_known_int_params(prescan.instance_path, &params.integers);
+    ctx.register_known_real_params(prescan.instance_path, &params.reals);
     Ok(())
 }
 
-/// Re-fold the inner class's Real declarations against the overrides written on
-/// the instance, so derived parameters follow their modified source (MLS §7.2).
-fn applied_real_params(
-    inner_ctx: &InstantiateEvalCtx<'_>,
-    class_reals: FxHashMap<String, f64>,
-    overrides: FxHashMap<String, f64>,
-) -> FxHashMap<String, f64> {
-    if overrides.is_empty() {
-        return class_reals;
+fn occurrence_effective_components(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    declarations: &IndexMap<String, ast::Component>,
+    prescan: &InnerParamPrescan<'_>,
+    ctx: &mut InstantiateContext,
+) -> InstantiateResult<IndexMap<String, ast::Component>> {
+    let mut effective_components = declarations.clone();
+    for (name, decl) in &mut effective_components {
+        if !is_structural_scalar_declaration(decl) {
+            continue;
+        }
+        let modifier = inner_parameter_modifier(ctx, prescan.comp, name);
+        if let Some(fixed) = modifier.fixed {
+            let Some(effective_fixed) = evaluate_modifier_in_source_scope(
+                tree,
+                class_index,
+                prescan.parent_components,
+                &fixed,
+                AstScalarKind::Boolean,
+                ctx,
+            )?
+            else {
+                decl.binding = None;
+                continue;
+            };
+            if exact_boolean_literal(&effective_fixed) != Some(true) {
+                decl.binding = None;
+                continue;
+            }
+            decl.modifications
+                .insert("fixed".to_string(), effective_fixed);
+        }
+        let Some(binding) = modifier.binding else {
+            continue;
+        };
+        let Some(kind) = canonical_scalar_kind(tree, decl) else {
+            decl.binding = None;
+            continue;
+        };
+        decl.binding = evaluate_modifier_in_source_scope(
+            tree,
+            class_index,
+            prescan.parent_components,
+            &binding,
+            kind,
+            ctx,
+        )?;
     }
-    let mut reals = extract_real_params_with_mods(inner_ctx, &overrides);
-    reals.extend(overrides);
-    reals
+    Ok(effective_components)
 }
 
-fn is_boolean_parameter(decl: &ast::Component) -> bool {
-    matches!(decl.variability, rumoca_core::Variability::Parameter(_))
-        && rumoca_core::qualified_type_name_matches(&decl.type_name.to_string(), "Boolean")
+struct PrescannedParams {
+    bools: FxHashMap<String, bool>,
+    integers: FxHashMap<String, i64>,
+    reals: FxHashMap<String, f64>,
 }
 
-/// The modifier applied to `<inner>.<param>` in the enclosing scope, if any.
-///
-/// MLS §7.2.4: a modification handed down from further out wins over the one
-/// written on the declaration itself.
-fn inner_bool_modifier<'a>(
-    mod_env: &'a ast::ModificationEnvironment,
-    comp: &'a ast::Component,
-    param: &str,
-) -> Option<&'a ast::Expression> {
-    let mut path = ast::QualifiedName::from_ident(&comp.name);
-    path.parts.push((param.to_string(), Vec::new()));
-    if let Some(modification) = mod_env.get(&path) {
-        return Some(&modification.value);
+fn fold_inner_structural_params(
+    tree: &ast::ClassTree,
+    effective_components: &IndexMap<String, ast::Component>,
+) -> PrescannedParams {
+    let occurrence_mods = ast::ModificationEnvironment::new();
+    let inner_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: &occurrence_mods,
+        effective_components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let mut bools = FxHashMap::default();
+    let mut integers = FxHashMap::default();
+    let mut reals = FxHashMap::default();
+    for (name, decl) in effective_components {
+        if !component_allows_structural_evaluation(name, decl, &inner_ctx)
+            || !decl.shape.is_empty()
+            || !decl.shape_expr.is_empty()
+        {
+            continue;
+        }
+        let Some(binding) = decl.binding.as_ref() else {
+            continue;
+        };
+        match canonical_scalar_kind(tree, decl) {
+            Some(AstScalarKind::Boolean) => {
+                if let Some(value) = evaluate_component_condition_with_outer_values(
+                    &inner_ctx,
+                    binding,
+                    OuterValues::default(),
+                ) {
+                    bools.insert(name.clone(), value);
+                }
+            }
+            Some(AstScalarKind::Integer) => {
+                if let Some(value) = try_eval_integer_expr(&inner_ctx, binding) {
+                    integers.insert(name.clone(), value);
+                }
+            }
+            Some(AstScalarKind::Real) => {
+                if let Some(value) = try_eval_real_expr(&inner_ctx, binding) {
+                    reals.insert(name.clone(), value);
+                }
+            }
+            None => {}
+        }
     }
-    comp.modifications.get(param)
+    PrescannedParams {
+        bools,
+        integers,
+        reals,
+    }
+}
+
+struct InnerParameterModifier {
+    binding: Option<ModifierBinding>,
+    fixed: Option<ModifierBinding>,
+}
+
+struct ModifierBinding {
+    expression: ast::Expression,
+    source: ModifierSource,
+}
+
+enum ModifierSource {
+    Applied(Option<ast::QualifiedName>),
+    Declaration(Option<ast::QualifiedName>),
+}
+
+fn inner_parameter_modifier(
+    ctx: &InstantiateContext,
+    inner: &ast::Component,
+    parameter: &str,
+) -> InnerParameterModifier {
+    let parameter_path = ast::QualifiedName::from_ident(&inner.name).child(parameter);
+    let fixed_path = parameter_path.child("fixed");
+    let direct = inner.modifications.get(parameter);
+    let binding = ctx.mod_env().get(&parameter_path).map_or_else(
+        || {
+            direct
+                .and_then(ast::Expression::component_modifier_binding_value)
+                .map(|expression| ModifierBinding {
+                    expression: expression.clone(),
+                    source: ModifierSource::Declaration(
+                        expression_source_scope(ctx, expression)
+                            .map(|(scope, _)| scope)
+                            .or_else(|| component_declaration_source_scope(ctx, inner)),
+                    ),
+                })
+        },
+        |applied| {
+            applied
+                .value
+                .component_modifier_binding_value()
+                .map(|expression| ModifierBinding {
+                    expression: expression.clone(),
+                    source: ModifierSource::Applied(applied.source_scope.clone()),
+                })
+        },
+    );
+    let applied_fixed = ctx.mod_env().get(&fixed_path);
+    let direct_fixed = direct.and_then(modifier_fixed_attribute);
+    let fixed = applied_fixed.map_or_else(
+        || {
+            direct_fixed.map(|expression| ModifierBinding {
+                expression: expression.clone(),
+                source: ModifierSource::Declaration(
+                    expression_source_scope(ctx, expression)
+                        .map(|(scope, _)| scope)
+                        .or_else(|| component_declaration_source_scope(ctx, inner)),
+                ),
+            })
+        },
+        |applied| {
+            Some(ModifierBinding {
+                expression: applied.value.clone(),
+                source: ModifierSource::Applied(applied.source_scope.clone()),
+            })
+        },
+    );
+    InnerParameterModifier { binding, fixed }
+}
+
+fn evaluate_modifier_in_source_scope(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    parent_components: &IndexMap<String, ast::Component>,
+    binding: &ModifierBinding,
+    kind: AstScalarKind,
+    ctx: &mut InstantiateContext,
+) -> InstantiateResult<Option<ast::Expression>> {
+    let source_class = modifier_source_class(tree, ctx, &binding.source);
+    let source_template = source_class
+        .map(|class| get_or_compute_template(tree, class, &mut ctx.template_cache))
+        .transpose()?;
+    let unavailable_explicit_scope = match &binding.source {
+        ModifierSource::Declaration(_) => source_template.is_none(),
+        ModifierSource::Applied(Some(_)) => source_template.is_none(),
+        ModifierSource::Applied(None) => false,
+    };
+    let empty_components = IndexMap::default();
+    let empty_mods = ast::ModificationEnvironment::new();
+    let components = source_template.as_ref().map_or_else(
+        || {
+            if unavailable_explicit_scope {
+                &empty_components
+            } else {
+                parent_components
+            }
+        },
+        |template| &template.effective_components,
+    );
+    // MLS §13.2: the modifier expression was written in the source class, so
+    // that class's own import bindings (never an inherited union) apply.
+    let source_imports = source_class
+        .and_then(|class| class.scope_id)
+        .map(|scope_id| tree.effective_imports(scope_id));
+    let rewrite = crate::dims::ImportRewrite {
+        class_index,
+        overriding_aliases: &[],
+        effective: source_imports.as_ref(),
+        fallback_aliases: &[],
+    };
+    let expression = crate::dims::qualify_shape_expr_imports(tree, &binding.expression, rewrite)?;
+    let eval_ctx = InstantiateEvalCtx {
+        tree,
+        mod_env: if unavailable_explicit_scope {
+            &empty_mods
+        } else {
+            ctx.mod_env()
+        },
+        effective_components: components,
+        resolve_class_components: resolve_effective_components_for_eval,
+    };
+    let span = binding.expression.span();
+    Ok(match kind {
+        AstScalarKind::Boolean => evaluate_component_condition_with_outer_values(
+            &eval_ctx,
+            &expression,
+            OuterValues::default(),
+        )
+        .map(|value| boolean_terminal(value, span)),
+        AstScalarKind::Integer => {
+            try_eval_integer_expr(&eval_ctx, &expression).map(|value| integer_terminal(value, span))
+        }
+        AstScalarKind::Real => {
+            try_eval_real_expr(&eval_ctx, &expression).map(|value| real_terminal(value, span))
+        }
+    })
+}
+
+fn modifier_source_class<'a>(
+    tree: &'a ast::ClassTree,
+    ctx: &InstantiateContext,
+    source: &ModifierSource,
+) -> Option<&'a ast::ClassDef> {
+    match source {
+        ModifierSource::Declaration(Some(scope)) => {
+            find_class_in_tree(tree, &scope.to_flat_string())
+        }
+        ModifierSource::Applied(Some(scope)) => {
+            let current_path = ctx.current_path();
+            if !path_is_ancestor_or_same(scope, &current_path) {
+                return None;
+            }
+            let frame = ctx.active_instantiations.get(scope.parts.len())?;
+            let super::InstantiationFrameKey::Def(def_id) = frame.key;
+            tree.get_class_by_def_id(def_id)
+        }
+        ModifierSource::Declaration(None) | ModifierSource::Applied(None) => None,
+    }
+}
+
+fn is_structural_scalar_declaration(declaration: &ast::Component) -> bool {
+    matches!(
+        declaration.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    ) && declaration.shape.is_empty()
+        && declaration.shape_expr.is_empty()
+}
+
+fn modifier_fixed_attribute(expression: &ast::Expression) -> Option<&ast::Expression> {
+    match expression {
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs,
+            ..
+        }
+        | ast::Expression::Parenthesized { inner: lhs, .. } => modifier_fixed_attribute(lhs),
+        ast::Expression::ClassModification { modifications, .. } => {
+            modifications.iter().find_map(|modifier| match modifier {
+                ast::Expression::Modification {
+                    target,
+                    value: Some(value),
+                    ..
+                } if reference_is_single_name(target, "fixed") => Some(value.as_ref()),
+                ast::Expression::NamedArgument { name, value, .. }
+                    if name.text.as_ref() == "fixed" =>
+                {
+                    Some(value.as_ref())
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn reference_is_single_name(reference: &ast::ComponentReference, expected: &str) -> bool {
+    reference.parts.len() == 1
+        && reference.parts[0].subs.is_none()
+        && reference.parts[0].ident.text.as_ref() == expected
+}
+
+fn exact_boolean_literal(expression: &ast::Expression) -> Option<bool> {
+    match expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::Bool,
+            token,
+            ..
+        } => match token.text.as_ref() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        ast::Expression::Parenthesized { inner, .. } => exact_boolean_literal(inner),
+        _ => None,
+    }
+}
+
+fn boolean_terminal(value: bool, span: rumoca_core::Span) -> ast::Expression {
+    scalar_terminal(ast::TerminalType::Bool, value.to_string(), span)
+}
+
+fn integer_terminal(value: i64, span: rumoca_core::Span) -> ast::Expression {
+    scalar_terminal(ast::TerminalType::UnsignedInteger, value.to_string(), span)
+}
+
+fn real_terminal(value: f64, span: rumoca_core::Span) -> ast::Expression {
+    scalar_terminal(ast::TerminalType::UnsignedReal, value.to_string(), span)
+}
+
+fn scalar_terminal(
+    terminal_type: ast::TerminalType,
+    text: String,
+    span: rumoca_core::Span,
+) -> ast::Expression {
+    ast::Expression::Terminal {
+        terminal_type,
+        token: rumoca_core::Token {
+            text: text.into(),
+            ..rumoca_core::Token::default()
+        },
+        span,
+    }
 }
 
 fn resolve_inner_outer_type_name(
@@ -452,16 +810,27 @@ fn resolve_type_name_in_source_scope(
         .find(|candidate| tree.name_map.contains_key(candidate))
 }
 
-fn resolve_pending_outer_refs_for_inner(
+fn plan_pending_outer_refs_for_inner(
     tree: &ast::ClassTree,
-    ctx: &mut InstantiateContext,
-    overlay: &mut ast::InstanceOverlay,
+    ctx: &InstantiateContext,
     name: &str,
     inner_decl: &InnerDeclaration,
+) -> InstantiateResult<Vec<bool>> {
+    ctx.missing_inners
+        .iter()
+        .map(|missing| can_resolve_missing_inner(tree, name, inner_decl, missing))
+        .collect()
+}
+
+fn apply_pending_outer_resolutions(
+    ctx: &mut InstantiateContext,
+    overlay: &mut ast::InstanceOverlay,
+    inner_decl: &InnerDeclaration,
+    resolutions: Vec<bool>,
 ) {
     let mut remaining = Vec::new();
-    for missing in ctx.missing_inners.drain(..) {
-        if can_resolve_missing_inner(tree, name, inner_decl, &missing) {
+    for (missing, resolves) in ctx.missing_inners.drain(..).zip(resolutions) {
+        if resolves {
             record_late_inner_outer_mapping(overlay, &missing, inner_decl);
         } else {
             remaining.push(missing);
@@ -475,16 +844,18 @@ fn can_resolve_missing_inner(
     name: &str,
     inner_decl: &InnerDeclaration,
     missing: &MissingInnerInfo,
-) -> bool {
-    missing.name == name
-        && inner_visible_to_outer(inner_decl, missing)
-        && is_type_compatible_with_def_id(
-            tree,
-            &missing.type_name,
-            missing.type_def_id,
-            &inner_decl.type_name,
-            inner_decl.type_def_id,
-        )
+) -> InstantiateResult<bool> {
+    if missing.name != name || !inner_visible_to_outer(inner_decl, missing) {
+        return Ok(false);
+    }
+    is_type_compatible_with_def_id(
+        tree,
+        &missing.type_name,
+        missing.type_def_id,
+        &inner_decl.type_name,
+        inner_decl.type_def_id,
+        missing.span,
+    )
 }
 
 pub(crate) fn inner_visible_to_outer(

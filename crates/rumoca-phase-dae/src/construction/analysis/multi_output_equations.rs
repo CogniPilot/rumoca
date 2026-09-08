@@ -11,7 +11,6 @@ pub(super) fn analyze_multi_output_equations(
     flat: &flat::Model,
     equations: &[flat::Equation],
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     shapes: &FunctionShapeAnalysis,
     initialization: bool,
 ) -> Result<HashMap<usize, MultiOutputEquationPlan>, ToDaeError> {
@@ -22,7 +21,7 @@ pub(super) fn analyze_multi_output_equations(
         };
         plans.insert(
             row,
-            validate_multi_output_equation(flat, roles, states, shapes, source, initialization)?,
+            validate_multi_output_equation(flat, roles, shapes, source, initialization)?,
         );
     }
     Ok(plans)
@@ -52,6 +51,7 @@ fn multi_output_equation(equation: &flat::Equation) -> Option<MultiOutputEquatio
         name,
         args,
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         ..
     } = rhs.as_ref()
     else {
@@ -68,7 +68,6 @@ fn multi_output_equation(equation: &flat::Equation) -> Option<MultiOutputEquatio
 fn validate_multi_output_equation(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     shapes: &FunctionShapeAnalysis,
     source: MultiOutputEquationSource<'_>,
     initialization: bool,
@@ -80,9 +79,7 @@ fn validate_multi_output_equation(
         shapes.model_values(),
         source.span,
     )?;
-    let certificate = shapes
-        .certificate(&call.specialization)
-        .expect("a call-shape certificate names a function certificate");
+    let certificate = &call.specialization;
     if source.receivers.len() != certificate.results.len() {
         return Err(ToDaeError::unsupported_flat(
             "multi-output equation",
@@ -146,7 +143,6 @@ fn validate_multi_output_equation(
         validate_model_expression_with_record_array_fields(
             argument,
             roles,
-            states,
             shapes.record_array_fields(),
             shapes.model_values(),
         )?;

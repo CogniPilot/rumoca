@@ -172,12 +172,24 @@ end Lib;
         tree.source_map.add(file_name, SOURCE);
         let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("fixture should resolve");
-        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
-            .expect("fixture should instantiate");
-        let ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+        let overlay =
+            match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model)
+            {
+                rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+                rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                    missing_inners,
+                    ..
+                } => {
+                    panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+                }
+                rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                    panic!("fixture instantiation failed: {error}")
+                }
+            };
+        let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
             .expect("fixture should typecheck");
-        crate::flatten_ref(&tree, &overlay, model).expect("fixture should flatten")
+        crate::flatten_typed(typed, crate::FlattenOptions::default())
+            .expect("fixture should flatten")
     }
 
     fn output_dimensions(model: &flat::Model, function: &str) -> Vec<i64> {
@@ -297,12 +309,24 @@ end Lib;
         tree.source_map.add(file_name, &source);
         let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("fixture should resolve");
-        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
-            .expect("fixture should instantiate");
-        let ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+        let overlay =
+            match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model)
+            {
+                rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+                rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                    missing_inners,
+                    ..
+                } => {
+                    panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+                }
+                rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                    panic!("fixture instantiation failed: {error}")
+                }
+            };
+        let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
             .expect("fixture should typecheck");
-        crate::flatten_ref(&tree, &overlay, model).expect("fixture should flatten")
+        crate::flatten_typed(typed, crate::FlattenOptions::default())
+            .expect("fixture should flatten")
     }
 
     fn statement_callees(statements: &[rumoca_core::Statement]) -> Vec<String> {

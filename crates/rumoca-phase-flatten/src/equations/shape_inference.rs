@@ -103,7 +103,9 @@ pub(crate) fn project_component_dims_by_subscripts(
                     remaining_dims.push(dims[dim_idx]);
                     dim_idx += 1;
                 }
-                ast::Subscript::Empty => {}
+                ast::Subscript::Empty => {
+                    unreachable!("flatten input validation rejects empty recovery subscripts")
+                }
             }
         }
     }
@@ -284,6 +286,10 @@ pub(crate) fn infer_expression_shape(
                 infer_array_builtin_shape(comp, args, prefix, ctx)
             }
         }
+        ast::Expression::DerivativeCall { args, .. } => match args.as_slice() {
+            [argument] => infer_expression_shape(argument, prefix, ctx),
+            _ => ExpressionShape::Other,
+        },
         ast::Expression::If {
             branches,
             else_branch,

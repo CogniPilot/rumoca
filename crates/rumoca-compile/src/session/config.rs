@@ -25,7 +25,8 @@ impl SessionConfig {
     pub(super) fn instantiate_options(&self) -> InstantiateOptions {
         InstantiateOptions {
             depth_limit: self.instantiation_depth_limit,
-            ..InstantiateOptions::default()
+            root_modifications: Vec::new(),
+            compact_component_families: true,
         }
     }
 }

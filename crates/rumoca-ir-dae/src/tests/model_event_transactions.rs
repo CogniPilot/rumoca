@@ -24,12 +24,14 @@ fn declare_discrete_variables<'dae>(
         Ok((
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 z_at,
                 VariableAttributes::default(),
             )?,
             variables.discrete_value(
                 VarName::new("valid"),
+                rumoca_core::InstanceId::new(2),
                 boolean,
                 valid_at,
                 VariableAttributes::default(),

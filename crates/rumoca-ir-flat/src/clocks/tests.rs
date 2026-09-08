@@ -1,5 +1,8 @@
 use super::*;
-use rumoca_core::{Expression, Literal, SourceId};
+use rumoca_core::{
+    Expression, FunctionCallKind, FunctionInstanceId, Literal, Reference,
+    ResolvedFunctionReference, SourceId,
+};
 
 fn span() -> Span {
     Span::from_offsets(SourceId::from_source_name(file!()), 0, 1)
@@ -516,6 +519,42 @@ fn base_clock_partition_wire_reconstructs_the_checked_aggregate() {
     let error = serde_json::from_value::<BaseClockPartition>(removed_public_field_shape)
         .expect_err("the removed public-field wire shape must fail");
     assert!(error.to_string().contains("unknown field"));
+}
+
+#[test]
+fn standalone_clock_wire_rejects_calls_without_a_root_callable_catalog() {
+    let owner = named_span("rootless_clock_call.mo", 1);
+    let call_span = named_span("rootless_clock_call.mo", 3);
+    let call = Expression::FunctionCall {
+        name: Reference::new("f").with_resolved_function(ResolvedFunctionReference {
+            instance_id: FunctionInstanceId::new(1),
+            base_part_count: 0,
+            transitively_non_replaceable: false,
+        }),
+        args: Vec::new(),
+        is_constructor: false,
+        call_kind: FunctionCallKind::Invocation,
+        span: call_span,
+    };
+    let mut partition =
+        BaseClockPartition::construct(1, BaseClock::inferred(owner), provenance(owner));
+    partition
+        .add_equation(Equation::new(
+            call,
+            call_span,
+            crate::EquationOrigin::ComponentEquation {
+                component: "clocked".into(),
+            },
+        ))
+        .expect("the in-memory fixture represents a root-dependent call");
+
+    let encoded = serde_json::to_value(partition).expect("clock partition serializes");
+    let error = serde_json::from_value::<BaseClockPartition>(encoded)
+        .expect_err("a standalone child cannot replay a root-dependent semantic call");
+    assert!(
+        error.to_string().contains("root callable inventory"),
+        "{error}"
+    );
 }
 
 #[test]

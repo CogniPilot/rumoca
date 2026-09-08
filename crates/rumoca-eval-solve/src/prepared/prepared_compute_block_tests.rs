@@ -8,7 +8,7 @@ use rumoca_ir_solve::{
 fn test_domain() -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 3,
@@ -258,7 +258,7 @@ fn prepared_compute_block_evaluates_map_through_native_affine_loop() {
 fn prepared_empty_map_does_not_require_inputs_from_its_unexecuted_body() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 0,
@@ -434,34 +434,28 @@ fn prepared_compute_block_rejects_negative_tensor_output_map_with_span() {
 }
 
 #[test]
-fn prepared_compute_block_rejects_scalar_output_count_overflow_with_span() {
+fn scalar_program_construction_rejects_output_count_overflow_with_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_scalar_output.mo"),
         3,
         9,
     );
-    let block = ComputeBlock {
-        nodes: vec![ComputeNode::ScalarPrograms(
-            ScalarProgramBlock::with_output_indices(
-                vec![const_store_row(1.0)],
-                vec![span],
-                vec![usize::MAX],
-            )
-            .expect("overflow fixture metadata should match row count"),
-        )],
-    };
-
-    let err = match PreparedComputeBlock::new(&block) {
-        Ok(_) => panic!("overflowing scalar output index should fail preparation"),
-        Err(err) => err,
-    };
+    let err = ScalarProgramBlock::with_output_indices(
+        vec![const_store_row(1.0)],
+        vec![span],
+        vec![usize::MAX],
+    )
+    .expect_err("overflowing scalar output index must fail block construction");
 
     assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.to_string()
-            .contains("node 0 output index arithmetic overflowed"),
-        "error should explain output-count overflow: {err}"
-    );
+    assert!(matches!(
+        err,
+        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow {
+            context,
+            node_index: 0,
+            span: Some(error_span),
+        } if context == "ScalarProgramBlock" && error_span == span
+    ));
 }
 
 #[test]

@@ -8,8 +8,6 @@
 include!(concat!(env!("OUT_DIR"), "/build_metadata.rs"));
 
 mod class_browser_helpers;
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-mod gpu_api;
 mod scenario_config_api;
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 mod simulation_api;
@@ -20,7 +18,7 @@ mod workspace_config_api;
 
 use std::{
     collections::BTreeMap,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Mutex, MutexGuard},
 };
 
@@ -37,11 +35,7 @@ use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_rayon::init_thread_pool;
 
 use rumoca_compile::Session;
-use rumoca_compile::codegen::render_algorithm_code_template_with_artifact;
-use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetTemplateIr, builtin_target_descriptors_for_ir,
-    parse_target_manifest, render_dae_target_files,
-};
+use rumoca_compile::codegen::targets::builtin_target_descriptors;
 use rumoca_compile::compile::{
     CompilationMode, CompilationResult, CompilePhaseTimingSnapshot, FailedPhase, PhaseResult,
     compile_phase_timing_stats, reset_compile_phase_timing_stats, session_cache_stats,
@@ -50,7 +44,7 @@ use rumoca_compile::parsing::{
     ClassDef, Expression, ParseError, StoredDefinition, collect_model_names, parse_source_to_ast,
     parse_source_to_ast_with_errors,
 };
-use rumoca_core::{Causality, DefId, OpBinary, Span, Variability};
+use rumoca_core::{Causality, DefId, OpBinary, PhaseError, Span, Variability};
 use rumoca_tool_lint::{LintOptions, lint as lint_source};
 use rumoca_tool_lsp::completion_metrics::{
     CompletionTimingSummary, extract_namespace_completion_prefix,
@@ -62,8 +56,6 @@ use crate::class_browser_helpers::{
     class_type_label, component_reference_to_path, expression_path, extract_string_literal,
     join_path, token_list_to_text,
 };
-#[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
-pub use crate::gpu_api::{prepare_gpu_simulation, update_gpu_parameters};
 #[cfg(any(feature = "sim-wasm", feature = "sim-diffsol", feature = "sim-rk45"))]
 use crate::simulation_api::{
     lower_model_to_solve_json_impl, model_parameter_metadata_impl,
@@ -259,13 +251,13 @@ pub fn get_build_time_utc() -> String {
     BUILD_TIME_UTC.to_string()
 }
 
-/// Get the built-in codegen targets bundled with the WASM runtime.
 #[wasm_bindgen]
 pub fn get_builtin_targets() -> Result<JsValue, WasmError> {
-    let mut targets = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
-    targets.extend(builtin_target_descriptors_for_ir(
-        TargetTemplateIr::AlgorithmCode,
-    ));
+    let targets = builtin_target_descriptors().map_err(|error| {
+        WasmError::new(format!(
+            "built-in target discovery failed checked construction: {error:#}"
+        ))
+    })?;
     serialize_js_value(&targets, "Serialize built-in target descriptors")
 }
 
@@ -286,13 +278,6 @@ struct WasmSimulationModelState {
     models: Vec<String>,
     selected_model: Option<String>,
     error: Option<String>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WasmRenderedTarget {
-    ok: bool,
-    files: Vec<RenderedTargetFile>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -415,6 +400,11 @@ fn first_parse_error_message(errors: &[ParseError]) -> String {
 fn parse_error_message(error: &ParseError) -> String {
     match error {
         ParseError::SyntaxError { message, .. } => message.clone(),
+        ParseError::UnsupportedImplicitIterationRange { .. } => {
+            // The parser already renders this refusal; reuse its wording rather
+            // than maintaining a second copy of the message here.
+            error.to_diagnostic().message
+        }
         ParseError::NoAstProduced { .. } => "parsing succeeded but no AST was produced".to_string(),
         ParseError::IoError { path, message, .. } => {
             format!("failed to read `{path}`: {message}")
@@ -461,10 +451,9 @@ fn span_start_line_column(source: &str, span: Span) -> Result<Option<(u32, u32)>
 }
 
 fn parse_error_line_column(source: &str, error: &ParseError) -> Result<(u32, u32), WasmError> {
-    let ParseError::SyntaxError { span, .. } = error else {
-        return Ok((1, 1));
-    };
-    Ok(span_start_line_column(source, *span)?.unwrap_or((1, 1)))
+    // `ParseError::span` is the parser-owned provenance for every variant, so
+    // this surface does not need to know which variants carry a real location.
+    Ok(span_start_line_column(source, error.span())?.unwrap_or((1, 1)))
 }
 
 fn syntax_error_message(source: &str, error: &ParseError) -> Result<WasmLintMessage, WasmError> {
@@ -684,12 +673,6 @@ pub fn compile(source: &str, model_name: &str) -> Result<String, WasmError> {
     with_singleton_session(|session| compile_source_in_session(session, source, model_name))
 }
 
-/// Compile Modelica source code to DAE JSON (alias for worker compatibility).
-#[wasm_bindgen]
-pub fn compile_to_json(source: &str, model_name: &str) -> Result<String, WasmError> {
-    compile(source, model_name)
-}
-
 /// Discover compilable simulation models in a source document.
 #[wasm_bindgen]
 pub fn get_simulation_models(source: &str, default_model: &str) -> Result<String, WasmError> {
@@ -890,7 +873,11 @@ fn collect_documentation_fields(
             }
             collect_documentation_fields(value, context, fields);
         }
-        Expression::Modification { target, value, .. } => {
+        Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => {
             let path = join_path(context, &component_reference_to_path(target));
             if let Some(text) = extract_string_literal(value) {
                 maybe_capture_documentation_field(&path, text, fields);
@@ -1174,121 +1161,6 @@ pub fn get_class_info(qualified_name: &str) -> Result<String, WasmError> {
 }
 
 // ==========================================================================
-// Code Generation
-// ==========================================================================
-
-#[wasm_bindgen]
-pub fn render_target(
-    dae_json: &str,
-    model_name: &str,
-    target: &str,
-    manifest_source: &str,
-    templates_json: &str,
-) -> Result<JsValue, WasmError> {
-    let dae = serde_json::from_str::<rumoca_compile::compile::Dae>(dae_json)
-        .map_err(|e| WasmError::new(format!("Invalid DAE JSON: {e}")))?;
-
-    let custom_templates: BTreeMap<String, String> = serde_json::from_str(templates_json)
-        .map_err(|e| WasmError::new(format!("Invalid target template map: {e}")))?;
-    let files = if manifest_source.trim().is_empty() {
-        let bundle = TargetBundle::builtin(target)
-            .ok_or_else(|| WasmError::new(format!("Unknown built-in target '{target}'")))?;
-        let manifest = bundle
-            .parse_manifest()
-            .map_err(|e| WasmError::new(e.to_string()))?;
-        match manifest.ir {
-            TargetTemplateIr::Dae => render_dae_target_files(&bundle, &manifest, &dae, model_name),
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&bundle, &manifest, &dae, model_name)
-            }
-            _ => Err(anyhow::anyhow!(
-                "WASM target rendering supports dae and algorithm-code IR targets"
-            )),
-        }
-        .map_err(|e| WasmError::new(format!("Target render failed: {e}")))?
-    } else {
-        let manifest =
-            parse_target_manifest(manifest_source).map_err(|e| WasmError::new(e.to_string()))?;
-        match manifest.ir {
-            TargetTemplateIr::Dae => {
-                render_dae_target_files(&custom_templates, &manifest, &dae, model_name)
-            }
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&custom_templates, &manifest, &dae, model_name)
-            }
-            _ => Err(anyhow::anyhow!(
-                "WASM target rendering supports dae and algorithm-code IR targets"
-            )),
-        }
-        .map_err(|e| WasmError::new(format!("Target render failed: {e}")))?
-    };
-
-    serde_wasm_bindgen::to_value(&WasmRenderedTarget { ok: true, files })
-        .map_err(|e| WasmError::new(format!("Serialize target output: {e}")))
-}
-
-#[derive(Serialize)]
-struct WasmSourceArtifactFacts {
-    generated_at: &'static str,
-    generation_tool: &'static str,
-    identities: BTreeMap<String, String>,
-    checksums: BTreeMap<String, String>,
-}
-
-fn render_algorithm_code_source_files(
-    source: &impl rumoca_compile::codegen::targets::TargetTemplateSource,
-    manifest: &rumoca_compile::codegen::targets::TargetManifest,
-    dae: &rumoca_compile::compile::Dae,
-    model_name: &str,
-) -> anyhow::Result<Vec<RenderedTargetFile>> {
-    let model_id = model_name.replace('.', "_");
-    let package = rumoca_phase_galec::lower_to_algorithm_code(
-        &rumoca_phase_galec::GalecInput::new(dae, &model_id),
-        &rumoca_phase_galec::GalecOptions::default(),
-    )
-    .map_err(|diagnostics| {
-        anyhow::anyhow!(
-            "GALEC projection failed: {}",
-            diagnostics
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    })?;
-    let artifact = WasmSourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca wasm source preview",
-        identities: BTreeMap::new(),
-        checksums: BTreeMap::new(),
-    };
-    let mut files = Vec::new();
-    for file in &manifest.files {
-        let extension = std::path::Path::new(&file.path)
-            .extension()
-            .and_then(|value| value.to_str());
-        if !matches!(extension, Some("alg" | "h" | "c")) {
-            continue;
-        }
-        let path = render_algorithm_code_template_with_artifact(
-            &package, &artifact, &file.path, &model_id,
-        )?;
-        let template = source.template_source(&file.template)?;
-        let content = render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            template.as_ref(),
-            &model_id,
-        )?;
-        files.push(RenderedTargetFile {
-            path: path.trim().to_owned(),
-            content,
-        });
-    }
-    Ok(files)
-}
-
-// ==========================================================================
 // LSP Functions — thin wrappers over rumoca-tool-lsp
 // ==========================================================================
 
@@ -1325,7 +1197,7 @@ fn timed_wasm_completion(
     ast: Option<&StoredDefinition>,
     line: u32,
     character: u32,
-) -> (Vec<lsp_types::CompletionItem>, CompletionTimingSummary) {
+) -> Result<(Vec<lsp_types::CompletionItem>, CompletionTimingSummary), WasmError> {
     let position = Position { line, character };
     let stats_before = session_cache_stats();
     let completion_started = wasm_timing_start();
@@ -1333,7 +1205,11 @@ fn timed_wasm_completion(
 
     let completion_source_root_load_started = wasm_timing_start();
     if completion_prefix.is_some() {
-        let _ = session.namespace_index_query("");
+        drop(
+            session.namespace_index_query("").map_err(|error| {
+                WasmError::new(format!("Namespace index rebuild failed: {error}"))
+            })?,
+        );
     }
     let completion_source_root_load_ms = wasm_elapsed_ms(completion_source_root_load_started);
 
@@ -1360,7 +1236,7 @@ fn timed_wasm_completion(
         "class_interface"
     };
 
-    (
+    Ok((
         items,
         CompletionTimingSummary {
             requested_edit_epoch: 0,
@@ -1398,28 +1274,29 @@ fn timed_wasm_completion(
             class_name_count_after_ensure,
             session_cache_delta,
         },
-    )
+    ))
+}
+
+enum ResolvedNavigationAuthority {
+    Semantic(Box<rumoca_compile::parsing::ast::ClassTree>),
+    SyntaxOnly,
+    Failed,
 }
 
 fn resolved_tree_for_navigation(
     session: &mut Session,
     ast: Option<&StoredDefinition>,
     line: u32,
-) -> Option<rumoca_compile::parsing::ast::ClassTree> {
-    ast.and_then(|parsed| {
+) -> ResolvedNavigationAuthority {
+    let Some(active_model) = ast.and_then(|parsed| {
         rumoca_tool_lsp::helpers::find_enclosing_class_qualified_name(parsed, line)
-    })
-    .and_then(|active_model| {
-        session
-            .resolved_for_semantic_navigation(&active_model)
-            .ok()
-            .map(|resolved| resolved.as_ref().clone())
-    })
-    .or_else(|| {
-        session
-            .resolved_cached()
-            .map(|resolved| resolved.into_inner())
-    })
+    }) else {
+        return ResolvedNavigationAuthority::SyntaxOnly;
+    };
+    match session.resolved_for_semantic_navigation(&active_model) {
+        Ok(resolved) => ResolvedNavigationAuthority::Semantic(Box::new(resolved.as_ref().clone())),
+        Err(_) => ResolvedNavigationAuthority::Failed,
+    }
 }
 
 fn local_component_hover(info: &rumoca_compile::compile::LocalComponentInfo) -> lsp_types::Hover {
@@ -1473,46 +1350,25 @@ fn class_target_hover(
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn url_from_session_document_uri(document_uri: &str) -> Option<Url> {
-    Url::parse(document_uri)
-        .ok()
-        .or_else(|| Url::from_file_path(document_uri).ok())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn url_from_session_document_uri(document_uri: &str) -> Option<Url> {
-    if let Ok(uri) = Url::parse(document_uri) {
-        return Some(uri);
-    }
-    let mut normalized = document_uri.replace('\\', "/");
-    if normalized.is_empty() {
-        return None;
-    }
-    if !normalized.starts_with('/') {
-        normalized.insert(0, '/');
-    }
-    Url::parse(&format!("file://{}", normalized)).ok()
-}
-
 fn class_target_definition(
     session: &Session,
     info: &rumoca_compile::compile::NavigationClassTargetInfo,
-    fallback_uri: &Url,
-) -> lsp_types::GotoDefinitionResponse {
-    let target_uri = resolve_session_target_uri(session, &info.target_uri, fallback_uri);
+) -> Option<lsp_types::GotoDefinitionResponse> {
+    let target_uri = resolve_session_target_uri(session, &info.target_uri)?;
     // LSP columns are UTF-16 code units, so the range has to be measured
     // against the *target* file's text.
     let target_source = session
         .get_document(&info.target_uri)
         .map(|doc| &doc.content);
-    lsp_types::GotoDefinitionResponse::Scalar(lsp_types::Location {
-        uri: target_uri,
-        range: rumoca_tool_lsp::helpers::location_to_range_in_optional_source(
-            target_source.map(|content| content.as_ref()),
-            &info.declaration_location,
-        ),
-    })
+    Some(lsp_types::GotoDefinitionResponse::Scalar(
+        lsp_types::Location {
+            uri: target_uri,
+            range: rumoca_tool_lsp::helpers::location_to_range_in_optional_source(
+                target_source.map(|content| content.as_ref()),
+                &info.declaration_location,
+            ),
+        },
+    ))
 }
 
 fn parsed_source_root_class_definition(
@@ -1521,17 +1377,16 @@ fn parsed_source_root_class_definition(
     tree: &rumoca_compile::parsing::ast::ClassTree,
     source: &str,
     position: Position,
-    fallback_uri: &Url,
 ) -> Option<lsp_types::GotoDefinitionResponse> {
     if let Some(qualified_name) =
         rumoca_tool_lsp::helpers::get_qualified_class_name_at_position(source, position)
         && let Some(def_id) = tree.get_def_id_by_name(&qualified_name)
     {
-        return goto_response_for_def_id(session, tree, def_id, fallback_uri);
+        return goto_response_for_def_id(session, tree, def_id);
     }
     let word = rumoca_tool_lsp::helpers::get_word_at_position(source, position)?;
     let def_id = imported_def_id_in_definition(ast, tree, &word)?;
-    goto_response_for_def_id(session, tree, def_id, fallback_uri)
+    goto_response_for_def_id(session, tree, def_id)
 }
 
 fn local_component_definition(
@@ -1578,7 +1433,6 @@ fn goto_response_for_def_id(
     session: &Session,
     tree: &rumoca_compile::parsing::ast::ClassTree,
     def_id: DefId,
-    fallback_uri: &Url,
 ) -> Option<lsp_types::GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
     let loc = &class.name.location;
@@ -1586,7 +1440,7 @@ fn goto_response_for_def_id(
     // only place the real path and text still live, and the text is what makes
     // the emitted range UTF-16-correct.
     let target = tree.source_map.get_source(loc.source);
-    let target_uri = target_uri_for_location(session, target.map(|(name, _)| name), fallback_uri);
+    let target_uri = target_uri_for_location(session, target.map(|(name, _)| name))?;
     Some(lsp_types::GotoDefinitionResponse::Scalar(
         lsp_types::Location {
             uri: target_uri,
@@ -1598,72 +1452,27 @@ fn goto_response_for_def_id(
     ))
 }
 
-fn target_uri_for_location(
-    session: &Session,
-    target_file_name: Option<&str>,
-    fallback_uri: &Url,
-) -> Url {
-    let Some(file_name) = target_file_name.filter(|name| !name.is_empty()) else {
-        return fallback_uri.clone();
-    };
+fn target_uri_for_location(session: &Session, target_file_name: Option<&str>) -> Option<Url> {
+    let file_name = target_file_name.filter(|name| !name.is_empty())?;
     if !Path::new(file_name).is_absolute() {
-        return resolve_session_target_uri(session, file_name, fallback_uri);
+        return resolve_session_target_uri(session, file_name);
     }
-    let path = Path::new(file_name);
-    if path.is_absolute()
-        && let Some(uri) = url_from_file_path(path)
-    {
-        return uri;
-    }
-    if let Some(base_path) = file_path_from_url(fallback_uri)
-        && let Some(parent) = base_path.parent()
-    {
-        let candidate = parent.join(path);
-        if let Some(uri) = url_from_file_path(candidate) {
-            return uri;
-        }
-    }
-    fallback_uri.clone()
+    url_from_file_path(file_name)
 }
 
-fn resolve_session_target_uri(session: &Session, target: &str, fallback_uri: &Url) -> Url {
-    if let Some(uri) = url_from_session_document_uri(target) {
-        return uri;
+fn resolve_session_target_uri(session: &Session, target: &str) -> Option<Url> {
+    if let Ok(uri) = Url::parse(target) {
+        return Some(uri);
     }
-    let normalized_target = target.replace('\\', "/");
-    for document_uri in session.document_uris() {
-        let document_uri = document_uri.to_string();
-        let normalized_document = document_uri.replace('\\', "/");
-        if normalized_document.ends_with(&normalized_target)
-            && let Some(uri) = url_from_session_document_uri(&document_uri)
-        {
-            return uri;
-        }
+    if Path::new(target).is_absolute() {
+        return url_from_file_path(target);
     }
-    if !normalized_target.is_empty() {
-        let relative = normalized_target.trim_start_matches('/');
-        if let Ok(uri) = Url::parse(&format!("file:///{relative}")) {
-            return uri;
-        }
+    if session.get_document(target).is_some() && !target.is_empty() {
+        let normalized = target.replace('\\', "/");
+        let relative = normalized.trim_start_matches('/');
+        return Url::parse(&format!("file:///{relative}")).ok();
     }
-    fallback_uri.clone()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn file_path_from_url(uri: &Url) -> Option<PathBuf> {
-    uri.to_file_path().ok()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn file_path_from_url(uri: &Url) -> Option<PathBuf> {
-    if uri.scheme() != "file" {
-        return None;
-    }
-    let path = uri.path();
-    if path.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(path))
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1716,10 +1525,14 @@ pub fn lsp_hover(source: &str, line: u32, character: u32) -> Result<String, Wasm
                     .navigation_class_target_query("input.mo", line, character)
                     .map(|info| class_target_hover(&info))
             })
-            .or_else(|| {
-                let resolved = resolved_tree_for_navigation(session, ast, line);
-                let tree = resolved.as_ref();
-                rumoca_tool_lsp::handle_hover(&doc.content, ast, tree, line, character)
+            .or_else(|| match resolved_tree_for_navigation(session, ast, line) {
+                ResolvedNavigationAuthority::Semantic(tree) => {
+                    rumoca_tool_lsp::handle_hover(&doc.content, ast, Some(&tree), line, character)
+                }
+                ResolvedNavigationAuthority::SyntaxOnly => {
+                    rumoca_tool_lsp::handle_hover(&doc.content, ast, None, line, character)
+                }
+                ResolvedNavigationAuthority::Failed => None,
             });
         serde_json::to_string(&hover).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
     })
@@ -1732,7 +1545,7 @@ pub fn lsp_completion(source: &str, line: u32, character: u32) -> Result<String,
         session.update_document("input.mo", source);
         let doc = session.get_document("input.mo").cloned();
         let ast = doc.as_ref().and_then(|doc| doc.parsed());
-        let (items, _) = timed_wasm_completion(session, source, ast, line, character);
+        let (items, _) = timed_wasm_completion(session, source, ast, line, character)?;
         serde_json::to_string(&items).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
     })
 }
@@ -1748,7 +1561,7 @@ pub fn lsp_completion_with_timing(
         session.update_document("input.mo", source);
         let doc = session.get_document("input.mo").cloned();
         let ast = doc.as_ref().and_then(|doc| doc.parsed());
-        let (items, timing) = timed_wasm_completion(session, source, ast, line, character);
+        let (items, timing) = timed_wasm_completion(session, source, ast, line, character)?;
         let payload = TimedCompletionResponse { items, timing };
         serde_json::to_string(&payload).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
     })
@@ -1772,36 +1585,46 @@ pub fn lsp_definition(source: &str, line: u32, character: u32) -> Result<String,
         let position = Position { line, character };
         let response = session
             .navigation_class_target_query("input.mo", line, character)
-            .map(|info| class_target_definition(session, &info, &uri))
+            .and_then(|info| class_target_definition(session, &info))
             .or_else(|| {
                 session
                     .local_component_info_query("input.mo", line, character)
                     .map(|info| local_component_definition(&info, &doc.content, &uri))
             })
-            .or_else(|| {
-                let resolved = resolved_tree_for_navigation(session, Some(ast), line);
-                let tree = resolved.as_ref();
-                tree.and_then(|tree| {
-                    parsed_source_root_class_definition(
-                        session,
-                        ast,
-                        tree,
-                        &doc.content,
-                        position,
-                        &uri,
-                    )
-                })
-                .or_else(|| {
-                    rumoca_tool_lsp::handle_goto_definition(
-                        ast,
-                        tree,
-                        &doc.content,
-                        &uri,
-                        line,
-                        character,
-                    )
-                })
-            });
+            .or_else(
+                || match resolved_tree_for_navigation(session, Some(ast), line) {
+                    ResolvedNavigationAuthority::Semantic(tree) => {
+                        parsed_source_root_class_definition(
+                            session,
+                            ast,
+                            &tree,
+                            &doc.content,
+                            position,
+                        )
+                        .or_else(|| {
+                            rumoca_tool_lsp::handle_goto_definition(
+                                ast,
+                                Some(&tree),
+                                &doc.content,
+                                &uri,
+                                line,
+                                character,
+                            )
+                        })
+                    }
+                    ResolvedNavigationAuthority::SyntaxOnly => {
+                        rumoca_tool_lsp::handle_goto_definition(
+                            ast,
+                            None,
+                            &doc.content,
+                            &uri,
+                            line,
+                            character,
+                        )
+                    }
+                    ResolvedNavigationAuthority::Failed => None,
+                },
+            );
         serde_json::to_string(&response).map_err(|e| WasmError::new(format!("JSON error: {}", e)))
     })
 }

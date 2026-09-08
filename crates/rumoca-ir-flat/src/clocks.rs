@@ -525,7 +525,7 @@ struct SubClockPartitionWire {
     source_span: Span,
     sub_clock: SubClock,
     variables: Vec<ClockPartitionVariableWire>,
-    equations: Vec<Equation>,
+    equations: Vec<crate::wire::EquationWire>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -535,7 +535,7 @@ struct BaseClockPartitionWire {
     source_span: Span,
     clock: BaseClock,
     variables: Vec<ClockPartitionVariableWire>,
-    equations: Vec<Equation>,
+    equations: Vec<crate::wire::EquationWire>,
     sub_partitions: Vec<SubClockPartitionWire>,
     discretized_at: Option<Span>,
 }
@@ -545,7 +545,7 @@ struct BaseClockPartitionWire {
 struct ContinuousPartitionWire {
     source_span: Span,
     variables: Vec<ClockPartitionVariableWire>,
-    equations: Vec<Equation>,
+    equations: Vec<crate::wire::EquationWire>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -592,7 +592,11 @@ impl From<&ContinuousPartition> for ContinuousPartitionWire {
                     span: span.span(),
                 })
                 .collect(),
-            equations: partition.equations.clone(),
+            equations: partition
+                .equations
+                .iter()
+                .map(crate::wire::EquationWire::from)
+                .collect(),
         }
     }
 }
@@ -627,6 +631,9 @@ impl ClockPartitionsWire {
                     .map_err(E::custom)?;
             }
             for equation in continuous.equations {
+                let equation = equation
+                    .reconstruct_standalone("continuous clock partition")
+                    .map_err(E::custom)?;
                 partitions
                     .add_continuous_equation(equation)
                     .map_err(E::custom)?;
@@ -662,7 +669,11 @@ impl From<&SubClockPartition> for SubClockPartitionWire {
                     span: span.span(),
                 })
                 .collect(),
-            equations: partition.equations.clone(),
+            equations: partition
+                .equations
+                .iter()
+                .map(crate::wire::EquationWire::from)
+                .collect(),
         }
     }
 }
@@ -684,6 +695,9 @@ impl SubClockPartitionWire {
                 .map_err(E::custom)?;
         }
         for equation in self.equations {
+            let equation = equation
+                .reconstruct_standalone("sub-clock partition")
+                .map_err(E::custom)?;
             partition.add_equation(equation).map_err(E::custom)?;
         }
         Ok(partition)
@@ -716,7 +730,11 @@ impl From<&BaseClockPartition> for BaseClockPartitionWire {
                     span: span.span(),
                 })
                 .collect(),
-            equations: partition.equations.clone(),
+            equations: partition
+                .equations
+                .iter()
+                .map(crate::wire::EquationWire::from)
+                .collect(),
             sub_partitions: partition
                 .sub_partitions
                 .iter()
@@ -744,6 +762,9 @@ impl BaseClockPartitionWire {
                 .map_err(E::custom)?;
         }
         for equation in self.equations {
+            let equation = equation
+                .reconstruct_standalone("base-clock partition")
+                .map_err(E::custom)?;
             partition.add_equation(equation).map_err(E::custom)?;
         }
         for sub_partition in self.sub_partitions {

@@ -11,7 +11,7 @@ pub(super) fn lower_initial_discrete_values<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    analysis: &Analysis,
+    analysis: &Analysis<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut targets = analysis.initial_discrete_values.keys().collect::<Vec<_>>();
     targets.sort_by(|left, right| left.as_str().cmp(right.as_str()));

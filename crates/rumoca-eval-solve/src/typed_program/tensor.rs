@@ -55,9 +55,9 @@ impl EvalFrame<'_, '_> {
                 format: SolveRealFormat::Binary64,
                 ..
             } => SolveValueKind::Real64(0.0_f64.to_bits()),
-            SolveScalarType::Integer(domain) if domain.contains(0) => SolveValueKind::Integer(0),
-            SolveScalarType::Integer(_) | SolveScalarType::Boolean => {
-                return invalid("diagonal tensor", provenance);
+            SolveScalarType::Integer(_) => SolveValueKind::Integer(0),
+            SolveScalarType::Boolean => {
+                unreachable!("typed-program construction excludes Boolean diagonal operands")
             }
         };
         let extent = *extent as usize;
@@ -100,11 +100,9 @@ impl EvalFrame<'_, '_> {
                 SolveValueKind::Real64(0.0_f64.to_bits()),
                 SolveValueKind::Real64(1.0_f64.to_bits()),
             ),
-            SolveScalarType::Integer(domain) if domain.contains(0) && domain.contains(1) => {
-                (SolveValueKind::Integer(0), SolveValueKind::Integer(1))
-            }
-            SolveScalarType::Integer(_) | SolveScalarType::Boolean => {
-                return invalid("identity tensor", provenance);
+            SolveScalarType::Integer(_) => (SolveValueKind::Integer(0), SolveValueKind::Integer(1)),
+            SolveScalarType::Boolean => {
+                unreachable!("typed-program construction excludes Boolean identity element types")
             }
         };
         let extent = *rows as usize;
@@ -251,20 +249,19 @@ impl EvalFrame<'_, '_> {
         destination: SolveRegisterId,
         lhs: SolveRegisterId,
         rhs: SolveRegisterId,
+        plan: SolveMatrixMultiplyPlan,
         provenance: Span,
     ) -> Result<(), TypedProgramEvalError> {
         let lhs = self.read(lhs, provenance)?;
         let rhs = self.read(rhs, provenance)?;
-        let (rows, inner, columns) = matrix_product_extents(
-            lhs.value_type.dimensions(),
-            rhs.value_type.dimensions(),
-            provenance,
-        )?;
-        let mut elements = Vec::with_capacity(rows * columns);
+        let rows = plan.rows() as usize;
+        let inner = plan.inner() as usize;
+        let columns = plan.columns() as usize;
+        let mut elements = Vec::with_capacity(plan.output_count() as usize);
         for row in 0..rows {
             for column in 0..columns {
                 elements.push(matrix_product_element(
-                    lhs, rhs, row, column, inner, columns, provenance,
+                    lhs, rhs, row, column, inner, plan, provenance,
                 )?);
             }
         }
@@ -350,9 +347,11 @@ impl EvalFrame<'_, '_> {
         };
         let scalar = operand.value_type.element_type();
         let mut elements = operand.elements.iter().copied();
-        let mut value = elements
-            .next()
-            .ok_or(invalid_error("reduce tensor", provenance))?;
+        let mut value = match elements.next() {
+            Some(value) => value,
+            None if operator == SolveReductionOperator::All => SolveValueKind::Boolean(true),
+            None => return Err(invalid_error("reduce tensor", provenance)),
+        };
         for element in elements {
             value = eval_binary_element(binary, value, element, scalar, provenance)?;
         }
@@ -371,25 +370,48 @@ fn matrix_product_element(
     row: usize,
     column: usize,
     inner: usize,
-    columns: usize,
+    plan: SolveMatrixMultiplyPlan,
     provenance: Span,
 ) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let mut shared = 0..inner;
-    let first = shared
-        .next()
-        .ok_or(invalid_error("multiply matrices", provenance))?;
-    let mut value = matrix_product_term(lhs, rhs, row, column, first, columns, provenance)?;
+    let SolveMatrixMultiplyArithmetic::Real {
+        accumulator,
+        semantics,
+        order: rumoca_ir_solve::SolveMatrixMultiplyOrder::AscendingSharedAxis,
+        primitive_rounding: rumoca_ir_solve::SolveMatrixMultiplyRounding::RoundToNearestTiesToEven,
+        contraction: rumoca_ir_solve::SolveMatrixMultiplyContraction::SeparateMultiplyAdd,
+        intermediate_precision:
+            rumoca_ir_solve::SolveMatrixMultiplyIntermediatePrecision::AccumulatorFormatOnly,
+        final_rounding: rumoca_ir_solve::SolveMatrixMultiplyFinalRounding::None,
+        signed_zero: rumoca_ir_solve::SolveMatrixMultiplySignedZero::IeeePrimitiveResult,
+        nan: rumoca_ir_solve::SolveMatrixMultiplyNan::QuietPayloadAndSignQuotient,
+        infinity: rumoca_ir_solve::SolveMatrixMultiplyInfinity::IeeePrimitiveResult,
+        subnormal: rumoca_ir_solve::SolveMatrixMultiplySubnormal::GradualUnderflow,
+        status: rumoca_ir_solve::SolveMatrixMultiplyStatus::NoObservableFloatingStatus,
+    } = plan.arithmetic();
+    let scalar = SolveScalarType::Real {
+        format: accumulator,
+    };
+    let (mut value, shared) = match semantics {
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct => (
+            matrix_product_term(lhs, rhs, row, column, 0, plan, provenance)?,
+            1..inner,
+        ),
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero => {
+            (matrix_product_zero(accumulator), 0..inner)
+        }
+    };
     for shared in shared {
-        let term = matrix_product_term(lhs, rhs, row, column, shared, columns, provenance)?;
-        value = eval_binary_element(
-            SolveBinaryOperator::Add,
-            value,
-            term,
-            lhs.value_type.element_type(),
-            provenance,
-        )?;
+        let term = matrix_product_term(lhs, rhs, row, column, shared, plan, provenance)?;
+        value = eval_binary_element(SolveBinaryOperator::Add, value, term, scalar, provenance)?;
     }
     Ok(value)
+}
+
+fn matrix_product_zero(format: SolveRealFormat) -> SolveValueKind {
+    match format {
+        SolveRealFormat::Binary32 => SolveValueKind::Real32(0.0f32.to_bits()),
+        SolveRealFormat::Binary64 => SolveValueKind::Real64(0.0f64.to_bits()),
+    }
 }
 
 fn matrix_product_term(
@@ -398,53 +420,22 @@ fn matrix_product_term(
     row: usize,
     column: usize,
     shared: usize,
-    columns: usize,
+    plan: SolveMatrixMultiplyPlan,
     provenance: Span,
 ) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let lhs_index = matrix_lhs_index(lhs.value_type.dimensions(), row, shared);
-    let rhs_index = matrix_rhs_index(rhs.value_type.dimensions(), shared, column, columns);
+    let lhs_index =
+        row * plan.lhs_row_stride() as usize + shared * plan.lhs_inner_stride() as usize;
+    let rhs_index =
+        shared * plan.rhs_inner_stride() as usize + column * plan.rhs_column_stride() as usize;
     eval_binary_element(
         SolveBinaryOperator::Multiply,
         lhs.elements[lhs_index],
         rhs.elements[rhs_index],
-        lhs.value_type.element_type(),
+        match plan.arithmetic() {
+            SolveMatrixMultiplyArithmetic::Real { accumulator, .. } => SolveScalarType::Real {
+                format: accumulator,
+            },
+        },
         provenance,
     )
-}
-
-fn matrix_product_extents(
-    lhs: &[u32],
-    rhs: &[u32],
-    provenance: Span,
-) -> Result<(usize, usize, usize), TypedProgramEvalError> {
-    let extents = match (lhs, rhs) {
-        ([inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => (1, *inner_lhs as usize, 1),
-        ([rows, inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => {
-            (*rows as usize, *inner_lhs as usize, 1)
-        }
-        ([inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => {
-            (1, *inner_lhs as usize, *columns as usize)
-        }
-        ([rows, inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => {
-            (*rows as usize, *inner_lhs as usize, *columns as usize)
-        }
-        _ => return invalid("resolve matrix product extents", provenance),
-    };
-    Ok(extents)
-}
-
-fn matrix_lhs_index(dimensions: &[u32], row: usize, shared: usize) -> usize {
-    if dimensions.len() == 1 {
-        shared
-    } else {
-        row * dimensions[1] as usize + shared
-    }
-}
-
-fn matrix_rhs_index(dimensions: &[u32], shared: usize, column: usize, columns: usize) -> usize {
-    if dimensions.len() == 1 {
-        shared
-    } else {
-        shared * columns + column
-    }
 }

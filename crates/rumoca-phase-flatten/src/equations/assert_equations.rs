@@ -5,7 +5,7 @@ use rumoca_ir_flat as flat;
 
 use crate::boolean_eval::{try_eval_integer_for_comparison, try_eval_structural_boolean};
 use crate::errors::FlattenError;
-use crate::{Context, qualify_expression_imports_with_def_map_ctx};
+use crate::{Context, qualify_expression_imports_ctx};
 
 use super::FlattenedEquations;
 
@@ -13,7 +13,6 @@ pub(super) struct AssertEquationLowering<'a> {
     ctx: &'a Context,
     prefix: &'a ast::QualifiedName,
     span: rumoca_core::Span,
-    def_map: Option<&'a crate::ResolveDefMap>,
     origin: flat::EquationOrigin,
     operators: &'a ast::ConnectionOperatorCatalog,
 }
@@ -23,7 +22,6 @@ impl<'a> AssertEquationLowering<'a> {
         ctx: &'a Context,
         prefix: &'a ast::QualifiedName,
         span: rumoca_core::Span,
-        def_map: Option<&'a crate::ResolveDefMap>,
         origin: flat::EquationOrigin,
         operators: &'a ast::ConnectionOperatorCatalog,
     ) -> Self {
@@ -31,7 +29,6 @@ impl<'a> AssertEquationLowering<'a> {
             ctx,
             prefix,
             span,
-            def_map,
             origin,
             operators,
         }
@@ -47,28 +44,20 @@ pub(super) fn flatten_assert_equation(
     // MLS §8.3.7: preserve assert-equations for runtime checks in flat output.
     // They do not contribute to the DAE residual equation system.
     let assert_eq = flat::AssertEquation::new(
-        qualify_assert_condition(
-            lowering.ctx,
-            condition,
-            lowering.prefix,
-            lowering.def_map,
-            lowering.operators,
-        )?,
-        qualify_expression_imports_with_def_map_ctx(
+        qualify_assert_condition(lowering.ctx, condition, lowering.prefix, lowering.operators)?,
+        qualify_expression_imports_ctx(
             message,
             lowering.prefix,
             &lowering.ctx.current_imports,
-            lowering.def_map,
             lowering.ctx,
             None,
         )?,
         level
             .map(|expr| {
-                qualify_expression_imports_with_def_map_ctx(
+                qualify_expression_imports_ctx(
                     expr,
                     lowering.prefix,
                     &lowering.ctx.current_imports,
-                    lowering.def_map,
                     lowering.ctx,
                     None,
                 )
@@ -202,32 +191,17 @@ fn qualify_assert_condition(
     ctx: &Context,
     condition: &ast::Expression,
     prefix: &ast::QualifiedName,
-    def_map: Option<&crate::ResolveDefMap>,
     operators: &ast::ConnectionOperatorCatalog,
 ) -> Result<rumoca_core::Expression, FlattenError> {
     if !contains_structural_assert_intrinsic(condition, operators) {
-        return qualify_expression_imports_with_def_map_ctx(
-            condition,
-            prefix,
-            &ctx.current_imports,
-            def_map,
-            ctx,
-            None,
-        );
+        return qualify_expression_imports_ctx(condition, prefix, &ctx.current_imports, ctx, None);
     }
     let rewritten = rewrite_structural_assert_condition(ctx, condition, prefix);
     let condition = match try_eval_structural_boolean(ctx, &rewritten, prefix, operators)? {
         Some(value) => ast_boolean_literal(value, condition.span()),
         None => rewritten,
     };
-    qualify_expression_imports_with_def_map_ctx(
-        &condition,
-        prefix,
-        &ctx.current_imports,
-        def_map,
-        ctx,
-        None,
-    )
+    qualify_expression_imports_ctx(&condition, prefix, &ctx.current_imports, ctx, None)
 }
 
 fn contains_structural_assert_intrinsic(
@@ -241,6 +215,9 @@ fn contains_structural_assert_intrinsic(
                     .iter()
                     .any(|argument| contains_structural_assert_intrinsic(argument, operators))
         }
+        ast::Expression::DerivativeCall { args, .. } => args
+            .iter()
+            .any(|argument| contains_structural_assert_intrinsic(argument, operators)),
         ast::Expression::Unary { rhs, .. } => contains_structural_assert_intrinsic(rhs, operators),
         ast::Expression::Binary { lhs, rhs, .. } => {
             contains_structural_assert_intrinsic(lhs, operators)
@@ -304,10 +281,11 @@ fn contains_structural_assert_intrinsic(
         ast::Expression::ClassModification { modifications, .. } => modifications
             .iter()
             .any(|modification| contains_structural_assert_intrinsic(modification, operators)),
-        ast::Expression::Modification { value, .. } => {
-            contains_structural_assert_intrinsic(value, operators)
-        }
-        ast::Expression::ComponentReference(_)
+        ast::Expression::Modification {
+            value: Some(value), ..
+        } => contains_structural_assert_intrinsic(value, operators),
+        ast::Expression::Modification { value: None, .. }
+        | ast::Expression::ComponentReference(_)
         | ast::Expression::Empty { .. }
         | ast::Expression::Terminal { .. } => false,
     }
@@ -379,6 +357,13 @@ fn rewrite_structural_assert_condition(
                 .map(|arg| rewrite_structural_assert_condition(ctx, arg, prefix))
                 .collect(),
             is_partial_application: *is_partial_application,
+            span: *span,
+        },
+        ast::Expression::DerivativeCall { args, span } => ast::Expression::DerivativeCall {
+            args: args
+                .iter()
+                .map(|arg| rewrite_structural_assert_condition(ctx, arg, prefix))
+                .collect(),
             span: *span,
         },
         ast::Expression::NamedArgument { name, value, span } => ast::Expression::NamedArgument {
@@ -563,7 +548,9 @@ fn rewrite_assert_modification(
             span,
         } => ast::Expression::Modification {
             target: rewrite_assert_component_ref(ctx, target, prefix),
-            value: Arc::new(rewrite_structural_assert_condition(ctx, value, prefix)),
+            value: value
+                .as_ref()
+                .map(|value| Arc::new(rewrite_structural_assert_condition(ctx, value, prefix))),
             span: *span,
         },
         _ => expr.clone(),
@@ -812,7 +799,6 @@ mod tests {
             &ctx,
             &condition,
             &prefix,
-            None,
             &crate::test_support::connection_operators(),
         )
         .expect("structural assertion condition should qualify");
@@ -841,7 +827,6 @@ mod tests {
             &ctx,
             &condition,
             &prefix,
-            None,
             &crate::test_support::connection_operators(),
         )
         .expect("mixed assertion condition should qualify");
@@ -863,7 +848,6 @@ mod tests {
             &ctx,
             &condition,
             &prefix,
-            None,
             &crate::test_support::connection_operators(),
         )
         .expect("runtime parameter assertion condition should qualify");

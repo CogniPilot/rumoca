@@ -5,6 +5,7 @@
 
 use rumoca::Compiler;
 use rumoca_sim::SimOptions;
+use std::sync::Arc;
 
 // Steady state (a=2, b=3, c=1.5, d=0.5):
 //   der(w) = c - d*w        => w* = c/d = 3
@@ -159,19 +160,22 @@ fn nonlinear_algebraic_refresh_converges_to_true_root() {
         .model("SteadyModel")
         .compile_str(SOURCE, "SteadyModel.mo")
         .expect("SteadyModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
-        .expect("lowering should succeed");
-    let runtime = rumoca_solver::SolveRuntime::new(&solve_model).expect("runtime should build");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
+            .expect("lowering should succeed"),
+    );
+    let runtime =
+        rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model)).expect("runtime should build");
 
     // Settle the algebraics from the steady state x*=4.5, w*=3 (z is the third,
     // nonlinear, solver-y slot).
-    let names = &solve_model.problem.solve_layout().solver_maps.names;
+    let names = &solve_model.problem().solve_layout().solver_maps.names;
     let z_index = names
         .iter()
         .position(|n| n == "z")
         .expect("z is a solver variable");
     let solver_y = runtime
-        .full_solver_y(0.0, &[4.5, 3.0], &solve_model.parameters, 1.0e-12, 200)
+        .full_solver_y(0.0, &[4.5, 3.0], solve_model.parameters(), 1.0e-12, 200)
         .expect("algebraic settle should converge");
 
     let z_true = (3.0_f64 * 4.5).sqrt();

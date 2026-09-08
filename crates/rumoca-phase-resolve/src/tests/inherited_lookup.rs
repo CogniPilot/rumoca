@@ -144,10 +144,41 @@ end P;
             diagnostic.code.as_deref() == Some("ER002")
                 && diagnostic
                     .message
-                    .contains("unresolved component reference: 'x'")
+                    .contains("ambiguous inherited reference: 'x'")
         }),
         "an ambiguous inherited x must not bind arbitrarily or fall through to P.x: \
          {diagnostics:?}"
+    );
+}
+
+#[test]
+fn conflicting_inherited_type_does_not_bind_enclosing_decoy() {
+    let source = r#"
+model BaseA
+  type T = Real;
+end BaseA;
+model BaseB
+  type T = Integer;
+end BaseB;
+package P
+  type T = Boolean;
+  model Derived
+    extends BaseA;
+    extends BaseB;
+    T value;
+  end Derived;
+end P;
+"#;
+    let diagnostics = resolve_test_source(source)
+        .expect_err("an ambiguous inherited type must stop before the enclosing decoy");
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("ER002")
+                && diagnostic
+                    .message
+                    .contains("ambiguous inherited reference: 'T'")
+        }),
+        "the ambiguous inherited T must not bind to P.T: {diagnostics:?}"
     );
 }
 
@@ -174,7 +205,8 @@ end Orifice;
 "#;
     let tree = resolve_test_source(source)
         .expect("an extends-modified duplicate inherited element must still resolve")
-        .into_inner();
+        .inner()
+        .clone();
     let transport_m_flow = tree
         .definitions
         .classes
@@ -213,7 +245,7 @@ model Derived
   Real x[m];
 end Derived;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let derived = tree
         .definitions
         .classes
@@ -258,7 +290,8 @@ end DynamicPipe;
 "#;
     let tree = resolve_test_source(source)
         .expect("a duplicate inherited parameter differing only by description must resolve")
-        .into_inner();
+        .inner()
+        .clone();
     let first_base_n_parallel = tree
         .definitions
         .classes

@@ -32,6 +32,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
     /// the aggregate owner itself remains compact in DAE.
     pub(super) fn lower_array_update_at(
         &mut self,
+        expression: dae::ExprId<'dae>,
         base: dae::ExprId<'dae>,
         value: dae::ExprId<'dae>,
         subscripts: dae::SubscriptsView<'dae>,
@@ -52,23 +53,30 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         else {
             return self.lower_at(base, indices);
         };
+        let Some(condition) = dynamic_conditions
+            .into_iter()
+            .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
+        else {
+            return self.lower_at(value, &value_indices);
+        };
         let activation_operands = vec![base.index(), value.index()];
+        let selection = self.selection_point(
+            ConditionalActivationKind::ArrayUpdate,
+            expression,
+            &activation_operands,
+            indices,
+        )?;
         self.conditional_activation_path
             .push(ConditionalActivationKey {
                 kind: ConditionalActivationKind::ArrayUpdate,
                 operands: activation_operands.clone(),
+                selection,
                 branch: 0,
             });
         let updated_start = self.pending_prefix_statements.len();
         let updated = self.lower_at(value, &value_indices);
         self.conditional_activation_path.pop();
         let updated = updated?;
-        let Some(condition) = dynamic_conditions
-            .into_iter()
-            .reduce(|lhs, rhs| gast::Expression::binary(gast::BinaryOp::And, lhs, rhs))
-        else {
-            return Ok(updated);
-        };
         let updated = SelectionValue {
             prefix: self.pending_prefix_statements.split_off(updated_start),
             expression: updated.expression,
@@ -77,6 +85,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .push(ConditionalActivationKey {
                 kind: ConditionalActivationKind::ArrayUpdate,
                 operands: activation_operands,
+                selection,
                 branch: 1,
             });
         let historical_start = self.pending_prefix_statements.len();
@@ -364,7 +373,8 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         element: dae::ExprId<'dae>,
         span: Span,
     ) -> Result<gast::Expression, GalecTargetError> {
-        if let Some(name) = self.array_update_index_locals.get(&element.index()) {
+        let key = self.array_update_index_key(element.index());
+        if let Some(name) = self.array_update_index_locals.get(&key) {
             return Ok(gast::Expression::Ref(gast::Reference::local(name.clone())));
         }
         let lowered = self.lower(element)?;
@@ -393,8 +403,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             },
             span,
         ));
-        self.array_update_index_locals
-            .insert(element.index(), target.clone());
+        self.array_update_index_locals.insert(key, target.clone());
         Ok(gast::Expression::Ref(gast::Reference::local(target)))
     }
 

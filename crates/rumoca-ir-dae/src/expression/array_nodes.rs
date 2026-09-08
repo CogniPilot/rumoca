@@ -11,18 +11,22 @@ impl<'dae> ExpressionAt<'_, 'dae> {
                 span: self.provenance.span(),
             });
         };
-        let mut element_ty = self.storage.expr_type(first, self.provenance)?.clone();
-        let mut variability = self.storage.expr_variability(first, self.provenance)?;
+        let first_provenance = self.storage.expr_provenance(first, self.provenance)?;
+        let mut element_ty = self.storage.expr_type(first, first_provenance)?.clone();
+        let mut variability = self.storage.expr_variability(first, first_provenance)?;
         let binder_domain =
             merged_binder_domain(self.storage, elements.iter().copied(), self.provenance)?;
         for element in &elements[1..] {
+            let element_provenance = self.storage.expr_provenance(*element, self.provenance)?;
             element_ty = common_value_type(
                 &element_ty,
-                self.storage.expr_type(*element, self.provenance)?,
-                self.provenance,
+                self.storage.expr_type(*element, element_provenance)?,
+                element_provenance,
             )?;
-            variability =
-                variability.max(self.storage.expr_variability(*element, self.provenance)?);
+            variability = variability.max(
+                self.storage
+                    .expr_variability(*element, element_provenance)?,
+            );
         }
         let mut dimensions = Vec::with_capacity(element_ty.dimensions().len() + 1);
         dimensions.push(checked_u32(
@@ -34,6 +38,75 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         let ty = self
             .storage
             .intern_type(element_ty.with_dimensions(dimensions), self.provenance)?;
+        let operands = self
+            .storage
+            .expressions
+            .push_operands(elements.into_iter().map(ExprId::index), self.provenance)?;
+        self.insert(ExprNode::Array { operands }, ty, variability, binder_domain)
+    }
+
+    /// Construct a nonempty array in an exact assignment context.
+    ///
+    /// The target type is not trusted as the resulting expression type: an
+    /// all-Integer literal assigned to a Real array remains an Integer array
+    /// and the assignment owns the numeric widening. It is the authority for
+    /// checking each member, in source order, so an invalid first member cannot
+    /// make a later valid member look like the type error.
+    pub(crate) fn array_for_expected_type(
+        self,
+        expected: ValueTypeId<'dae>,
+        elements: impl IntoIterator<Item = ExprId<'dae>>,
+    ) -> Result<ExprId<'dae>, DaeConstructionError> {
+        let elements = elements.into_iter().collect::<Vec<_>>();
+        let Some(_) = elements.first() else {
+            return Err(DaeConstructionError::EmptyArray {
+                span: self.provenance.span(),
+            });
+        };
+        let expected_array = self
+            .storage
+            .value_type_at(expected.index(), self.provenance)?
+            .clone();
+        let Some((expected_extent, element_dimensions)) = expected_array.dimensions().split_first()
+        else {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: self.provenance.span(),
+            });
+        };
+        if usize::try_from(*expected_extent).ok() != Some(elements.len()) {
+            return Err(DaeConstructionError::ShapeMismatch {
+                span: self.provenance.span(),
+            });
+        }
+
+        let expected_element = expected_array.with_dimensions(element_dimensions.to_vec());
+        let mut variability = ExpressionVariability::Constant;
+        let mut any_real = false;
+        for element in &elements {
+            let member_at = self.storage.expr_provenance(*element, self.provenance)?;
+            let found = self.storage.expr_type(*element, member_at)?;
+            expect_array_member_compatible(&expected_element, found, member_at)?;
+            any_real |= found.scalar_type() == ScalarType::Real;
+            variability = variability.max(self.storage.expr_variability(*element, member_at)?);
+        }
+
+        let result_element = if expected_element.scalar_type() == ScalarType::Real && !any_real {
+            ValueType::array(ScalarType::Integer, element_dimensions.to_vec())
+        } else {
+            expected_element
+        };
+        let mut dimensions = Vec::with_capacity(result_element.dimensions().len() + 1);
+        dimensions.push(checked_u32(
+            elements.len(),
+            "array extent",
+            self.provenance,
+        )?);
+        dimensions.extend_from_slice(result_element.dimensions());
+        let ty = self
+            .storage
+            .intern_type(result_element.with_dimensions(dimensions), self.provenance)?;
+        let binder_domain =
+            merged_binder_domain(self.storage, elements.iter().copied(), self.provenance)?;
         let operands = self
             .storage
             .expressions
@@ -53,7 +126,7 @@ impl<'dae> ExpressionAt<'_, 'dae> {
         let ty = self
             .storage
             .value_type_at(value_type.index(), self.provenance)?;
-        if ty.is_record() || ty.dimensions().first() != Some(&0) {
+        if ty.dimensions().first() != Some(&0) {
             return Err(DaeConstructionError::ShapeMismatch {
                 span: self.provenance.span(),
             });
@@ -133,6 +206,27 @@ impl<'dae> ExpressionAt<'_, 'dae> {
             binder_domain,
         )
     }
+}
+
+fn expect_array_member_compatible(
+    expected: &ValueType,
+    found: &ValueType,
+    at: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let integer_to_real = found.dimensions() == expected.dimensions()
+        && expected.scalar_type() == ScalarType::Real
+        && found.scalar_type() == ScalarType::Integer;
+    if found == expected || integer_to_real {
+        return Ok(());
+    }
+    if found.scalar_type() != expected.scalar_type() {
+        return Err(DaeConstructionError::TypeMismatch {
+            expected: expected.scalar_type(),
+            found: found.scalar_type(),
+            span: at.span(),
+        });
+    }
+    Err(DaeConstructionError::ShapeMismatch { span: at.span() })
 }
 
 fn range_bound<'dae>(

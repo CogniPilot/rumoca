@@ -323,6 +323,7 @@
     "policy_excluded_models": 9,
     "trace_nonidentifiable_models": 0,
     "agreement_high": 113,
+    "strict_high_models": 113,
     "agreement_high_percent": 100.0,
     "agreement_minor": 0,
     "agreement_minor_percent": 0.0,

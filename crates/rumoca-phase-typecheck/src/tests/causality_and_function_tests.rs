@@ -123,7 +123,7 @@ fn instanced_function_accepts_redeclared_replaceable_record_slot() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .definitions
         .classes
@@ -134,6 +134,6 @@ fn instanced_function_accepts_redeclared_replaceable_record_slot() {
         add_test_instance(&mut overlay, name, component, component.binding.clone());
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("instanced checking must preserve replaceable record-slot compatibility");
 }

@@ -176,6 +176,7 @@ pub(crate) struct ExternalBodyEntry {
     pub(crate) arguments: Vec<ExternalArgumentEntry>,
     pub(crate) result: Option<u32>,
     pub(crate) linkage: ExternalLinkage,
+    pub(crate) provenance: DaeProvenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +253,7 @@ pub(super) fn build_external_body<'dae>(
         arguments: entries,
         result,
         linkage,
+        provenance,
     })
 }
 

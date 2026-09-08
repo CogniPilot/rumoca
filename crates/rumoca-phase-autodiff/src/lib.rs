@@ -207,7 +207,7 @@ fn synthesize(
             ),
         ));
     };
-    let model = FunctionModel::read(class, &at)?;
+    let model = FunctionModel::read(class, &scope, &owner, &at)?;
     let formal = differentiated_formal(&model, site, &at)?;
     // A shape the wrapper states has to be a shape the call really produces.
     // Everything below reads declarations, and a call whose actual is wider
@@ -300,7 +300,10 @@ fn synthesize_tangents(
                     format!("`{requested}` is not a function declared in this file"),
                 ));
             };
-            pending.push((FunctionModel::read(class, at)?, callee_owner));
+            pending.push((
+                FunctionModel::read(class, &scope, &callee_owner, at)?,
+                callee_owner,
+            ));
         }
         record(expansion, &owner, generated, anchor);
     }

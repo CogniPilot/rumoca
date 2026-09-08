@@ -405,11 +405,9 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
             }
         }
         LinearOp::LoadSeed { .. } => "LoadSeed",
-        LinearOp::LoadIndexedP { .. } => "LoadIndexedP",
         LinearOp::LoadIndexedRegister { .. } => "LoadIndexedRegister",
         LinearOp::LoadIndexedFoldCarried { .. } => "LoadIndexedFoldCarried",
         LinearOp::LoadIndexedFoldCapture { .. } => "LoadIndexedFoldCapture",
-        LinearOp::LoadIndexedSeed { .. } => "LoadIndexedSeed",
         LinearOp::LoadFoldCarried { .. } => "LoadFoldCarried",
         LinearOp::LoadFoldIndex { .. } => "LoadFoldIndex",
         LinearOp::LoadFoldCapture { .. } => "LoadFoldCapture",
@@ -437,10 +435,6 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::TensorFill { .. } => "TensorFill",
         LinearOp::TensorIdentity { .. } => "TensorIdentity",
         LinearOp::TensorLoad { .. } => "TensorLoad",
-        LinearOp::TableBounds { .. } => "TableBounds",
-        LinearOp::TableLookup { .. } => "TableLookup",
-        LinearOp::TableLookupSlope { .. } => "TableLookupSlope",
-        LinearOp::TableNextEvent { .. } => "TableNextEvent",
         LinearOp::RandomInitialState { .. } => "RandomInitialState",
         LinearOp::RandomResult { .. } => "RandomResult",
         LinearOp::RandomState { .. } => "RandomState",
@@ -671,5 +665,9 @@ fn tensor_output_map_error(
         rumoca_ir_solve::TensorOutputMapError::OutputIndexOverflow => {
             ScalarizeError::OutputIndexArithmeticOverflow { kind, span }
         }
+        rumoca_ir_solve::TensorOutputMapError::NonInjective => ScalarizeError::ShapeContract {
+            message: "tensor output map is not injective over one dense interval".to_string(),
+            span: Some(span),
+        },
     }
 }

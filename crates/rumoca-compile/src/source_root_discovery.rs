@@ -1,11 +1,55 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+
+use thiserror::Error;
 
 use crate::session::{
     SourceRootActivityKind, SourceRootActivityPhase, SourceRootKind, SourceRootStatusSnapshot,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRootIoOperation {
+    Canonicalize,
+    Inspect,
+    ReadDirectory,
+    ReadSource,
+}
+
+impl fmt::Display for SourceRootIoOperation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Canonicalize => "canonicalize",
+            Self::Inspect => "inspect",
+            Self::ReadDirectory => "read directory",
+            Self::ReadSource => "read source",
+        })
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("failed to {operation} source-root path `{path}`: {source}")]
+pub struct SourceRootDiscoveryError {
+    pub operation: SourceRootIoOperation,
+    pub path: String,
+    #[source]
+    pub source: io::Error,
+}
+
+fn source_root_io_error(
+    operation: SourceRootIoOperation,
+    path: &Path,
+    source: io::Error,
+) -> SourceRootDiscoveryError {
+    SourceRootDiscoveryError {
+        operation,
+        path: path.to_string_lossy().into_owned(),
+        source,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceRootDuplicateSkip {
@@ -113,8 +157,9 @@ fn extract_declared_root_names(source: &str) -> Vec<String> {
     roots
 }
 
-fn extract_top_level_roots_from_file(path: &Path) -> std::io::Result<Vec<String>> {
-    let source = fs::read_to_string(path)?;
+fn extract_top_level_roots_from_file(path: &Path) -> Result<Vec<String>, SourceRootDiscoveryError> {
+    let source = fs::read_to_string(path)
+        .map_err(|error| source_root_io_error(SourceRootIoOperation::ReadSource, path, error))?;
     let file_name = path.to_string_lossy().to_string();
     let mut roots = match rumoca_phase_parse::parse_to_ast(&source, &file_name) {
         Ok(def) => def.classes.keys().cloned().collect::<Vec<_>>(),
@@ -125,19 +170,61 @@ fn extract_top_level_roots_from_file(path: &Path) -> std::io::Result<Vec<String>
     Ok(roots)
 }
 
-fn collect_nested_package_roots(level1: &[PathBuf]) -> std::io::Result<Vec<String>> {
+fn read_directory_paths(path: &Path) -> Result<Vec<PathBuf>, SourceRootDiscoveryError> {
+    fs::read_dir(path)
+        .map_err(|error| source_root_io_error(SourceRootIoOperation::ReadDirectory, path, error))?
+        .map(|entry| {
+            entry.map(|entry| entry.path()).map_err(|error| {
+                source_root_io_error(SourceRootIoOperation::ReadDirectory, path, error)
+            })
+        })
+        .collect()
+}
+
+fn inspect_path(path: &Path) -> Result<fs::Metadata, SourceRootDiscoveryError> {
+    fs::metadata(path)
+        .map_err(|error| source_root_io_error(SourceRootIoOperation::Inspect, path, error))
+}
+
+fn existing_regular_file(path: &Path) -> Result<bool, SourceRootDiscoveryError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(source_root_io_error(
+            SourceRootIoOperation::Inspect,
+            path,
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected a regular source file",
+            ),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(source_root_io_error(
+            SourceRootIoOperation::Inspect,
+            path,
+            error,
+        )),
+    }
+}
+
+fn child_directories(path: &Path) -> Result<Vec<PathBuf>, SourceRootDiscoveryError> {
+    let mut directories = Vec::new();
+    for entry_path in read_directory_paths(path)? {
+        if inspect_path(&entry_path)?.is_dir() {
+            directories.push(entry_path);
+        }
+    }
+    directories.sort();
+    Ok(directories)
+}
+
+fn collect_nested_package_roots(
+    level1: &[PathBuf],
+) -> Result<Vec<String>, SourceRootDiscoveryError> {
     let mut roots = Vec::new();
     for dir in level1 {
-        let mut level2: Vec<_> = fs::read_dir(dir)?
-            .collect::<std::io::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|entry| entry.is_dir())
-            .collect();
-        level2.sort();
-        for subdir in level2 {
+        for subdir in child_directories(dir)? {
             let pkg = subdir.join("package.mo");
-            if !pkg.is_file() {
+            if !existing_regular_file(&pkg)? {
                 continue;
             }
             roots.extend(extract_top_level_roots_from_file(&pkg)?);
@@ -148,33 +235,29 @@ fn collect_nested_package_roots(level1: &[PathBuf]) -> std::io::Result<Vec<Strin
 
 /// Infer root package/class names for a source-root path.
 ///
-/// If inference fails to determine roots (e.g. directory without package.mo), returns
-/// an empty list so callers can conservatively load.
-fn infer_source_root_names(path: &Path) -> std::io::Result<Vec<String>> {
-    if path.is_file() {
+/// A directory without a package declaration has no inferred roots. I/O
+/// failures are returned so semantic load planning cannot treat them as an
+/// unclaimed root.
+fn infer_source_root_names(path: &Path) -> Result<Vec<String>, SourceRootDiscoveryError> {
+    let metadata = inspect_path(path)?;
+    if metadata.is_file() {
         return extract_top_level_roots_from_file(path);
     }
 
-    if path.is_dir() {
+    if metadata.is_dir() {
         let package_file = path.join("package.mo");
-        if package_file.is_file() {
+        if existing_regular_file(&package_file)? {
             return extract_top_level_roots_from_file(&package_file);
         }
 
         // Support wrapped source-root layouts (e.g., ModelicaStandardLibrary_vX.Y.Z/Modelica X.Y.Z/package.mo)
         // by searching a shallow depth for nested package.mo files.
         let mut roots = Vec::new();
-        let mut level1: Vec<_> = fs::read_dir(path)?
-            .collect::<std::io::Result<Vec<_>>>()?
-            .into_iter()
-            .map(|entry| entry.path())
-            .filter(|entry| entry.is_dir())
-            .collect();
-        level1.sort();
+        let level1 = child_directories(path)?;
 
         for dir in &level1 {
             let pkg = dir.join("package.mo");
-            if pkg.is_file() {
+            if existing_regular_file(&pkg)? {
                 roots.extend(extract_top_level_roots_from_file(&pkg)?);
             }
         }
@@ -188,18 +271,24 @@ fn infer_source_root_names(path: &Path) -> std::io::Result<Vec<String>> {
         return Ok(roots);
     }
 
-    Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "source-root path does not exist",
+    Err(source_root_io_error(
+        SourceRootIoOperation::Inspect,
+        path,
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "source-root path is not a regular file or directory",
+        ),
     ))
 }
 
 /// Decide whether a source-root path should be loaded for this source.
 ///
-/// Returns true when:
-/// - root inference fails (conservative), or
-/// - any inferred root package/class appears as an identifier token in source.
-fn should_load_source_root_for_source(source: &str, path: &Path) -> std::io::Result<bool> {
+/// Returns true when no roots can be inferred from a readable root, or when an
+/// inferred root package/class appears as an identifier token in source.
+fn should_load_source_root_for_source(
+    source: &str,
+    path: &Path,
+) -> Result<bool, SourceRootDiscoveryError> {
     let roots = infer_source_root_names(path)?;
     if roots.is_empty() {
         return Ok(true);
@@ -213,40 +302,41 @@ pub fn referenced_unloaded_source_root_paths(
     source: &str,
     source_root_paths: &[String],
     loaded_source_root_path_keys: &HashSet<String>,
-) -> Vec<String> {
+) -> Result<Vec<String>, SourceRootDiscoveryError> {
     let mut seen_source_root_paths = HashSet::new();
     let mut referenced_paths = Vec::new();
     for source_root_path in source_root_paths {
-        let path_key = canonical_path_key(source_root_path);
+        let path_key = canonical_source_root_path_key(source_root_path)?;
         if !seen_source_root_paths.insert(path_key.clone()) {
             continue;
         }
         if loaded_source_root_path_keys.contains(&path_key) {
             continue;
         }
-        let should_load =
-            should_load_source_root_for_source(source, Path::new(source_root_path)).unwrap_or(true);
+        let should_load = should_load_source_root_for_source(source, Path::new(source_root_path))?;
         if should_load {
             referenced_paths.push(source_root_path.clone());
         }
     }
-    referenced_paths
+    Ok(referenced_paths)
 }
 
 fn existing_source_root_claims(
     loaded_source_root_path_keys: &HashSet<String>,
-) -> (HashSet<String>, HashMap<String, String>) {
+) -> Result<(HashSet<String>, HashMap<String, String>), SourceRootDiscoveryError> {
     let mut seen_source_root_paths = HashSet::new();
     let mut claimed_roots = HashMap::new();
-    for loaded_path in loaded_source_root_path_keys {
-        seen_source_root_paths.insert(canonical_path_key(loaded_path));
-        for root in infer_source_root_names(Path::new(loaded_path)).unwrap_or_default() {
+    let mut loaded_paths = loaded_source_root_path_keys.iter().collect::<Vec<_>>();
+    loaded_paths.sort();
+    for loaded_path in loaded_paths {
+        seen_source_root_paths.insert(canonical_source_root_path_key(loaded_path)?);
+        for root in infer_source_root_names(Path::new(loaded_path))? {
             claimed_roots
                 .entry(root)
-                .or_insert_with(|| loaded_path.clone());
+                .or_insert_with(|| loaded_path.to_string());
         }
     }
-    (seen_source_root_paths, claimed_roots)
+    Ok((seen_source_root_paths, claimed_roots))
 }
 
 fn duplicate_root_provider(
@@ -275,20 +365,19 @@ fn claim_roots(
 pub fn plan_source_root_loads(
     candidate_source_root_paths: &[String],
     loaded_source_root_path_keys: &HashSet<String>,
-) -> SourceRootLoadPlan {
+) -> Result<SourceRootLoadPlan, SourceRootDiscoveryError> {
     let (mut seen_source_root_paths, mut claimed_roots) =
-        existing_source_root_claims(loaded_source_root_path_keys);
+        existing_source_root_claims(loaded_source_root_path_keys)?;
     let mut load_paths = Vec::new();
     let mut duplicate_root_skips = Vec::new();
     for source_root_path in candidate_source_root_paths {
-        let path_key = canonical_path_key(source_root_path);
+        let path_key = canonical_source_root_path_key(source_root_path)?;
         if !seen_source_root_paths.insert(path_key.clone())
             || loaded_source_root_path_keys.contains(&path_key)
         {
             continue;
         }
-        let inferred_roots =
-            infer_source_root_names(Path::new(source_root_path)).unwrap_or_default();
+        let inferred_roots = infer_source_root_names(Path::new(source_root_path))?;
         if let Some((root_name, provider_path)) =
             duplicate_root_provider(&inferred_roots, &claimed_roots)
         {
@@ -302,40 +391,57 @@ pub fn plan_source_root_loads(
         load_paths.push(source_root_path.clone());
         claim_roots(&mut claimed_roots, inferred_roots, source_root_path);
     }
-    SourceRootLoadPlan {
+    Ok(SourceRootLoadPlan {
         load_paths,
         duplicate_root_skips,
-    }
+    })
 }
 
 pub fn source_requires_unloaded_source_roots(
     source: &str,
     source_root_paths: &[String],
     loaded_source_root_path_keys: &HashSet<String>,
-) -> bool {
-    !referenced_unloaded_source_root_paths(source, source_root_paths, loaded_source_root_path_keys)
-        .is_empty()
+) -> Result<bool, SourceRootDiscoveryError> {
+    Ok(!referenced_unloaded_source_root_paths(
+        source,
+        source_root_paths,
+        loaded_source_root_path_keys,
+    )?
+    .is_empty())
 }
 
 pub fn sources_require_loaded_source_roots<'a, I>(
     sources: I,
     loaded_source_root_paths: &HashSet<String>,
-) -> bool
+) -> Result<bool, SourceRootDiscoveryError>
 where
     I: IntoIterator<Item = &'a str>,
 {
     let sources = sources.into_iter().collect::<Vec<_>>();
-    loaded_source_root_paths.iter().any(|source_root_path| {
-        sources.iter().any(|source| {
-            should_load_source_root_for_source(source, Path::new(source_root_path)).unwrap_or(true)
-        })
-    })
+    let mut source_root_paths = loaded_source_root_paths.iter().collect::<Vec<_>>();
+    source_root_paths.sort();
+    for source_root_path in source_root_paths {
+        for source in &sources {
+            if should_load_source_root_for_source(source, Path::new(source_root_path))? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub fn canonical_path_key(path: &str) -> String {
     fs::canonicalize(path)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.to_string())
+}
+
+fn canonical_source_root_path_key(path: &str) -> Result<String, SourceRootDiscoveryError> {
+    fs::canonicalize(path)
+        .map(|canonical| canonical.to_string_lossy().into_owned())
+        .map_err(|error| {
+            source_root_io_error(SourceRootIoOperation::Canonicalize, Path::new(path), error)
+        })
 }
 
 pub fn merge_source_root_paths(
@@ -386,14 +492,11 @@ pub fn source_root_source_set_key(source_root_path: &str) -> String {
 }
 
 pub fn source_root_status_display_name(path_or_key: &str) -> String {
-    let inferred_roots = infer_source_root_names(Path::new(path_or_key)).unwrap_or_default();
+    let Ok(inferred_roots) = infer_source_root_names(Path::new(path_or_key)) else {
+        return source_root_path_display_name(path_or_key);
+    };
     if inferred_roots.is_empty() {
-        return Path::new(path_or_key)
-            .file_stem()
-            .or_else(|| Path::new(path_or_key).file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or(path_or_key)
-            .to_string();
+        return source_root_path_display_name(path_or_key);
     }
     if inferred_roots.len() <= 3 {
         return inferred_roots.join(", ");
@@ -405,6 +508,17 @@ pub fn source_root_status_display_name(path_or_key: &str) -> String {
         inferred_roots[2],
         inferred_roots.len() - 3
     )
+}
+
+/// Status text must remain renderable after a root disappears. This is a
+/// presentation-only name projection; semantic discovery never calls it.
+fn source_root_path_display_name(path_or_key: &str) -> String {
+    Path::new(path_or_key)
+        .file_stem()
+        .or_else(|| Path::new(path_or_key).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(path_or_key)
+        .to_string()
 }
 
 fn source_root_activity_label(kind: SourceRootActivityKind) -> &'static str {
@@ -498,6 +612,17 @@ pub fn render_source_root_indexing_failed_message(
 mod tests {
     use super::*;
 
+    fn write_package_root(parent: &Path, directory: &str, root: &str) -> String {
+        let path = parent.join(directory);
+        std::fs::create_dir_all(&path).expect("create source root");
+        std::fs::write(
+            path.join("package.mo"),
+            format!("package {root}\nend {root};\n"),
+        )
+        .expect("write package.mo");
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn source_contains_identifier_honors_boundaries() {
         assert!(source_contains_identifier(
@@ -557,6 +682,16 @@ end SE2;
 
         let display_name = source_root_status_display_name(wrapped.to_string_lossy().as_ref());
         assert_eq!(display_name, "Modelica, ModelicaServices");
+    }
+
+    #[test]
+    fn source_root_status_display_name_survives_a_disappeared_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let disappeared = temp.path().join("Gone.mo");
+        drop(temp);
+
+        let display_name = source_root_status_display_name(disappeared.to_string_lossy().as_ref());
+        assert_eq!(display_name, "Gone");
     }
 
     #[test]
@@ -622,34 +757,32 @@ end SE2;
 
     #[test]
     fn source_requires_unloaded_source_roots_ignores_loaded_and_duplicate_paths() {
-        let loaded = HashSet::from([canonical_path_key("/tmp/Modelica"), String::from("/tmp/B")]);
-        let source_root_paths = vec![
-            "/tmp/Modelica".to_string(),
-            "/tmp/Modelica".to_string(),
-            "/tmp/B".to_string(),
-            "/tmp/C".to_string(),
-        ];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let modelica = write_package_root(temp.path(), "modelica", "Modelica");
+        let b = write_package_root(temp.path(), "b", "B");
+        let c = write_package_root(temp.path(), "c", "C");
+        let loaded = HashSet::from([canonical_path_key(&modelica), canonical_path_key(&b)]);
+        let source_root_paths = vec![modelica.clone(), modelica, b, c];
         let source = "model Active\n  C.A a;\nend Active;\n";
-        assert!(source_requires_unloaded_source_roots(
-            source,
-            &source_root_paths,
-            &loaded
-        ));
+        assert!(
+            source_requires_unloaded_source_roots(source, &source_root_paths, &loaded)
+                .expect("inspect configured source roots")
+        );
     }
 
     #[test]
     fn referenced_unloaded_source_root_paths_returns_only_referenced_unloaded_roots() {
-        let loaded = HashSet::from([canonical_path_key("/tmp/B")]);
-        let source_root_paths = vec![
-            "/tmp/A".to_string(),
-            "/tmp/A".to_string(),
-            "/tmp/B".to_string(),
-            "/tmp/C".to_string(),
-        ];
+        let temp = tempfile::tempdir().expect("tempdir");
+        let a = write_package_root(temp.path(), "a", "A");
+        let b = write_package_root(temp.path(), "b", "B");
+        let c = write_package_root(temp.path(), "c", "C");
+        let loaded = HashSet::from([canonical_path_key(&b)]);
+        let source_root_paths = vec![a.clone(), a.clone(), b, c.clone()];
         let source = "model Active\n  A.X ax;\n  C.Y cy;\nend Active;\n";
         assert_eq!(
-            referenced_unloaded_source_root_paths(source, &source_root_paths, &loaded),
-            vec!["/tmp/A".to_string(), "/tmp/C".to_string()]
+            referenced_unloaded_source_root_paths(source, &source_root_paths, &loaded)
+                .expect("inspect configured source roots"),
+            vec![a, c]
         );
     }
 
@@ -675,15 +808,21 @@ end SE2;
             "model Local\n  Real x;\nend Local;\n",
             "model UsesModelica\n  Modelica.SIunits.Time t;\nend UsesModelica;\n",
         ];
-        assert!(sources_require_loaded_source_roots(
-            local_sources.iter().copied(),
-            &loaded_source_root_paths
-        ));
+        assert!(
+            sources_require_loaded_source_roots(
+                local_sources.iter().copied(),
+                &loaded_source_root_paths
+            )
+            .expect("inspect loaded source roots")
+        );
         let local_only_sources = ["model Local\n  Real x;\nend Local;\n"];
-        assert!(!sources_require_loaded_source_roots(
-            local_only_sources.iter().copied(),
-            &loaded_source_root_paths
-        ));
+        assert!(
+            !sources_require_loaded_source_roots(
+                local_only_sources.iter().copied(),
+                &loaded_source_root_paths
+            )
+            .expect("inspect loaded source roots")
+        );
     }
 
     #[test]
@@ -701,7 +840,8 @@ end SE2;
             lib_a.to_string_lossy().to_string(),
             lib_b.to_string_lossy().to_string(),
         ];
-        let plan = plan_source_root_loads(&candidate_source_root_paths, &HashSet::new());
+        let plan = plan_source_root_loads(&candidate_source_root_paths, &HashSet::new())
+            .expect("plan readable source roots");
         assert_eq!(plan.load_paths, vec![lib_a.to_string_lossy().to_string()]);
         assert_eq!(plan.duplicate_root_skips.len(), 1);
         assert_eq!(
@@ -712,6 +852,67 @@ end SE2;
                 provider_path: lib_a.to_string_lossy().to_string(),
             }
         );
+    }
+
+    #[test]
+    fn plan_accepts_readable_valid_roots_in_configured_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = write_package_root(temp.path(), "first", "First");
+        let second = write_package_root(temp.path(), "second", "Second");
+        let candidates = vec![first.clone(), second.clone()];
+
+        let plan = plan_source_root_loads(&candidates, &HashSet::new())
+            .expect("readable valid roots must produce a load plan");
+        assert_eq!(plan.load_paths, vec![first, second]);
+        assert!(plan.duplicate_root_skips.is_empty());
+    }
+
+    #[test]
+    fn plan_propagates_read_failure_without_bypassing_duplicate_detection() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lib_a = write_package_root(temp.path(), "lib_a", "Lib");
+        let lib_b = write_package_root(temp.path(), "lib_b", "Lib");
+        let unreadable_source = temp.path().join("invalid_utf8.mo");
+        std::fs::write(&unreadable_source, [0xff]).expect("write invalid UTF-8 fixture");
+        let unreadable_source = unreadable_source.to_string_lossy().into_owned();
+        let candidates = vec![lib_a.clone(), unreadable_source.clone(), lib_b.clone()];
+
+        let error = plan_source_root_loads(&candidates, &HashSet::new())
+            .expect_err("read failure must reject the whole plan");
+        assert_eq!(error.operation, SourceRootIoOperation::ReadSource);
+        assert_eq!(error.path, unreadable_source);
+        assert_eq!(error.source.kind(), io::ErrorKind::InvalidData);
+
+        std::fs::write(&unreadable_source, "package Other\nend Other;\n")
+            .expect("repair source fixture");
+        let plan = plan_source_root_loads(&candidates, &HashSet::new())
+            .expect("plan repaired source roots");
+        assert_eq!(plan.load_paths, vec![lib_a, unreadable_source]);
+        assert_eq!(plan.duplicate_root_skips.len(), 1);
+        assert_eq!(plan.duplicate_root_skips[0].source_root_path, lib_b);
+        assert_eq!(plan.duplicate_root_skips[0].root_name, "Lib");
+    }
+
+    #[test]
+    fn metadata_and_directory_failures_retain_operation_path_and_source() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing");
+        let metadata_error = infer_source_root_names(&missing)
+            .expect_err("missing root must preserve metadata failure");
+        assert_eq!(metadata_error.operation, SourceRootIoOperation::Inspect);
+        assert_eq!(metadata_error.path, missing.to_string_lossy());
+        assert_eq!(metadata_error.source.kind(), io::ErrorKind::NotFound);
+
+        let regular_file = temp.path().join("not-a-directory.mo");
+        std::fs::write(&regular_file, "model A\nend A;\n").expect("write source fixture");
+        let directory_error = read_directory_paths(&regular_file)
+            .expect_err("read_dir on a file must preserve the failure");
+        assert_eq!(
+            directory_error.operation,
+            SourceRootIoOperation::ReadDirectory
+        );
+        assert_eq!(directory_error.path, regular_file.to_string_lossy());
+        assert!(!directory_error.source.to_string().is_empty());
     }
 
     #[test]

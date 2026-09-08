@@ -6,6 +6,7 @@
 //! - shape inference before flattening produces Expression forms
 
 use crate::ast_scalar::{self, AstScalarContext};
+use crate::function_budget::AstFunctionWorkBudget;
 use crate::function_control::FunctionStmtFlow;
 use rumoca_core::{Causality, ClassType, OpBinary};
 use rumoca_core::{
@@ -44,6 +45,38 @@ pub trait DimensionInferenceContext {
         _scope: &str,
     ) -> Option<Vec<usize>> {
         None
+    }
+
+    /// Whether this exact call target is the predefined function named `name`.
+    /// Identity-free references are admitted only for synthetic/pre-resolution
+    /// callers; resolved identities fail closed unless an implementation can
+    /// prove them against Resolve's predefined registry.
+    fn is_predefined_function(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        name: &str,
+    ) -> bool {
+        function.target_def_id().is_none()
+            && function.parts.len() == 1
+            && function.parts[0].ident.text.as_ref() == name
+    }
+
+    fn infer_user_function_dimensions_for_call(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        arguments: &[Expression],
+        scope: &str,
+    ) -> Option<Vec<usize>> {
+        self.infer_user_function_dimensions(
+            &function
+                .parts
+                .iter()
+                .map(|part| part.ident.text.as_ref())
+                .collect::<Vec<_>>()
+                .join("."),
+            arguments,
+            scope,
+        )
     }
 }
 
@@ -111,6 +144,25 @@ fn component_reference_path(cr: &rumoca_ir_ast::ComponentReference) -> Cow<'_, s
     Cow::Owned(path)
 }
 
+/// How compile-time evaluation may select called functions (SPEC_0036).
+///
+/// Every evaluation environment names its category at construction; there is
+/// no default, so generic construction cannot silently choose the permissive
+/// category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallIdentityPolicy {
+    /// Post-Resolve environments: user and predefined calls are selected only
+    /// by their Resolve-issued target `DefId`. An identity-free call
+    /// reference selects nothing and folds nothing.
+    RequireResolvedIdentity,
+    /// The delimited pre-identity structural category: modifier and binding
+    /// expressions that Resolve does not annotate, evaluated for structural
+    /// values before identities exist. Rendered canonical-name user-function
+    /// lookup and single-segment builtin-spelling selection remain available
+    /// here, and only here.
+    PreIdentityStructural,
+}
+
 pub struct TypeCheckEvalContext {
     pub integers: FxHashMap<String, i64>,
     pub reals: FxHashMap<String, f64>,
@@ -120,21 +172,30 @@ pub struct TypeCheckEvalContext {
     pub dimensions: FxHashMap<String, Vec<usize>>,
     /// Function definitions for compile-time evaluation (MLS §12.4).
     pub functions: Arc<FxHashMap<String, ClassDef>>,
+    predefined_functions: FxHashMap<String, rumoca_core::DefId>,
     pub func_eval_depth: usize,
+    function_work_budget: Option<Arc<AstFunctionWorkBudget>>,
     pub enum_sizes: FxHashMap<String, usize>,
     pub enum_ordinals: FxHashMap<String, i64>,
+    call_identity_policy: CallIdentityPolicy,
     warning_keys: RefCell<HashSet<(String, Span)>>,
     warnings: RefCell<Vec<CommonDiagnostic>>,
 }
 
-impl Default for TypeCheckEvalContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TypeCheckEvalContext {
-    pub fn new() -> Self {
+    /// Post-Resolve environment: call selection requires Resolve-issued
+    /// identities.
+    pub fn for_resolved_identities() -> Self {
+        Self::with_policy(CallIdentityPolicy::RequireResolvedIdentity)
+    }
+
+    /// The delimited pre-identity structural category (SPEC_0036): modifier
+    /// and binding expressions that Resolve does not annotate.
+    pub fn for_pre_identity_structural() -> Self {
+        Self::with_policy(CallIdentityPolicy::PreIdentityStructural)
+    }
+
+    fn with_policy(call_identity_policy: CallIdentityPolicy) -> Self {
         Self {
             integers: FxHashMap::default(),
             reals: FxHashMap::default(),
@@ -143,12 +204,20 @@ impl TypeCheckEvalContext {
             enums: FxHashMap::default(),
             dimensions: FxHashMap::default(),
             functions: Arc::new(FxHashMap::default()),
+            predefined_functions: FxHashMap::default(),
             func_eval_depth: 0,
+            function_work_budget: None,
             enum_sizes: FxHashMap::default(),
             enum_ordinals: FxHashMap::default(),
+            call_identity_policy,
             warning_keys: RefCell::new(HashSet::default()),
             warnings: RefCell::new(Vec::new()),
         }
+    }
+
+    /// The call-selection category this environment was constructed with.
+    pub fn call_identity_policy(&self) -> CallIdentityPolicy {
+        self.call_identity_policy
     }
 
     pub fn add_integer(&mut self, name: impl Into<String>, value: i64) {
@@ -177,6 +246,14 @@ impl TypeCheckEvalContext {
 
     pub fn add_dimensions(&mut self, name: impl Into<String>, dims: Vec<usize>) {
         self.dimensions.insert(name.into(), dims);
+    }
+
+    /// Replace the exact predefined function identities supplied by Resolve.
+    pub fn set_predefined_functions(
+        &mut self,
+        functions: impl IntoIterator<Item = (String, rumoca_core::DefId)>,
+    ) {
+        self.predefined_functions = functions.into_iter().collect();
     }
 
     pub fn get_integer(&self, name: &str) -> Option<i64> {
@@ -238,6 +315,25 @@ impl DimensionInferenceContext for TypeCheckEvalContext {
         scope: &str,
     ) -> Option<Vec<usize>> {
         infer_dims_from_user_func(function, arguments, self, scope)
+    }
+
+    fn is_predefined_function(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        name: &str,
+    ) -> bool {
+        call_targets_predefined(function, name, self)
+    }
+
+    fn infer_user_function_dimensions_for_call(
+        &self,
+        function: &rumoca_ir_ast::ComponentReference,
+        arguments: &[Expression],
+        scope: &str,
+    ) -> Option<Vec<usize>> {
+        let rendered = component_reference_path(function);
+        let selected = selected_user_function_name(function, &rendered, self)?;
+        infer_dims_from_user_func(selected, arguments, self, scope)
     }
 }
 
@@ -368,19 +464,20 @@ fn eval_integer_binary_with_warning(
 
 /// Scope-aware evaluation for integer builtins and pure functions.
 fn eval_integer_func_with_scope(
-    func_name: &str,
+    function: &rumoca_ir_ast::ComponentReference,
     args: &[Expression],
     ctx: &TypeCheckEvalContext,
     scope: &str,
     call_span: Span,
 ) -> Option<i64> {
-    if let Some(value) =
-        eval_builtin_integer_func_with_scope(func_name, args, ctx, scope, call_span)
-    {
-        return Some(value);
+    let func_name = component_reference_path(function);
+    if let Some(selected) = selected_user_function_name(function, &func_name, ctx) {
+        return eval_user_func_integer(selected, args, ctx, scope);
     }
-
-    eval_user_func_integer(func_name, args, ctx, scope)
+    if !call_targets_predefined(function, &func_name, ctx) {
+        return None;
+    }
+    eval_builtin_integer_func_with_scope(&func_name, args, ctx, scope, call_span)
 }
 
 fn eval_builtin_integer_func_with_scope(
@@ -489,7 +586,7 @@ fn eval_integer_size_with_scope(
     ctx: &TypeCheckEvalContext,
     scope: &str,
 ) -> Option<i64> {
-    let dimension = eval_integer_with_scope(dimension, ctx, scope)? as usize;
+    let dimension = usize::try_from(eval_integer_with_scope(dimension, ctx, scope)?).ok()?;
     if dimension < 1 {
         return None;
     }
@@ -505,301 +602,12 @@ fn eval_integer_size_with_scope(
         .map(|value| *value as i64)
 }
 
-const MAX_FUNC_EVAL_DEPTH: usize = 10;
-
-fn lookup_function<'a>(func_name: &str, ctx: &'a TypeCheckEvalContext) -> Option<&'a ClassDef> {
-    ctx.functions.get(func_name)
-}
-
-fn find_func_output_name(func_def: &ClassDef) -> Option<String> {
-    func_def
-        .components
-        .iter()
-        .find(|(_, comp)| matches!(comp.causality, Causality::Output(_)))
-        .map(|(name, _)| name.clone())
-}
-
-fn integral_real_to_i64(
-    value: f64,
-    ctx: &TypeCheckEvalContext,
-    span: Span,
-    context: &str,
-) -> Option<i64> {
-    checked_integral_real_to_i64(value, ctx, span, context)
-}
-
-fn local_has_scalar(local: &TypeCheckEvalContext, name: &str) -> bool {
-    local.integers.contains_key(name)
-        || local.reals.contains_key(name)
-        || local.booleans.contains_key(name)
-}
-
-fn bind_local_scalar_value(
-    local: &mut TypeCheckEvalContext,
-    name: &str,
-    expr: &Expression,
-    ctx: &TypeCheckEvalContext,
-    scope: &str,
-) {
-    if let Some(v) = eval_integer_with_scope(expr, ctx, scope) {
-        local.integers.insert(name.to_string(), v);
-        local.reals.insert(name.to_string(), v as f64);
-        local.remember_scalar_span(name, expr.span());
-        return;
-    }
-    if let Some(v) = eval_real_with_scope(expr, ctx, scope) {
-        local.reals.insert(name.to_string(), v);
-        local.remember_scalar_span(name, expr.span());
-        if let Some(i) = integral_real_to_i64(v, ctx, expr.span(), "local scalar binding") {
-            local.integers.insert(name.to_string(), i);
-        }
-        return;
-    }
-    if let Some(v) = eval_boolean_with_scope(expr, ctx, scope) {
-        local.booleans.insert(name.to_string(), v);
-        local.scalar_spans.remove(name);
-    }
-}
-
-/// Build a local evaluation context for interpreting a function call (MLS §12.4).
-///
-/// Maps formal input parameters to actual argument values. Falls back to
-/// default values when arguments are not provided.
-fn build_func_eval_context(
-    func_def: &ClassDef,
-    args: &[Expression],
-    ctx: &TypeCheckEvalContext,
-    scope: &str,
-) -> Option<TypeCheckEvalContext> {
-    let mut local = TypeCheckEvalContext::new();
-    local.functions = Arc::clone(&ctx.functions);
-    local.func_eval_depth = ctx.func_eval_depth + 1;
-    if local.func_eval_depth > MAX_FUNC_EVAL_DEPTH {
-        return None;
-    }
-    let inputs: Vec<_> = func_def
-        .components
-        .iter()
-        .filter(|(_, comp)| matches!(comp.causality, Causality::Input(_)))
-        .collect();
-    // Pass 1: match positional (non-named) arguments
-    let mut positional_idx = 0;
-    for arg in args {
-        if matches!(arg, Expression::NamedArgument { .. }) {
-            continue; // Named args handled in pass 2
-        }
-        if positional_idx < inputs.len() {
-            let (param_name, _) = &inputs[positional_idx];
-            bind_local_scalar_value(&mut local, param_name, arg, ctx, scope);
-        }
-        positional_idx += 1;
-    }
-    // Pass 2: match named arguments by name
-    for arg in args {
-        if let Expression::NamedArgument { name, value, .. } = arg
-            && let Some((param_name, _)) = inputs
-                .iter()
-                .find(|(n, _)| n.as_str() == name.text.as_ref())
-        {
-            bind_local_scalar_value(&mut local, param_name, value, ctx, scope);
-        }
-    }
-    // Pass 3: fill remaining inputs from their declaration binding (MLS §12.4.1:
-    // an input not supplied by the call takes its default from the declaration).
-    //
-    // The `start` attribute is not a default argument. MLS §4.9 makes it an
-    // initial guess and the parser seeds it with the declared type's default, so
-    // reading it would hand an unsupplied input a value the function never
-    // declared (SPEC_0008). An input left unbound simply stays absent, and the
-    // fold that needs it declines.
-    for (param_name, param_comp) in &inputs {
-        if local_has_scalar(&local, param_name) {
-            continue;
-        }
-        if let Some(binding) = &param_comp.binding {
-            bind_local_scalar_value(&mut local, param_name, binding, ctx, scope);
-        }
-    }
-    Some(local)
-}
-
-/// Try to evaluate a user-defined pure function returning a scalar integer (MLS §12.4).
-///
-/// Looks up the function definition, builds a local context with input values,
-/// interprets the algorithm section, and returns the output variable's value.
-fn eval_user_func_integer(
-    func_name: &str,
-    args: &[Expression],
-    ctx: &TypeCheckEvalContext,
-    scope: &str,
-) -> Option<i64> {
-    if ctx.func_eval_depth >= MAX_FUNC_EVAL_DEPTH {
-        return None;
-    }
-    let func_def = lookup_function(func_name, ctx)?;
-    if func_def.class_type != ClassType::Function {
-        return None;
-    }
-    let mut local_ctx = build_func_eval_context(func_def, args, ctx, scope)?;
-    let output_name = find_func_output_name(func_def)?;
-    for algo in &func_def.algorithms {
-        if matches!(
-            interpret_stmts(algo, &mut local_ctx)?,
-            FunctionStmtFlow::Return
-        ) {
-            break;
-        }
-    }
-    local_ctx.integers.get(&output_name).copied().or_else(|| {
-        let span = local_ctx.scalar_span(&output_name)?;
-        local_ctx
-            .reals
-            .get(&output_name)
-            .and_then(|v| integral_real_to_i64(*v, &local_ctx, span, "function return"))
-    })
-}
-
-/// Interpret a sequence of algorithm statements (MLS §11.1).
-fn interpret_stmts(
-    stmts: &[Statement],
-    ctx: &mut TypeCheckEvalContext,
-) -> Option<FunctionStmtFlow> {
-    for stmt in stmts {
-        let flow = interpret_stmt(stmt, ctx)?;
-        if flow != FunctionStmtFlow::Continue {
-            return Some(flow);
-        }
-    }
-    Some(FunctionStmtFlow::Continue)
-}
-
-/// Interpret a single algorithm statement for compile-time function evaluation.
-///
-/// Handles assignment and if-elseif-else branching. Returns None if the
-/// statement cannot be interpreted (unsupported construct or evaluation failure).
-fn interpret_stmt(stmt: &Statement, ctx: &mut TypeCheckEvalContext) -> Option<FunctionStmtFlow> {
-    match stmt {
-        Statement::Assignment { comp, value } => {
-            let var_name = comp.to_string();
-            if let Some(val) = eval_integer_with_scope(value, ctx, "") {
-                ctx.integers.insert(var_name.clone(), val);
-                ctx.reals.insert(var_name.clone(), val as f64);
-                ctx.remember_scalar_span(&var_name, value.span());
-                return Some(FunctionStmtFlow::Continue);
-            }
-            if let Some(val) = eval_real_with_scope(value, ctx, "") {
-                ctx.reals.insert(var_name.clone(), val);
-                ctx.remember_scalar_span(&var_name, value.span());
-                if let Some(i) =
-                    integral_real_to_i64(val, ctx, value.span(), "algorithm assignment")
-                {
-                    ctx.integers.insert(var_name, i);
-                }
-                return Some(FunctionStmtFlow::Continue);
-            }
-            if let Some(val) = eval_boolean_with_scope(value, ctx, "") {
-                ctx.booleans.insert(var_name.clone(), val);
-                ctx.scalar_spans.remove(&var_name);
-            }
-            Some(FunctionStmtFlow::Continue)
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => interpret_if_stmt(cond_blocks, else_block.as_deref(), ctx),
-        Statement::For { indices, equations } => interpret_for_stmt(indices, equations, ctx),
-        Statement::While(block) => interpret_while_stmt(block, ctx),
-        Statement::Break { .. } => Some(FunctionStmtFlow::Break),
-        Statement::Return { .. } => Some(FunctionStmtFlow::Return),
-        Statement::Empty => Some(FunctionStmtFlow::Continue),
-        _ => None,
-    }
-}
-
-/// Interpret an if-elseif-else statement (MLS §11.2.6).
-fn interpret_if_stmt(
-    cond_blocks: &[StatementBlock],
-    else_block: Option<&[Statement]>,
-    ctx: &mut TypeCheckEvalContext,
-) -> Option<FunctionStmtFlow> {
-    for block in cond_blocks {
-        match eval_boolean_with_scope(&block.cond, ctx, "") {
-            Some(true) => return interpret_stmts(&block.stmts, ctx),
-            Some(false) => continue,
-            None => return None,
-        }
-    }
-    if let Some(else_stmts) = else_block {
-        interpret_stmts(else_stmts, ctx)
-    } else {
-        Some(FunctionStmtFlow::Continue)
-    }
-}
-
-/// Interpret a for-loop statement (MLS §11.2.4).
-fn interpret_for_stmt(
-    indices: &[rumoca_ir_ast::ForIndex],
-    equations: &[Statement],
-    ctx: &mut TypeCheckEvalContext,
-) -> Option<FunctionStmtFlow> {
-    if indices.len() != 1 {
-        return None;
-    }
-    let idx = &indices[0];
-    let var_name = idx.ident.text.to_string();
-    let (start, end) = eval_for_range(&idx.range, ctx)?;
-    for i in start..=end {
-        ctx.integers.insert(var_name.clone(), i);
-        match interpret_stmts(equations, ctx)? {
-            FunctionStmtFlow::Continue => {}
-            FunctionStmtFlow::Break => {
-                ctx.integers.remove(&var_name);
-                ctx.scalar_spans.remove(&var_name);
-                return Some(FunctionStmtFlow::Continue);
-            }
-            FunctionStmtFlow::Return => {
-                ctx.integers.remove(&var_name);
-                ctx.scalar_spans.remove(&var_name);
-                return Some(FunctionStmtFlow::Return);
-            }
-        }
-    }
-    ctx.integers.remove(&var_name);
-    ctx.scalar_spans.remove(&var_name);
-    Some(FunctionStmtFlow::Continue)
-}
-
-/// Interpret a while-loop statement (MLS §11.2.5).
-fn interpret_while_stmt(
-    block: &StatementBlock,
-    ctx: &mut TypeCheckEvalContext,
-) -> Option<FunctionStmtFlow> {
-    const MAX_WHILE_ITERATIONS: usize = 100_000;
-    for _ in 0..MAX_WHILE_ITERATIONS {
-        match eval_boolean_with_scope(&block.cond, ctx, "") {
-            Some(true) => match interpret_stmts(&block.stmts, ctx)? {
-                FunctionStmtFlow::Continue => {}
-                FunctionStmtFlow::Break => return Some(FunctionStmtFlow::Continue),
-                FunctionStmtFlow::Return => return Some(FunctionStmtFlow::Return),
-            },
-            Some(false) => return Some(FunctionStmtFlow::Continue),
-            None => return None,
-        }
-    }
-    None
-}
-
-/// Evaluate a for-loop range expression to (start, end) bounds.
-fn eval_for_range(range: &Expression, ctx: &TypeCheckEvalContext) -> Option<(i64, i64)> {
-    if let Expression::Range { start, end, .. } = range {
-        let s = eval_integer_with_scope(start, ctx, "")?;
-        let e = eval_integer_with_scope(end, ctx, "")?;
-        Some((s, e))
-    } else {
-        None
-    }
-}
-
+mod function_eval;
+#[cfg(test)]
+use function_eval::interpret_stmts;
+use function_eval::{
+    MAX_FUNC_EVAL_DEPTH, build_func_eval_context, eval_user_func_integer, lookup_function,
+};
 /// Look up array dimensions with scope-aware progressive lookup.
 ///
 /// For `array_name` = "a" and `scope` = "tf.inner", tries:
@@ -899,8 +707,7 @@ impl AstScalarContext for TypeCheckScalarAdapter<'_> {
         _depth: usize,
         span: Span,
     ) -> Option<i64> {
-        let function = component_reference_path(function);
-        eval_integer_func_with_scope(&function, args, self.ctx, scope, span)
+        eval_integer_func_with_scope(function, args, self.ctx, scope, span)
     }
 
     fn call_real(
@@ -911,8 +718,13 @@ impl AstScalarContext for TypeCheckScalarAdapter<'_> {
         _depth: usize,
         _span: Span,
     ) -> Option<f64> {
-        let function = component_reference_path(function);
-        eval_real_func_with_scope(&function, args, self.ctx, scope)
+        let rendered = component_reference_path(function);
+        if selected_user_function_name(function, &rendered, self.ctx).is_some()
+            || !call_targets_predefined(function, &rendered, self.ctx)
+        {
+            return None;
+        }
+        eval_real_func_with_scope(&rendered, args, self.ctx, scope)
     }
 
     fn enum_equal(
@@ -1173,342 +985,13 @@ pub fn eval_integer_with_scope(
     ast_scalar::eval_integer(expr, &TypeCheckScalarAdapter { ctx }, scope, 0)
 }
 
-/// Infer dimensions from an array literal expression.
-fn infer_array_dims(
-    elements: &[Expression],
-    is_matrix: bool,
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<Vec<usize>> {
-    if elements.is_empty() {
-        return Some(vec![0]);
-    }
-    if is_matrix {
-        return infer_matrix_constructor_dims(elements, ctx, scope);
-    }
-    if let Some(inner) = elements
-        .first()
-        .and_then(|f| infer_dimensions_from_binding_with_scope(f, ctx, scope))
-    {
-        let mut dims = vec![elements.len()];
-        dims.extend(inner);
-        return Some(dims);
-    }
-    Some(vec![elements.len()])
-}
-
-fn infer_matrix_constructor_dims(
-    elements: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<Vec<usize>> {
-    let has_nested_rows = matches!(elements.first(), Some(Expression::Array { .. }));
-    if !has_nested_rows {
-        return infer_matrix_row_dims(elements, ctx, scope).map(|(_, cols)| vec![1, cols]);
-    }
-
-    let mut rows = 0usize;
-    let mut expected_cols = None;
-    for row in elements {
-        let Expression::Array {
-            elements: row_elements,
-            ..
-        } = row
-        else {
-            return None;
-        };
-        let (row_count, col_count) = infer_matrix_row_dims(row_elements, ctx, scope)?;
-        match expected_cols {
-            Some(expected) if expected != col_count => return None,
-            None => expected_cols = Some(col_count),
-            _ => {}
-        }
-        rows += row_count;
-    }
-
-    Some(vec![rows, expected_cols.unwrap_or(0)])
-}
-
-fn infer_matrix_row_dims(
-    elements: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<(usize, usize)> {
-    let single_entry = elements.len() == 1;
-    let mut expected_rows = None;
-    let mut cols = 0usize;
-    for element in elements {
-        let dims = infer_dimensions_from_binding_with_scope(element, ctx, scope)?;
-        let (entry_rows, entry_cols) = matrix_entry_dims(&dims, single_entry)?;
-        match expected_rows {
-            Some(expected) if expected != entry_rows => return None,
-            None => expected_rows = Some(entry_rows),
-            _ => {}
-        }
-        cols += entry_cols;
-    }
-    Some((expected_rows?, cols))
-}
-
-fn matrix_entry_dims(dims: &[usize], single_entry: bool) -> Option<(usize, usize)> {
-    match dims {
-        [] => Some((1, 1)),
-        [len] if single_entry => Some((*len, 1)),
-        [len] => Some((1, *len)),
-        [rows, cols] => Some((*rows, *cols)),
-        _ => None,
-    }
-}
-
-/// Infer dimensions for `cat(dim, A, B, ...)` concatenation.
-fn infer_cat_dims_with_scope(
-    args: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<Vec<usize>> {
-    let cat_dim = usize::try_from(ctx.eval_integer(&args[0], scope)?).ok()?;
-    if cat_dim < 1 {
-        return None;
-    }
-    let cat_idx = cat_dim - 1;
-    let mut result_dims: Option<Vec<usize>> = None;
-    for arg in &args[1..] {
-        let arg_dims = infer_dimensions_from_binding_with_scope(arg, ctx, scope)?;
-        match &mut result_dims {
-            None => result_dims = Some(arg_dims),
-            Some(dims) => {
-                if arg_dims.len() != dims.len() || cat_idx >= dims.len() {
-                    return None;
-                }
-                dims[cat_idx] += arg_dims[cat_idx];
-            }
-        }
-    }
-    result_dims
-}
-
-/// Scope-aware dimension inference from array-constructing function calls.
-fn infer_dims_from_func_with_scope(
-    func_name: &str,
-    args: &[Expression],
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<Vec<usize>> {
-    match func_name {
-        "zeros" | "ones" => args
-            .iter()
-            .map(|a| {
-                ctx.eval_integer(a, scope)
-                    .and_then(|i| usize::try_from(i).ok())
-            })
-            .collect(),
-        "fill" if args.len() >= 2 => args[1..]
-            .iter()
-            .map(|a| {
-                ctx.eval_integer(a, scope)
-                    .and_then(|i| usize::try_from(i).ok())
-            })
-            .collect(),
-        "identity" if args.len() == 1 => usize::try_from(ctx.eval_integer(&args[0], scope)?)
-            .ok()
-            .map(|n| vec![n, n]),
-        "cat" if args.len() >= 2 => infer_cat_dims_with_scope(args, ctx, scope),
-        // transpose(A) → swap dimensions
-        "transpose" if args.len() == 1 => {
-            let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
-            if dims.len() == 2 {
-                Some(vec![dims[1], dims[0]])
-            } else {
-                None
-            }
-        }
-        // diagonal(v) → [n,n] from [n]
-        "diagonal" if args.len() == 1 => {
-            let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
-            if dims.len() == 1 {
-                Some(vec![dims[0], dims[0]])
-            } else {
-                None
-            }
-        }
-        // symmetric(A) → same dims as A
-        "symmetric" if args.len() == 1 => {
-            infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)
-        }
-        // linspace(a, b, n) → [n]
-        "linspace" if args.len() == 3 => usize::try_from(ctx.eval_integer(&args[2], scope)?)
-            .ok()
-            .map(|n| vec![n]),
-        // scalar(A) → [] (scalar)
-        "scalar" if args.len() == 1 => Some(vec![]),
-        // vector(A) → [product(dims)]
-        "vector" if args.len() == 1 => {
-            let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
-            let total: usize = dims.iter().product();
-            Some(vec![total])
-        }
-        // matrix(A) → [n,m] reshape to 2D
-        "matrix" if args.len() == 1 => {
-            let dims = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope)?;
-            match dims.len() {
-                0 => Some(vec![1, 1]),
-                1 => Some(vec![dims[0], 1]),
-                2 => Some(dims),
-                _ => None,
-            }
-        }
-        // cross(a, b) → [3] (cross product is always 3D)
-        "cross" if args.len() == 2 => Some(vec![3]),
-        // skew(v) → [3,3] from [3]
-        "skew" if args.len() == 1 => Some(vec![3, 3]),
-        // array(args...) → [len(args)] if all scalars, or [len(args), inner...] if arrays
-        "array" if !args.is_empty() => {
-            if let Some(inner) = infer_dimensions_from_binding_with_scope(&args[0], ctx, scope) {
-                let mut dims = vec![args.len()];
-                dims.extend(inner);
-                Some(dims)
-            } else {
-                Some(vec![args.len()])
-            }
-        }
-        // Fallback: infer dimensions from user-defined function output type (MLS §12.4)
-        _ => ctx.infer_user_function_dimensions(func_name, args, scope),
-    }
-}
-
-/// Infer output array dimensions from a user-defined function call (MLS §12.4).
-///
-/// Looks up the function definition, finds the output variable's dimension
-/// expressions, substitutes actual argument values, and evaluates them.
-fn infer_dims_from_user_func(
-    func_name: &str,
-    args: &[Expression],
-    ctx: &TypeCheckEvalContext,
-    scope: &str,
-) -> Option<Vec<usize>> {
-    if ctx.func_eval_depth >= MAX_FUNC_EVAL_DEPTH {
-        return None;
-    }
-    let func_def = lookup_function(func_name, ctx)?;
-    if func_def.class_type != ClassType::Function {
-        return None;
-    }
-    let local_ctx = build_func_eval_context(func_def, args, ctx, scope)?;
-    let (_, output) = func_def
-        .components
-        .iter()
-        .find(|(_, comp)| matches!(comp.causality, Causality::Output(_)))?;
-    // Scalar output (no dimension expressions)
-    if output.shape_expr.is_empty() {
-        // MLS §12.4.6: scalar functions applied element-wise to arrays.
-        // If any actual argument has array dims, the result inherits those dims.
-        return Some(find_broadcast_dims(args, ctx, scope));
-    }
-    // Evaluate each dimension expression in the local context
-    output
-        .shape_expr
-        .iter()
-        .map(|sub| match sub {
-            Subscript::Expression(expr) => {
-                eval_integer_with_scope(expr, &local_ctx, "").map(|v| v as usize)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Find the largest array dimensions among actual arguments (MLS §12.4.6).
-///
-/// When a scalar function is called with array arguments, the result has
-/// the shape of the largest argument (element-wise broadcast).
-fn find_broadcast_dims(args: &[Expression], ctx: &TypeCheckEvalContext, scope: &str) -> Vec<usize> {
-    let mut best: Vec<usize> = vec![];
-    for arg in args {
-        // Skip named arguments, use the value inside
-        let expr = if let Expression::NamedArgument { value, .. } = arg {
-            value.as_ref()
-        } else {
-            arg
-        };
-        if let Some(dims) = infer_dimensions_from_binding_with_scope(expr, ctx, scope)
-            && dims.len() > best.len()
-        {
-            best = dims;
-        }
-    }
-    best
-}
-
-/// Compute range length from start, step, end.
-fn compute_range_len(start: i64, step: i64, end: i64) -> usize {
-    if step == 0 {
-        return 0;
-    }
-    if step > 0 {
-        if end >= start {
-            ((end - start) / step + 1) as usize
-        } else {
-            0
-        }
-    } else if start >= end {
-        ((start - end) / (-step) + 1) as usize
-    } else {
-        0
-    }
-}
-
-/// Compute range length for real-valued ranges.
-///
-/// MLS range expressions (`start:step:end`) enumerate values while stepping
-/// toward the end value; the number of elements is therefore determined by the
-/// reachable step count, not by integer-only arithmetic.
-fn compute_range_len_real(start: f64, step: f64, end: f64) -> usize {
-    const STEP_EPS: f64 = 1e-12;
-    if step.abs() <= STEP_EPS {
-        return 0;
-    }
-
-    let delta = end - start;
-    if (step > 0.0 && delta < -STEP_EPS) || (step < 0.0 && delta > STEP_EPS) {
-        return 0;
-    }
-
-    let n = delta / step;
-    if !n.is_finite() {
-        return 0;
-    }
-
-    // Tolerate minor floating-point roundoff near integer boundaries.
-    let eps = (n.abs() * 1e-12).max(1e-12);
-    let len = (n + eps).floor() + 1.0;
-    if len.is_finite() && len > 0.0 {
-        len as usize
-    } else {
-        0
-    }
-}
-
-fn infer_range_len_numeric(
-    start: &Expression,
-    step: Option<&Expression>,
-    end: &Expression,
-    ctx: &(impl DimensionInferenceContext + ?Sized),
-    scope: &str,
-) -> Option<usize> {
-    let int_start = ctx.eval_integer(start, scope);
-    let int_end = ctx.eval_integer(end, scope);
-    let int_step = step.map(|x| ctx.eval_integer(x, scope)).unwrap_or(Some(1));
-    if let (Some(s), Some(e), Some(st)) = (int_start, int_end, int_step)
-        && st != 0
-    {
-        return Some(compute_range_len(s, st, e));
-    }
-
-    let s = ctx.eval_real(start, scope)?;
-    let e = ctx.eval_real(end, scope)?;
-    let st = step.map(|x| ctx.eval_real(x, scope)).unwrap_or(Some(1.0))?;
-    Some(compute_range_len_real(s, st, e))
-}
+mod shape_inference;
+use shape_inference::{
+    infer_array_dims, infer_dims_from_func_with_scope, infer_dims_from_user_func,
+    infer_range_len_numeric,
+};
+mod builtin_identity;
+use builtin_identity::{call_targets_predefined, selected_user_function_name};
 mod dimension_inference;
 
 mod eval_lookup_impl;

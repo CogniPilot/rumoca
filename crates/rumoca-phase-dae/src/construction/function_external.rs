@@ -16,20 +16,28 @@ pub(super) fn define_external_function<'dae>(
     function: &rumoca_core::Function,
     plan: &ExternalFunctionPlan,
 ) -> Result<(), dae::DaeConstructionError> {
-    let external = function
-        .external
-        .as_ref()
-        .expect("external lowering runs only for declared external functions");
+    let external =
+        function
+            .external
+            .as_ref()
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: function.span,
+            })?;
     let provenance = dae::DaeProvenance::source(function.span)?;
     let mut arguments = Vec::with_capacity(plan.arguments.len());
     for argument in &plan.arguments {
         arguments.push(match argument {
             ExternalArgumentPlan::Input(ordinal) => {
-                let source = &external.args[*ordinal];
+                let source = external.args.get(*ordinal).ok_or(
+                    dae::DaeConstructionError::InvalidExpressionForm {
+                        span: function.span,
+                    },
+                )?;
                 let lowered = lower_expression_scoped(
                     construction,
                     LoweringSymbols {
                         coordinates,
+                        record_staging: None,
                         functions,
                         shapes,
                         function_body: None,
@@ -42,15 +50,16 @@ pub(super) fn define_external_function<'dae>(
                 )?;
                 dae::ExternalArgument::Input(lowered)
             }
-            ExternalArgumentPlan::Output(name) => {
-                dae::ExternalArgument::Output(function_value_coordinate(coordinates, name))
-            }
+            ExternalArgumentPlan::Output(name) => dae::ExternalArgument::Output(
+                function_value_coordinate(coordinates, name, function.span)?,
+            ),
         });
     }
     let result = plan
         .result
         .as_ref()
-        .map(|name| function_value_coordinate(coordinates, name));
+        .map(|name| function_value_coordinate(coordinates, name, function.span))
+        .transpose()?;
     let body = dae::ExternalFunctionBody::new(
         plan.purity,
         plan.language,

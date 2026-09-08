@@ -10,6 +10,7 @@
 //! live in `main.rs` (binary-only); the error-*report builders* live here so they
 //! can be unit-tested alongside the dispatch logic and reused by `main.rs`.
 
+mod artifact_session_input;
 #[cfg(test)]
 mod cli_report_tests;
 #[cfg(test)]
@@ -18,7 +19,7 @@ mod compile_selectors;
 mod model_resolution;
 mod value;
 
-pub use compile_selectors::{CompilePhase, EmissionPolicyArg, InlinePolicyArg, ScalarizePolicyArg};
+use compile_selectors::EmitStage;
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -41,9 +42,9 @@ use miette::{LabeledSpan, MietteDiagnostic, NamedSource, Report, Severity};
 // `rumoca::cli::FmtArgs` / `rumoca::cli::SimBenchArgs`.
 pub use crate::fmt_cli::FmtArgs;
 pub use crate::sim_bench::SimBenchArgs;
-use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult, TemplateIr};
+use crate::{CompilationResult, Compiler, CompilerError, DaeCompilationResult};
 use rumoca_compile::{
-    codegen::{CodegenError, render_flat_template_with_name},
+    codegen::CodegenError,
     compile::{Dae, FlatModel},
 };
 use rumoca_core::{Diagnostic as CommonDiagnostic, DiagnosticSeverity, SourceMap};
@@ -297,14 +298,15 @@ pub struct CompileArgs {
     #[command(flatten)]
     pub input: ModelInputArgs,
 
-    /// Dump an intermediate representation: `<stage>-mo` for Modelica or
-    /// `<stage>-json` for JSON (stage = ast/flat/dae/solve). See possible values.
+    /// Dump an intermediate representation. JSON is exact; `dae-mo` is the
+    /// checked textual form. The retained `flat-mo` spelling returns a named
+    /// unsupported-feature refusal. See possible values.
     #[arg(long, value_enum, conflicts_with = "target")]
     pub emit: Option<EmitTarget>,
 
-    /// Code-generation target: a built-in target, a raw .jinja template, or a
-    /// directory containing target.toml. Run `rumoca targets` to list them. For
-    /// an IR/Modelica dump use --emit instead.
+    /// Code-generation target: a built-in target or a directory containing
+    /// target.toml. Run `rumoca targets` to list them. For an IR/Modelica dump
+    /// use --emit instead.
     #[arg(long, value_name = "TARGET")]
     pub target: Option<String>,
 
@@ -315,40 +317,26 @@ pub struct CompileArgs {
     #[arg(long, conflicts_with_all = ["emit", "target", "inspect"])]
     pub emit_standard_modelica: bool,
 
-    /// Pick which IR a raw template `--target` receives (default dae). Only
-    /// meaningful when --target is a `.jinja` file, e.g. `--target my.jinja
-    /// --phase flat`.
-    #[arg(long, value_enum, requires = "target")]
-    pub phase: Option<CompilePhase>,
-
-    /// How much call structure a GALEC-derived target keeps (default `none`, so
-    /// no flag emits what a compiler with no dial emits). Information-preserving
-    /// and bit-identical at every setting, so all stay certification-eligible.
+    /// Pin the exact UTC-second generation instant for reproducible target
+    /// artifacts. Must be supplied together with --artifact-identity-seed.
     #[arg(
         long,
-        value_enum,
+        value_name = "YYYY-MM-DDTHH:MM:SSZ",
         requires = "target",
-        conflicts_with = "emission_policy"
+        requires = "artifact_identity_seed"
     )]
-    pub inline_policy: Option<InlinePolicyArg>,
+    pub artifact_generation_instant:
+        Option<rumoca_compile::codegen::targets::ArtifactGenerationInstant>,
 
-    /// Whether tensor operations may be expanded into per-element statements
-    /// (default `never`). Expansion destroys index sets, symmetry and
-    /// bandedness, so any other setting taints the artifact and says so.
+    /// Pin the UUID namespace seed for reproducible target artifacts. Must be
+    /// supplied together with --artifact-generation-instant.
     #[arg(
         long,
-        value_enum,
+        value_name = "UUID",
         requires = "target",
-        conflicts_with = "emission_policy"
+        requires = "artifact_generation_instant"
     )]
-    pub scalarize_policy: Option<ScalarizePolicyArg>,
-
-    /// Shorthand for one point in the (`--inline-policy`, `--scalarize-policy`)
-    /// space: `reviewable` = (none, never), `balanced` = (cost-model, never),
-    /// `flat` = (all, all). A preset is never the only way to name a point: the
-    /// useful combinations it does not name need the two axes.
-    #[arg(long, value_enum, requires = "target")]
-    pub emission_policy: Option<EmissionPolicyArg>,
+    pub artifact_identity_seed: Option<rumoca_compile::codegen::targets::ArtifactIdentitySeed>,
 
     /// Output path. For an `--emit` IR dump this is a file (defaults to stdout);
     /// for a `--target` codegen run it may be a file or a directory.
@@ -401,13 +389,22 @@ pub enum EmitTarget {
     SolveJson,
 }
 
+const UNSUPPORTED_FLAT_MODELICA_TEXT_EXPORT: &str = "unsupported-feature:flat-modelica-text-export";
+
+fn refuse_flat_modelica_text_export<T>() -> Result<T> {
+    bail!(
+        "{UNSUPPORTED_FLAT_MODELICA_TEXT_EXPORT}: Flat IR does not yet retain every equation \
+         body needed for a lossless Modelica reconstruction; use `--emit flat-json`"
+    )
+}
+
 impl EmitTarget {
-    fn phase(self) -> CompilePhase {
+    fn phase(self) -> EmitStage {
         match self {
-            Self::AstJson => CompilePhase::Ast,
-            Self::FlatMo | Self::FlatJson => CompilePhase::Flat,
-            Self::DaeMo | Self::DaeJson => CompilePhase::Dae,
-            Self::SolveJson => CompilePhase::Solve,
+            Self::AstJson => EmitStage::Ast,
+            Self::FlatMo | Self::FlatJson => EmitStage::Flat,
+            Self::DaeMo | Self::DaeJson => EmitStage::Dae,
+            Self::SolveJson => EmitStage::Solve,
         }
     }
 
@@ -1071,25 +1068,29 @@ fn run_compile(args: CompileArgs) -> Result<()> {
     if args.emit_standard_modelica {
         return crate::standard_modelica::run(&args.input.model_file, args.output.as_deref());
     }
-    invalidate_previous_compile_output(&args)?;
+    validate_compile_output_destination(&args)?;
+    if matches!(args.emit, Some(EmitTarget::FlatMo)) {
+        return refuse_flat_modelica_text_export();
+    }
     if let Some(emit) = args.emit
-        && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
+        && matches!(emit.phase(), EmitStage::Ast | EmitStage::Flat)
     {
-        let (artifact, model) = compile_early_ir_with_inferred_model(
+        let (artifact, _model) = compile_early_ir_with_inferred_model(
             &args.input,
             emit.phase(),
             args.diagnostics.verbose,
         )?;
-        return run_early_ir_dump(&artifact, &model, emit.is_json(), args.output);
+        return run_early_ir_dump(&artifact, emit.is_json(), args.output);
     }
 
-    let (result, model) = compile_with_inferred_model(&args.input, args.diagnostics.verbose)?;
+    let result = compile_with_inferred_model(&args.input, args.diagnostics.verbose)?;
+    let model = result.model_name();
 
     // Structural / point inspection of the lowered model (shares the `sim
     // --inspect` machinery). Structure is a compile-time artifact, so it belongs
     // on `compile` too; eval/jacobian take a point via `--at`.
     if let Some(kind) = args.inspect {
-        let dae = &result.dae;
+        let dae = result.dae();
         let at = inspect_at_spec(args.at.as_deref());
         let solver = SimulateSolverMode::Auto;
         if matches!(args.format, InspectFormat::Json)
@@ -1100,18 +1101,18 @@ fn run_compile(args: CompileArgs) -> Result<()> {
             );
         }
         return match kind {
-            InspectKind::Structure => sim_inspect::run_structure_dump(dae, &model, solver.into()),
-            InspectKind::Eval => sim_inspect::run_eval_at(dae, &model, at, solver.into()),
+            InspectKind::Structure => sim_inspect::run_structure_dump(dae, model, solver.into()),
+            InspectKind::Eval => sim_inspect::run_eval_at(dae, model, at, solver.into()),
             InspectKind::Jacobian => sim_inspect::run_jacobian(
                 dae,
-                &model,
+                model,
                 at,
                 solver.into(),
                 matches!(args.format, InspectFormat::Json),
             ),
             InspectKind::ObjectiveGradient => sim_inspect::run_objective_gradient(
                 dae,
-                &model,
+                model,
                 at,
                 args.objective.as_deref(),
                 matches!(args.grad_mode, GradMode::Adjoint),
@@ -1120,24 +1121,20 @@ fn run_compile(args: CompileArgs) -> Result<()> {
         };
     }
 
-    let emission_policy = compile_selectors::resolve_emission_policy(
-        args.emission_policy,
-        args.inline_policy,
-        args.scalarize_policy,
-    );
     match (args.emit, args.target) {
         // IR dump of one compiler stage (--emit conflicts with --target).
-        (Some(emit), _) => run_ir_dump(&result, &model, emit.phase(), emit.is_json(), args.output),
-        // Code-gen target; --phase (clap-required to accompany --target) only
-        // picks the IR a raw .jinja template receives.
-        (None, Some(target)) => target_manifest::compile_target(
-            &result,
-            &model,
-            &target,
-            args.output,
-            args.phase.map(TemplateIr::from),
-            emission_policy,
-        ),
+        (Some(emit), _) => run_ir_dump(&result, emit.phase(), emit.is_json(), args.output),
+        // Code-gen target. Its checked manifest declares every file's IR
+        // context, semantic view, and artifact kind.
+        (None, Some(target)) => {
+            let artifact_input = artifact_session_input::resolve(
+                args.artifact_generation_instant,
+                args.artifact_identity_seed,
+            )?;
+            let output_root = args.output.unwrap_or_else(|| PathBuf::from("."));
+            target_manifest::compile_target(&result, &target, &output_root, artifact_input)
+                .map(|_| ())
+        }
         // Neither: just report the compilation summary. There is no artifact to
         // write here, so `--output` would be a silent no-op — reject it instead
         // of lying by omission.
@@ -1149,24 +1146,15 @@ fn run_compile(args: CompileArgs) -> Result<()> {
                     path.display()
                 );
             }
-            print_summary(&model, &result);
+            print_summary(model, &result);
             Ok(())
         }
     }
 }
 
-fn invalidate_previous_compile_output(args: &CompileArgs) -> Result<()> {
+fn validate_compile_output_destination(args: &CompileArgs) -> Result<()> {
     let Some(output) = args.output.as_deref() else {
-        if args.target.is_none() {
-            return Ok(());
-        }
-        let model = selected_model_name(&args.input)?;
-        return target_manifest::invalidate_target_output(
-            &model,
-            args.target.as_deref().expect("target checked above"),
-            None,
-            args.phase.map(TemplateIr::from),
-        );
+        return Ok(());
     };
 
     if args.emit.is_some() {
@@ -1183,21 +1171,6 @@ fn invalidate_previous_compile_output(args: &CompileArgs) -> Result<()> {
                 output.display()
             );
         }
-        if output.exists() {
-            std::fs::remove_file(output)
-                .with_context(|| format!("Invalidate previous output '{}'", output.display()))?;
-        }
-        return Ok(());
-    }
-
-    if let Some(target) = args.target.as_deref() {
-        let model = selected_model_name(&args.input)?;
-        target_manifest::invalidate_target_output(
-            &model,
-            target,
-            Some(output),
-            args.phase.map(TemplateIr::from),
-        )?;
     }
     Ok(())
 }
@@ -1215,13 +1188,6 @@ pub(crate) fn output_names_input_file(output: &Path, input: &Path) -> Result<boo
     Ok(output == input)
 }
 
-fn selected_model_name(args: &ModelInputArgs) -> Result<String> {
-    match &args.options.model {
-        Some(model) => Ok(model.clone()),
-        None => infer_model_name(&args.model_file),
-    }
-}
-
 pub(crate) enum EarlyIrArtifact {
     Ast(Box<ResolvedTree>),
     Flat(Box<FlatModel>),
@@ -1229,7 +1195,6 @@ pub(crate) enum EarlyIrArtifact {
 
 fn run_early_ir_dump(
     artifact: &EarlyIrArtifact,
-    model: &str,
     json: bool,
     output: Option<PathBuf>,
 ) -> Result<()> {
@@ -1239,13 +1204,13 @@ fn run_early_ir_dump(
             bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
         (EarlyIrArtifact::Flat(flat), true) => serde_json::to_string_pretty(flat)?,
-        (EarlyIrArtifact::Flat(flat), false) => render_early_ir_as_modelica_flat(flat, model)?,
+        (EarlyIrArtifact::Flat(_), false) => return refuse_flat_modelica_text_export(),
     };
     write_ir_dump(
         &rendered,
         match artifact {
-            EarlyIrArtifact::Ast(_) => CompilePhase::Ast,
-            EarlyIrArtifact::Flat(_) => CompilePhase::Flat,
+            EarlyIrArtifact::Ast(_) => EmitStage::Ast,
+            EarlyIrArtifact::Flat(_) => EmitStage::Flat,
         },
         json,
         output,
@@ -1256,15 +1221,14 @@ fn run_early_ir_dump(
 /// or stdout.
 fn run_ir_dump(
     result: &CompilationResult,
-    model: &str,
-    phase: CompilePhase,
+    phase: EmitStage,
     json: bool,
     output: Option<PathBuf>,
 ) -> Result<()> {
     let rendered = if json {
         result.to_ir_json(phase.into())?
     } else {
-        render_ir_as_modelica(result, model, phase)?
+        render_ir_as_modelica(result, phase)?
     };
 
     write_ir_dump(&rendered, phase, json, output)
@@ -1272,7 +1236,7 @@ fn run_ir_dump(
 
 fn write_ir_dump(
     rendered: &str,
-    phase: CompilePhase,
+    phase: EmitStage,
     json: bool,
     output: Option<PathBuf>,
 ) -> Result<()> {
@@ -1306,40 +1270,28 @@ fn write_ir_dump(
     Ok(())
 }
 
-fn render_early_ir_as_modelica_flat(flat: &FlatModel, model: &str) -> Result<String> {
-    let template = rumoca_compile::codegen::templates::builtin_template_source(
-        "flat-modelica",
-        "flat_modelica.mo.jinja",
-    )
-    .ok_or_else(|| anyhow::anyhow!("missing built-in flat-modelica template"))?;
-    let model_identifier = model.replace('.', "_");
-    render_flat_template_with_name(flat, template, &model_identifier).map_err(Into::into)
-}
-
 /// Render the IR at `phase` back to equivalent Modelica via the built-in
 /// `*-modelica` templates.
-fn render_ir_as_modelica(
-    result: &CompilationResult,
-    model: &str,
-    phase: CompilePhase,
-) -> Result<String> {
-    let (target, template_file) = match phase {
-        CompilePhase::Ast => {
+fn render_ir_as_modelica(result: &CompilationResult, phase: EmitStage) -> Result<String> {
+    let target = match phase {
+        EmitStage::Ast => {
             bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
-        CompilePhase::Flat => ("flat-modelica", "flat_modelica.mo.jinja"),
-        CompilePhase::Dae => ("dae-modelica", "dae_modelica.mo.jinja"),
-        CompilePhase::Solve => {
-            bail!("the solve IR has no Modelica form; use `--phase solve --json`")
+        EmitStage::Flat => return refuse_flat_modelica_text_export(),
+        EmitStage::Dae => "dae-modelica",
+        EmitStage::Solve => {
+            bail!("the solve IR has no Modelica form; use `--emit solve-json`")
         }
     };
-    let template =
-        rumoca_compile::codegen::templates::builtin_template_source(target, template_file)
-            .ok_or_else(|| anyhow::anyhow!("missing built-in {target} template"))?;
-    let model_identifier = model.replace('.', "_");
-    result
-        .render_template_str_with_name_and_ir(template, &model_identifier, phase.into())
-        .map_err(Into::into)
+    let artifact_input = artifact_session_input::fresh()?;
+    let mut files = target_manifest::render_target_files(result, target, artifact_input)?;
+    if files.len() != 1 {
+        bail!(
+            "checked {target} manifest must emit exactly one file, found {}",
+            files.len()
+        );
+    }
+    Ok(files.remove(0).content().to_owned())
 }
 
 fn run_sim(args: SimCommandArgs) -> Result<()> {
@@ -1678,10 +1630,7 @@ fn expand_trace_filter(spec: &str) -> String {
         .join(",")
 }
 
-fn compile_with_inferred_model(
-    args: &ModelInputArgs,
-    verbose: bool,
-) -> Result<(CompilationResult, String)> {
+fn compile_with_inferred_model(args: &ModelInputArgs, verbose: bool) -> Result<CompilationResult> {
     ensure_model_file_readable(&args.model_file)?;
     let model = match &args.options.model {
         Some(model) => model.clone(),
@@ -1694,13 +1643,12 @@ fn compile_with_inferred_model(
         .model(&model)
         .verbose(verbose)
         .source_roots(&source_roots);
-    let result = compiler.compile_file(&args.model_file)?;
-    Ok((result, model))
+    compiler.compile_file(&args.model_file).map_err(Into::into)
 }
 
 fn compile_early_ir_with_inferred_model(
     args: &ModelInputArgs,
-    phase: CompilePhase,
+    phase: EmitStage,
     verbose: bool,
 ) -> Result<(EarlyIrArtifact, String)> {
     ensure_model_file_readable(&args.model_file)?;
@@ -1716,13 +1664,13 @@ fn compile_early_ir_with_inferred_model(
         .verbose(verbose)
         .source_roots(&source_roots);
     let artifact = match phase {
-        CompilePhase::Ast => {
+        EmitStage::Ast => {
             EarlyIrArtifact::Ast(Box::new(compiler.compile_file_ast(&args.model_file)?))
         }
-        CompilePhase::Flat => {
+        EmitStage::Flat => {
             EarlyIrArtifact::Flat(Box::new(compiler.compile_file_flat(&args.model_file)?))
         }
-        CompilePhase::Dae | CompilePhase::Solve => {
+        EmitStage::Dae | EmitStage::Solve => {
             bail!("internal error: early IR compile requested for {phase:?}")
         }
     };
@@ -1757,29 +1705,28 @@ pub(crate) fn compile_str_with_inferred_model(
     file_name: &str,
     options: &ModelOptions,
     verbose: bool,
-) -> Result<(CompilationResult, String)> {
-    let (compiler, model) = compiler_for_source(source, file_name, options, verbose)?;
-    let result = compiler.compile_str(source, file_name)?;
-    Ok((result, model))
+) -> Result<CompilationResult> {
+    let (compiler, _model) = compiler_for_source(source, file_name, options, verbose)?;
+    compiler.compile_str(source, file_name).map_err(Into::into)
 }
 
 /// In-memory counterpart to [`compile_early_ir_with_inferred_model`].
-pub(crate) fn compile_str_early_ir_with_inferred_model(
+fn compile_str_early_ir_with_inferred_model(
     source: &str,
     file_name: &str,
     options: &ModelOptions,
-    phase: CompilePhase,
+    phase: EmitStage,
     verbose: bool,
 ) -> Result<(EarlyIrArtifact, String)> {
     let (compiler, model) = compiler_for_source(source, file_name, options, verbose)?;
     let artifact = match phase {
-        CompilePhase::Ast => {
+        EmitStage::Ast => {
             EarlyIrArtifact::Ast(Box::new(compiler.compile_str_ast(source, file_name)?))
         }
-        CompilePhase::Flat => {
+        EmitStage::Flat => {
             EarlyIrArtifact::Flat(Box::new(compiler.compile_str_flat(source, file_name)?))
         }
-        CompilePhase::Dae | CompilePhase::Solve => {
+        EmitStage::Dae | EmitStage::Solve => {
             bail!("internal error: early IR compile requested for {phase:?}")
         }
     };
@@ -1800,7 +1747,7 @@ pub(crate) fn compile_str_dae_with_inferred_model(
 
 fn print_summary(model: &str, result: &CompilationResult) {
     let (states, algebraics, parameters, constants, inputs, outputs, continuous, initial) =
-        result.dae.inspect(|view| {
+        result.dae().inspect(|view| {
             let mut roles = [0usize; 6];
             for (_, variable) in view.variables() {
                 match variable.role() {
@@ -1886,7 +1833,7 @@ struct SimulationRun<'a> {
 }
 
 fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
-    use rumoca_sim::simulate_with_diagnostics_auto_nan_trace;
+    use rumoca_sim::simulate_dae;
 
     // Validate the report path before spending a full solve on it: `sim`'s
     // --output is the HTML report *file*, not a directory.
@@ -1918,11 +1865,7 @@ fn run_simulation(run: SimulationRun<'_>) -> Result<()> {
     }
 
     eprintln!("Simulating {} to t={}...", run.model, run.t_end);
-    // On a non-finite-suggestive failure (e.g. a model divide-by-zero showing up
-    // as "step size too small"), this re-runs once with NaN tracing so the
-    // offending variable(s) are named for the user.
-    let sim = simulate_with_diagnostics_auto_nan_trace(run.dae, &opts)
-        .map_err(|error| simulation_failure_error(&error))?;
+    let sim = simulate_dae(run.dae, &opts).map_err(|error| simulation_failure_error(&error))?;
     eprintln!(
         "Simulation complete: {} time points, {} variables",
         sim.times.len(),

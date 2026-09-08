@@ -503,6 +503,7 @@ fn arithmetic_profile() -> solve::SolveArithmeticProfile {
         solve::SolveRealFormat::Binary64,
         solve::SolveIntegerDomain::construct(i64::MIN, i64::MAX)
             .expect("the full i64 domain is nonempty"),
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
     )
 }
 

@@ -15,7 +15,7 @@ use rumoca_ir_galec::ast::{
     RangeAttributes, RefPart, Reference, ScalarType, SignalCheck, SignalTest, Spanned,
     StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
-use rumoca_ir_galec::validate;
+use rumoca_ir_galec::package::{CheckedAlgorithmBlock, PackageError};
 
 // ---------------------------------------------------------------------------
 // Builders
@@ -35,6 +35,10 @@ fn real_decl(name: &str) -> VariableDeclaration {
 
 fn int_decl(name: &str) -> VariableDeclaration {
     VariableDeclaration::scalar(ScalarType::Integer, n(name))
+}
+
+fn bool_decl(name: &str) -> VariableDeclaration {
+    VariableDeclaration::scalar(ScalarType::Boolean, n(name))
 }
 
 fn arr_decl(name: &str, sizes: &[i64]) -> VariableDeclaration {
@@ -134,19 +138,38 @@ fn out_real(name: &str) -> Parameter {
 }
 
 fn interface_var(kind: InterfaceKind, decl: VariableDeclaration) -> InterfaceVariable {
-    InterfaceVariable {
-        kind,
-        decl,
-        start: None,
-    }
+    let start = default_start(&decl);
+    InterfaceVariable { kind, decl, start }
 }
 
 fn protected_entity(kind: ProtectedKind, decl: VariableDeclaration) -> ProtectedEntity {
-    ProtectedEntity {
-        kind,
-        decl,
-        start: None,
-    }
+    let start = default_start(&decl);
+    ProtectedEntity { kind, decl, start }
+}
+
+fn default_start(declaration: &VariableDeclaration) -> Option<Expression> {
+    let scalar = match declaration.ty {
+        TypeRef::Primitive(ScalarType::Real) => Expression::Real(0.0),
+        TypeRef::Primitive(ScalarType::Integer) => Expression::Integer(0),
+        TypeRef::Primitive(ScalarType::Boolean) => Expression::Bool(false),
+        TypeRef::Compartment(_) => return None,
+    };
+    Some(
+        declaration
+            .dimensions
+            .iter()
+            .rev()
+            .fold(scalar, |value, dimension| {
+                let extent = match dimension {
+                    Dimension::Expr(Expression::Integer(value)) => {
+                        usize::try_from(*value).ok().filter(|value| *value > 0)
+                    }
+                    Dimension::Derived | Dimension::Expr(_) => None,
+                }
+                .unwrap_or(1);
+                Expression::Array(vec![value; extent])
+            }),
+    )
 }
 
 fn function(kind: FunctionKind, name: &str, statements: Vec<Spanned<Statement>>) -> UserFunction {
@@ -186,16 +209,19 @@ fn catch_stmt(signals: &[&str], body: Vec<Spanned<Statement>>) -> Spanned<Statem
 
 #[track_caller]
 fn expect_codes(block: &Block, expected: &[&str]) {
-    let errors = validate(block).expect_err("block must be invalid");
+    let error = CheckedAlgorithmBlock::construct(block.clone()).expect_err("block must be invalid");
+    let PackageError::Block(diagnostics) = error else {
+        panic!("expected language diagnostics, got: {error}");
+    };
+    let errors = diagnostics.errors();
     let codes: Vec<&str> = errors.iter().map(|e| e.code()).collect();
     assert_eq!(codes, expected, "diagnostics: {errors:#?}");
 }
 
 #[track_caller]
 fn expect_valid(block: &Block) {
-    if let Err(errors) = validate(block) {
-        panic!("expected a valid block, got: {errors:#?}");
-    }
+    CheckedAlgorithmBlock::construct(block.clone())
+        .unwrap_or_else(|error| panic!("expected a valid block, got: {error:#?}"));
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +236,56 @@ fn minimal() -> Block {
         interface_var(InterfaceKind::Output, real_decl("y")),
     ];
     block
+}
+
+#[test]
+fn declaration_start_relation_rejects_scalar_and_array_shape_mismatches() {
+    let mut scalar_with_array = minimal();
+    scalar_with_array.interface[0].start = Some(Expression::Array(vec![r(0.0)]));
+    expect_codes(&scalar_with_array, &["EG017"]);
+
+    let mut array_with_scalar = minimal();
+    array_with_scalar.interface[0].decl = arr_decl("u", &[2]);
+    array_with_scalar.interface[0].start = Some(r(0.0));
+    expect_codes(&array_with_scalar, &["EG017"]);
+
+    let mut wrong_extent = minimal();
+    wrong_extent.interface[0].decl = arr_decl("u", &[2]);
+    wrong_extent.interface[0].start = Some(Expression::Array(vec![r(0.0); 3]));
+    expect_codes(&wrong_extent, &["EG017"]);
+}
+
+#[test]
+fn algorithm_code_syntax_without_manifest_start_enters_only_the_syntax_root() {
+    let mut block = minimal();
+    block.interface[0].start = None;
+    CheckedAlgorithmBlock::construct(block)
+        .expect("Algorithm Code syntax has no concrete start field to reconstruct");
+}
+
+#[test]
+fn no_start_component_aggregate_cannot_fabricate_one() {
+    let mut block = with_compartment(minimal());
+    block.protected.push(ProtectedEntity {
+        kind: ProtectedKind::State,
+        decl: VariableDeclaration {
+            ty: TypeRef::Compartment(n("Cfg")),
+            name: n("component"),
+            dimensions: vec![],
+            range: RangeAttributes::default(),
+            span: Span::DUMMY,
+        },
+        start: Some(r(0.0)),
+    });
+    expect_codes(&block, &["EG043"]);
+}
+
+#[test]
+fn matching_row_major_array_start_is_admitted() {
+    let mut block = minimal();
+    block.interface[0].decl = arr_decl("u", &[2, 2]);
+    block.interface[0].start = Some(matrix2());
+    expect_valid(&block);
 }
 
 /// A stateless classifier: `w := 0.0` (optionally signaling `probeFault`)
@@ -595,6 +671,17 @@ fn mismatched_array_ranks_rejected() {
 }
 
 #[test]
+fn assignment_with_equal_types_still_requires_equal_fixed_extents() {
+    let mut block = minimal();
+    block.protected = vec![
+        protected_entity(ProtectedKind::State, arr_decl("target", &[2])),
+        protected_entity(ProtectedKind::State, arr_decl("value", &[3])),
+    ];
+    block.do_step.statements = vec![assign(state("target"), sref("value"))];
+    expect_codes(&block, &["EG017"]);
+}
+
+#[test]
 fn relational_operators_are_scalar_only() {
     let mut block = minimal();
     block
@@ -666,7 +753,11 @@ fn multi_assignment_mismatch_reports_target_as_expected() {
         targets: vec![local("lu"), local("pivots")],
         call: fcall("luFactorize", vec![matrix2()]),
     })];
-    let errors = validate(&block).expect_err("mismatched target must fail");
+    let error = CheckedAlgorithmBlock::construct(block).expect_err("mismatched target must fail");
+    let PackageError::Block(diagnostics) = error else {
+        panic!("expected language diagnostics, got: {error}");
+    };
+    let errors = diagnostics.errors();
     assert_eq!(errors.len(), 1, "diagnostics: {errors:#?}");
     assert_eq!(errors[0].code(), "EG017");
     // Same orientation as single assignments: target is expected.
@@ -688,6 +779,35 @@ fn component_typed_locals_rejected() {
         span: Span::DUMMY,
     }];
     expect_codes(&block, &["EG020"]);
+}
+
+#[test]
+fn invalid_call_signature_remains_a_language_diagnostic() {
+    let mut block = with_compartment(minimal());
+    let component = VariableDeclaration {
+        ty: TypeRef::Compartment(n("Cfg")),
+        name: n("component"),
+        dimensions: vec![],
+        range: RangeAttributes::default(),
+        span: Span::DUMMY,
+    };
+    block
+        .protected
+        .push(protected_entity(ProtectedKind::State, component.clone()));
+    let mut invalid = function(FunctionKind::Stateless, "invalid", Vec::new());
+    invalid.parameters = vec![Parameter {
+        direction: Direction::Input,
+        decl: component,
+    }];
+    block.protected_functions = vec![invalid];
+    block.do_step.statements = vec![call_stmt("invalid", vec![sref("component")])];
+
+    let error = CheckedAlgorithmBlock::construct(block)
+        .expect_err("a component-typed call signature must fail construction");
+    assert!(
+        matches!(error, PackageError::Block(_)),
+        "invalid source must remain a typed language diagnostic: {error}"
+    );
 }
 
 #[test]
@@ -857,6 +977,204 @@ fn recursive_call_cycles_rejected() {
     ];
     block.do_step.statements = vec![call_stmt("ping", vec![])];
     expect_codes(&block, &["EG026"]);
+}
+
+#[test]
+fn recursive_edge_inside_if_expression_arm_cannot_escape_the_retained_graph() {
+    let mut left = function(FunctionKind::Stateless, "left", Vec::new());
+    left.parameters = vec![out_real("value")];
+    left.statements = vec![assign(
+        local("value"),
+        Expression::If(IfExpression::new(
+            vec![(
+                Expression::Bool(true),
+                Expression::Call(fcall("right", vec![])),
+            )],
+            r(0.0),
+        )),
+    )];
+
+    let mut right = function(FunctionKind::Stateless, "right", Vec::new());
+    right.parameters = vec![out_real("value")];
+    right.statements = vec![assign(
+        local("value"),
+        Expression::Call(fcall("left", vec![])),
+    )];
+
+    let mut block = minimal();
+    block.protected_functions = vec![left, right];
+    block.do_step.locals = vec![real_decl("leftValue"), real_decl("rightValue")];
+    // Reach both functions independently so omitting the arm edge cannot be
+    // exposed merely as EG027; the retained call graph must preserve it to
+    // diagnose the actual mutual recursion.
+    block.do_step.statements = vec![
+        assign(local("leftValue"), Expression::Call(fcall("left", vec![]))),
+        assign(
+            local("rightValue"),
+            Expression::Call(fcall("right", vec![])),
+        ),
+    ];
+    expect_codes(&block, &["EG026"]);
+}
+
+#[test]
+fn repeated_edges_do_not_duplicate_one_recursive_call_defect() {
+    let mut block = minimal();
+    block.protected_functions = vec![function(
+        FunctionKind::Stateless,
+        "again",
+        vec![call_stmt("again", vec![]), call_stmt("again", vec![])],
+    )];
+    block.do_step.statements = vec![call_stmt("again", vec![])];
+    expect_codes(&block, &["EG026"]);
+}
+
+#[test]
+fn startup_call_locations_distinguish_if_statement_conditions() {
+    let mut helper = function(FunctionKind::Stateless, "ready", Vec::new());
+    helper.parameters = vec![Parameter {
+        direction: Direction::Output,
+        decl: bool_decl("value"),
+    }];
+    helper.statements = vec![assign(local("value"), Expression::Bool(true))];
+
+    let mut block = minimal();
+    block.protected_functions = vec![helper];
+    block.startup.statements = vec![Spanned::dummy(Statement::If(IfStatement {
+        branches: vec![
+            IfBranch {
+                condition: Condition::Expression(Expression::Call(fcall("ready", vec![]))),
+                body: Vec::new(),
+                span: Span::DUMMY,
+            },
+            IfBranch {
+                condition: Condition::Expression(Expression::Call(fcall("ready", vec![]))),
+                body: Vec::new(),
+                span: Span::DUMMY,
+            },
+        ],
+        else_body: None,
+    }))];
+    block.do_step.locals = vec![bool_decl("readyValue")];
+    block.do_step.statements = vec![assign(
+        local("readyValue"),
+        Expression::Call(fcall("ready", vec![])),
+    )];
+
+    let error = CheckedAlgorithmBlock::construct(block).expect_err("Startup calls must fail");
+    let PackageError::Block(diagnostics) = error else {
+        panic!("expected language diagnostics, got: {error}");
+    };
+    let locations = diagnostics
+        .errors()
+        .iter()
+        .filter(|error| error.code() == "EG028")
+        .map(|error| error.location().path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(locations.len(), 2);
+    assert_eq!(
+        locations[0][2],
+        rumoca_ir_galec::diagnostic::PathSegment::Statement(0)
+    );
+    assert_eq!(
+        locations[0][3],
+        rumoca_ir_galec::diagnostic::PathSegment::Branch(0)
+    );
+    assert_eq!(
+        locations[0][4],
+        rumoca_ir_galec::diagnostic::PathSegment::Condition
+    );
+    assert_eq!(
+        locations[1][3],
+        rumoca_ir_galec::diagnostic::PathSegment::Branch(1)
+    );
+    assert_eq!(
+        locations[1][4],
+        rumoca_ir_galec::diagnostic::PathSegment::Condition
+    );
+}
+
+#[test]
+fn startup_call_locations_distinguish_signal_check_fallbacks() {
+    let mut helper = function(FunctionKind::Stateless, "ready", Vec::new());
+    helper.parameters = vec![Parameter {
+        direction: Direction::Output,
+        decl: bool_decl("value"),
+    }];
+    helper.statements = vec![assign(local("value"), Expression::Bool(true))];
+
+    let fallback = || Some(Expression::Call(fcall("ready", vec![])));
+    let mut block = minimal();
+    block.protected_functions = vec![helper];
+    block.startup.statements = vec![
+        Spanned::dummy(Statement::Signal(vec![id("NAN"), id("OVERFLOW")])),
+        Spanned::dummy(Statement::If(IfStatement {
+            branches: vec![
+                IfBranch {
+                    condition: Condition::SignalCheck(SignalCheck {
+                        closure: None,
+                        test: Some(SignalTest {
+                            negated: false,
+                            signals: vec![id("NAN")],
+                        }),
+                        fallback: fallback(),
+                    }),
+                    body: Vec::new(),
+                    span: Span::DUMMY,
+                },
+                IfBranch {
+                    condition: Condition::SignalCheck(SignalCheck {
+                        closure: None,
+                        test: Some(SignalTest {
+                            negated: false,
+                            signals: vec![id("OVERFLOW")],
+                        }),
+                        fallback: fallback(),
+                    }),
+                    body: Vec::new(),
+                    span: Span::DUMMY,
+                },
+            ],
+            else_body: None,
+        })),
+    ];
+    block.do_step.locals = vec![bool_decl("readyValue")];
+    block.do_step.statements = vec![assign(
+        local("readyValue"),
+        Expression::Call(fcall("ready", vec![])),
+    )];
+
+    let error = CheckedAlgorithmBlock::construct(block).expect_err("Startup calls must fail");
+    let PackageError::Block(diagnostics) = error else {
+        panic!("expected language diagnostics, got: {error}");
+    };
+    let locations = diagnostics
+        .errors()
+        .iter()
+        .filter(|error| error.code() == "EG028")
+        .map(|error| error.location().path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(locations.len(), 2);
+    assert_eq!(
+        locations[0][2],
+        rumoca_ir_galec::diagnostic::PathSegment::Statement(1)
+    );
+    assert_eq!(
+        locations[0][3],
+        rumoca_ir_galec::diagnostic::PathSegment::Branch(0)
+    );
+    assert_eq!(
+        locations[0][4],
+        rumoca_ir_galec::diagnostic::PathSegment::Condition
+    );
+    assert_eq!(
+        locations[1][3],
+        rumoca_ir_galec::diagnostic::PathSegment::Branch(1)
+    );
+    assert_eq!(
+        locations[1][4],
+        rumoca_ir_galec::diagnostic::PathSegment::Condition
+    );
 }
 
 #[test]

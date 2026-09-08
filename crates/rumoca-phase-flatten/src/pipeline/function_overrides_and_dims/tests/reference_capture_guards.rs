@@ -42,7 +42,7 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
         span: test_span(),
     };
 
-    let no_locals_ctx = FunctionOverrideRewriteContext::new(
+    let no_locals_ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -55,7 +55,7 @@ fn function_override_rewrite_keeps_function_local_record_fields() {
     };
     assert_eq!(name.as_str(), "AliasMedium.kappa");
 
-    let local_ctx = FunctionOverrideRewriteContext::new(
+    let local_ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -102,7 +102,7 @@ fn active_package_member_rewrite_keeps_structured_instance_path() {
     let mut component_members = component_member_scope::ComponentMemberScopes::default();
     component_members
         .insert_component_member_path(&ComponentPath::from_flat_path("tank.medium.state.p"));
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -188,7 +188,7 @@ fn concrete_package_component_ref_is_not_canonicalized_to_inherited_partial_name
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let override_packages = Vec::new();
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -206,6 +206,7 @@ fn concrete_package_component_ref_is_not_canonicalized_to_inherited_partial_name
         ),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -244,7 +245,7 @@ fn comprehension_binder_is_not_captured_by_active_override() {
     override_package.alias = "Medium".to_string();
     let override_packages = vec![override_package];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,

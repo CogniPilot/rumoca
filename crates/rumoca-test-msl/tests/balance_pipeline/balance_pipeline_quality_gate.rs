@@ -16,7 +16,6 @@ use compiler_contract_migration::*;
 use indexmap::{IndexMap, IndexSet};
 pub(super) use parity_measurement::*;
 pub(super) use reference_stage::*;
-use rumoca_test_msl::msl_tools::band_table::BandLabel;
 use runtime_cohort::*;
 use schema_migrations::*;
 use status::*;
@@ -117,11 +116,15 @@ pub(super) struct MslTraceAccuracyStatsBaseline {
     #[serde(default)]
     trace_nonidentifiable_models: usize,
     agreement_high: usize,
+    /// High-band models whose source-channel universe was accounted for in
+    /// full. This is deliberately distinct from accounting-blind
+    /// `agreement_high` and is the authority for strict certification rosters.
+    strict_high_models: usize,
     #[serde(default)]
     agreement_high_percent: Option<f64>,
-    #[serde(default, alias = "agreement_near")]
+    #[serde(default)]
     agreement_minor: usize,
-    #[serde(default, alias = "agreement_near_percent")]
+    #[serde(default)]
     agreement_minor_percent: Option<f64>,
     agreement_deviation: usize,
     #[serde(default)]
@@ -679,11 +682,10 @@ fn parse_trace_accuracy_stats(
         trace_nonidentifiable_models: json_usize_field(trace, "trace_nonidentifiable_models")
             .unwrap_or(0),
         agreement_high: json_usize_field(trace, "agreement_high")?,
+        strict_high_models: json_usize_field(trace, "strict_high_models")?,
         agreement_high_percent: json_f64_field(trace, "agreement_high_percent"),
-        agreement_minor: json_usize_field(trace, "agreement_near")
-            .or_else(|| json_usize_field(trace, "agreement_minor"))?,
-        agreement_minor_percent: json_f64_field(trace, "agreement_near_percent")
-            .or_else(|| json_f64_field(trace, "agreement_minor_percent")),
+        agreement_minor: json_usize_field(trace, "agreement_minor")?,
+        agreement_minor_percent: json_f64_field(trace, "agreement_minor_percent"),
         agreement_deviation: json_usize_field(trace, "agreement_deviation")?,
         agreement_deviation_percent: json_f64_field(trace, "agreement_deviation_percent"),
         total_channels_compared: json_usize_field(trace, "total_channels_compared"),
@@ -751,16 +753,20 @@ pub(super) fn load_msl_parity_gate_input(path: &Path) -> io::Result<MslParityGat
         ))
     })?;
 
-    Ok(MslParityGateInput {
-        total_models: parse_total_models(&payload),
-        omc_version: parse_omc_version(&payload),
-        runtime_context: parse_runtime_context(&payload),
-        runtime_ratio_stats: parse_runtime_ratio_stats(&payload),
-        runtime_model_ratios: parse_runtime_model_ratios(&payload),
-        trace_accuracy_stats: parse_trace_accuracy_stats(&payload),
-        omc_assertion_failure_models: parse_omc_assertion_failure_models(&payload),
-        omc_assertion_failure_examples: parse_omc_assertion_failure_examples(&payload),
-    })
+    Ok(parse_msl_parity_gate_input(&payload))
+}
+
+fn parse_msl_parity_gate_input(payload: &serde_json::Value) -> MslParityGateInput {
+    MslParityGateInput {
+        total_models: parse_total_models(payload),
+        omc_version: parse_omc_version(payload),
+        runtime_context: parse_runtime_context(payload),
+        runtime_ratio_stats: parse_runtime_ratio_stats(payload),
+        runtime_model_ratios: parse_runtime_model_ratios(payload),
+        trace_accuracy_stats: parse_trace_accuracy_stats(payload),
+        omc_assertion_failure_models: parse_omc_assertion_failure_models(payload),
+        omc_assertion_failure_examples: parse_omc_assertion_failure_examples(payload),
+    }
 }
 
 fn parse_omc_assertion_failure_models(payload: &serde_json::Value) -> usize {
@@ -808,18 +814,13 @@ fn parse_omc_assertion_failure_examples(payload: &serde_json::Value) -> Vec<Stri
         .collect()
 }
 
-pub(super) fn load_current_msl_parity_gate_input_required(
+pub(super) fn current_msl_parity_gate_input_required(
+    payload: &serde_json::Value,
     expected_sim_target_models: usize,
 ) -> io::Result<MslParityGateInput> {
-    let path = omc_simulation_reference_path();
-    if !path.is_file() {
-        return Err(io::Error::other(format!(
-            "missing required OMC parity file '{}'",
-            path.display()
-        )));
-    }
-    let parity = load_msl_parity_gate_input(&path)?;
-    validate_parity_total_models(&path, &parity, expected_sim_target_models)?;
+    let path = Path::new("<current-run-omc-reference-receipt>");
+    let parity = parse_msl_parity_gate_input(payload);
+    validate_parity_total_models(path, &parity, expected_sim_target_models)?;
     if parity.omc_version.is_none() {
         return Err(io::Error::other(format!(
             "OMC parity file '{}' is missing omc_version metadata; regenerate OMC simulation reference",
@@ -1175,7 +1176,7 @@ pub(super) fn write_current_msl_quality_snapshot(
                 .table
                 .rows
                 .iter()
-                .filter(|row| row.band == BandLabel::High)
+                .filter(|row| row.is_strict_high_certified())
                 .map(|row| row.model_name.clone())
                 .collect::<IndexSet<_>>();
             root.insert(

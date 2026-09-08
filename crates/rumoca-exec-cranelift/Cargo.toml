@@ -21,6 +21,7 @@ cranelift-module = "0.125"
 # covered by the default unsafe_code deny rule.
 [lints.rust]
 unsafe_code = "allow"
+unused_must_use = "forbid"
 unreachable_pub = "deny"
 unnameable_types = "deny"
 private_interfaces = "deny"
@@ -30,6 +31,7 @@ dead_code = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
+let_underscore_must_use = "deny"
 excessive_nesting = "deny"
 too_many_lines = "deny"
 too_many_arguments = "deny"

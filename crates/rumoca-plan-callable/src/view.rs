@@ -288,13 +288,6 @@ impl<'plan, 'dae> CallablePlanView<'plan, 'dae> {
                 marker: PhantomData,
             })
     }
-
-    pub fn call_edges(self) -> impl ExactSizeIterator<Item = CallableCallEdgeView<'plan, 'dae>> {
-        (0..self.plan.acyclic_call_edges().len()).map(move |index| CallableCallEdgeView {
-            view: self,
-            raw: index as u32,
-        })
-    }
 }
 
 impl<'plan, 'dae> CallableOwnerView<'plan, 'dae> {

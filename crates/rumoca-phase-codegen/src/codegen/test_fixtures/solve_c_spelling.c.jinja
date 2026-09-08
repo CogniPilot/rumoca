@@ -57,8 +57,6 @@
     const double __r{{ op.dst }} = y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     const double __r{{ op.dst }} = p[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}
-    const double __r{{ op.dst }} = p[{{ op.base }} + (size_t)fmin(fmax(round(__r{{ op.index_ref }}), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}
     const double __r{{ op.dst }} = __r{{ op.src }};
 {%- elif op.kind == "LinearSolveComponent" %}
@@ -176,9 +174,6 @@ int {{ model_name | sanitize }}_derivative_rhs(
     (void)p;
 {%- if plan.output_count > 0 %}
     double __out[RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN];
-    for (int i = 0; i < RUMOCA_{{ model_name | upper | replace("-", "_") }}_DERIVATIVE_LEN; ++i) {
-        __out[i] = 0.0;
-    }
 {%- for program in plan.programs %}
 {%- for op in program.ops %}
 {{ scalar_op(op) }}

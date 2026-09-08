@@ -193,7 +193,7 @@ fn test_typecheck_diagnostic_preserves_source_file_in_multi_document_session() {
         diagnostic_snapshot,
         serde_json::json!({
             "code": "ET001",
-            "message": "unknown modifier `startd` for builtin component `x` of type `Real`",
+            "message": "unknown modifier `startd` for component `x` of type `Real`",
             "primary_file": "target.mo",
             "primary_label": "unknown modifier"
         })
@@ -706,6 +706,88 @@ fn strict_compilation_carries_exact_target_resolve_proof() {
 }
 
 #[test]
+fn incomplete_planning_tree_retains_resolved_inherited_import_routes() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "incomplete_inherited_imports.mo",
+            r#"
+            package Outer
+              package Base
+                constant Integer n = 3;
+              end Base;
+
+              package Mid
+                extends Base;
+              end Mid;
+
+              model Single
+                import Outer.Mid.n;
+                Real x[n];
+              end Single;
+
+              model Selective
+                import Outer.Mid.{n};
+                Real x[n];
+              end Selective;
+
+              model Wildcard
+                import Outer.Mid.*;
+                Real x[n];
+              end Wildcard;
+
+              model Broken
+                MissingType unresolved;
+              end Broken;
+            end Outer;
+            "#,
+        )
+        .expect("source should parse");
+
+    let (plan, diagnostics) = session
+        .build_resolution_plan_for_strict_compile()
+        .expect("strict recovery must preserve an error-bearing planning tree");
+    let ResolutionPlanningTree::Incomplete(tree) = plan else {
+        panic!("the unrelated broken sibling must make the planning tree incomplete");
+    };
+    assert!(
+        !diagnostics.is_empty(),
+        "an incomplete planning tree must retain the unrelated Resolve diagnostic"
+    );
+
+    let dependencies = super::dependency_fingerprint::DependencyFingerprintCache::from_tree(&tree);
+    for model in ["Outer.Single", "Outer.Selective", "Outer.Wildcard"] {
+        let retained = dependencies
+            .class_dependencies()
+            .get(model)
+            .unwrap_or_else(|| panic!("missing planning dependencies for {model}"));
+        for owner in ["Outer", "Outer.Mid", "Outer.Base"] {
+            assert!(
+                retained.contains(owner),
+                "{model} lost Resolve-issued import-route owner {owner}: {retained:?}"
+            );
+        }
+
+        let target = session
+            .resolve_strict_target(model)
+            .unwrap_or_else(|failure| {
+                panic!(
+                    "{model} must re-resolve from its retained import closure: {:?}",
+                    failure.failures
+                )
+            });
+        let resolved = target.resolved.inner();
+        assert!(resolved.get_class_by_qualified_name("Outer.Mid").is_some());
+        assert!(resolved.get_class_by_qualified_name("Outer.Base").is_some());
+        assert!(
+            resolved
+                .get_class_by_qualified_name("Outer.Broken")
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
     let mut session = Session::default();
     session
@@ -767,9 +849,7 @@ fn strict_target_resolution_keeps_dependencies_declared_by_lexical_ancestors() {
     }
 }
 
-#[test]
-fn strict_target_resolution_keeps_external_object_lifecycle_identity() {
-    const SOURCE: &str = r#"
+const EXTERNAL_OBJECT_LIFECYCLE_SOURCE: &str = r#"
 class Handle
   extends ExternalObject;
 
@@ -790,9 +870,11 @@ model UsesHandle
 end UsesHandle;
 "#;
 
+#[test]
+fn strict_target_resolution_keeps_external_object_lifecycle_identity() {
     let mut session = Session::default();
     session
-        .add_document("external_object.mo", SOURCE)
+        .add_document("external_object.mo", EXTERNAL_OBJECT_LIFECYCLE_SOURCE)
         .expect("source should parse");
 
     let strict_target = session
@@ -828,11 +910,15 @@ end UsesHandle;
     assert_ne!(destructor_def_id, handle_class_def_id);
     assert_ne!(constructor_def_id, destructor_def_id);
     assert_eq!(
-        SOURCE[constructor.location.start as usize..constructor.location.end as usize].trim_start(),
+        EXTERNAL_OBJECT_LIFECYCLE_SOURCE
+            [constructor.location.start as usize..constructor.location.end as usize]
+            .trim_start(),
         "constructor\n    input Real seed;\n    output Handle handle;\n    external \"C\" handle = make_handle(seed);\n  end constructor"
     );
     assert_eq!(
-        SOURCE[destructor.location.start as usize..destructor.location.end as usize].trim_start(),
+        EXTERNAL_OBJECT_LIFECYCLE_SOURCE
+            [destructor.location.start as usize..destructor.location.end as usize]
+            .trim_start(),
         "destructor\n    input Handle handle;\n    external \"C\" free_handle(handle);\n  end destructor"
     );
 
@@ -844,7 +930,15 @@ end UsesHandle;
     let constructor_function = flat
         .functions
         .get(&rumoca_core::VarName::new("Handle"))
-        .expect("ExternalObject constructor must be exposed under its callable type");
+        .unwrap_or_else(|| {
+            panic!(
+                "ExternalObject constructor must be exposed under its callable type; retained functions: {:?}; binding: {:?}",
+                flat.functions.keys().collect::<Vec<_>>(),
+                flat.variables
+                    .get(&rumoca_core::VarName::new("handle"))
+                    .and_then(|variable| variable.binding.as_ref())
+            )
+        });
     assert_eq!(constructor_function.def_id, Some(constructor_def_id));
     assert_ne!(constructor_function.def_id, Some(handle_class_def_id));
     assert!(!constructor_function.is_constructor);
@@ -872,7 +966,10 @@ end UsesHandle;
             .map(|function| function.instance_id),
         constructor_function.instance_id
     );
-    assert_eq!(&SOURCE[span.start.0..span.end.0], "Handle(1.0)");
+    assert_eq!(
+        &EXTERNAL_OBJECT_LIFECYCLE_SOURCE[span.start.0..span.end.0],
+        "Handle(1.0)"
+    );
 }
 
 #[test]

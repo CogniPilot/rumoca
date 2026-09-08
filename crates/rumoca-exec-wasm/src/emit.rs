@@ -334,18 +334,6 @@ impl<'a> BodyEmitter<'a> {
             LinearOp::LoadSeed { dst, index } => {
                 self.emit_array_load(dst, index, SEED_PTR_PARAM)?;
             }
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => self.emit_indexed_load(dst, base, count, index, P_PTR_PARAM)?,
-            LinearOp::LoadIndexedSeed {
-                dst,
-                base,
-                count,
-                index,
-            } => self.emit_indexed_load(dst, base, count, index, SEED_PTR_PARAM)?,
             LinearOp::LoadIndexedRegister { .. }
             | LinearOp::LoadIndexedFoldCarried { .. }
             | LinearOp::LoadIndexedFoldCapture { .. }
@@ -384,12 +372,6 @@ impl<'a> BodyEmitter<'a> {
                 return Err(
                     "WASM backend does not yet support compact tensor-product ops".to_string(),
                 );
-            }
-            LinearOp::TableBounds { .. }
-            | LinearOp::TableLookup { .. }
-            | LinearOp::TableLookupSlope { .. }
-            | LinearOp::TableNextEvent { .. } => {
-                return Err("WASM backend does not yet support host-backed table ops".to_string());
             }
             LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
@@ -437,35 +419,6 @@ impl<'a> BodyEmitter<'a> {
         self.push(Instruction::LocalGet(ptr_param));
         self.push(Instruction::F64Load(memarg_for_index(index)?));
         self.set_reg(dst)
-    }
-
-    /// Emit `mem[ptr + 8*(base + clamp(round(index), 0, count-1))]` as an f64
-    /// load, matching [`rumoca_ir_solve::resolve_indexed_slot`]: round the
-    /// runtime f64 index to nearest, clamp into `[0, count-1]`, scale to bytes,
-    /// add the run-relative base via the static load offset.
-    fn emit_indexed_load(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-        ptr_param: u32,
-    ) -> Result<(), String> {
-        let last = if count == 0 { 0.0 } else { (count - 1) as f64 };
-        self.push_reg(index)?;
-        self.push(Instruction::F64Nearest);
-        self.push(Instruction::F64Const(0.0f64.into()));
-        self.push(Instruction::F64Max);
-        self.push(Instruction::F64Const(last.into()));
-        self.push(Instruction::F64Min);
-        self.push(Instruction::I32TruncF64S);
-        self.push(Instruction::I32Const(8));
-        self.push(Instruction::I32Mul);
-        self.push(Instruction::LocalGet(ptr_param));
-        self.push(Instruction::I32Add);
-        self.push(Instruction::F64Load(memarg_for_index(base)?));
-        self.set_reg(dst)?;
-        Ok(())
     }
 
     fn emit_unary(&mut self, dst: Reg, op: UnaryOp, arg: Reg) -> Result<(), String> {

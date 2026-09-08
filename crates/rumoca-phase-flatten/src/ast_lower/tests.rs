@@ -58,6 +58,108 @@ fn ast_var_with_span(name: &str, span: Span) -> ast::Expression {
     })
 }
 
+#[test]
+fn direct_statement_lowering_rejects_empty_recovery_node_at_owner_span() {
+    let span = span_at(17, 23);
+    let error = statement_from_ast_with_span(
+        &ast::Statement::Empty,
+        LoweringContext::default(),
+        None,
+        span,
+    )
+    .expect_err("direct statement lowering must not preserve Statement::Empty");
+
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidAstRecovery {
+            span: error_span,
+            ..
+        } if error_span == span
+    ));
+}
+
+#[test]
+fn direct_expression_lowering_rejects_recovery_nodes_at_their_spans() {
+    let span = span_at(31, 37);
+    let terminal = || ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedInteger,
+        token: rumoca_core::Token {
+            text: Arc::from("1"),
+            ..rumoca_core::Token::default()
+        },
+        span,
+    };
+    let invalid = [
+        ast::Expression::Empty { span },
+        ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Empty,
+            rhs: Arc::new(terminal()),
+            span,
+        },
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Empty,
+            lhs: Arc::new(terminal()),
+            rhs: Arc::new(terminal()),
+            span,
+        },
+    ];
+
+    for expression in invalid {
+        let error = expression_from_ast(&expression)
+            .expect_err("direct expression lowering must reject recovery syntax");
+        assert!(matches!(
+            error,
+            crate::FlattenError::InvalidAstRecovery {
+                span: error_span,
+                ..
+            } if error_span == span
+        ));
+    }
+}
+
+#[test]
+fn direct_expression_lowering_rejects_context_only_call_carriers() {
+    let span = span_at(41, 49);
+    let value = ast::Expression::Terminal {
+        terminal_type: ast::TerminalType::UnsignedInteger,
+        token: rumoca_core::Token {
+            text: Arc::from("1"),
+            ..rumoca_core::Token::default()
+        },
+        span,
+    };
+    let invalid = [
+        ast::Expression::NamedArgument {
+            name: rumoca_core::Token::default(),
+            value: Arc::new(value.clone()),
+            span,
+        },
+        ast::Expression::Modification {
+            target: component_ref(&["x"]),
+            value: Some(Arc::new(value)),
+            span,
+        },
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Assign,
+            lhs: Arc::new(ast_var("x")),
+            rhs: Arc::new(ast_var("y")),
+            span,
+        },
+    ];
+
+    for expression in invalid {
+        let error = expression_from_ast(&expression)
+            .expect_err("a context-only carrier must not silently become only its value");
+        assert!(matches!(
+            error,
+            crate::FlattenError::InvalidAstRecovery {
+                span: error_span,
+                ..
+            } if error_span == span
+        ));
+    }
+}
+
 fn function_ref(name: &str) -> ast::ComponentReference {
     component_ref(&[name])
 }
@@ -130,12 +232,39 @@ fn scalar_lowering_preserves_identity_and_each_source_span() {
 }
 
 #[test]
+fn empty_terminal_rejects_with_source_span() {
+    let span = test_span();
+    let error = convert_terminal(
+        &ast::TerminalType::Empty,
+        &rumoca_core::Token::default(),
+        span,
+    )
+    .expect_err("an empty terminal is not a numeric literal");
+
+    assert!(matches!(
+        error,
+        FlattenError::InvalidLiteralTerminal {
+            span: error_span,
+            ..
+        } if error_span == span
+    ));
+
+    let token = rumoca_core::Token {
+        text: Arc::from("7"),
+        ..rumoca_core::Token::default()
+    };
+    assert_eq!(
+        convert_terminal(&ast::TerminalType::UnsignedInteger, &token, span)
+            .expect("an unsigned integer terminal remains a legal literal"),
+        rumoca_core::Literal::Integer(7)
+    );
+}
+
+#[test]
 fn derivative_lowering_is_structurally_discoverable() {
     let derivative_span = span_at(10, 16);
-    let call = ast::Expression::FunctionCall {
-        comp: function_ref("der"),
+    let call = ast::Expression::DerivativeCall {
         args: vec![ast_var_with_span("x", span_at(14, 15))],
-        is_partial_application: false,
         span: derivative_span,
     };
 
@@ -152,6 +281,22 @@ fn derivative_lowering_is_structurally_discoverable() {
     let mut states = Vec::new();
     lowered.collect_state_variables(&mut states);
     assert_eq!(states, vec![rumoca_core::VarName::new("x")]);
+}
+
+#[test]
+fn ordinary_function_reference_spelled_der_cannot_mint_derivative_identity() {
+    let call = ast::Expression::FunctionCall {
+        comp: function_ref("der"),
+        args: vec![ast_var_with_span("x", span_at(14, 15))],
+        is_partial_application: false,
+        span: span_at(10, 16),
+    };
+
+    let lowered = expression_from_ast(&call).expect("ordinary calls remain ordinary calls");
+    assert!(matches!(
+        lowered,
+        rumoca_core::Expression::FunctionCall { .. }
+    ));
 }
 
 #[test]
@@ -185,6 +330,7 @@ fn constructor_lowering_requires_identity_and_preserves_named_argument_span() {
         args,
         is_constructor,
         span,
+        ..
     } = lowered
     else {
         panic!("expected constructor call");
@@ -201,13 +347,17 @@ fn constructor_lowering_requires_identity_and_preserves_named_argument_span() {
             name,
             args,
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span,
         },
     ] = args.as_slice()
     else {
         panic!("expected generated named-argument wrapper");
     };
-    assert_eq!(name.as_str(), "__rumoca_named_arg__.value");
+    assert_eq!(
+        name.as_str(),
+        format!("{}value", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+    );
     assert!(name.is_generated());
     assert_eq!(*span, argument_span);
     assert!(matches!(
@@ -363,6 +513,7 @@ fn interval_requires_the_exact_predefined_declaration_identity() {
     let predefined = convert_function_call_with_context(
         &resolved_function_ref("interval", predefined_interval),
         &[ast_var("u")],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         context,
     )
@@ -378,6 +529,7 @@ fn interval_requires_the_exact_predefined_declaration_identity() {
     let shadowed = convert_function_call_with_context(
         &resolved_function_ref("interval", shadowed_interval),
         &[ast_var("u")],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         context,
     )
@@ -428,6 +580,7 @@ fn resolved_product_declaration_is_not_lowered_as_reduction_builtin() {
     let lowered = convert_function_call_with_context(
         &resolved_function_ref("product", product),
         &[ast_var("left"), ast_var("right")],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         LoweringContext::default(),
     )
@@ -478,10 +631,198 @@ fn algorithm_assert_requires_the_exact_predefined_declaration_identity() {
 }
 
 #[test]
+fn function_call_output_lowering_preserves_legal_slots_and_rejects_other_expressions() {
+    let call_span = span_at(70, 92);
+    let omitted_span = span_at(71, 72);
+    let target_span = span_at(74, 75);
+    let invalid_span = span_at(77, 82);
+    let mut target = component_ref(&["y"]);
+    target.span = target_span;
+
+    let lowered = lower_function_call_statement(
+        &function_ref("f"),
+        &[],
+        &[
+            ast::Expression::Empty { span: omitted_span },
+            ast::Expression::ComponentReference(target.clone()),
+        ],
+        LoweringContext::default(),
+        call_span,
+    )
+    .expect("omitted and component-reference output slots are legal");
+    assert!(matches!(
+        lowered,
+        rumoca_core::Statement::FunctionCall { outputs, .. }
+            if matches!(outputs.as_slice(), [None, Some(reference)] if Some(reference.target_def_id()) == target.target_def_id())
+    ));
+
+    let invalid = [
+        integer(1, invalid_span),
+        ast::Expression::Binary {
+            op: rumoca_core::OpBinary::Add,
+            lhs: Arc::new(integer(1, invalid_span)),
+            rhs: Arc::new(integer(2, invalid_span)),
+            span: invalid_span,
+        },
+    ];
+    for output in invalid {
+        let error = lower_function_call_statement(
+            &function_ref("f"),
+            &[],
+            &[output],
+            LoweringContext::default(),
+            call_span,
+        )
+        .expect_err("non-reference output expressions must not become omitted slots");
+        assert!(matches!(
+            error,
+            crate::FlattenError::InvalidFunctionCallOutput {
+                span: error_span,
+                ..
+            } if error_span == invalid_span
+        ));
+    }
+
+    let dummy_output = integer(1, Span::DUMMY);
+    let owner_error = lower_function_call_statement(
+        &function_ref("f"),
+        &[],
+        std::slice::from_ref(&dummy_output),
+        LoweringContext::default(),
+        call_span,
+    )
+    .expect_err("a valid call owner supplies missing child provenance");
+    assert!(matches!(
+        owner_error,
+        crate::FlattenError::InvalidFunctionCallOutput { span, .. } if span == call_span
+    ));
+
+    let missing = lower_function_call_statement(
+        &function_ref("f"),
+        &[],
+        &[dummy_output],
+        LoweringContext::default(),
+        Span::DUMMY,
+    )
+    .expect_err("a diagnostic cannot be minted with dummy child and owner spans");
+    assert!(matches!(
+        missing,
+        crate::FlattenError::MissingSourceContext { .. }
+    ));
+}
+
+#[test]
+fn multi_output_call_statement_projects_named_actuals_to_markers() {
+    // A multi-output tuple assignment such as `(q, r) := h2(a = p, b = 2)`
+    // carries the same positional-and-named actual layout as an expression-position
+    // call. Its actuals must pass through the shared named-argument marker projection
+    // so no `Expression::NamedArgument` survives into Flat construction, where the
+    // construction boundary rejects it unconditionally. This guards the tuple-call
+    // lowering path against regressing back to a plain-expression conversion, which
+    // stranded the named marker and produced an invalid-AST-recovery refusal.
+    let call_span = span_at(70, 92);
+    let named_a_span = span_at(72, 77);
+    let named_b_span = span_at(79, 84);
+    let named = |text: &str, value: ast::Expression, span: Span| ast::Expression::NamedArgument {
+        name: rumoca_core::Token {
+            text: Arc::from(text),
+            ..rumoca_core::Token::default()
+        },
+        value: Arc::new(value),
+        span,
+    };
+
+    let named_form = lower_function_call_statement(
+        &function_ref("h2"),
+        &[
+            named("a", ast_var("p"), named_a_span),
+            named("b", integer(2, named_b_span), named_b_span),
+        ],
+        &[
+            ast::Expression::ComponentReference(component_ref(&["q"])),
+            ast::Expression::ComponentReference(component_ref(&["r"])),
+        ],
+        LoweringContext::default(),
+        call_span,
+    )
+    .expect("named actuals in a multi-output call statement must lower cleanly");
+
+    let rumoca_core::Statement::FunctionCall { args, outputs, .. } = named_form else {
+        panic!("expected a lowered function-call statement");
+    };
+    // Both tuple output slots survive; a multi-output call is not a scalar assignment.
+    assert_eq!(outputs.len(), 2);
+    // Each named actual is projected to a generated marker rather than an
+    // `Expression::NamedArgument`; the marker name carries the shared prefix and the
+    // original argument span so slot resolution can report against the source.
+    let [
+        rumoca_core::Expression::FunctionCall {
+            name: name_a,
+            span: span_a,
+            ..
+        },
+        rumoca_core::Expression::FunctionCall {
+            name: name_b,
+            span: span_b,
+            ..
+        },
+    ] = args.as_slice()
+    else {
+        panic!("expected two generated named-argument markers");
+    };
+    assert_eq!(
+        name_a.as_str(),
+        format!("{}a", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+    );
+    assert!(name_a.is_generated());
+    assert_eq!(*span_a, named_a_span);
+    assert_eq!(
+        name_b.as_str(),
+        format!("{}b", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+    );
+    assert!(name_b.is_generated());
+    assert_eq!(*span_b, named_b_span);
+}
+
+#[test]
+fn multi_output_call_statement_keeps_positional_actuals_unwrapped() {
+    // The positional spelling `(q, r) := h2(p, 2)` is the differential partner of the
+    // named form: its actuals must lower to plain expressions with no marker wrapping,
+    // so that after slot resolution the two spellings resolve to the same argument
+    // vector. A marker minted for a positional actual would corrupt that equivalence.
+    let call_span = span_at(70, 92);
+    let positional_form = lower_function_call_statement(
+        &function_ref("h2"),
+        &[ast_var("p"), integer(2, span_at(79, 80))],
+        &[
+            ast::Expression::ComponentReference(component_ref(&["q"])),
+            ast::Expression::ComponentReference(component_ref(&["r"])),
+        ],
+        LoweringContext::default(),
+        call_span,
+    )
+    .expect("positional actuals in a multi-output call statement must lower cleanly");
+
+    let rumoca_core::Statement::FunctionCall { args, .. } = positional_form else {
+        panic!("expected a lowered function-call statement");
+    };
+    // A positional component reference stays a variable reference and a positional
+    // literal stays a literal; neither is disguised as a named-argument marker.
+    assert!(matches!(
+        args.as_slice(),
+        [
+            rumoca_core::Expression::VarRef { .. },
+            rumoca_core::Expression::Literal { .. },
+        ]
+    ));
+}
+
+#[test]
 fn unresolved_interval_spelling_never_mints_a_predefined_intrinsic() {
     let lowered = convert_function_call_with_context(
         &function_ref("interval"),
         &[ast_var("u")],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         LoweringContext::default(),
     )
@@ -498,6 +839,7 @@ fn get_instance_name_lowers_to_instance_string_literal() {
     let expr = convert_function_call_with_context(
         &function_ref("getInstanceName"),
         &[],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         LoweringContext {
             instance_name: Some("Vehicle.engine.controller"),
@@ -534,10 +876,65 @@ fn function_call_lowering_preserves_the_ast_call_span() {
 }
 
 #[test]
+fn function_call_lowering_preserves_invocation_vs_partial_application_identity() {
+    let named_argument = ast::Expression::NamedArgument {
+        name: rumoca_core::Token {
+            text: Arc::from("gain"),
+            ..Default::default()
+        },
+        value: Arc::new(integer(2, span_at(20, 21))),
+        span: span_at(13, 21),
+    };
+    let lower = |is_partial_application| {
+        expression_from_ast(&ast::Expression::FunctionCall {
+            comp: function_ref("scale"),
+            args: vec![named_argument.clone()],
+            is_partial_application,
+            span: span_at(5, 22),
+        })
+        .expect("resolved call syntax lowers")
+    };
+
+    let rumoca_core::Expression::FunctionCall {
+        call_kind: invocation_kind,
+        args: invocation_args,
+        ..
+    } = lower(false)
+    else {
+        panic!("expected ordinary invocation");
+    };
+    assert_eq!(
+        invocation_kind,
+        rumoca_core::FunctionCallKind::Invocation,
+        "ordinary named arguments do not imply a function value"
+    );
+    assert!(matches!(
+        invocation_args.as_slice(),
+        [rumoca_core::Expression::FunctionCall {
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
+            ..
+        }]
+    ));
+
+    let rumoca_core::Expression::FunctionCall {
+        call_kind: partial_kind,
+        ..
+    } = lower(true)
+    else {
+        panic!("expected partial application");
+    };
+    assert_eq!(
+        partial_kind,
+        rumoca_core::FunctionCallKind::PartialApplication
+    );
+}
+
+#[test]
 fn get_instance_name_requires_instance_scope() {
     let err = convert_function_call_with_context(
         &function_ref("getInstanceName"),
         &[],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         LoweringContext::default(),
     )
@@ -554,6 +951,7 @@ fn get_instance_name_rejects_arguments() {
     let err = convert_function_call_with_context(
         &function_ref("getInstanceName"),
         &[ast_var("x")],
+        rumoca_core::FunctionCallKind::Invocation,
         test_span(),
         LoweringContext {
             instance_name: Some("Vehicle.engine.controller"),
@@ -716,7 +1114,12 @@ fn dynamic_final_subscript_keeps_local_index_base() {
                 ..rumoca_core::Token::default()
             },
             subs: Some(vec![
-                ast::Subscript::Empty,
+                ast::Subscript::Range {
+                    token: rumoca_core::Token {
+                        text: Arc::from(":"),
+                        ..rumoca_core::Token::default()
+                    },
+                },
                 ast::Subscript::Expression(ast_var("i")),
             ]),
             def_id: Some(variable_def),
@@ -739,6 +1142,31 @@ fn dynamic_final_subscript_keeps_local_index_base() {
 
     assert_eq!(name.as_str(), "leg_v_b");
     assert_eq!(subscripts.len(), 2);
+}
+
+#[test]
+fn empty_component_subscript_rejects_at_component_span() {
+    let owner_span = span_at(40, 49);
+    let comp = ast::ComponentReference {
+        local: false,
+        parts: vec![ast::ComponentRefPart {
+            ident: rumoca_core::Token {
+                text: Arc::from("value"),
+                ..rumoca_core::Token::default()
+            },
+            subs: Some(vec![ast::Subscript::Empty]),
+            def_id: Some(DefId::new(3)),
+        }],
+        span: owner_span,
+        qualified_display_name: None,
+    };
+
+    let error = expression_from_component_ref_with_context(&comp, LoweringContext::default())
+        .expect_err("a recovery subscript cannot become a whole-dimension selector");
+    assert!(matches!(
+        error,
+        FlattenError::InvalidAstSubscript { span, .. } if span == owner_span
+    ));
 }
 
 #[test]
@@ -850,4 +1278,156 @@ fn structured_subscript_base_carries_exact_final_target_for_flat_projection() {
 
     assert_eq!(name.as_str(), "source.medium.fluidConstants");
     assert_eq!(name.target_def_id(), Some(fluid_constants_def_id));
+}
+
+fn named_arg(name: &str, value: ast::Expression, span: Span) -> ast::Expression {
+    ast::Expression::NamedArgument {
+        name: rumoca_core::Token {
+            text: Arc::from(name),
+            ..rumoca_core::Token::default()
+        },
+        value: Arc::new(value),
+        span,
+    }
+}
+
+fn builtin_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
+    ast::Expression::FunctionCall {
+        comp: function_ref(name),
+        args,
+        is_partial_application: false,
+        span: test_span(),
+    }
+}
+
+fn homotopy_positional_args(expression: &rumoca_core::Expression) -> &[rumoca_core::Expression] {
+    match expression {
+        rumoca_core::Expression::BuiltinCall {
+            function: rumoca_core::BuiltinFunction::Homotopy,
+            args,
+            ..
+        } => args,
+        other => panic!("expected a homotopy BuiltinCall, found {other:?}"),
+    }
+}
+
+#[test]
+fn homotopy_named_arguments_lower_to_positional_vector() {
+    let named = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![
+            named_arg("actual", ast_var("a"), test_span()),
+            named_arg("simplified", ast_var("b"), test_span()),
+        ],
+    ))
+    .expect("named homotopy actuals lower cleanly");
+    let positional =
+        expression_from_ast(&builtin_call("homotopy", vec![ast_var("a"), ast_var("b")]))
+            .expect("positional homotopy actuals lower cleanly");
+
+    assert_eq!(
+        homotopy_positional_args(&named),
+        homotopy_positional_args(&positional),
+    );
+}
+
+#[test]
+fn homotopy_reordered_named_arguments_bind_by_name() {
+    // The named spelling deliberately reverses source order; binding by name must
+    // still place `actual` first and `simplified` second, matching `homotopy(a, b)`.
+    let reordered = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![
+            named_arg("simplified", ast_var("b"), test_span()),
+            named_arg("actual", ast_var("a"), test_span()),
+        ],
+    ))
+    .expect("reordered named homotopy actuals lower cleanly");
+
+    let args = homotopy_positional_args(&reordered);
+    assert!(matches!(
+        &args[0],
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "a"
+    ));
+    assert!(matches!(
+        &args[1],
+        rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "b"
+    ));
+}
+
+#[test]
+fn homotopy_unknown_named_formal_is_refused() {
+    let error = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![
+            named_arg("bogus", ast_var("a"), test_span()),
+            named_arg("simplified", ast_var("b"), test_span()),
+        ],
+    ))
+    .expect_err("an unknown formal name has no slot to bind");
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidFunctionCallArgs { ref function, .. } if function == "homotopy"
+    ));
+}
+
+#[test]
+fn homotopy_duplicate_named_formal_is_refused() {
+    let error = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![
+            named_arg("actual", ast_var("a"), test_span()),
+            named_arg("actual", ast_var("b"), test_span()),
+        ],
+    ))
+    .expect_err("a formal filled twice is ambiguous");
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidFunctionCallArgs { ref function, .. } if function == "homotopy"
+    ));
+}
+
+#[test]
+fn homotopy_positional_after_named_is_refused() {
+    // The grammar cannot produce this order, but the binder must still refuse a
+    // hand-built AST that trails a positional actual after a named one.
+    let error = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![named_arg("actual", ast_var("a"), test_span()), ast_var("b")],
+    ))
+    .expect_err("a positional actual may not follow a named actual");
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidFunctionCallArgs { ref function, .. } if function == "homotopy"
+    ));
+}
+
+#[test]
+fn homotopy_named_gap_before_filled_slot_is_refused() {
+    // `simplified` fills slot 1 while slot 0 (`actual`) has no argument; a builtin
+    // owns no defaults, so the hole cannot be filled and the call is refused.
+    let error = expression_from_ast(&builtin_call(
+        "homotopy",
+        vec![named_arg("simplified", ast_var("b"), test_span())],
+    ))
+    .expect_err("an unfilled earlier slot is a gap a builtin cannot default");
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidFunctionCallArgs { ref function, .. } if function == "homotopy"
+    ));
+}
+
+#[test]
+fn named_argument_to_operator_without_named_formals_is_refused() {
+    // `sin` takes a single positional argument and defines no named formals, so a
+    // named actual is a typed refusal rather than a stranded NamedArgument node.
+    let error = expression_from_ast(&builtin_call(
+        "sin",
+        vec![named_arg("x", ast_var("a"), test_span())],
+    ))
+    .expect_err("a builtin with no named formals rejects a named actual");
+    assert!(matches!(
+        error,
+        crate::FlattenError::InvalidFunctionCallArgs { ref function, .. } if function == "sin"
+    ));
 }

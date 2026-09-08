@@ -211,11 +211,11 @@ pub(in crate::construction) fn specialized_comprehension_plan(
     let mut scoped = values.clone();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
+    for (index, ordinal) in indices.iter().zip(0u32..) {
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = proven_comprehension_range(&index.range, &scoped, range_span)?;
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.name.clone(),
             lower,
             upper,
@@ -306,7 +306,7 @@ fn comprehension_plan(
     let mut names = HashSet::new();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
+    for (index, ordinal) in indices.iter().zip(0u32..) {
         if !names.insert(&index.name) {
             return Err(ToDaeError::unsupported_flat(
                 "array comprehension domain",
@@ -317,7 +317,7 @@ fn comprehension_plan(
         let range_span = expression_span(&index.range)?;
         let (lower, step, upper) = evaluated_range(&index.range, constants)?;
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.name.clone(),
             lower,
             upper,
@@ -420,8 +420,9 @@ mod tests {
         let extent_two = comprehension(2, span);
         let extent_three = comprehension(3, span);
 
-        let plans = analyze_comprehensions([&extent_two, &extent_three], &EvalContext::new())
-            .expect("distinct exact occurrences may retain distinct compact domains");
+        let plans =
+            analyze_comprehensions([&extent_two, &extent_three], &EvalContext::resolved_empty())
+                .expect("distinct exact occurrences may retain distinct compact domains");
 
         assert_eq!(plans.len(), 2);
     }
@@ -440,7 +441,7 @@ mod tests {
             unreachable!("fixture is a comprehension")
         };
         let key = ComprehensionKey::new(span, indices).expect("fixture has exact provenance");
-        let expected = comprehension_plan(indices, &EvalContext::new(), span)
+        let expected = comprehension_plan(indices, &EvalContext::resolved_empty(), span)
             .expect("fixture has a constant compact domain");
         let mut conflicting = expected.clone();
         conflicting.domain.binders[0].upper = 3;

@@ -6,14 +6,8 @@ use crate::LowerError;
 use crate::lower::call_scoped_actions::CallScopedActionCollector;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum StorageClass {
-    Y,
-    P,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) struct VariableSlot {
-    pub(crate) storage: StorageClass,
+    pub(crate) storage: solve::SolveStorageColumn,
     pub(crate) base: usize,
     pub(crate) count: usize,
 }
@@ -65,7 +59,7 @@ pub(crate) fn lower_layout<'dae>(
     let mut shape_spans = IndexMap::new();
     let mut variables = vec![
         VariableSlot {
-            storage: StorageClass::P,
+            storage: solve::SolveStorageColumn::P,
             base: 0,
             count: 0,
         };
@@ -117,6 +111,7 @@ pub(crate) fn lower_layout<'dae>(
     let causal_definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
     let (variable_storage_runs, variable_declarations) =
         solve_variable_declarations(view, &variables, &causal_definitions)?;
+    let static_parameter_names = p.names[..p.parameter_count].to_vec();
     let solve_layout = solve::SolveLayout {
         solver_maps,
         variable_storage_runs,
@@ -125,6 +120,7 @@ pub(crate) fn lower_layout<'dae>(
         algebraic_scalar_count: y.algebraic_count,
         output_scalar_count: y.output_count,
         parameter_count: p.parameter_count,
+        static_parameter_names,
         compiled_parameter_len: runtime.scalar_count,
         input_scalar_names: p.input_names,
         discrete_real_scalar_names: p.discrete_real_names,
@@ -176,10 +172,7 @@ fn solve_variable_declarations<'dae>(
             };
             Ok((
                 solve::SolveVariableStorageRun {
-                    base: match slot.storage {
-                        StorageClass::Y => solve::scalar_slot_y(slot.base),
-                        StorageClass::P => solve::scalar_slot_p(slot.base),
-                    },
+                    base: solve::SolveStorageCoordinate::new(slot.storage, slot.base),
                     scalar_count: slot.count,
                     role,
                     value_kind,
@@ -372,8 +365,8 @@ fn append_pre_variables(
             // so it is snapshot from wherever the coordinate lives — solver
             // state `y` for a continuous coordinate, `p` for a discrete one.
             let source = match current.storage {
-                StorageClass::Y => solve::PreParamSource::Y { index: source },
-                StorageClass::P => solve::PreParamSource::P { index: source },
+                solve::SolveStorageColumn::Y => solve::PreParamSource::Y { index: source },
+                solve::SolveStorageColumn::P => solve::PreParamSource::P { index: source },
             };
             bindings.push(solve::PreParamBinding {
                 dest_p_index,
@@ -609,12 +602,12 @@ fn append_y_variables(
                 bindings,
                 &mut columns.names,
                 variable,
-                StorageClass::Y,
+                solve::SolveStorageColumn::Y,
                 base,
             )?;
             record_shape(shapes, shape_spans, variable);
             slots[id.index() as usize] = VariableSlot {
-                storage: StorageClass::Y,
+                storage: solve::SolveStorageColumn::Y,
                 base,
                 count: variable.scalar_count(),
             };
@@ -669,12 +662,12 @@ fn append_p_variables(
                 bindings,
                 &mut columns.names,
                 variable,
-                StorageClass::P,
+                solve::SolveStorageColumn::P,
                 base,
             )?;
             record_shape(shapes, shape_spans, variable);
             slots[id.index() as usize] = VariableSlot {
-                storage: StorageClass::P,
+                storage: solve::SolveStorageColumn::P,
                 base,
                 count: variable.scalar_count(),
             };
@@ -711,13 +704,13 @@ fn insert_scalar_bindings(
     bindings: &mut IndexMap<String, solve::ScalarSlot>,
     names: &mut Vec<String>,
     variable: dae::VariableView<'_>,
-    storage: StorageClass,
+    storage: solve::SolveStorageColumn,
     base: usize,
 ) -> Result<(), LowerError> {
     if !variable.value_type().is_scalar() && variable.scalar_count() != 0 {
         let slot = match storage {
-            StorageClass::Y => solve::scalar_slot_y(base),
-            StorageClass::P => solve::scalar_slot_p(base),
+            solve::SolveStorageColumn::Y => solve::scalar_slot_y(base),
+            solve::SolveStorageColumn::P => solve::scalar_slot_p(base),
         };
         if bindings.insert(variable.name().to_string(), slot).is_some() {
             return Err(LowerError::contract(
@@ -743,8 +736,8 @@ fn insert_scalar_bindings(
             )
         })?;
         let slot = match storage {
-            StorageClass::Y => solve::scalar_slot_y(index),
-            StorageClass::P => solve::scalar_slot_p(index),
+            solve::SolveStorageColumn::Y => solve::scalar_slot_y(index),
+            solve::SolveStorageColumn::P => solve::scalar_slot_p(index),
         };
         if bindings.insert(name.clone(), slot).is_some() {
             return Err(LowerError::contract(
@@ -801,7 +794,7 @@ fn solver_base_indices(
     view.variables()
         .filter_map(|(id, variable)| {
             let slot = variables[id.index() as usize];
-            matches!(slot.storage, StorageClass::Y).then(|| {
+            matches!(slot.storage, solve::SolveStorageColumn::Y).then(|| {
                 (
                     variable.name().to_string(),
                     (slot.base..slot.base + slot.count).collect(),

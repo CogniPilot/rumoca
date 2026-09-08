@@ -31,6 +31,14 @@ accesses fail the build.
 | Shared editor/workspace context | A visible `rumoca-workspace.toml` **workspace file** (below) | Same source-root/cache context in VS Code, playground, and docs |
 | User-authored model/sim/viz config | A `rumoca-scenario.toml` **scenario file** (below) | Colocated, version-controlled, editor-discoverable |
 
+A target-manifest field that fixes executable semantics is a declaration of the
+target product's identity, not an ambient tool preference. In particular, an
+Algorithm Code target declares its matrix-product relation in `[arithmetic]`;
+changing that declaration defines a different target product. If the compiler
+offers a per-invocation override for such a relation, that override MUST be a
+`clap` flag and MUST enter semantic construction before the package exists.
+There is no manifest, CLI, or orchestration fallback.
+
 **REQUIRED:**
 - Do NOT add a new `RUMOCA_*` (or other ad-hoc) environment variable to read
   configuration or behavior — in Rust **or** in editor/JS code. Pick a channel

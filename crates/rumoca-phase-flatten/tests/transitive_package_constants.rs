@@ -72,13 +72,23 @@ fn same_leaf_package_constants_materialize_by_exact_target_at_each_use_site() {
     tree.source_map.add(SOURCE_NAME, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let instanced =
-        rumoca_phase_instantiate::instantiate(resolved, "Library.Top").expect("model instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "Library.Top")
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        "Library.Top",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "Library.Top")
         .expect("instanced model typechecks");
     let model =
-        rumoca_phase_flatten::flatten_ref(&tree, &overlay, "Library.Top").expect("model flattens");
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("model flattens");
 
     let mut collector = ConstantUseCollector::default();
     for equation in &model.equations {

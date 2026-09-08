@@ -5,13 +5,12 @@
 //! whole-compiler link. Keep it that way: a member that needs the compiler
 //! belongs in `suite_core/main.rs`, which also documents the grouping rules.
 //!
-//! Two members (`galec_review_surface`, `rdd2_perf_guard`) are RDD2 metric
-//! gates behind the `rdd2-metric-gates` feature: they drive the RELEASE
-//! `rumoca` binary as a subprocess and measure what it produced, which needs a
-//! release build plus the out-of-tree `modelica_models` library. A feature is
-//! how this repo gates heavy suites, and it also keeps them out of the default
-//! binary entirely. They still link no `rumoca` library, so they belong here
-//! rather than in `suite_core`. Run them with:
+//! The `rdd2_perf_guard` member is behind the `rdd2-metric-gates` feature: it
+//! drives the RELEASE `rumoca` binary as a subprocess, which needs a release
+//! build plus the out-of-tree `modelica_models` library. A feature is how this
+//! repo gates heavy suites, and it also keeps the guard out of the default
+//! binary entirely. It still links no `rumoca` library, so it belongs here
+//! rather than in `suite_core`. Run it with:
 //!
 //! ```text
 //! cargo build --release -p rumoca
@@ -29,9 +28,6 @@ mod rdd2_text_metrics;
 #[cfg(feature = "rdd2-metric-gates")]
 mod rdd2_gate_environment;
 
-#[cfg(feature = "rdd2-metric-gates")]
-mod galec_review_surface;
-mod mls_formalization_manifest_test;
 #[cfg(feature = "rdd2-metric-gates")]
 mod rdd2_perf_guard;
 mod spec_budget_test;

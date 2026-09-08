@@ -60,6 +60,7 @@ fn demanded_function_call_issues_one_typed_owner() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 variable_at,
                 dae::VariableAttributes::default(),
@@ -88,7 +89,7 @@ fn demanded_function_call_issues_one_typed_owner() {
     assert!(owner.body().operations().len() >= 5);
 
     let [ComputeNode::ScalarPrograms(rows)] =
-        package.problem.continuous().residual.nodes.as_slice()
+        package.problem.continuous().residual().nodes.as_slice()
     else {
         panic!("one scalar residual block expected");
     };
@@ -140,6 +141,7 @@ fn clocked_function_call_projects_issued_typed_owner_without_body_inlining() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 variable_at,
                 dae::VariableAttributes::default(),
@@ -260,12 +262,14 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
             Ok((
                 variables.algebraic(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(3),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("z2"),
+                    rumoca_core::InstanceId::new(4),
                     real,
                     at,
                     dae::VariableAttributes::default(),
@@ -304,7 +308,7 @@ fn function_conditional_captures_preceding_definition_once_per_call_frame() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let sites = rows
@@ -442,12 +446,14 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(5),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(6),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
@@ -477,7 +483,7 @@ fn function_conditional_captures_tensor_definition_as_one_semantic_range() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     let site = rows.programs()[0]
@@ -612,12 +618,14 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(7),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(8),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
@@ -647,7 +655,7 @@ fn aggregate_conditional_expression_retains_one_lazy_tensor_result_range() {
 
     let package = lower_solve_package(&model).unwrap();
     let solve = &package.problem;
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     let site = rows.programs()[0]
@@ -759,6 +767,11 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
     let solve = &package.problem;
     assert_eq!(solve.events().root_conditions.len(), 1);
     assert_eq!(solve.events().actions.len(), 1);
+    assert_eq!(
+        solve.events().root_relation_memory_targets,
+        [None],
+        "the call-scoped root's absent relation-memory target participates in the exact proof"
+    );
     let mut root = [0.0];
     rumoca_eval_solve::eval_scalar_program_block_with_context(
         &solve.events().root_conditions,
@@ -774,7 +787,7 @@ fn call_scoped_assertion_constructs_guarded_root_and_action_rows() {
     .unwrap();
     assert_eq!(root, [1.0], "an active failing assertion is above zero");
     let request = rumoca_eval_solve::eval_event_action_request(
-        &solve.events(),
+        solve.events(),
         &[0.0],
         &vec![0.0; solve.layout().p_scalars()],
         0.0,
@@ -915,6 +928,7 @@ fn function_two_assertions_solve() -> crate::LoweredSolvePackage {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(9),
                 real,
                 variable_at,
                 dae::VariableAttributes::default(),
@@ -1053,6 +1067,7 @@ fn function_assertion_solve(
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(10),
                 real,
                 variable_at,
                 dae::VariableAttributes::default(),

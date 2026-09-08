@@ -215,6 +215,30 @@ fn eqn_008_for_equation_vector() {
     );
 }
 
+#[test]
+fn eqn_008_scalar_for_equation_range_is_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector Pin
+            Real v;
+            flow Real i;
+        end Pin;
+
+        model Test
+            Pin a[3];
+            Pin b[3];
+        equation
+            for i in 3 loop
+                connect(a[i], b[i]);
+            end for;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Instantiate,
+        "EI004",
+    );
+}
+
 // =============================================================================
 // EQN-010: For-loop variable readonly
 // "Loop-variable shall not be assigned to"
@@ -1016,6 +1040,32 @@ fn eqn_019_connect_in_noneval_if_rejected() {
             C b;
         equation
             if time > 1 then
+                connect(a, b);
+            end if;
+        end M;
+    "#,
+        "M",
+        "ER083",
+    );
+}
+
+#[test]
+fn eqn_019_qualified_continuous_connect_guard_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        model Switch
+            Boolean enabled;
+        end Switch;
+        model M
+            connector C
+                Real e;
+                flow Real f;
+            end C;
+            Switch s;
+            C a;
+            C b;
+        equation
+            if s.enabled then
                 connect(a, b);
             end if;
         end M;

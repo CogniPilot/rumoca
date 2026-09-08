@@ -1,0 +1,332 @@
+schema_version = 2
+
+[[models]]
+id = "UnitDerivative"
+profile = "unit-derivative-v1"
+
+[models.claim]
+kind = "candidate"
+
+[models.claim.details]
+reason = "Demoted from reviewed on 2026-09-05 after full-cone adversarial review began. Four slices of the measured cone were reviewed against the frozen footprint (rumoca-ir-solve, rumoca-phase-solve, rumoca-phase-flatten/pipeline, rumoca-phase-parse; 14048 of 51472 covered lines, 27 percent). All four returned does-not-pass on correct-by-construction or DRY grounds, so the prior claim that C61 was the only outstanding proof endpoint is false. No finding produces a wrong output for this model today: every one is either a proof that does not prove what it claims, or a correctness that holds by accident of this model's size. Two obligations were shown to be vacuous at one state because count equals identity: the FMI state/derivative correspondence check at rumoca-ir-solve/src/fmi.rs:634-638, and the C61 executable-owner census, which was proven inert by a shape-preserving mutation that left all 171 phase-solve tests and every C61 architecture gate green. The native endpoint observes only RK45 backend selection, finite strictly increasing timestamps with interval endpoints, and x = 2 + t within 1e-13 at each observed time. Because the derivative is constant, it does not witness the requested interior grid, RK45 order, dense-interior coefficients or accuracy, step rejection, PI control, or error-control behavior. The claim returns to reviewed only after the findings are closed, a non-self-referential production snapshot and semantic evidence checker exist, the candidate footprint is recaptured at a quiesced tree, and the remaining 73 percent of the cone is reviewed."
+last_compliance_check = "2026-09-04T08:14:36Z"
+
+[models.claim.details.capture.source]
+path = "crates/rumoca/tests/fixtures/golden/UnitDerivative.mo"
+sha256 = "d4616dfdf3148ee79d741458997a31ff6cb58caff930628bef57a79db0c0ed18"
+
+[models.claim.details.capture.review_record]
+path = "infra/verification/golden-models/UnitDerivative.md"
+sha256 = "dcf7d80fd3777d843db2897bb4445eea9b95ab091a2aab68ba11b82b5f8de255"
+
+[[models.claim.details.capture.scenarios]]
+id = "native-solve-trace"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "dae-solve-production-refinement"
+disposition = "blocked"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "native-interpreter-rk-trace"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios]]
+id = "direct-efmi-refusal"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "direct-galec-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.scenarios]]
+id = "registered-efmi-refusal"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "registered-galec-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "registered-efmu-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.scenarios]]
+id = "fmi3-me-cs-package"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_template_runtime"
+features = ["template-runtime-tests"]
+test_name = "cli_target_fmi::unit_derivative_fmi3_package_matches_me_and_cs_lifecycle_contract"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-model-description-xml"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-build-description-xml"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-model-source-cc"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-archive-membership"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-me-derivative-state-lifecycle"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "fmi3-cs-do-step-lifecycle"
+disposition = "observed"
+
+[[models.claim.details.capture.cone]]
+owner = "canonical-source"
+predecessors = []
+
+[[models.claim.details.capture.cone]]
+owner = "strict-parse"
+predecessors = ["canonical-source"]
+
+[[models.claim.details.capture.cone]]
+owner = "resolved-ast"
+predecessors = ["strict-parse"]
+
+[[models.claim.details.capture.cone]]
+owner = "flat-ir"
+predecessors = ["resolved-ast"]
+
+[[models.claim.details.capture.cone]]
+owner = "dae-ir"
+predecessors = ["flat-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "prepared-dae"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "solve-ir"
+predecessors = ["prepared-dae"]
+
+[[models.claim.details.capture.cone]]
+owner = "dae-solve-variable-refinement"
+predecessors = ["dae-ir", "solve-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "dae-solve-equation-refinement"
+predecessors = ["dae-ir", "solve-ir", "dae-solve-variable-refinement"]
+
+[[models.claim.details.capture.cone]]
+owner = "runtime-fmi-component"
+predecessors = ["solve-ir", "dae-solve-variable-refinement"]
+
+[[models.claim.details.capture.cone]]
+owner = "native-me-host"
+predecessors = ["runtime-fmi-component"]
+
+[[models.claim.details.capture.cone]]
+owner = "native-trace"
+predecessors = ["native-me-host"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-target-admission"
+predecessors = ["solve-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-component"
+predecessors = ["fmi3-target-admission"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-prepared-emission"
+predecessors = ["fmi3-component"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-model-description"
+predecessors = ["fmi3-prepared-emission"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-build-description"
+predecessors = ["fmi3-prepared-emission"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-model-source"
+predecessors = ["fmi3-prepared-emission"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-archive"
+predecessors = ["fmi3-model-description", "fmi3-build-description", "fmi3-model-source"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-me-lifecycle"
+predecessors = ["fmi3-model-description", "fmi3-model-source"]
+
+[[models.claim.details.capture.cone]]
+owner = "fmi3-cs-lifecycle"
+predecessors = ["fmi3-model-description", "fmi3-model-source"]
+
+[[models.claim.details.capture.cone]]
+owner = "direct-galec-refusal"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "registered-galec-refusal"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "registered-efmu-refusal"
+predecessors = ["dae-ir"]
+
+# Production binding. The bytes the evidence was produced against are not a
+# curated file list; they are the measured line-coverage footprint of
+# compiling this model, written by `cargo xtask coverage golden UnitDerivative`
+# to `target/golden-coverage/UnitDerivative/footprint.json` and checked in
+# beside this registry. The footprint names production lines the bound
+# scenarios executed and records source digests as candidate review input.
+# Schema 2 validates this outer binding only; it does not trust the footprint's
+# self-recorded file digests, treat coverage as semantic evidence, or use the
+# capture as a non-self-referential production snapshot. Candidates contribute
+# zero aggregate coordinates. Reviewed admission remains a typed refusal until
+# independent snapshot and semantic-evidence checkers are implemented.
+
+[models.claim.details.coverage_footprint]
+path = "infra/verification/golden-models/UnitDerivative.footprint.json"
+sha256 = "c4602c5b8d7b8c96611867cc9f58e1fdd16b486a0fc493861ce6145ad4b057fd"
+
+
+
+[[models]]
+id = "ParameterDecay"
+profile = "parameter-decay-v1"
+
+[models.claim]
+kind = "candidate"
+
+[models.claim.details]
+reason = "Every endpoint of the parameter-decay-v1 profile is observed or typed-refused by the bound tests: the native RK trace matches x(t) = 2 exp(-t) within 1e-9 on the 0.1 output grid, the derivative kernel is the exact LoadP, LoadY, Mul, StoreOutput program over the P column with the binding evaluated bit-exactly to -1.0, and the direct and registered eFMI refusals are typed at the state. The C61 equation-refinement receipt is not in the profile because the profile admits exactly one DAE variable and this model declares two, so no receipt can be minted or owed. The claim stays candidate: no coverage footprint is bound because the capture at this check ran all three scenarios to a pass but its merge was refused when crates/rumoca-eval-flat/src/phase_constant/mod.rs changed between scenario runs; the record's admission criteria that the MLS 3.6 4.8.1 parameter fixed default be decided at one site and that the parameter write policy be exercised through FMI3 generated C are open; and the tree is under revision, so a pinned binding would go stale as the UnitDerivative binding already has."
+last_compliance_check = "2026-09-04T04:25:09Z"
+
+[models.claim.details.capture.source]
+path = "crates/rumoca/tests/fixtures/golden/ParameterDecay.mo"
+sha256 = "340b0acc678fbb7d68e723a8211e3a466847082cf708112ab526f3c93b5437a3"
+
+[models.claim.details.capture.review_record]
+path = "infra/verification/golden-models/ParameterDecay.md"
+sha256 = "685f51dbf20000eb5d8c8109acc19bcfc26ec4ed135006023ac2c95a496dc6fa"
+
+[[models.claim.details.capture.scenarios]]
+id = "native-solve-trace"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::parameter_decay_reaches_solve_with_a_parameter_column_and_matches_exponential_decay"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "native-interpreter-rk-trace"
+disposition = "observed"
+
+[[models.claim.details.capture.scenarios]]
+id = "direct-efmi-refusal"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::parameter_decay_efmi_algorithm_code_is_refused_before_construction"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "direct-galec-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.scenarios]]
+id = "registered-efmi-refusal"
+
+[models.claim.details.capture.scenarios.test]
+package = "rumoca"
+test_target = "suite_core"
+features = []
+test_name = "pipeline_test::parameter_decay_registered_efmi_targets_refuse_typed_at_the_state"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "registered-galec-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.scenarios.requests]]
+endpoint = "registered-efmu-continuous-refusal"
+disposition = "typed-refusal"
+
+[[models.claim.details.capture.cone]]
+owner = "canonical-source"
+predecessors = []
+
+[[models.claim.details.capture.cone]]
+owner = "strict-parse"
+predecessors = ["canonical-source"]
+
+[[models.claim.details.capture.cone]]
+owner = "resolved-ast"
+predecessors = ["strict-parse"]
+
+[[models.claim.details.capture.cone]]
+owner = "flat-ir"
+predecessors = ["resolved-ast"]
+
+[[models.claim.details.capture.cone]]
+owner = "dae-ir"
+predecessors = ["flat-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "prepared-dae"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "solve-ir"
+predecessors = ["prepared-dae"]
+
+[[models.claim.details.capture.cone]]
+owner = "dae-solve-variable-refinement"
+predecessors = ["dae-ir", "solve-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "runtime-fmi-component"
+predecessors = ["solve-ir", "dae-solve-variable-refinement"]
+
+[[models.claim.details.capture.cone]]
+owner = "native-me-host"
+predecessors = ["runtime-fmi-component"]
+
+[[models.claim.details.capture.cone]]
+owner = "native-trace"
+predecessors = ["native-me-host"]
+
+[[models.claim.details.capture.cone]]
+owner = "direct-galec-refusal"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "registered-galec-refusal"
+predecessors = ["dae-ir"]
+
+[[models.claim.details.capture.cone]]
+owner = "registered-efmu-refusal"
+predecessors = ["dae-ir"]

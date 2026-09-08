@@ -68,7 +68,7 @@ fn flatten_source() -> Fixture {
         .def_id
         .expect("constructor has declaration identity");
     let constructor_span = constructor.location.span();
-    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
         resolved.inner(),
         "UsesBoth",
     ) {
@@ -80,11 +80,11 @@ fn flatten_source() -> Fixture {
             panic!("fixture instantiation failed: {error}")
         }
     };
-    rumoca_phase_typecheck::typecheck_instanced(&resolved, &mut overlay, "UsesBoth")
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "UsesBoth")
         .expect("model typechecks");
-    let tree = resolved.into_inner();
     let model =
-        rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesBoth").expect("model flattens");
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("model flattens");
     Fixture {
         model,
         handle_class_def_id,

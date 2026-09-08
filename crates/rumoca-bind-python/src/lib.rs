@@ -20,14 +20,14 @@ use ::rumoca::CompilationResult as HighLevelCompilationResult;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::{PyErr, exceptions::PyRuntimeError};
-use rumoca_compile::codegen::targets::RenderedTargetFile;
+use rumoca_compile::codegen::targets::CompletedRenderedFile;
 use rumoca_compile::compile::{FailedPhase, PhaseResult, Session, SourceRootKind};
 use rumoca_compile::parsing::{
     collect_compile_unit_source_files, collect_model_names, validate_source_syntax,
 };
 use rumoca_compile::scenario::{EffectiveSimulationConfig, ScenarioConfig, ScenarioTask};
 use rumoca_compile::source_roots::{
-    canonical_path_key, merge_source_root_paths, plan_source_root_loads,
+    SourceRootDiscoveryError, canonical_path_key, merge_source_root_paths, plan_source_root_loads,
     referenced_unloaded_source_root_paths, source_root_source_set_key,
 };
 use rumoca_compile::workspace::WorkspaceConfig;
@@ -57,6 +57,12 @@ use diagnostics::Diagnostic;
 /// it can appear in the signatures of pyo3-exported functions.
 #[derive(Debug)]
 pub struct PyRuntimeStringError(pub String);
+
+impl From<SourceRootDiscoveryError> for PyRuntimeStringError {
+    fn from(error: SourceRootDiscoveryError) -> Self {
+        Self(error.to_string())
+    }
+}
 
 impl From<PyRuntimeStringError> for PyErr {
     fn from(value: PyRuntimeStringError) -> Self {
@@ -148,7 +154,7 @@ fn format_source(source: &str, filename: Option<&str>) -> Result<String, PyRunti
 
 /// Runtime-discovered codegen targets.
 #[pyfunction(name = "targets")]
-fn targets_fn() -> Vec<targets::Target> {
+fn targets_fn() -> Result<Vec<targets::Target>, PyRuntimeStringError> {
     targets::list_targets()
 }
 
@@ -351,8 +357,8 @@ fn ensure_required_source_roots_loaded(
     source_root_paths: &[String],
 ) -> Result<(), PyRuntimeStringError> {
     let loaded = session.loaded_source_root_path_keys();
-    let referenced = referenced_unloaded_source_root_paths(source, source_root_paths, &loaded);
-    let plan = plan_source_root_loads(&referenced, &loaded);
+    let referenced = referenced_unloaded_source_root_paths(source, source_root_paths, &loaded)?;
+    let plan = plan_source_root_loads(&referenced, &loaded)?;
     for source_root_path in plan.load_paths {
         let source_root_key = source_root_source_set_key(&source_root_path);
         let report = session.load_source_root_tolerant(
@@ -536,13 +542,7 @@ fn compile_requested_model(
         };
         PyRuntimeStringError(message)
     })?;
-    let (result, resolved) = compilation.into_parts();
-    Ok(HighLevelCompilationResult::new(
-        result.dae,
-        result.balance_detail,
-        result.flat,
-        resolved,
-    ))
+    Ok(HighLevelCompilationResult::from_strict(compilation))
 }
 
 pub(crate) fn compile_source_in_session(
@@ -551,26 +551,53 @@ pub(crate) fn compile_source_in_session(
     model_name: Option<&str>,
     file_name: &str,
     source_root_paths: &[String],
-) -> Result<(HighLevelCompilationResult, String), PyRuntimeStringError> {
+) -> Result<HighLevelCompilationResult, PyRuntimeStringError> {
     ensure_required_source_roots_loaded(session, source, source_root_paths)?;
     load_local_compile_unit(session, source, file_name)?;
     let model_name = match model_name {
         Some(name) => name.to_string(),
         None => infer_model_name_from_session(session, file_name)?,
     };
-    let result = compile_requested_model(session, &model_name)?;
-    Ok((result, model_name))
+    compile_requested_model(session, &model_name)
 }
 
 /// Render a codegen target's files from a compiled model, returning the typed
 /// (path, content) list through the same target-dispatch path the CLI uses.
 pub(crate) fn render_target_files(
     result: &HighLevelCompilationResult,
-    model_name: &str,
     target: &str,
-) -> Result<Vec<RenderedTargetFile>, PyRuntimeStringError> {
-    ::rumoca::render_target_files(result, model_name, target, None)
+) -> Result<Vec<CompletedRenderedFile>, PyRuntimeStringError> {
+    let artifact_input = fresh_artifact_session_input()?;
+    ::rumoca::render_target_files(result, target, artifact_input)
         .map_err(|e| PyRuntimeStringError(format!("Target rendering error: {e:#}")))
+}
+
+fn fresh_artifact_session_input()
+-> Result<rumoca_compile::codegen::targets::ArtifactSessionInput, PyRuntimeStringError> {
+    use rumoca_compile::codegen::targets::{
+        ArtifactGenerationInstant, ArtifactIdentitySeed, ArtifactSessionInput,
+    };
+    use time::format_description::well_known::Rfc3339;
+
+    let instant = time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .map_err(|error| PyRuntimeStringError(format!("Artifact timestamp error: {error}")))?
+        .format(&Rfc3339)
+        .map_err(|error| PyRuntimeStringError(format!("Artifact timestamp error: {error}")))?
+        .parse::<ArtifactGenerationInstant>()
+        .map_err(|error| PyRuntimeStringError(format!("Artifact timestamp error: {error}")))?;
+    let mut seed_bytes = [0_u8; 16];
+    getrandom::fill(&mut seed_bytes).map_err(|error| {
+        PyRuntimeStringError(format!("Artifact identity entropy error: {error}"))
+    })?;
+    seed_bytes[6] = (seed_bytes[6] & 0x0f) | 0x40;
+    seed_bytes[8] = (seed_bytes[8] & 0x3f) | 0x80;
+    let seed = uuid::Uuid::from_bytes(seed_bytes)
+        .hyphenated()
+        .to_string()
+        .parse::<ArtifactIdentitySeed>()
+        .map_err(|error| PyRuntimeStringError(format!("Artifact identity error: {error}")))?;
+    Ok(ArtifactSessionInput::construct(instant, seed))
 }
 
 /// Rumoca compiled extension module (`rumoca._native`).

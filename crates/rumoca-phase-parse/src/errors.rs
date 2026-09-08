@@ -35,6 +35,49 @@ impl std::fmt::Display for ParseSemanticError {
 
 impl std::error::Error for ParseSemanticError {}
 
+/// A source iterator that omitted its range (`for i` rather than `for i in r`).
+///
+/// MLS 3.7 §11.2.2.1 deduces an omitted range from the dimensions of the
+/// expressions the iterator subscripts. Rumoca has no such inference, so the
+/// omission is refused at the source boundary. This is a distinct error type,
+/// not a [`ParseSemanticError`], so [`convert_parol_error`] can issue the
+/// dedicated `EP004` instead of collapsing the refusal into a generic `EP001`
+/// syntax error that any unrelated typo would also satisfy.
+#[derive(Debug, Clone)]
+pub struct OmittedIterationRange {
+    /// The iterator whose range the source omitted.
+    pub iterator: String,
+    /// The iterator token's own span.
+    pub span: Span,
+}
+
+impl std::fmt::Display for OmittedIterationRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", implicit_iteration_range_message(&self.iterator))
+    }
+}
+
+impl std::error::Error for OmittedIterationRange {}
+
+fn implicit_iteration_range_message(iterator: &str) -> String {
+    format!(
+        "iterator `{iterator}` omits its range; implicit iteration ranges \
+         (MLS 3.7 §11.2.2.1) are not yet supported, so write `{iterator} in <range>`"
+    )
+}
+
+/// Sole issuer of the omitted-iterator-range refusal.
+///
+/// The parser's single `ForIndex` converter calls this and nothing else builds
+/// an [`OmittedIterationRange`], so for-equations, for-statements, array
+/// comprehensions, and reduction arguments all refuse the omission identically.
+pub(crate) fn omitted_iteration_range_error(iterator: &rumoca_core::Token) -> anyhow::Error {
+    anyhow::Error::new(OmittedIterationRange {
+        iterator: iterator.text.to_string(),
+        span: ast_location_to_span(&iterator.location),
+    })
+}
+
 /// Build an anyhow error that retains parse semantic span information.
 pub fn semantic_error_from_token(
     message: impl Into<String>,
@@ -98,6 +141,12 @@ pub enum ParseError {
         unexpected: Option<String>,
         span: Span,
     },
+    /// An iterator declared without the range Rumoca still requires.
+    ///
+    /// Distinct from [`Self::SyntaxError`] on purpose: the source is
+    /// grammatically well formed, and a witness for this refusal must not be
+    /// satisfiable by unrelated syntax corruption.
+    UnsupportedImplicitIterationRange { iterator: String, span: Span },
     /// No AST was produced despite successful parse.
     NoAstProduced { span: Span },
     /// IO error while reading file.
@@ -113,6 +162,7 @@ impl ParseError {
     pub fn span(&self) -> Span {
         match self {
             Self::SyntaxError { span, .. }
+            | Self::UnsupportedImplicitIterationRange { span, .. }
             | Self::NoAstProduced { span }
             | Self::IoError { span, .. } => *span,
         }
@@ -122,6 +172,7 @@ impl ParseError {
 const EP001_SYNTAX_ERROR: &str = "EP001";
 const EP002_NO_AST_PRODUCED: &str = "EP002";
 const EP003_IO_ERROR: &str = "EP003";
+const EP004_UNSUPPORTED_IMPLICIT_ITERATION_RANGE: &str = "EP004";
 
 pub(crate) fn default_parse_span(source: SourceId) -> Span {
     Span::from_offsets(source, 0, 1)
@@ -175,6 +226,11 @@ impl PhaseError for ParseError {
 
                 diag
             }
+            Self::UnsupportedImplicitIterationRange { iterator, span } => Diagnostic::error(
+                EP004_UNSUPPORTED_IMPLICIT_ITERATION_RANGE,
+                implicit_iteration_range_message(iterator),
+                PrimaryLabel::new(normalize_span(*span)).with_message("iterator has no range"),
+            ),
             Self::NoAstProduced { span } => Diagnostic::error(
                 EP002_NO_AST_PRODUCED,
                 "parsing succeeded but no AST was produced",
@@ -210,6 +266,15 @@ pub(crate) fn convert_parol_error(
             }]
         }
         ParolError::UserError(user_err) => {
+            // Dispatch on the concrete conversion-failure type. The omitted
+            // iterator range is its own type precisely so it does not land in
+            // the `ParseSemanticError` bucket below, which renders as `EP001`.
+            if let Some(omitted) = user_err.downcast_ref::<OmittedIterationRange>() {
+                return vec![ParseError::UnsupportedImplicitIterationRange {
+                    iterator: omitted.iterator.clone(),
+                    span: omitted.span,
+                }];
+            }
             if let Some(semantic_error) = user_err.downcast_ref::<ParseSemanticError>() {
                 return vec![ParseError::SyntaxError {
                     message: format!("parse error: {}", semantic_error.message),
@@ -477,6 +542,77 @@ mod tests {
         assert_eq!(diag.code, Some("EP001".to_string()));
         assert!(diag.message.contains("unexpected"));
         assert!(!diag.notes.is_empty());
+    }
+
+    #[test]
+    fn omitted_iteration_range_is_not_a_generic_syntax_error() {
+        // Mutation this fails against: routing `OmittedIterationRange` through
+        // the `ParseSemanticError`/`SyntaxError` bucket, or reusing `EP001` for
+        // the new variant. Both would make the code read `EP001` here.
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_parse_errors_source_1.mo"),
+            21,
+            22,
+        );
+        let err = ParseError::UnsupportedImplicitIterationRange {
+            iterator: "i".to_string(),
+            span,
+        };
+        let diag = err.to_diagnostic();
+        assert!(diag.is_error());
+        assert_eq!(diag.code, Some("EP004".to_string()));
+        assert!(
+            diag.message.contains("`i`") && diag.message.contains("§11.2.2.1"),
+            "EP004 must name the iterator and its MLS rule: {}",
+            diag.message
+        );
+        assert_eq!(
+            err.span(),
+            span,
+            "EP004 must retain the iterator token's own provenance"
+        );
+    }
+
+    #[test]
+    fn parol_user_errors_keep_their_two_dispositions_apart() {
+        // Mutation this fails against: deleting the `OmittedIterationRange`
+        // arm from `convert_parol_error`. The omission then matches neither
+        // remaining downcast and falls through to the generic `user_err`
+        // bucket, which renders as `EP001`, so both inputs collapse onto one
+        // code. Reordering the two downcast blocks is *not* the mutation: they
+        // test disjoint concrete types, so their order is unobservable.
+        let source_id = SourceId::from_source_name("phase_parse_errors_source_2.mo");
+        let token = rumoca_core::Token {
+            text: std::sync::Arc::from("j"),
+            location: rumoca_core::Location {
+                start_line: 4,
+                start_column: 7,
+                end_line: 4,
+                end_column: 8,
+                start: 30,
+                end: 31,
+                source: source_id,
+            },
+            token_number: 0,
+            token_type: 0,
+        };
+
+        let omitted = convert_parol_error(
+            ParolError::UserError(omitted_iteration_range_error(&token)),
+            "model M end M;",
+            source_id,
+        );
+        let semantic = convert_parol_error(
+            ParolError::UserError(semantic_error_from_token("some other refusal", &token)),
+            "model M end M;",
+            source_id,
+        );
+
+        let codes = |errors: &[ParseError]| -> Vec<Option<String>> {
+            errors.iter().map(|e| e.to_diagnostic().code).collect()
+        };
+        assert_eq!(codes(&omitted), vec![Some("EP004".to_string())]);
+        assert_eq!(codes(&semantic), vec![Some("EP001".to_string())]);
     }
 
     #[test]

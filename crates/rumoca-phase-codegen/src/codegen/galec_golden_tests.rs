@@ -16,15 +16,7 @@ use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 fn render_block(block: &Block) -> Result<String, String> {
     let checked =
         CheckedAlgorithmBlock::construct(block.clone()).map_err(|error| error.to_string())?;
-    let template = crate::templates::builtin_template_source("galec", "model.alg.jinja")
-        .ok_or_else(|| "missing built-in GALEC template".to_owned())?;
-    crate::render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &(),
-        template,
-        block.name.lexeme(),
-    )
-    .map_err(|error| error.to_string())
+    crate::render_checked_algorithm_block_source(&checked).map_err(|error| error.to_string())
 }
 
 fn n(name: &str) -> Name {
@@ -131,12 +123,12 @@ fn rate_controller_interface() -> Vec<InterfaceVariable> {
         interface(
             InterfaceKind::Input,
             ranged(real_decl(n("speedSetpoint")), -500.0, 500.0),
-            None,
+            Some(r(0.0)),
         ),
         interface(
             InterfaceKind::Input,
             ranged(real_decl(n("speedMeasured")), -500.0, 500.0),
-            None,
+            Some(r(0.0)),
         ),
         interface(
             InterfaceKind::Output,
@@ -171,7 +163,7 @@ fn rate_controller_protected() -> Vec<ProtectedEntity> {
         entity(
             ProtectedKind::DependentParameter,
             real_decl(n("integralGain")),
-            None,
+            Some(r(5.0)),
         ),
         entity(
             ProtectedKind::State,
@@ -381,7 +373,7 @@ fn golden_pid_shaped_block() {
 
 #[test]
 fn golden_pid_shaped_block_validates() {
-    rumoca_ir_galec::validate(&rate_controller()).expect("golden PID fixture must validate");
+    CheckedAlgorithmBlock::construct(rate_controller()).expect("golden PID fixture must validate");
 }
 
 fn matrix_startup() -> BlockMethod {
@@ -452,7 +444,10 @@ fn matrix_averager() -> Block {
             interface(
                 InterfaceKind::Input,
                 ranged(dims(real_decl(n("samples")), &[2, 3]), -1000.0, 1000.0),
-                None,
+                Some(Expression::Array(vec![
+                    Expression::Array(vec![r(0.0), r(0.0), r(0.0)]),
+                    Expression::Array(vec![r(0.0), r(0.0), r(0.0)]),
+                ])),
             ),
             interface(
                 InterfaceKind::Output,
@@ -468,7 +463,10 @@ fn matrix_averager() -> Block {
         protected: vec![entity(
             ProtectedKind::State,
             dims(real_decl(n("accumulator")), &[2, 3]),
-            None,
+            Some(Expression::Array(vec![
+                Expression::Array(vec![r(0.0), r(0.0), r(0.0)]),
+                Expression::Array(vec![r(0.0), r(0.0), r(0.0)]),
+            ])),
         )],
         startup: matrix_startup(),
         do_step: matrix_do_step(),
@@ -516,7 +514,8 @@ fn golden_array_native_block() {
 
 #[test]
 fn golden_array_native_block_validates() {
-    rumoca_ir_galec::validate(&matrix_averager()).expect("array-native fixture must validate");
+    CheckedAlgorithmBlock::construct(matrix_averager())
+        .expect("array-native fixture must validate");
 }
 
 fn classify_function() -> UserFunction {
@@ -663,7 +662,7 @@ fn signal_guard() -> Block {
             interface(
                 InterfaceKind::Input,
                 ranged(real_decl(n("reading")), -100.0, 100.0),
-                None,
+                Some(r(0.0)),
             ),
             interface(
                 InterfaceKind::Output,
@@ -758,7 +757,7 @@ fn golden_signal_machinery_block() {
 
 #[test]
 fn golden_signal_machinery_block_validates() {
-    rumoca_ir_galec::validate(&signal_guard()).expect("signal fixture must validate");
+    CheckedAlgorithmBlock::construct(signal_guard()).expect("signal fixture must validate");
 }
 
 fn minimal_block(statements: Vec<Spanned<Statement>>) -> Block {
@@ -782,6 +781,89 @@ fn for_loop_with_step_prints_start_step_stop() {
         printed.contains("for k in 8:-2:2 loop"),
         "missing stepped loop head in:\n{printed}"
     );
+}
+
+#[test]
+fn binary_operand_parenthesization_tracks_class_and_associativity() {
+    let names = [
+        "a",
+        "b",
+        "c",
+        "left_sub",
+        "right_sub",
+        "left_div",
+        "right_pow",
+        "left_pow",
+        "mixed",
+    ];
+    let mut block = minimal_block(vec![
+        assign(local("a"), r(1.0)),
+        assign(local("b"), r(2.0)),
+        assign(local("c"), r(3.0)),
+        assign(
+            local("left_sub"),
+            bin(
+                BinaryOp::Sub,
+                bin(BinaryOp::Sub, lref("a"), lref("b")),
+                lref("c"),
+            ),
+        ),
+        assign(
+            local("right_sub"),
+            bin(
+                BinaryOp::Sub,
+                lref("a"),
+                bin(BinaryOp::Sub, lref("b"), lref("c")),
+            ),
+        ),
+        assign(
+            local("left_div"),
+            bin(
+                BinaryOp::Div,
+                bin(BinaryOp::Div, lref("a"), lref("b")),
+                lref("c"),
+            ),
+        ),
+        assign(
+            local("right_pow"),
+            bin(
+                BinaryOp::Pow,
+                lref("a"),
+                bin(BinaryOp::Pow, lref("b"), lref("c")),
+            ),
+        ),
+        assign(
+            local("left_pow"),
+            bin(
+                BinaryOp::Pow,
+                bin(BinaryOp::Pow, lref("a"), lref("b")),
+                lref("c"),
+            ),
+        ),
+        assign(
+            local("mixed"),
+            bin(
+                BinaryOp::Add,
+                lref("a"),
+                bin(BinaryOp::Mul, lref("b"), lref("c")),
+            ),
+        ),
+    ]);
+    block.do_step.locals = names.iter().map(|name| real_decl(n(name))).collect();
+    let printed = render_block(&block).expect("block must render");
+    for expected in [
+        "left_sub := a - b - c;",
+        "right_sub := a - (b - c);",
+        "left_div := a / b / c;",
+        "right_pow := a ^ b ^ c;",
+        "left_pow := (a ^ b) ^ c;",
+        "mixed := a + (b * c);",
+    ] {
+        assert!(
+            printed.contains(expected),
+            "missing `{expected}` in:\n{printed}"
+        );
+    }
 }
 
 #[test]

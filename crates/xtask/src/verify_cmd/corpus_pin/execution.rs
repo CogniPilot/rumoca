@@ -192,7 +192,7 @@ fn wait_for_child(child: &mut Child, deadline: Duration) -> Result<(Option<ExitS
             return Ok((Some(status), false));
         }
         if started.elapsed() >= deadline {
-            let _ = child.kill();
+            let _already_exited = child.kill();
             return Ok((child.wait().ok(), true));
         }
         std::thread::sleep(POLL_INTERVAL);

@@ -4,19 +4,134 @@
 //! therefore never need to guess connector membership or treat stream
 //! operators as runtime pass-through functions.
 
+mod projection;
+
 use rumoca_core::{
-    BuiltinFunction, ComponentPath, Expression, FallibleExpressionRewriter,
-    FallibleStatementRewriter, Literal, OpBinary, OpUnary, Span, Subscript, VarName,
+    BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, DefId, Expression,
+    ExpressionVisitor, FallibleExpressionRewriter, FallibleStatementRewriter, Literal, OpBinary,
+    OpUnary, Reference, Span, Subscript, VarName,
 };
+use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::FlattenError;
+pub(super) use projection::StreamRewriteProjection;
+use projection::rewrite_assertion_expressions;
 
 /// The MLS recommended regularization scales epsilon from flow nominal values.
 /// This value is above Rumoca's algebraic-Newton residual tolerance while small
 /// relative to the default flow nominal of one.
 const STREAM_RELATIVE_TOLERANCE: f64 = 1.0e-7;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StreamOperatorRole {
+    InStream,
+    ActualStream,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StreamOperatorIdentities {
+    in_stream: DefId,
+    actual_stream: DefId,
+}
+
+impl StreamOperatorIdentities {
+    pub(crate) fn from_tree(tree: &ast::ClassTree, span: Span) -> Result<Self, FlattenError> {
+        let lookup = |name: &str| {
+            tree.scope_tree
+                .predefined_member(&ComponentPath::from_flat_path(name))
+                .ok_or_else(|| {
+                    FlattenError::invalid_connection_evidence(
+                        format!("Resolve did not issue the predefined `{name}` operator identity"),
+                        span,
+                    )
+                })
+        };
+        let identities = Self {
+            in_stream: lookup("inStream")?,
+            actual_stream: lookup("actualStream")?,
+        };
+        if identities.in_stream == identities.actual_stream {
+            return Err(FlattenError::invalid_connection_evidence(
+                "Resolve issued one DefId for both predefined stream-operator roles",
+                span,
+            ));
+        }
+        Ok(identities)
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture() -> Self {
+        Self {
+            in_stream: DefId::new(0x00fe_2001),
+            actual_stream: DefId::new(0x00fe_2002),
+        }
+    }
+
+    fn classify(
+        self,
+        name: &Reference,
+        span: Span,
+    ) -> Result<Option<StreamOperatorRole>, FlattenError> {
+        let spelling = name.last_segment();
+        let apparent = matches!(spelling, "inStream" | "actualStream");
+        match name.target_def_id() {
+            Some(target) if target == self.in_stream && spelling == "inStream" => {
+                Ok(Some(StreamOperatorRole::InStream))
+            }
+            Some(target) if target == self.actual_stream && spelling == "actualStream" => {
+                Ok(Some(StreamOperatorRole::ActualStream))
+            }
+            Some(target) if target == self.in_stream || target == self.actual_stream => {
+                Err(FlattenError::invalid_connection_evidence(
+                    "a stream-operator reference contradicts its Resolve-issued operator role",
+                    span,
+                ))
+            }
+            Some(_) => Ok(None),
+            None if apparent => Err(FlattenError::invalid_connection_evidence(
+                format!("apparent `{spelling}` call lacks exact Resolve target identity"),
+                span,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub(super) fn reference(self, role: StreamOperatorRole, span: Span) -> Reference {
+        let (spelling, def_id) = match role {
+            StreamOperatorRole::InStream => ("inStream", self.in_stream),
+            StreamOperatorRole::ActualStream => ("actualStream", self.actual_stream),
+        };
+        let component_ref = ComponentReference::construct(
+            true,
+            span,
+            vec![ComponentRefPart {
+                ident: spelling.to_string(),
+                span,
+                subs: Vec::new(),
+                def_id,
+            }],
+        )
+        .expect("Resolve-issued stream operator identity constructs one exact reference");
+        Reference::generated_component_reference(component_ref)
+    }
+
+    pub(super) fn call(
+        self,
+        role: StreamOperatorRole,
+        args: Vec<Expression>,
+        span: Span,
+    ) -> Expression {
+        Expression::FunctionCall {
+            name: self.reference(role, span),
+            args,
+            is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
+            span,
+        }
+    }
+}
 
 #[derive(Clone)]
 struct FlowCandidate {
@@ -81,11 +196,14 @@ struct StreamAccess {
 
 type StreamEndpointMap = FxHashMap<VarName, StreamEndpoint>;
 
-pub(super) fn rewrite_stream_operators(
-    model: &mut flat::Model,
+pub(super) fn plan_stream_operator_rewrite(
+    model: &flat::Model,
     stream_sets: &[super::StreamConnectionSet],
     endpoints: &StreamConnectionEndpoints,
-) -> Result<(), FlattenError> {
+    operator_identities: StreamOperatorIdentities,
+    projected_equations: &mut [super::transaction::PlannedConnectionEquation],
+    projected_assertions: &mut [flat::AssertEquation],
+) -> Result<StreamRewriteProjection, FlattenError> {
     let stream_variables = collect_stream_variables(model, stream_sets);
     let mut rewriter = StreamOperatorRewriter {
         endpoints: endpoints.inside.clone(),
@@ -94,8 +212,25 @@ pub(super) fn rewrite_stream_operators(
         stream_connectors: collect_stream_connectors(&stream_variables),
         stream_variables,
         expanding: Vec::new(),
+        operator_identities,
     };
-    rewrite_model_expressions(model, &mut rewriter)
+    for planned in projected_equations {
+        if contains_stream_operator(&planned.equation.residual, operator_identities)? {
+            planned.equation.residual = rewriter.rewrite_expression(&planned.equation.residual)?;
+        }
+        if let Some(template) = planned
+            .family
+            .as_mut()
+            .and_then(|family| family.template.as_mut())
+            && expressions_contain_stream_operator(&template.body, operator_identities)?
+        {
+            template.body = rewriter.rewrite_expressions(&template.body)?;
+        }
+    }
+    for assertion in projected_assertions {
+        rewrite_assertion_expressions(assertion, &mut rewriter)?;
+    }
+    StreamRewriteProjection::plan(model, &mut rewriter)
 }
 
 /// Split the per-scope stream connection sets into the two per-connector views
@@ -114,7 +249,7 @@ pub(super) fn build_stream_connection_endpoints(
         let flows = stream_set
             .variables
             .iter()
-            .map(|stream| associated_flow(model, &flow_candidates, stream))
+            .map(|stream| associated_flow(model, &flow_candidates, stream, stream_set.span))
             .collect::<Result<Vec<_>, _>>()?;
         let epsilon = stream_epsilon(&flows);
         let roles = stream_set
@@ -164,7 +299,12 @@ impl StreamConnectionEndpoints {
     /// Returns `None` when `stream` is not an outside member of any stream
     /// connection set, which is the MLS §15.2 "not connected" case where the
     /// equation degenerates to `c.h_outflow = inStream(c.h_outflow)`.
-    pub(super) fn outside_equation_rhs(&self, stream: &VarName, span: Span) -> Option<Expression> {
+    pub(super) fn outside_equation_rhs(
+        &self,
+        stream: &VarName,
+        operator_identities: StreamOperatorIdentities,
+        span: Span,
+    ) -> Option<Expression> {
         let endpoint = self.outside.get(stream)?;
         let access = StreamAccess {
             name: stream.clone(),
@@ -174,7 +314,12 @@ impl StreamConnectionEndpoints {
             field_base: None,
             span,
         };
-        Some(in_stream_expression(&access, endpoint, span))
+        Some(in_stream_expression(
+            &access,
+            endpoint,
+            operator_identities,
+            span,
+        ))
     }
 }
 
@@ -241,10 +386,12 @@ fn associated_flow(
     model: &flat::Model,
     candidates: &[FlowCandidate],
     stream: &VarName,
+    span: Span,
 ) -> Result<FlowCandidate, FlattenError> {
+    let stream_declaration = stream_variable(model, stream, span)?;
     let stream_path = ComponentPath::from_flat_path(stream.as_str());
     let Some(parent) = stream_path.parent() else {
-        return Err(stream_flow_error(model, stream));
+        return Err(stream_flow_error(stream, stream_declaration));
     };
     let exact = candidates
         .iter()
@@ -254,7 +401,7 @@ fn associated_flow(
         return Ok((*candidate).clone());
     }
     if !exact.is_empty() {
-        return Err(stream_flow_error(model, stream));
+        return Err(stream_flow_error(stream, stream_declaration));
     }
 
     let normalized_parent = normalized_path(&parent);
@@ -263,7 +410,7 @@ fn associated_flow(
         .filter(|candidate| candidate.normalized_parent == normalized_parent)
         .collect::<Vec<_>>();
     let [candidate] = normalized.as_slice() else {
-        return Err(stream_flow_error(model, stream));
+        return Err(stream_flow_error(stream, stream_declaration));
     };
     let flow_path = parent.join(&ComponentPath::from_parts([candidate.leaf.clone()]));
     let mut candidate = (*candidate).clone();
@@ -279,15 +426,7 @@ fn normalized_path(path: &ComponentPath) -> ComponentPath {
     )
 }
 
-fn stream_flow_error(model: &flat::Model, stream: &VarName) -> FlattenError {
-    let Some(variable) = stream_variable(model, stream) else {
-        return FlattenError::MissingSourceContext {
-            reason: format!(
-                "stream-set endpoint `{}` has no declared Flat IR variable",
-                stream.as_str()
-            ),
-        };
-    };
+fn stream_flow_error(stream: &VarName, variable: &flat::Variable) -> FlattenError {
     FlattenError::unsupported_equation(
         format!(
             "stream variable `{}` does not have exactly one scalar flow variable at the same connector level",
@@ -297,17 +436,13 @@ fn stream_flow_error(model: &flat::Model, stream: &VarName) -> FlattenError {
     )
 }
 
-fn stream_variable<'a>(model: &'a flat::Model, stream: &VarName) -> Option<&'a flat::Variable> {
-    model
-        .variables
-        .get(stream)
-        .or_else(|| {
-            super::subscripted_base_var(stream, model).and_then(|base| model.variables.get(&base))
-        })
-        .or_else(|| {
-            super::strip_embedded_array_indices(stream.as_str())
-                .and_then(|base| model.variables.get(&VarName::new(base)))
-        })
+fn stream_variable<'a>(
+    model: &'a flat::Model,
+    stream: &VarName,
+    span: Span,
+) -> Result<&'a flat::Variable, FlattenError> {
+    let evidence = super::require_connection_declaration(model, stream, span)?;
+    Ok(evidence.declaration())
 }
 
 fn numeric_nominal(nominal: Option<&Expression>) -> f64 {
@@ -350,19 +485,24 @@ struct StreamOperatorRewriter {
     /// hierarchy level up. The stack bounds that walk and turns an ill-formed
     /// self-referential set into a diagnostic instead of unbounded recursion.
     expanding: Vec<VarName>,
+    operator_identities: StreamOperatorIdentities,
 }
 
 impl StreamOperatorRewriter {
     fn rewrite_stream_call(
         &mut self,
-        operator: &str,
+        operator: StreamOperatorRole,
         args: &[Expression],
         span: Span,
     ) -> Result<Expression, FlattenError> {
+        let operator_name = match operator {
+            StreamOperatorRole::InStream => "inStream",
+            StreamOperatorRole::ActualStream => "actualStream",
+        };
         let [argument] = args else {
             return Err(FlattenError::unsupported_equation(
                 format!(
-                    "{operator}() requires one stream-variable reference, got {} arguments",
+                    "{operator_name}() requires one stream-variable reference, got {} arguments",
                     args.len()
                 ),
                 span,
@@ -370,7 +510,7 @@ impl StreamOperatorRewriter {
         };
         let access = stream_access(argument).ok_or_else(|| {
             FlattenError::unsupported_equation(
-                format!("{operator}() requires one stream-variable reference"),
+                format!("{operator_name}() requires one stream-variable reference"),
                 span,
             )
         })?;
@@ -380,7 +520,7 @@ impl StreamOperatorRewriter {
             }
             return Err(FlattenError::unsupported_equation(
                 format!(
-                    "{operator}() argument `{}` is not a stream variable",
+                    "{operator_name}() argument `{}` is not a stream variable",
                     access.name.as_str()
                 ),
                 access.span,
@@ -389,13 +529,19 @@ impl StreamOperatorRewriter {
 
         let indexed_matches = self.indexed_endpoint_matches(&access.name);
         let expanded = if indexed_matches.len() > 1 {
-            indexed_endpoint_expression(operator, &access, indexed_matches, span)?
+            indexed_endpoint_expression(
+                operator,
+                &access,
+                indexed_matches,
+                self.operator_identities,
+                span,
+            )?
         } else {
             let endpoint = self.endpoint_for(&access.name, span)?;
-            if operator == "actualStream" {
-                actual_stream_expression(&access, &endpoint, span)
+            if operator == StreamOperatorRole::ActualStream {
+                actual_stream_expression(&access, &endpoint, self.operator_identities, span)
             } else {
-                in_stream_expression(&access, &endpoint, span)
+                in_stream_expression(&access, &endpoint, self.operator_identities, span)
             }
         };
         self.resolve_nested_stream_operators(&access.name, expanded, span)
@@ -412,7 +558,7 @@ impl StreamOperatorRewriter {
         expression: Expression,
         span: Span,
     ) -> Result<Expression, FlattenError> {
-        if !contains_stream_operator(&expression) {
+        if !contains_stream_operator(&expression, self.operator_identities)? {
             return Ok(expression);
         }
         if self.expanding.iter().any(|active| active == stream) {
@@ -508,17 +654,22 @@ impl StreamOperatorRewriter {
 }
 
 fn indexed_endpoint_expression(
-    operator: &str,
+    operator: StreamOperatorRole,
     access: &StreamAccess,
     matches: Vec<(VarName, StreamEndpoint)>,
+    operator_identities: StreamOperatorIdentities,
     span: Span,
 ) -> Result<Expression, FlattenError> {
+    let operator_name = match operator {
+        StreamOperatorRole::InStream => "inStream",
+        StreamOperatorRole::ActualStream => "actualStream",
+    };
     let access_indices = connector_access_indices(access);
     let mut choices = Vec::with_capacity(matches.len());
     for (stream, endpoint) in matches {
         let candidate_indices = embedded_parent_indices(&stream).ok_or_else(|| {
             indexed_stream_error(
-                operator,
+                operator_name,
                 access,
                 "connection member has a non-integer index",
             )
@@ -526,22 +677,22 @@ fn indexed_endpoint_expression(
         let condition = index_match_condition(&access_indices, &candidate_indices, span)
             .ok_or_else(|| {
                 indexed_stream_error(
-                    operator,
+                    operator_name,
                     access,
                     "connector access rank does not match connection members",
                 )
             })?;
         let concrete = concrete_stream_access(access, stream, span);
-        let expression = if operator == "actualStream" {
-            actual_stream_expression(&concrete, &endpoint, span)
+        let expression = if operator == StreamOperatorRole::ActualStream {
+            actual_stream_expression(&concrete, &endpoint, operator_identities, span)
         } else {
-            in_stream_expression(&concrete, &endpoint, span)
+            in_stream_expression(&concrete, &endpoint, operator_identities, span)
         };
         choices.push((condition, expression));
     }
     let Some((_, else_branch)) = choices.pop() else {
         return Err(indexed_stream_error(
-            operator,
+            operator_name,
             access,
             "connection set is empty",
         ));
@@ -550,16 +701,6 @@ fn indexed_endpoint_expression(
         branches: choices,
         else_branch: Box::new(else_branch),
         span,
-    })
-}
-
-fn contains_stream_operator(expression: &Expression) -> bool {
-    expression.contains_subexpression(|candidate| {
-        matches!(
-            candidate,
-            Expression::FunctionCall { name, .. }
-                if matches!(name.var_name().last_segment(), "inStream" | "actualStream")
-        )
     })
 }
 
@@ -666,11 +807,9 @@ impl FallibleExpressionRewriter for StreamOperatorRewriter {
         if let Expression::FunctionCall {
             name, args, span, ..
         } = expr
+            && let Some(operator) = self.operator_identities.classify(name, *span)?
         {
-            let operator = name.var_name().last_segment();
-            if matches!(operator, "inStream" | "actualStream") {
-                return self.rewrite_stream_call(operator, args, *span);
-            }
+            return self.rewrite_stream_call(operator, args, *span);
         }
         self.walk_expression(expr)
     }
@@ -787,12 +926,13 @@ fn associated_flow_from_candidates(
 fn in_stream_expression(
     access: &StreamAccess,
     endpoint: &StreamEndpoint,
+    operator_identities: StreamOperatorIdentities,
     span: Span,
 ) -> Expression {
     match endpoint.peers.as_slice() {
         [] => stream_reference(&access.name, access, span),
-        [peer] => peer_stream_value(peer, access, span),
-        peers => weighted_stream_mean(peers, access, endpoint, span),
+        [peer] => peer_stream_value(peer, access, operator_identities, span),
+        peers => weighted_stream_mean(peers, access, endpoint, operator_identities, span),
     }
 }
 
@@ -803,22 +943,25 @@ fn in_stream_expression(
 /// pushes into this set, `inStream(c_k.h_outflow)`; that nested operator is
 /// resolved against the set in which `c_k` is an inside connector, one level up
 /// the hierarchy.
-fn peer_stream_value(peer: &StreamPeer, access: &StreamAccess, span: Span) -> Expression {
+fn peer_stream_value(
+    peer: &StreamPeer,
+    access: &StreamAccess,
+    operator_identities: StreamOperatorIdentities,
+    span: Span,
+) -> Expression {
     let reference = stream_reference(&peer.stream, access, span);
     match peer.role {
         ConnectorRole::Inside => reference,
-        ConnectorRole::Outside => Expression::FunctionCall {
-            name: rumoca_core::Reference::generated("inStream"),
-            args: vec![reference],
-            is_constructor: false,
-            span,
-        },
+        ConnectorRole::Outside => {
+            operator_identities.call(StreamOperatorRole::InStream, vec![reference], span)
+        }
     }
 }
 
 fn actual_stream_expression(
     access: &StreamAccess,
     endpoint: &StreamEndpoint,
+    operator_identities: StreamOperatorIdentities,
     span: Span,
 ) -> Expression {
     let condition = binary(
@@ -828,7 +971,10 @@ fn actual_stream_expression(
         span,
     );
     Expression::If {
-        branches: vec![(condition, in_stream_expression(access, endpoint, span))],
+        branches: vec![(
+            condition,
+            in_stream_expression(access, endpoint, operator_identities, span),
+        )],
         else_branch: Box::new(stream_reference(&access.name, access, span)),
         span,
     }
@@ -838,6 +984,7 @@ fn weighted_stream_mean(
     peers: &[StreamPeer],
     access: &StreamAccess,
     endpoint: &StreamEndpoint,
+    operator_identities: StreamOperatorIdentities,
     span: Span,
 ) -> Expression {
     let weighted_values = peers
@@ -847,7 +994,7 @@ fn weighted_stream_mean(
             binary(
                 OpBinary::Mul,
                 weight,
-                peer_stream_value(peer, access, span),
+                peer_stream_value(peer, access, operator_identities, span),
                 span,
             )
         })
@@ -997,100 +1144,167 @@ fn integer_literal(value: i64, span: Span) -> Expression {
     }
 }
 
-fn rewrite_model_expressions(
-    model: &mut flat::Model,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    rewrite_equation_partitions(model, rewriter)?;
-    rewrite_variable_expressions(model, rewriter)?;
-    rewrite_assertions(model, rewriter)?;
-    rewrite_algorithms(model, rewriter)?;
-    rewrite_when_chains(model, rewriter)?;
-    Ok(())
+struct StreamOperatorDetector {
+    identities: StreamOperatorIdentities,
+    found: bool,
+    error: Option<FlattenError>,
 }
 
-fn rewrite_equation_partitions(
-    model: &mut flat::Model,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    for equation in model
-        .equations
-        .iter_mut()
-        .chain(model.initial_equations.iter_mut())
-    {
-        equation.residual = rewriter.rewrite_expression(&equation.residual)?;
+impl ExpressionVisitor for StreamOperatorDetector {
+    fn visit_expression(&mut self, expression: &Expression) {
+        if self.found || self.error.is_some() {
+            return;
+        }
+        if let Expression::FunctionCall { name, span, .. } = expression {
+            match self.identities.classify(name, *span) {
+                Ok(Some(_)) => {
+                    self.found = true;
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.error = Some(error);
+                    return;
+                }
+            }
+        }
+        self.walk_expression(expression);
     }
-    for family in model
-        .structured_equations
-        .iter_mut()
-        .chain(model.initial_structured_equations.iter_mut())
-    {
-        if let Some(template) = &mut family.template {
-            template.body = rewriter.rewrite_expressions(&template.body)?;
+}
+
+impl flat::StatementVisitor for StreamOperatorDetector {}
+
+fn contains_stream_operator(
+    expression: &Expression,
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    let mut detector = StreamOperatorDetector {
+        identities,
+        found: false,
+        error: None,
+    };
+    ExpressionVisitor::visit_expression(&mut detector, expression);
+    match detector.error {
+        Some(error) => Err(error),
+        None => Ok(detector.found),
+    }
+}
+
+fn expressions_contain_stream_operator(
+    expressions: &[Expression],
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    for expression in expressions {
+        if contains_stream_operator(expression, identities)? {
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
-fn rewrite_variable_expressions(
-    model: &mut flat::Model,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    for variable in model.variables.values_mut() {
-        rewrite_optional_expression(&mut variable.binding, rewriter)?;
-        rewrite_optional_expression(&mut variable.start, rewriter)?;
-        rewrite_optional_expression(&mut variable.min, rewriter)?;
-        rewrite_optional_expression(&mut variable.max, rewriter)?;
-        rewrite_optional_expression(&mut variable.nominal, rewriter)?;
+fn statements_contain_stream_operator(
+    statements: &[rumoca_core::Statement],
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    let mut detector = StreamOperatorDetector {
+        identities,
+        found: false,
+        error: None,
+    };
+    for statement in statements {
+        flat::StatementVisitor::visit_statement(&mut detector, statement);
+        if detector.found || detector.error.is_some() {
+            break;
+        }
     }
-    Ok(())
-}
-
-fn rewrite_optional_expression(
-    expression: &mut Option<Expression>,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    if let Some(value) = expression.take() {
-        *expression = Some(rewriter.rewrite_expression(&value)?);
+    match detector.error {
+        Some(error) => Err(error),
+        None => Ok(detector.found),
     }
-    Ok(())
 }
 
-fn rewrite_assertions(
-    model: &mut flat::Model,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    for assertion in model
-        .assert_equations
-        .iter_mut()
-        .chain(model.initial_assert_equations.iter_mut())
-    {
-        assertion.condition = rewriter.rewrite_expression(&assertion.condition)?;
-        assertion.message = rewriter.rewrite_expression(&assertion.message)?;
-        rewrite_optional_expression(&mut assertion.level, rewriter)?;
+fn when_chain_contains_stream_operator(
+    chain: &flat::WhenChain,
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    for branch in chain.branches() {
+        if contains_stream_operator(&branch.condition, identities)?
+            || when_equations_contain_stream_operator(&branch.equations, identities)?
+        {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
-fn rewrite_algorithms(
-    model: &mut flat::Model,
-    rewriter: &mut StreamOperatorRewriter,
-) -> Result<(), FlattenError> {
-    for algorithm in model
-        .algorithms
-        .iter_mut()
-        .chain(model.initial_algorithms.iter_mut())
-    {
-        algorithm.statements = rewriter.rewrite_statements(&algorithm.statements)?;
+fn when_equations_contain_stream_operator(
+    equations: &[flat::WhenEquation],
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    for equation in equations {
+        let found = match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                contains_stream_operator(value, identities)?
+            }
+            flat::WhenEquation::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => {
+                contains_stream_operator(condition, identities)?
+                    || contains_stream_operator(message, identities)?
+                    || match level.as_deref() {
+                        Some(level) => contains_stream_operator(level, identities)?,
+                        None => false,
+                    }
+            }
+            flat::WhenEquation::Terminate { message, .. } => {
+                contains_stream_operator(message, identities)?
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => conditional_when_equations_contain_stream_operator(
+                branches,
+                else_branch.as_deref(),
+                identities,
+            )?,
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                contains_stream_operator(function, identities)?
+            }
+        };
+        if found {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
-fn rewrite_when_chains(
-    model: &mut flat::Model,
+fn conditional_when_equations_contain_stream_operator(
+    branches: &[(Expression, Vec<flat::WhenEquation>)],
+    else_branch: Option<&[flat::WhenEquation]>,
+    identities: StreamOperatorIdentities,
+) -> Result<bool, FlattenError> {
+    for (condition, branch) in branches {
+        if contains_stream_operator(condition, identities)?
+            || when_equations_contain_stream_operator(branch, identities)?
+        {
+            return Ok(true);
+        }
+    }
+    match else_branch {
+        Some(branch) => when_equations_contain_stream_operator(branch, identities),
+        None => Ok(false),
+    }
+}
+
+fn rewrite_when_chain_slice(
+    chains: &mut [flat::WhenChain],
     rewriter: &mut StreamOperatorRewriter,
 ) -> Result<(), FlattenError> {
-    for chain in &mut model.when_chains {
+    for chain in chains {
         for branch in chain.branches_mut() {
             branch.condition = rewriter.rewrite_expression(&branch.condition)?;
             rewrite_when_equations(&mut branch.equations, rewriter)?;
@@ -1142,4 +1356,32 @@ fn rewrite_when_equations(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_selected_stream_never_reaches_stream_semantics() {
+        let mut model = flat::Model::new();
+        model.add_variable(
+            VarName::new("port.h_outflow"),
+            flat::Variable {
+                name: VarName::new("port.h_outflow"),
+                dims: vec![2],
+                stream: true,
+                ..flat::Variable::empty_with_span(Span::DUMMY)
+            },
+        );
+
+        let error = stream_variable(
+            &model,
+            &VarName::new("port.h_outflow[not_an_integer]"),
+            Span::DUMMY,
+        )
+        .expect_err("malformed selection evidence cannot authorize stream semantics");
+
+        assert!(error.to_string().contains("concrete integer indices"));
+    }
 }

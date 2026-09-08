@@ -7,228 +7,6 @@ fn checked(program: Vec<solve::LinearOp>) -> Vec<solve::LinearOp> {
     program
 }
 
-fn certifies(program: &[solve::LinearOp]) -> bool {
-    parameter_static_refresh_program(
-        program,
-        10,
-        2,
-        &BTreeSet::from([11, 12]),
-        ContinuousStaticParameters {
-            immutable_prefix: 8,
-            homotopy_endpoint: None,
-        },
-    )
-}
-
-#[test]
-fn compact_tensor_inputs_preserve_the_parameter_static_certificate() {
-    let parameter_tensor = checked(vec![
-        solve::LinearOp::TensorLoad {
-            dst_start: 0,
-            input: solve::TensorInputKind::P,
-            input_start: 4,
-            count: 3,
-            seed_start: None,
-            lanes: 1,
-        },
-        solve::LinearOp::TensorFill {
-            dst_start: 3,
-            value_start: 0,
-            count: 3,
-            lanes: 1,
-        },
-        solve::LinearOp::StoreOutputRange {
-            start: 3,
-            count: 3,
-            stride: 1,
-        },
-    ]);
-    assert!(certifies(&parameter_tensor));
-
-    let certified_y_tensor = checked(vec![
-        solve::LinearOp::TensorLoad {
-            dst_start: 0,
-            input: solve::TensorInputKind::Y,
-            input_start: 10,
-            count: 3,
-            seed_start: None,
-            lanes: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]);
-    assert!(certifies(&certified_y_tensor));
-
-    let dynamic_y_tensor = checked(vec![
-        solve::LinearOp::TensorLoad {
-            dst_start: 0,
-            input: solve::TensorInputKind::Y,
-            input_start: 10,
-            count: 4,
-            seed_start: None,
-            lanes: 1,
-        },
-        solve::LinearOp::StoreOutput { src: 3 },
-    ]);
-    assert!(!certifies(&dynamic_y_tensor));
-}
-
-#[test]
-fn runtime_parameter_tail_invalidates_the_static_refresh_certificate() {
-    let direct = checked(vec![
-        solve::LinearOp::LoadP { dst: 0, index: 8 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]);
-    assert!(!certifies(&direct));
-
-    let indexed = checked(vec![
-        solve::LinearOp::Const { dst: 0, value: 0.0 },
-        solve::LinearOp::LoadIndexedP {
-            dst: 1,
-            base: 7,
-            count: 2,
-            index: 0,
-        },
-        solve::LinearOp::StoreOutput { src: 1 },
-    ]);
-    assert!(!certifies(&indexed));
-
-    let tensor = checked(vec![
-        solve::LinearOp::TensorLoad {
-            dst_start: 0,
-            input: solve::TensorInputKind::P,
-            input_start: 7,
-            count: 2,
-            seed_start: None,
-            lanes: 1,
-        },
-        solve::LinearOp::StoreOutputRange {
-            start: 0,
-            count: 2,
-            stride: 1,
-        },
-    ]);
-    assert!(!certifies(&tensor));
-}
-
-#[test]
-fn homotopy_endpoint_is_static_only_after_its_checked_initialization_owner() {
-    let homotopy = checked(vec![
-        solve::LinearOp::LoadP { dst: 0, index: 8 },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]);
-    let dynamic_domain = ContinuousStaticParameters {
-        immutable_prefix: 8,
-        homotopy_endpoint: None,
-    };
-    let initialized_domain = ContinuousStaticParameters {
-        immutable_prefix: 8,
-        homotopy_endpoint: Some(8),
-    };
-    assert!(!parameter_static_refresh_program(
-        &homotopy,
-        10,
-        2,
-        &BTreeSet::new(),
-        dynamic_domain,
-    ));
-    assert!(parameter_static_refresh_program(
-        &homotopy,
-        10,
-        2,
-        &BTreeSet::new(),
-        initialized_domain,
-    ));
-}
-
-#[test]
-fn seed_dependent_tensor_load_is_never_parameter_static() {
-    let seeded_parameter_tensor = checked(vec![
-        solve::LinearOp::TensorLoad {
-            dst_start: 0,
-            input: solve::TensorInputKind::P,
-            input_start: 4,
-            count: 1,
-            seed_start: Some(0),
-            lanes: 2,
-        },
-        solve::LinearOp::StoreOutput { src: 1 },
-    ]);
-    assert!(!certifies(&seeded_parameter_tensor));
-}
-
-#[test]
-fn compact_fold_owner_is_certified_without_domain_expansion() {
-    let fold = solve::FunctionFoldProgram::checked(
-        StructuredIndexDomain {
-            binders: vec![StructuredIndexBinder {
-                id: 0,
-                display_name: "i".to_string(),
-                lower: 1,
-                upper: 3,
-                step: 1,
-            }],
-        },
-        1,
-        1,
-        vec![
-            solve::LinearOp::LoadFoldCarried { dst: 0, index: 0 },
-            solve::LinearOp::LoadFoldCapture { dst: 1, index: 0 },
-            solve::LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Add,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 2 },
-        ],
-    )
-    .expect("compact fold fixture has a checked carried/capture ABI");
-    let program = checked(vec![
-        solve::LinearOp::LoadP { dst: 0, index: 4 },
-        solve::LinearOp::Const { dst: 1, value: 0.0 },
-        solve::LinearOp::FunctionFold {
-            dst_start: 2,
-            initial_start: 1,
-            capture_start: 0,
-            program: Arc::new(fold),
-        },
-        solve::LinearOp::StoreOutput { src: 2 },
-    ]);
-    assert!(certifies(&program));
-}
-
-#[test]
-fn lazy_conditional_regions_are_recursively_fail_closed() {
-    let conditional = solve::FunctionConditionalProgram::checked(
-        0,
-        [1],
-        [(
-            vec![
-                solve::LinearOp::LoadTime { dst: 0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-            vec![
-                solve::LinearOp::Const { dst: 0, value: 1.0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-        )],
-        vec![
-            solve::LinearOp::Const { dst: 0, value: 0.0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ],
-    )
-    .expect("lazy conditional fixture has checked correlated regions");
-    let program = checked(vec![
-        solve::LinearOp::FunctionConditional {
-            dst_start: 0,
-            capture_start: 0,
-            program: Arc::new(conditional),
-        },
-        solve::LinearOp::StoreOutput { src: 0 },
-    ]);
-    assert!(!certifies(&program));
-}
-
 #[test]
 fn conditional_regions_contribute_every_solver_y_input_range() {
     let load = |index| {
@@ -256,7 +34,7 @@ fn conditional_regions_contribute_every_solver_y_input_range() {
 fn affine_compute_dependencies_include_every_shifted_solver_y_coordinate() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 3,
@@ -300,7 +78,7 @@ fn affine_compute_dependencies_include_every_shifted_solver_y_coordinate() {
 fn map_dependencies_accumulate_negative_stride_terms_without_expansion() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 3,
@@ -353,7 +131,7 @@ fn map_dependencies_accumulate_negative_stride_terms_without_expansion() {
 fn affine_dependency_storage_is_independent_of_domain_cardinality() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 1_000_000,
@@ -394,7 +172,7 @@ fn affine_dependency_storage_is_independent_of_domain_cardinality() {
 fn empty_affine_domain_has_no_runtime_y_dependencies() {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 0,
@@ -441,22 +219,41 @@ fn clocked_and_unclocked_outputs_get_distinct_refresh_dependencies() {
         vec![0, 1],
     )
     .expect("two correlated outputs have a checked scalar-program owner");
-    let mut problem = solve::SolveProblem::default();
-    problem.clocks.periodic_event_schedules = vec![
-        solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
-            .expect("fixture period is an exact positive schedule"),
-    ];
-    problem.clocks.activation_parameter_indices = vec![0];
-    let clock = problem
-        .clocks
+    let solve_layout = solve::SolveLayout::default();
+    let implicit_rhs = solve::ComputeBlock::default();
+    let implicit_row_targets = Vec::new();
+    let algebraic_projection_plan = solve::AlgebraicProjectionPlan::default();
+    let derivative_rhs = solve::ComputeBlock::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition {
+        periodic_event_schedules: vec![
+            solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
+                .expect("fixture period is an exact positive schedule"),
+        ],
+        activation_parameter_indices: vec![0],
+    };
+    let clock = clocks
         .periodic_clock_id(0)
         .expect("fixture clock identity is issued by its partition");
-    problem.discrete.rhs = consumer;
-    problem.discrete.clock_owners = vec![None, Some(clock)];
+    let discrete = solve::DiscreteSolveSystem {
+        rhs: consumer,
+        clock_owners: vec![None, Some(clock)],
+        ..solve::DiscreteSolveSystem::default()
+    };
+    let source = ContinuousRefreshSource {
+        solve_layout: &solve_layout,
+        implicit_rhs: &implicit_rhs,
+        implicit_row_targets: &implicit_row_targets,
+        algebraic_projection_plan: &algebraic_projection_plan,
+        derivative_rhs: &derivative_rhs,
+        discrete: &discrete,
+        events: &events,
+        clocks: &clocks,
+    };
 
-    let unclocked = event_consumer_dependencies(&problem, 10, None)
+    let unclocked = event_consumer_dependencies(&source, 10, None)
         .expect("unclocked dependency projection is checked");
-    let clocked = event_consumer_dependencies(&problem, 10, Some(clock))
+    let clocked = event_consumer_dependencies(&source, 10, Some(clock))
         .expect("clock dependency projection is checked");
 
     assert_eq!(
@@ -502,32 +299,83 @@ fn construction_issues_event_base_and_clock_remainder_plans() {
         vec![0, 1],
     )
     .expect("fixture event consumer has checked correlated outputs");
-    let mut problem = solve::SolveProblem::default();
-    problem.solve_layout.state_scalar_count = 0;
-    problem.solve_layout.algebraic_scalar_count = 2;
-    problem.solve_layout.solver_maps.names = vec!["a".to_string(), "b".to_string()];
-    problem.continuous.implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
-    problem.continuous.implicit_row_targets =
-        vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-    problem.clocks.periodic_event_schedules = vec![
-        solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
-            .expect("fixture period is an exact positive schedule"),
-    ];
-    problem.clocks.activation_parameter_indices = vec![0];
-    let clock = problem
-        .clocks
+    let mut solve_layout = solve::SolveLayout {
+        state_scalar_count: 0,
+        algebraic_scalar_count: 2,
+        ..solve::SolveLayout::default()
+    };
+    solve_layout.solver_maps.names = vec!["a".to_string(), "b".to_string()];
+    let implicit_rhs = solve::ComputeBlock::from_scalar_program_block(implicit);
+    let implicit_row_targets = vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
+    let mut algebraic_projection_plan = solve::AlgebraicProjectionPlan {
+        blocks: vec![
+            solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+                tearing: None,
+            },
+            solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            },
+        ],
+    };
+    let derivative_rhs = solve::ComputeBlock::default();
+    let clocks = solve::SolveClockPartition {
+        periodic_event_schedules: vec![
+            solve::PeriodicEventSchedule::from_seconds(0.01, 0.0)
+                .expect("fixture period is an exact positive schedule"),
+        ],
+        activation_parameter_indices: vec![0],
+    };
+    let clock = clocks
         .periodic_clock_id(0)
         .expect("fixture clock identity is issued by its partition");
-    problem.discrete.rhs = consumer;
-    problem.discrete.clock_owners = vec![None, Some(clock)];
+    let discrete = solve::DiscreteSolveSystem {
+        rhs: consumer,
+        clock_owners: vec![None, Some(clock)],
+        ..solve::DiscreteSolveSystem::default()
+    };
+    let events = solve::SolveEventPartition::default();
 
-    let owners = build_continuous_refresh_owners(&mut problem)
-        .expect("construction can partition the checked event dependencies");
+    let refresh_plans = build_continuous_refresh_plans(
+        &solve_layout,
+        (
+            &implicit_rhs,
+            &implicit_row_targets,
+            &mut algebraic_projection_plan,
+            &derivative_rhs,
+        ),
+        &discrete,
+        &events,
+        &clocks,
+    )
+    .expect("construction can partition the checked event dependencies");
+    let continuous = solve::ContinuousSolveSystem::construct(
+        &solve_layout,
+        solve::ContinuousSolveSystemInputs::new(
+            implicit_rhs.clone(),
+            implicit_row_targets,
+            algebraic_projection_plan,
+            implicit_rhs,
+            (
+                solve::ComputeBlock::default(),
+                solve::AlgebraicProjectionPlan::default(),
+            ),
+            derivative_rhs,
+            refresh_plans,
+        ),
+    )
+    .expect("fixture plans correlate with their exact continuous source");
+    assert_event_and_clock_refresh_owners(continuous.refresh_owners());
+}
 
+fn assert_event_and_clock_refresh_owners(owners: &solve::ContinuousRefreshOwners) {
     assert_eq!(
         owners
             .event()
-            .rows
+            .rows()
             .iter()
             .map(solve::AlgebraicRefreshRow::target_index)
             .collect::<Vec<_>>(),
@@ -535,7 +383,7 @@ fn construction_issues_event_base_and_clock_remainder_plans() {
     );
     assert_eq!(
         owners.clock_events()[0]
-            .rows
+            .rows()
             .iter()
             .map(solve::AlgebraicRefreshRow::target_index)
             .collect::<Vec<_>>(),
@@ -544,7 +392,7 @@ fn construction_issues_event_base_and_clock_remainder_plans() {
     assert_eq!(
         owners.clock_events_after_event()[0]
             .remainder()
-            .rows
+            .rows()
             .iter()
             .map(solve::AlgebraicRefreshRow::target_index)
             .collect::<Vec<_>>(),

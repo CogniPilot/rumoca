@@ -28,6 +28,7 @@ fn add_discrete_real_variable(
     let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
     variable.name = VarName::new(name);
     variable.instance_id = test_instance_id(name);
+    variable.component_ref = Some(test_component_reference(name, source.span(declaration, 0)));
     variable.type_id = TypeId::new(type_id);
     variable.variability = Variability::Discrete(Default::default());
     variable.is_primitive = true;
@@ -36,6 +37,105 @@ fn add_discrete_real_variable(
     model
         .variable_type_names
         .insert(VarName::new(name), "Real".to_string());
+}
+
+fn coordinate_inventory_variable(
+    name: &str,
+    instance_id: InstanceId,
+    root_def_id: rumoca_core::DefId,
+    span: Span,
+) -> flat::Variable {
+    let mut variable = flat::Variable::empty_with_span(span);
+    variable.name = VarName::new(name);
+    variable.instance_id = instance_id;
+    variable.component_ref = Some(
+        rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: name.to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: root_def_id,
+            }],
+        )
+        .expect("fixture coordinate has exact structured identity"),
+    );
+    variable
+}
+
+fn assert_coordinate_inventory_unchanged<'dae>(
+    coordinates: &ModelCoordinates<'dae>,
+    discrete: dae::DiscreteRealId<'dae>,
+    coordinate: Coordinate<'dae>,
+    established: &flat::Variable,
+    span: Span,
+) {
+    assert_eq!(coordinates.by_name.len(), 1);
+    assert_eq!(coordinates.by_instance.len(), 1);
+    assert_eq!(coordinates.by_occurrence.len(), 1);
+    assert_eq!(coordinates.event_by_name.len(), 1);
+    assert_eq!(coordinates.event_by_occurrence.len(), 1);
+    assert_eq!(coordinates.readable_by_occurrence.len(), 1);
+    assert!(matches!(
+        coordinates.event(&VarName::new("a"), span),
+        Ok(EventCoordinate::Real(id)) if id == discrete
+    ));
+    assert!(matches!(
+        coordinates.event_occurrence(
+            rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: established.instance_id,
+                root_def_id: established
+                    .component_ref
+                    .as_ref()
+                    .expect("established fixture identity is exact")
+                    .root_def_id(),
+            },
+            &established.name,
+            span,
+        ),
+        Ok(EventCoordinate::Real(id)) if id == discrete
+    ));
+    assert!(coordinates[&VarName::new("a")] == coordinate);
+}
+
+struct CoordinateDuplicateExpectation<'a> {
+    candidate: &'a flat::Variable,
+    expected_kind: &'static str,
+    expectation: &'static str,
+}
+
+fn assert_coordinate_duplicate_rejected<'dae>(
+    coordinates: &mut ModelCoordinates<'dae>,
+    coordinate: Coordinate<'dae>,
+    expectation: CoordinateDuplicateExpectation<'_>,
+    discrete: dae::DiscreteRealId<'dae>,
+    established: &flat::Variable,
+    span: Span,
+) {
+    let error = coordinates
+        .insert(expectation.candidate, coordinate)
+        .expect_err(expectation.expectation);
+    let dae::DaeConstructionError::DuplicateKey { kind, .. } = error else {
+        panic!("duplicate coordinate failed with an unrelated error: {error}");
+    };
+    assert_eq!(kind, expectation.expected_kind);
+    assert_coordinate_inventory_unchanged(coordinates, discrete, coordinate, established, span);
+}
+
+#[test]
+fn coordinate_inventory_rejects_every_duplicate_atomically() {
+    let source = TestSource::new("discrete Real a; discrete Real b;");
+    let span = source.span("discrete Real a", 0);
+    let provenance = dae::DaeProvenance::source(span).expect("fixture span has source identity");
+    let terminal = dae::Dae::construct(source.map, |construction| {
+        duplicate_coordinate_inventory_body(construction, span, provenance)
+    })
+    .expect_err("the fixture terminates after checking the private inventory");
+    assert_eq!(
+        terminal,
+        dae::DaeConstructionError::InvalidExpressionForm { span }
+    );
 }
 
 #[test]
@@ -83,7 +183,7 @@ fn model_algorithm_assignment_outside_when_activates_unconditionally() {
 
     let dae = construct(&model, source.map)
         .expect("a statement written outside every when lowers on the section activation");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.model_event_transaction_count(), 1);
         let transaction = view
             .model_event_transaction(view.model_event_transaction_id(0).unwrap())
@@ -173,7 +273,7 @@ fn model_event_algorithm_sequential_read_after_write_uses_new_value() {
 
     let dae = construct(&model, source.map)
         .expect("the event transition carries the first assignment into the second RHS");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.model_event_transaction_count(), 1);
         let transaction = view
             .model_event_transaction(view.model_event_transaction_id(0).unwrap())
@@ -277,7 +377,7 @@ fn model_event_algorithm_partial_assignment_retains_entry_value() {
     ));
     model.is_partial = true;
 
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("an unassigned event branch retains the target's event-entry value");
 }
 
@@ -367,7 +467,7 @@ fn model_event_algorithm_if_guard_uses_sequential_new_value() {
 
     let dae = construct(&model, source.map)
         .expect("the event-local if guard reads the checked sequential environment");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let condition = (0..view.condition_count())
             .filter_map(|index| view.condition(view.condition_id(index)?))
             .find(|condition| condition.provenance().span() == condition_span)
@@ -467,7 +567,7 @@ fn model_event_algorithm_total_element_loop_stays_one_tensor_map() {
     ));
 
     let dae = construct(&model, source.map).expect("the total loop has a checked tensor owner");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
             .unwrap();
@@ -631,7 +731,7 @@ fn model_event_tensor_loop_function_call_uses_scalar_binder_shape() {
 
     let dae = construct(&model, source.map)
         .expect("a function call in a compact loop shares the loop's scalar binder proof");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert!((0..view.expression_count()).any(|index| {
             let expression = view.expression(view.expression_id(index).unwrap()).unwrap();
             matches!(
@@ -745,7 +845,7 @@ fn sampled_algorithm_clock_ownership_is_independent_of_producer_order() {
     ));
     model.is_partial = true;
 
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("all clock owners are claimed before an earlier consumer is lowered");
 }
 
@@ -823,7 +923,7 @@ fn model_event_algorithm_indexed_writes_form_one_tensor_ssa_value() {
 
     let dae = construct(&model, source.map)
         .expect("indexed writes remain one checked tensor-valued transition");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
             .unwrap();
@@ -881,7 +981,7 @@ fn sampled_model_algorithm_assertion_keeps_the_when_activation() {
 
     let dae = construct(&model, source.map)
         .expect("an algorithm assertion is an action owned by its when activation");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.model_event_transaction_count(), 0);
         assert_eq!(view.event_action_count(), 1);
         let action = view.event_action(view.event_action_id(0).unwrap()).unwrap();
@@ -891,6 +991,208 @@ fn sampled_model_algorithm_assertion_keeps_the_when_activation() {
             dae::EventActionOperation::Assert { .. }
         ));
     });
+}
+
+#[test]
+fn targetless_algorithm_time_condition_finishes_without_a_transaction_or_root() {
+    let source = TestSource::new(
+        "model M algorithm when time > 0.5 then assert(false, \"failed\"); end when; end M;",
+    );
+    let relation_span = source.span("time > 0.5", 0);
+    let assertion_span = source.span("assert(false, \"failed\")", 0);
+    let when_span = source.span(
+        "when time > 0.5 then assert(false, \"failed\"); end when",
+        0,
+    );
+    let condition = Expression::Binary {
+        op: OpBinary::Gt,
+        lhs: Box::new(Expression::VarRef {
+            name: Reference::new("time"),
+            subscripts: Vec::new(),
+            span: source.span("time", 0),
+        }),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Real(0.5),
+            span: source.span("0.5", 0),
+        }),
+        span: relation_span,
+    };
+    let mut model = test_model();
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: condition,
+                stmts: vec![rumoca_core::Statement::Assert {
+                    condition: Expression::Literal {
+                        value: Literal::Boolean(false),
+                        span: source.span("false", 0),
+                    },
+                    message: Box::new(Expression::Literal {
+                        value: Literal::String("failed".to_string()),
+                        span: source.span("\"failed\"", 0),
+                    }),
+                    level: None,
+                    span: assertion_span,
+                }],
+            }],
+            span: when_span,
+        }],
+        source.span("algorithm", 0),
+        "targetless scheduled action",
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map)
+        .expect("the targetless event product has one total NoTargets finalizer");
+    dae.dae().inspect(|view| {
+        assert_eq!(view.model_event_transaction_count(), 0);
+        assert_eq!(view.event_action_count(), 1);
+        assert_eq!(view.time_event_count(), 1);
+        assert_eq!(view.root_count(), 0);
+        let instant = view
+            .time_event(view.time_event_id(0).unwrap())
+            .unwrap()
+            .instant()
+            .unwrap()
+            .to_f64();
+        assert!((instant - 0.5).abs() < 1.0e-12);
+    });
+}
+
+fn constant_event_function(
+    source: &TestSource,
+    name: &str,
+    declaration_id: u32,
+    value: f64,
+) -> rumoca_core::Function {
+    let mut function = rumoca_core::Function::new(
+        name,
+        rumoca_core::DefId::new(declaration_id),
+        source.span(&format!("function {name}"), 0),
+    );
+    function.add_output(real_function_param(
+        "z",
+        Vec::new(),
+        source.span("output Real z", usize::from(name == "g")),
+    ));
+    let assignment_span = source.span("z :=", usize::from(name == "g"));
+    function.body = vec![rumoca_core::Statement::Assignment {
+        comp: test_component_reference("z", assignment_span),
+        value: Expression::Literal {
+            value: Literal::Real(value),
+            span: assignment_span,
+        },
+        span: assignment_span,
+    }];
+    function
+}
+
+fn resolved_event_call(
+    source: &TestSource,
+    model: &flat::Model,
+    function: &str,
+    target: &str,
+    shared_span: Span,
+) -> rumoca_core::Statement {
+    let instance = model.functions[&VarName::new(function)]
+        .instance_id
+        .expect("Flat gives the event callee an exact instance");
+    rumoca_core::Statement::FunctionCall {
+        comp: Reference::from_component_reference(test_component_reference(function, shared_span))
+            .with_resolved_function(rumoca_core::ResolvedFunctionReference {
+                instance_id: instance,
+                base_part_count: 1,
+                transitively_non_replaceable: true,
+            }),
+        args: Vec::new(),
+        outputs: vec![Some(test_component_reference(target, shared_span))],
+        span: source.span("x := f()", 0),
+    }
+}
+
+#[test]
+fn same_span_event_calls_lower_their_exact_f_and_g_source_payloads() {
+    let source = TestSource::new(
+        "function f output Real z; algorithm z := 1.0; end f; \
+         function g output Real z; algorithm z := 2.0; end g; \
+         model M discrete Real x; discrete Real y; algorithm when true then \
+         x := f(); y := g(); end when; end M;",
+    );
+    let mut model = test_model();
+    model.add_function(constant_event_function(&source, "f", 63_303, 1.0));
+    model.add_function(constant_event_function(&source, "g", 63_304, 2.0));
+    add_discrete_real_variable(&mut model, &source, "x", "discrete Real x", 81);
+    add_discrete_real_variable(&mut model, &source, "y", "discrete Real y", 82);
+    let shared_span = source.span("x := f()", 0);
+    let f = resolved_event_call(&source, &model, "f", "x", shared_span);
+    let g = resolved_event_call(&source, &model, "g", "y", shared_span);
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                stmts: vec![f, g],
+            }],
+            span: source.span("when true", 0),
+        }],
+        source.span("algorithm when", 0),
+        "same-span exact call payloads",
+    ));
+    model.is_partial = true;
+
+    let dae = construct(&model, source.map)
+        .expect("event analysis retains each exact callee despite shared provenance");
+    dae.dae().inspect(|view| {
+        let transaction = view
+            .model_event_transaction(view.model_event_transaction_id(0).unwrap())
+            .unwrap();
+        let callees = transaction
+            .steps()
+            .filter_map(|step| step.definitions().next())
+            .filter_map(
+                |definition| match view.expression(definition.value())?.operation() {
+                    dae::ExpressionOperation::Call { function, .. } => {
+                        Some(view.function(function)?.name().clone())
+                    }
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(callees, [VarName::new("f"), VarName::new("g")]);
+    });
+}
+
+#[test]
+fn event_call_without_an_exact_analysis_occurrence_is_rejected_before_lowering() {
+    let source = TestSource::new("model M algorithm when true then missing(); end when; end M;");
+    let call_span = source.span("missing()", 0);
+    let mut model = test_model();
+    model.algorithms.push(flat::Algorithm::new(
+        vec![rumoca_core::Statement::When {
+            blocks: vec![rumoca_core::StatementBlock {
+                cond: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: source.span("true", 0),
+                },
+                stmts: vec![rumoca_core::Statement::FunctionCall {
+                    comp: Reference::new("missing"),
+                    args: Vec::new(),
+                    outputs: Vec::new(),
+                    span: call_span,
+                }],
+            }],
+            span: source.span("when true", 0),
+        }],
+        source.span("algorithm when", 0),
+        "absent exact call occurrence",
+    ));
+    model.is_partial = true;
+
+    let error = construct(&model, source.map)
+        .expect_err("an event call cannot lower without its exact analysis certificate");
+    assert!(error.to_string().contains("function"));
 }
 
 fn two_stage_tensor_loop(source: &TestSource, second_index: Expression) -> flat::Algorithm {
@@ -1018,7 +1320,7 @@ fn event_tensor_loop_allows_acyclic_same_element_dependency() {
         },
     ));
 
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("same-index dependencies form an ordered pair of compact tensor maps");
 }
 
@@ -1199,7 +1501,7 @@ fn sampled_mixed_result_call_stays_one_ordered_model_event_transaction() {
 
     let dae = construct(&model, source.map)
         .expect("the mixed sampled algorithm is one checked transaction");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.model_event_transaction_count(), 1);
         let transaction = view
             .model_event_transaction(view.model_event_transaction_id(0).unwrap())
@@ -1207,11 +1509,17 @@ fn sampled_mixed_result_call_stays_one_ordered_model_event_transaction() {
         assert_eq!(transaction.targets().len(), 3);
         assert_eq!(transaction.steps().len(), 2);
         assert!(transaction.steps().all(|step| step.clock().is_some()));
+        let transaction_targets = transaction.targets().collect::<HashSet<_>>();
         let definitions = transaction
             .steps()
             .flat_map(|step| step.definitions())
             .collect::<Vec<_>>();
         assert_eq!(definitions.len(), 3);
+        let definition_targets = definitions
+            .iter()
+            .map(|definition| definition.target())
+            .collect::<HashSet<_>>();
+        assert_eq!(definition_targets, transaction_targets);
         let call_owners = definitions
             .iter()
             .filter_map(|definition| {
@@ -1225,4 +1533,86 @@ fn sampled_mixed_result_call_stays_one_ordered_model_event_transaction() {
         assert_eq!(call_owners.len(), 3);
         assert!(call_owners.windows(2).all(|owners| owners[0] == owners[1]));
     });
+}
+
+/// Body of the duplicate-coordinate fixture, extracted from the `construct`
+/// closure so the test's assertion stays adjacent to what it asserts.
+///
+/// The statements and their order are unchanged, including the deliberate
+/// terminal `Err` that stops construction after the private inventory has been
+/// checked.
+fn duplicate_coordinate_inventory_body(
+    construction: &mut dae::DaeConstruction<'_>,
+    span: rumoca_core::Span,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let real = construction
+        .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance))?;
+    let (discrete, _reservation) = construction.variables(|variables| {
+        variables.reserve_discrete_real(VarName::new("a"), InstanceId::new(71), real, provenance)
+    })?;
+    let coordinate = Coordinate::DiscreteReal(discrete);
+    let mut coordinates = ModelCoordinates::new();
+    let established =
+        coordinate_inventory_variable("a", InstanceId::new(71), rumoca_core::DefId::new(81), span);
+    coordinates.insert(&established, coordinate)?;
+
+    let repeated_occurrence = established.clone();
+    assert_coordinate_duplicate_rejected(
+        &mut coordinates,
+        coordinate,
+        CoordinateDuplicateExpectation {
+            candidate: &repeated_occurrence,
+            expected_kind: "runtime variable occurrence",
+            expectation: "one exact occurrence can be inserted only once",
+        },
+        discrete,
+        &established,
+        span,
+    );
+
+    let duplicate_name =
+        coordinate_inventory_variable("a", InstanceId::new(72), rumoca_core::DefId::new(82), span);
+    assert_coordinate_duplicate_rejected(
+        &mut coordinates,
+        coordinate,
+        CoordinateDuplicateExpectation {
+            candidate: &duplicate_name,
+            expected_kind: "runtime variable name",
+            expectation: "one rendered coordinate name has one exact occurrence",
+        },
+        discrete,
+        &established,
+        span,
+    );
+
+    let duplicate_instance =
+        coordinate_inventory_variable("b", InstanceId::new(71), rumoca_core::DefId::new(83), span);
+    assert_coordinate_duplicate_rejected(
+        &mut coordinates,
+        coordinate,
+        CoordinateDuplicateExpectation {
+            candidate: &duplicate_instance,
+            expected_kind: "runtime variable instance",
+            expectation: "one instance cannot be rebound to a different root declaration",
+        },
+        discrete,
+        &established,
+        span,
+    );
+
+    let mut missing_reference =
+        coordinate_inventory_variable("b", InstanceId::new(73), rumoca_core::DefId::new(84), span);
+    missing_reference.component_ref = None;
+    let error = coordinates
+        .insert(&missing_reference, coordinate)
+        .expect_err("post-Resolve variables require exact structured identity");
+    assert!(matches!(
+        error,
+        dae::DaeConstructionError::InvalidExpressionForm { span: error_span }
+            if error_span == span
+    ));
+    assert_coordinate_inventory_unchanged(&coordinates, discrete, coordinate, &established, span);
+
+    Err(dae::DaeConstructionError::InvalidExpressionForm { span })
 }

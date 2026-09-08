@@ -1,6 +1,6 @@
 //! CONN (Connection) contract tests - MLS §9
 //!
-//! Tests for the 29 connection contracts defined in SPEC_0022.
+//! Tests for the 30 connection contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_compile::{Session, SessionConfig};
@@ -578,11 +578,9 @@ fn conn_030_stream_member_matched_with_stream_member_accepted() {
         "Test",
     );
     assert!(
-        result
-            .flat
-            .variables
-            .iter()
-            .any(|(name, variable)| name.as_str() == "v1.port.h_outflow" && variable.connected),
+        result.flat.variables.iter().any(|(name, variable)| {
+            name.as_str() == "v1.port.h_outflow" && !variable.connected.is_unconnected()
+        }),
         "a stream-to-stream connect must still join a stream connection set"
     );
 }

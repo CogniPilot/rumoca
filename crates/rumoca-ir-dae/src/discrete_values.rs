@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use rumoca_core::ComprehensionScalarView;
+use rumoca_core::{ComprehensionScalarView, checked_extent_product};
 use rustc_hash::FxHashSet;
 
 use crate::conditions::{ConditionNode, condition_owner_clock};
@@ -994,10 +994,7 @@ impl<'dae> DiscreteValueTopology<'_, 'dae> {
             };
             ordinal = next;
         }
-        let Some(selected_count) = dimensions[packed.len()..]
-            .iter()
-            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-        else {
+        let Some(selected_count) = checked_extent_product(&dimensions[packed.len()..]) else {
             return false;
         };
         ordinal

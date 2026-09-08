@@ -1,0 +1,5 @@
+--- a/closure-region-facts/src/artifact.rs
++++ b/closure-region-facts/src/artifact.rs
+@@ -112,1 +112,1 @@
+-    digest_file(Path::new("/proc/self/exe"))
++    digest_file(&std::env::current_exe()?)

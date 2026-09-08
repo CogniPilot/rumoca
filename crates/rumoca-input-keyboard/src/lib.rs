@@ -64,7 +64,7 @@ pub fn enable_raw_mode() -> bool {
 }
 
 pub fn disable_raw_mode() {
-    let _ = crossterm::terminal::disable_raw_mode();
+    let _terminal_cleanup = crossterm::terminal::disable_raw_mode();
 }
 
 #[cfg(test)]

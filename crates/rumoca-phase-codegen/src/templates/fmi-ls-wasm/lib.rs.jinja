@@ -161,7 +161,7 @@ impl GuestCoSimulationInstance for RumocaCoSimulationInstance {
         early_return_allowed:             bool,
         required_intermediate_variables:  Vec<u32>,
     ) -> Option<exports::fmi::fmi3::co_simulation::CoSimulationInstance> {
-        if instantiation_token != "{{ artifact.identities.fmu }}"
+        if instantiation_token != "{{ __rumoca_artifact_identity_v1_fmu }}"
             || event_mode_used
             || early_return_allowed
             || !required_intermediate_variables.is_empty()

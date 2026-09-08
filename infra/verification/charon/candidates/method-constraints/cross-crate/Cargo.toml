@@ -1,0 +1,4 @@
+[workspace]
+members = ["root"]
+exclude = ["dep"]
+resolver = "3"

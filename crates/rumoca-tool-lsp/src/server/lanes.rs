@@ -1,4 +1,4 @@
-use rumoca_compile::compile::{DaeCompilationResult, Session};
+use rumoca_compile::compile::{DaeCompilationResult, Session, StrictCompilation};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Default)]
@@ -43,6 +43,16 @@ impl StrictSessionSnapshot {
                 )
             })
             .collect()
+    }
+
+    pub(super) fn compile_target(
+        self,
+        model: &str,
+    ) -> std::result::Result<StrictCompilation, String> {
+        let mut isolated_session = self.session;
+        isolated_session
+            .compile_model_strict(model)
+            .map_err(|report| report.failure_summary(8))
     }
 }
 

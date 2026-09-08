@@ -19,9 +19,21 @@ pub(super) fn register_zero_sized_array_component(
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SourceScopeIndex {
-    component_scopes: FxHashMap<DefId, ast::QualifiedName>,
+    component_scopes: FxHashMap<DefId, ComponentDeclarationScope>,
     class_scopes: FxHashMap<DefId, ast::QualifiedName>,
     class_ranges: FxHashMap<rumoca_core::SourceId, SourceScopeFile>,
+}
+
+/// The declaring class of one component, as both its qualified name and its
+/// resolved lexical scope.
+///
+/// For an inherited component this names the base class that wrote the
+/// declaration, so import-sensitive projections of the declaration use the
+/// base class's own imports (MLS §13.2: imports are not inherited).
+#[derive(Debug, Clone)]
+struct ComponentDeclarationScope {
+    scope: ast::QualifiedName,
+    scope_id: Option<rumoca_core::ScopeId>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,12 +103,26 @@ impl SourceScopeIndex {
             let Some(def_id) = component.def_id else {
                 continue;
             };
-            self.component_scopes.insert(def_id, class_scope.clone());
+            self.component_scopes.insert(
+                def_id,
+                ComponentDeclarationScope {
+                    scope: class_scope.clone(),
+                    scope_id: class.scope_id,
+                },
+            );
         }
     }
 
     fn component_scope(&self, comp: &ast::Component) -> Option<ast::QualifiedName> {
-        self.component_scopes.get(&comp.def_id?).cloned()
+        self.component_scopes
+            .get(&comp.def_id?)
+            .map(|declaration| declaration.scope.clone())
+    }
+
+    fn component_scope_id(&self, comp: &ast::Component) -> Option<rumoca_core::ScopeId> {
+        self.component_scopes
+            .get(&comp.def_id?)
+            .and_then(|declaration| declaration.scope_id)
     }
 
     fn class_scope(&self, class: &ast::ClassDef) -> Option<ast::QualifiedName> {
@@ -184,10 +210,22 @@ pub(super) fn class_declaration_source_scope(
 pub(super) fn expression_source_scope(
     ctx: &InstantiateContext,
     expr: &ast::Expression,
-) -> Option<ast::QualifiedName> {
+) -> Option<(ast::QualifiedName, Option<rumoca_core::ScopeId>)> {
     ctx.source_scope_index
         .scope_for_location(expr.get_location()?)
-        .map(|(scope, _)| scope)
+}
+
+/// Effective import bindings of the class that declared `comp` (MLS §13.2).
+///
+/// Returns `None` when the component carries no resolved declaring scope,
+/// which only synthetic components without a source declaration do.
+pub(super) fn component_effective_imports(
+    tree: &ast::ClassTree,
+    ctx: &InstantiateContext,
+    comp: &ast::Component,
+) -> Option<ast::EffectiveImports> {
+    let scope_id = ctx.source_scope_index.component_scope_id(comp)?;
+    Some(tree.effective_imports(scope_id))
 }
 
 pub(super) fn location_source_scope(

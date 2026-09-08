@@ -21,7 +21,6 @@ wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-ast = { workspace = true }
-rumoca-phase-galec = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }
 # default-features = false drops the `server`+`simulation` features and keeps

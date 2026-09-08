@@ -12,7 +12,7 @@
 //! * rejection — a coupled residual and a same-tick cycle both fail closed at
 //!   the offending equation's own provenance.
 
-use rumoca_core::{SourceMap, Span, TypeId, VarName};
+use rumoca_core::{InstanceId, SourceMap, Span, TypeId, VarName};
 
 use super::*;
 
@@ -106,12 +106,14 @@ fn producer_consumer_model(order: ProducerOrder) -> dae::Dae {
             Ok((
                 variables.discrete_real(
                     VarName::new("consumer"),
+                    InstanceId::new(1),
                     real,
                     consumer_declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_real(
                     VarName::new("producer"),
+                    InstanceId::new(2),
                     real,
                     producer_declaration,
                     dae::VariableAttributes::default(),
@@ -180,12 +182,14 @@ fn same_tick_cycle_model() -> dae::Dae {
             Ok((
                 variables.discrete_real(
                     VarName::new("a"),
+                    InstanceId::new(1),
                     real,
                     a_declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_real(
                     VarName::new("b"),
+                    InstanceId::new(2),
                     real,
                     b_declaration,
                     dae::VariableAttributes::default(),
@@ -256,12 +260,14 @@ fn coupled_residual_model() -> dae::Dae {
             Ok((
                 variables.discrete_real(
                     VarName::new("z"),
+                    InstanceId::new(1),
                     real,
                     z_declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_real(
                     VarName::new("w"),
+                    InstanceId::new(2),
                     real,
                     w_declaration,
                     dae::VariableAttributes::default(),

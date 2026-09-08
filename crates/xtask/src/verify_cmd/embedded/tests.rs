@@ -58,7 +58,7 @@ fn entry(budget: Budget) -> BudgetEntry {
         id: "row".to_string(),
         model: "Vehicles.Rdd2.NavigationEstimator".to_string(),
         entry_point: "Vehicles/package.mo".to_string(),
-        target: "embedded-c-galec".to_string(),
+        target: "fixture-c-target".to_string(),
         why: "coverage".to_string(),
         budget,
     }
@@ -303,8 +303,8 @@ fn compiler_colouring_is_stripped_before_it_reaches_the_report() {
 #[test]
 fn a_row_id_becomes_a_safe_artifact_stem() {
     assert_eq!(
-        artifact_stem("navigation-estimator/embedded-c-galec"),
-        "navigation-estimator_embedded-c-galec"
+        artifact_stem("navigation-estimator/fixture-c-target"),
+        "navigation-estimator_fixture-c-target"
     );
 }
 
@@ -393,129 +393,27 @@ fn an_inadmissible_manifest_is_refused() {
     );
 }
 
-/// The checked-in budget loads, gates the artifacts the flight track is about,
-/// and carries a ceiling at or above the measurement it was set from. A ceiling
-/// recorded below its own measurement would be permanently red.
+/// With every former Embedded/Production C product retired, the checked-in
+/// roster is empty and therefore deliberately inadmissible. The command must
+/// fail closed until the `efmu` `SolveAlgorithmProduct` has fresh authenticated
+/// measurements; an empty green budget would certify nothing.
 #[test]
-fn the_checked_in_budget_gates_the_flight_artifacts() {
+fn the_checked_in_budget_refuses_to_certify_zero_active_artifacts() {
     let root = workspace_root();
-    let manifest = super::manifest::load(&super::manifest::manifest_path(&root))
-        .expect("the checked-in embedded budget must load");
-    for (model, target) in [
-        ("Vehicles.Rdd2.NavigationEstimator", "embedded-c-galec"),
-        ("Vehicles.Rdd2.NavigationEstimator", "galec-production"),
-        ("Estimation.StrapdownINS.UKF.Estimator", "galec-production"),
-    ] {
-        assert!(
-            manifest
-                .entries
-                .iter()
-                .any(|entry| entry.model == model && entry.target == target),
-            "the embedded budget does not gate {model} at {target}"
-        );
-    }
-    for entry in &manifest.entries {
-        let Budget {
-            text_bytes,
-            state_bytes,
-            fp_ops,
-            measured,
-        } = &entry.budget;
-        assert!(
-            *text_bytes >= measured.text_bytes,
-            "{}: text ceiling {text_bytes} is below its own recorded measurement {}",
-            entry.id,
-            measured.text_bytes
-        );
-        assert!(
-            *state_bytes >= measured.state_bytes,
-            "{}: state ceiling {state_bytes} is below its own recorded measurement {}",
-            entry.id,
-            measured.state_bytes
-        );
-        assert!(
-            *fp_ops >= measured.fp_ops,
-            "{}: arithmetic ceiling {fp_ops} is below its own recorded count {}",
-            entry.id,
-            measured.fp_ops
-        );
-    }
+    let path = super::manifest::manifest_path(&root);
+    let raw = std::fs::read_to_string(&path).expect("read checked-in embedded budget");
+    let manifest: BudgetManifest =
+        serde_json::from_str(&raw).expect("checked-in embedded budget schema");
+    assert!(
+        manifest.entries.is_empty(),
+        "no retired row may remain active"
+    );
+    let error = validate(&manifest).expect_err("an empty budget must fail closed");
+    assert!(
+        error.to_string().contains("no entries"),
+        "unexpected empty-budget refusal: {error:#}"
+    );
 }
-
-/// Every single-precision libm call the embedded-c-galec templates can emit
-/// must have its double sibling in [`DOUBLE_LIBM_FUNCTIONS`], so that losing
-/// the `f` on any template arm is caught by the symbol check. Unlike
-/// [`single_precision_siblings_are_all_permitted`], which only checks the
-/// names already listed, this test derives the required names from the
-/// templates themselves and therefore fails when a builtin is added without a
-/// matching forbidden entry (`tanhf` was emitted while `tanh` was absent).
-#[test]
-fn every_emitted_libm_float_has_its_double_sibling_forbidden() {
-    let template_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rumoca-phase-codegen/src/templates/embedded-c-galec");
-    let mut emitted = std::collections::BTreeSet::new();
-    for entry in std::fs::read_dir(&template_dir).expect("read template directory") {
-        let path = entry.expect("read template entry").path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("jinja") {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).expect("read template");
-        for word in f_suffixed_words(&text) {
-            let stem = &word[..word.len() - 1];
-            if DOUBLE_LIBM_FUNCTIONS.contains(&stem) {
-                emitted.insert(word.clone());
-            } else if LIBM_FLOAT_SHAPES.contains(&word.as_str()) {
-                panic!(
-                    "{} emits `{word}` but `{stem}` is not in \
-                     DOUBLE_LIBM_FUNCTIONS; add it so a dropped `f` \
-                     suffix cannot pass the symbol check",
-                    path.display()
-                );
-            }
-        }
-    }
-    for required in ["sqrtf", "sinf", "cosf", "atan2f", "tanhf", "powf"] {
-        assert!(
-            emitted.contains(required),
-            "template scan no longer sees `{required}`; the scan or the \
-             templates changed shape and this test must follow"
-        );
-    }
-}
-
-/// Lowercase alphanumeric words ending in `f`, at least two characters, not
-/// preceded by an underscore: the shape of a single-precision libm call in the
-/// templates, and nothing a `rumoca_galec_*` helper name can produce.
-fn f_suffixed_words(text: &str) -> Vec<String> {
-    let bytes = text.as_bytes();
-    let mut words = Vec::new();
-    let mut start = None;
-    for (index, byte) in bytes.iter().chain(std::iter::once(&b' ')).enumerate() {
-        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
-            start.get_or_insert(index);
-            continue;
-        }
-        let Some(word_start) = start.take() else {
-            continue;
-        };
-        let word = &text[word_start..index];
-        let boundary = word_start == 0 || bytes[word_start - 1] != b'_';
-        if boundary && word.len() > 1 && word.ends_with('f') {
-            words.push(word.to_string());
-        }
-    }
-    words
-}
-
-/// The libm float spellings the templates are known to use. The scan above
-/// only consults this list for words whose double stem is missing from
-/// [`DOUBLE_LIBM_FUNCTIONS`], so a genuinely new libm builtin must be added
-/// both here and there, while non-libm identifiers ending in `f` stay exempt.
-const LIBM_FLOAT_SHAPES: [&str; 22] = [
-    "acosf", "asinf", "atan2f", "atanf", "cbrtf", "ceilf", "cosf", "coshf", "expf", "fabsf",
-    "floorf", "fmodf", "hypotf", "log10f", "log2f", "logf", "powf", "sinf", "sinhf", "sqrtf",
-    "tanf", "tanhf",
-];
 
 /// A disassembly in the exact shape `arm-none-eabi-objdump -d` writes it,
 /// carrying every mnemonic [`COUNTED_ARITHMETIC`] names, one predicated

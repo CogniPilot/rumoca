@@ -87,16 +87,16 @@ impl Result {
     }
 
     #[getter]
-    fn metrics(&self, py: Python<'_>) -> PyObject {
+    fn metrics(&self, py: Python<'_>) -> ApiResult<PyObject> {
         let dict = PyDict::new_bound(py);
-        let _ = dict.set_item("points", self.times.len());
-        let _ = dict.set_item("variables", self.names.len());
-        let _ = dict.set_item("compile_seconds", self.compile_seconds);
-        let _ = dict.set_item("simulate_seconds", self.simulate_seconds);
+        dict.set_item("points", self.times.len())?;
+        dict.set_item("variables", self.names.len())?;
+        dict.set_item("compile_seconds", self.compile_seconds)?;
+        dict.set_item("simulate_seconds", self.simulate_seconds)?;
         if let Some(t) = &self.termination {
-            let _ = dict.set_item("termination", t);
+            dict.set_item("termination", t)?;
         }
-        dict.into_py(py)
+        Ok(dict.into_py(py))
     }
 
     fn __len__(&self) -> usize {
@@ -208,18 +208,18 @@ impl Result {
         Ok(axes.into_py(py))
     }
 
-    fn to_dict(&self, py: Python<'_>) -> PyObject {
+    fn to_dict(&self, py: Python<'_>) -> ApiResult<PyObject> {
         let dict = PyDict::new_bound(py);
-        let _ = dict.set_item("model", &self.model_name);
-        let _ = dict.set_item("time", to_py_array(py, &self.times));
-        let _ = dict.set_item("names", self.names.clone());
+        dict.set_item("model", &self.model_name)?;
+        dict.set_item("time", to_py_array(py, &self.times))?;
+        dict.set_item("names", self.names.clone())?;
         let data = PyDict::new_bound(py);
         for (name, col) in self.names.iter().zip(self.data.iter()) {
-            let _ = data.set_item(name, to_py_array(py, col));
+            data.set_item(name, to_py_array(py, col))?;
         }
-        let _ = dict.set_item("data", data);
-        let _ = dict.set_item("metrics", self.metrics(py));
-        dict.into_py(py)
+        dict.set_item("data", data)?;
+        dict.set_item("metrics", self.metrics(py)?)?;
+        Ok(dict.into_py(py))
     }
 
     #[pyo3(signature = (pretty=true))]

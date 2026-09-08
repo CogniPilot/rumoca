@@ -9,6 +9,7 @@ homepage.workspace = true
 
 [features]
 default = []
+fmu-packaging = ["dep:zip"]
 tracing = [
     "rumoca-phase-flatten/tracing",
     "rumoca-phase-instantiate/tracing",
@@ -30,9 +31,13 @@ rumoca-phase-flatten = { workspace = true }
 rumoca-phase-dae = { workspace = true }
 rumoca-phase-structural = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
+rumoca-phase-galec = { workspace = true }
+rumoca-phase-solve = { workspace = true }
+rumoca-ir-galec = { workspace = true }
 rumoca-core = { workspace = true }
 anyhow = { workspace = true }
 indexmap = { workspace = true }
+minijinja = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["unbounded_depth"] }
@@ -41,6 +46,15 @@ flate2 = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+tempfile = { workspace = true }
+zip = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

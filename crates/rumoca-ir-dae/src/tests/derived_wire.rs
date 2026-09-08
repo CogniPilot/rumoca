@@ -349,7 +349,13 @@ fn derived_wire_fixture() -> Dae {
         let empty =
             dae.types(|types| types.derived(ValueType::array(ScalarType::Real, [0]), empty_at))?;
         let z = dae.variables(|variables| {
-            variables.discrete_real(VarName::new("z"), real, z_at, VariableAttributes::default())
+            variables.discrete_real(
+                VarName::new("z"),
+                rumoca_core::InstanceId::new(1),
+                real,
+                z_at,
+                VariableAttributes::default(),
+            )
         })?;
         let clock = dae.clocks(|clocks| {
             let clock = clocks.periodic(
@@ -374,7 +380,7 @@ fn derived_wire_fixture() -> Dae {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "k".to_owned(),
                         lower: 1,
                         upper: 2,

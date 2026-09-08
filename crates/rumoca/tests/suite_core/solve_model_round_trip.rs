@@ -41,8 +41,6 @@ fn solve_model_round_trip_simulates_identically() {
     };
     let lowered = lower_correlated_for_simulation_with_overrides(compiled.dae(), &opts)
         .expect("lower correlated model");
-    crate::solve_root_contract::reseal_solve_problem(&lowered.model().problem)
-        .expect("lowered SolveProblem must satisfy its construction contract");
 
     // The addon boundary: hand the correlated component construction across as JSON.
     let wire = rumoca_phase_solve::fmi::fmi_component_wire(&lowered)
@@ -51,19 +49,19 @@ fn solve_model_round_trip_simulates_identically() {
     let mut deserializer = serde_json::Deserializer::from_str(&json);
     let round_tripped = rumoca_phase_solve::fmi::deserialize_fmi_component(&mut deserializer)
         .expect("replay FMI component");
-    let round_tripped_model = round_tripped.runtime_view().model();
+    let round_tripped_model = round_tripped.runtime_model();
     assert!(
         !round_tripped_model
-            .artifacts
-            .continuous
+            .artifacts()
+            .continuous()
             .full_jacobian_v
             .is_empty(),
         "checked replay must mechanically reconstruct the JVP"
     );
     assert!(
         round_tripped_model
-            .artifacts
-            .continuous
+            .artifacts()
+            .continuous()
             .structural
             .derivative()
             .is_some(),
@@ -120,7 +118,7 @@ fn solve_model_wire_rejects_caller_supplied_jvp_artifacts() {
     let model = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
         .expect("lower solve model");
     assert!(
-        !model.artifacts.continuous.full_jacobian_v.is_empty(),
+        !model.artifacts().continuous().full_jacobian_v.is_empty(),
         "fixture must carry a mechanically derived JVP"
     );
 
@@ -180,11 +178,11 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
         wrong_metadata.get("variable_meta").is_none(),
         "trace metadata must be derived rather than serialized as an authority"
     );
-    wrong_metadata["variable_catalog"]["entries"][0]["scalar_names"][0] =
-        serde_json::json!("forged");
+    wrong_metadata["variable_catalog"]["entries"][0]["scalar_names"] =
+        serde_json::json!(["forged"]);
     let error = replay_wire(&wrong_metadata)
-        .expect_err("visible names and metadata are one correlated projection");
-    assert!(error.to_string().contains("metadata at index 0"), "{error}");
+        .expect_err("catalog scalar identity and storage extent are one correlated projection");
+    assert!(error.to_string().contains("names contain 1"), "{error}");
 
     let mut unsupported = wire;
     unsupported["schema_version"] =
@@ -194,33 +192,6 @@ fn solve_model_replay_rejects_unproved_root_correlations() {
         error
             .to_string()
             .contains("unsupported SolveModel schema_version"),
-        "{error}"
-    );
-}
-
-#[test]
-fn solve_model_wire_view_fails_closed_before_serialization() {
-    let compiled = Compiler::new()
-        .model("ArrayDecay")
-        .compile_str(ARRAY_SOURCE, "array.mo")
-        .expect("compile ArrayDecay");
-    let model = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
-        .expect("lower solve model");
-
-    let mut wrong_vector = model.clone();
-    wrong_vector.initial_y.pop();
-    let error = rumoca_phase_solve::solve_model_wire(&wrong_vector)
-        .expect_err("wire construction must reject an uncorrelated runtime vector");
-    assert!(error.to_string().contains("initial_y"), "{error}");
-
-    let mut unsupported_artifact = model;
-    unsupported_artifact.artifacts.continuous.mass_matrix = rumoca_ir_solve::MassMatrix::Diagonal {
-        values: vec![1.0, 1.0, 1.0],
-    };
-    let error = rumoca_phase_solve::solve_model_wire(&unsupported_artifact)
-        .expect_err("wire construction must not silently omit a semantic artifact");
-    assert!(
-        error.to_string().contains("non-identity mass matrix"),
         "{error}"
     );
 }

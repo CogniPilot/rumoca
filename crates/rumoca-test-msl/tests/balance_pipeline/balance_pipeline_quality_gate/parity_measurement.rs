@@ -60,7 +60,8 @@
 //! disagrees with the reference on any band. Owner: this module; the on-disk
 //! shapes it reads are written by `rumoca-msl-tools omc-simulation-reference`
 //! (the reference) and by
-//! [`rumoca_test_msl::msl_tools::band_table::persist_band_table`] (the table).
+//! [`rumoca_test_msl::msl_tools::band_table::persist_current_run_band_table`]
+//! (the table).
 //!
 //! A demoted reading is not a soft failure: on a baseline-relative Tier 2 run
 //! [`MslParityMeasurement::gate_failure_reason`] turns it into a gate reason, so
@@ -72,7 +73,6 @@
 
 use super::*;
 use rumoca_test_msl::msl_tools::band_table::{self, BandTable, BandTableRunScope, BandTransitions};
-use std::sync::OnceLock;
 
 /// Fixed prefix every "no parity reading" line starts with. Operators and the
 /// CI summary grep for this exact text, so it is a constant rather than an
@@ -101,6 +101,9 @@ pub(crate) enum MslParityUnmeasuredReason {
     /// The band table and the reference disagree about the bands. One of the
     /// two is stale; neither may be quoted.
     BandTableInconsistent { detail: String },
+    /// The numerical band exists, but the accounting-complete certification
+    /// population disagrees with the source-bound per-model rows.
+    ChannelAccountingIncomplete { detail: String },
     /// The run attempted no simulations, so there is nothing to compare.
     NoSimulationsAttempted,
 }
@@ -127,6 +130,9 @@ impl MslParityUnmeasuredReason {
             Self::BandTableInconsistent { detail } => {
                 format!("the per-model band table disagrees with the OMC reference: {detail}")
             }
+            Self::ChannelAccountingIncomplete { detail } => {
+                format!("strict-high channel accounting is incomplete: {detail}")
+            }
             Self::NoSimulationsAttempted => "the run attempted no simulations".to_string(),
         }
     }
@@ -134,24 +140,23 @@ impl MslParityUnmeasuredReason {
 
 /// What the comparator stage did in this process.
 ///
-/// The gate combines this with what it finds on disk, so a run that merges
-/// another process's comparator output (the sharded fan-in) is measured, while
-/// a run whose own stage was skipped names the skip.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Every measured variant owns source-bound evidence from this run. The gate
+/// does not reopen similarly named on-disk comparator or reference artifacts.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum MslParityStageOutcome {
     /// The comparator stage ran to completion in this process.
-    Ran,
+    Ran(CurrentRunTraceComparison),
     /// The stage did not run; the reason must reach the summary.
     DidNotRun(MslParityUnmeasuredReason),
     /// This run consumes comparator artifacts merged from shard partials.
-    MergedShardArtifacts,
+    MergedShardArtifacts(CurrentRunTraceComparison),
 }
 
 impl MslParityStageOutcome {
-    fn skip_reason(&self) -> Option<&MslParityUnmeasuredReason> {
+    pub(crate) fn trace_comparison(&self) -> Option<&CurrentRunTraceComparison> {
         match self {
-            Self::DidNotRun(reason) => Some(reason),
-            Self::Ran | Self::MergedShardArtifacts => None,
+            Self::Ran(receipt) | Self::MergedShardArtifacts(receipt) => Some(receipt),
+            Self::DidNotRun(_) => None,
         }
     }
 }
@@ -276,6 +281,15 @@ impl MslParityMeasurement {
         if let Some(reason) = band_table_disagreement(stats, &cohort.table) {
             return Self::Unmeasured(reason);
         }
+        if cohort.table.strict_high_models() != stats.strict_high_models {
+            return Self::Unmeasured(MslParityUnmeasuredReason::ChannelAccountingIncomplete {
+                detail: format!(
+                    "source-bound table certifies {} strict-high models, reference records {}",
+                    cohort.table.strict_high_models(),
+                    stats.strict_high_models
+                ),
+            });
+        }
         Self::Measured {
             input: Box::new(input),
             cohort: Box::new(cohort),
@@ -360,10 +374,10 @@ impl MslParityMeasurement {
                     table.models_compared(),
                     absent_for(band_table::ExitReason::Excluded)
                         + absent_for(band_table::ExitReason::ComparatorFailed)
+                        + absent_for(band_table::ExitReason::NoCommonVariables)
                         + absent_for(band_table::ExitReason::NoComparableSamples),
                     absent_for(band_table::ExitReason::ReferenceMissing)
-                        + absent_for(band_table::ExitReason::RumocaTraceMissing)
-                        + absent_for(band_table::ExitReason::TraceMissingSideUnrecorded),
+                        + absent_for(band_table::ExitReason::RumocaTraceMissing),
                     absent_for(band_table::ExitReason::NotAttempted),
                     input.omc_version.as_deref().unwrap_or("unknown"),
                     cohort.summary_clause(),
@@ -419,11 +433,7 @@ fn band_table_disagreement(
             table.models_compared(),
             stats.models_compared,
         ),
-        (
-            "strict-high models",
-            table.strict_high_models(),
-            stats.agreement_high,
-        ),
+        ("high-band models", table.counts.high, stats.agreement_high),
         ("near models", table.near_models(), stats.agreement_minor),
         (
             "deviation models",
@@ -443,16 +453,15 @@ fn band_table_disagreement(
         })
 }
 
-/// This run's cohort reading, computed **once** per process.
+/// This run's cohort reading, computed **once** per receipt.
 ///
 /// The gate reads the measurement more than once (the snapshot writer and the
-/// gate itself). The `OnceLock` makes "one run, one reading" a property of the
-/// type rather than a call-order convention — rotation itself is idempotent, but
-/// deriving the table twice would still cost the run a second full read of the
-/// comparator output.
-fn cohort_reading() -> Result<MslCohortReading, MslParityUnmeasuredReason> {
-    static COHORT: OnceLock<Result<MslCohortReading, MslParityUnmeasuredReason>> = OnceLock::new();
-    COHORT.get_or_init(read_cohort).clone()
+/// gate itself). Receipt-owned memoization makes "one run, one reading" a
+/// property of the run-bound value rather than ambient process state.
+fn cohort_reading(
+    receipt: &CurrentRunTraceComparison,
+) -> Result<MslCohortReading, MslParityUnmeasuredReason> {
+    receipt.cohort_reading(|| read_cohort(receipt))
 }
 
 /// Derive the run's band table from the comparator output in the results
@@ -470,17 +479,17 @@ fn cohort_reading() -> Result<MslCohortReading, MslParityUnmeasuredReason> {
 /// results directory is its own, and the fan-in checks that every shard produced
 /// it), while a focused run over a directory that already holds the cohort table
 /// declines to displace it and says so.
-fn read_cohort() -> Result<MslCohortReading, MslParityUnmeasuredReason> {
+fn read_cohort(
+    receipt: &CurrentRunTraceComparison,
+) -> Result<MslCohortReading, MslParityUnmeasuredReason> {
     let run_scope = if should_skip_msl_quality_gate() {
         BandTableRunScope::Partial
     } else {
         BandTableRunScope::Full
     };
-    let persisted =
-        band_table::persist_band_table(&msl_results_dir(), run_scope).map_err(|error| {
-            MslParityUnmeasuredReason::BandTableAbsent {
-                detail: format!("{error:#}"),
-            }
+    let persisted = band_table::persist_current_run_band_table(run_scope, receipt.validated())
+        .map_err(|error| MslParityUnmeasuredReason::BandTableAbsent {
+            detail: format!("{error:#}"),
         })?;
     if let Some(reason) = persisted.not_persisted_reason.as_deref() {
         println!("MSL band table: NOT WRITTEN — {reason}");
@@ -506,16 +515,17 @@ pub(crate) fn measure_msl_parity(
     stage: &MslParityStageOutcome,
     expected_sim_target_models: usize,
 ) -> MslParityMeasurement {
-    if let Some(reason) = stage.skip_reason() {
-        return MslParityMeasurement::unmeasured(reason.clone());
-    }
-    let path = omc_simulation_reference_path();
-    if !path.is_file() {
-        return MslParityMeasurement::unmeasured(MslParityUnmeasuredReason::ReferenceAbsent {
-            path: path.display().to_string(),
-        });
-    }
-    let input = match load_current_msl_parity_gate_input_required(expected_sim_target_models) {
+    let receipt = match stage {
+        MslParityStageOutcome::DidNotRun(reason) => {
+            return MslParityMeasurement::unmeasured(reason.clone());
+        }
+        MslParityStageOutcome::Ran(receipt)
+        | MslParityStageOutcome::MergedShardArtifacts(receipt) => receipt,
+    };
+    let input = match current_msl_parity_gate_input_required(
+        receipt.reference_payload(),
+        expected_sim_target_models,
+    ) {
         Ok(input) => input,
         Err(error) => {
             return MslParityMeasurement::unmeasured(
@@ -525,7 +535,7 @@ pub(crate) fn measure_msl_parity(
             );
         }
     };
-    match cohort_reading() {
+    match cohort_reading(receipt) {
         Ok(cohort) => MslParityMeasurement::measured(input, cohort),
         Err(reason) => MslParityMeasurement::unmeasured(reason),
     }
@@ -575,7 +585,12 @@ pub(crate) mod fixtures {
             models.insert(name.clone(), deviation_metric(&name));
         }
         band_table::derive_band_table(
-            &serde_json::json!({ "models": models, "missing_trace": {}, "skipped": {} }),
+            &serde_json::json!({
+                "models": models,
+                "missing_trace": {},
+                "skipped": {},
+                "trace_nonidentifiable": {}
+            }),
             None,
             &std::collections::BTreeMap::new(),
             fixture_meta(tag),
@@ -600,10 +615,19 @@ pub(crate) mod fixtures {
     }
 
     pub(crate) fn band_metric(model_name: &str, high: usize, minor: usize) -> serde_json::Value {
+        let compared_count = high + minor;
+        let compared = (0..compared_count)
+            .map(|index| format!("channel-{index:08}"))
+            .collect::<Vec<_>>();
         serde_json::json!({
             "model_name": model_name,
-            "compared_variables": high + minor,
-            "samples_compared": 100,
+            "channel_partition": {
+                "compared": compared,
+                "shared_unmeasured": [],
+                "rumoca_only": [],
+                "reference_only": []
+            },
+            "samples_compared": compared_count * 2,
             "bounded_normalized_l1_score": 0.0,
             "mean_channel_bounded_normalized_l1": 0.0,
             "max_channel_bounded_normalized_l1": 0.0,
@@ -611,16 +635,53 @@ pub(crate) mod fixtures {
             "channel_minor_count": minor,
             "channel_deviation_count": 0,
             "channel_severe_count": 0,
-            "worst_variables": []
+            "channel_high_percent": high as f64 / (high + minor) as f64,
+            "channel_minor_percent": minor as f64 / (high + minor) as f64,
+            "channel_deviation_percent": 0.0,
+            "channel_severe_percent": 0.0,
+            "channel_violation_mass": 0.0,
+            "initial_condition": {
+                "channels_compared": high + minor,
+                "channels_unmeasured": 0,
+                "high_count": high,
+                "minor_count": minor,
+                "deviation_count": 0,
+                "severe_count": 0,
+                "high_percent": high as f64 / (high + minor) as f64,
+                "minor_percent": minor as f64 / (high + minor) as f64,
+                "deviation_percent": 0.0,
+                "severe_percent": 0.0,
+                "violation_mass_total": 0.0,
+                "violation_mass_mean_per_channel": 0.0,
+                "max_channel_bounded_normalized_error": 0.0,
+                "mean_channel_bounded_normalized_error": 0.0
+            },
+            "worst_variables": [],
+            "state_selection": null,
+            "rumoca_sim_wall_seconds": null,
+            "rumoca_sim_seconds": null,
+            "rumoca_sim_build_seconds": null,
+            "rumoca_sim_run_seconds": null,
+            "omc_sim_system_seconds": null,
+            "omc_total_system_seconds": null,
+            "omc_wall_seconds": null
         })
     }
 
     /// A model the classifier places in the deviation band: most of its channels
     /// deviate.
     fn deviation_metric(model_name: &str) -> serde_json::Value {
+        let compared = (0..10)
+            .map(|index| format!("channel-{index:08}"))
+            .collect::<Vec<_>>();
         serde_json::json!({
             "model_name": model_name,
-            "compared_variables": 10,
+            "channel_partition": {
+                "compared": compared,
+                "shared_unmeasured": [],
+                "rumoca_only": [],
+                "reference_only": []
+            },
             "samples_compared": 100,
             "bounded_normalized_l1_score": 0.5,
             "mean_channel_bounded_normalized_l1": 0.5,
@@ -629,7 +690,37 @@ pub(crate) mod fixtures {
             "channel_minor_count": 0,
             "channel_deviation_count": 9,
             "channel_severe_count": 0,
-            "worst_variables": []
+            "channel_high_percent": 0.1,
+            "channel_minor_percent": 0.0,
+            "channel_deviation_percent": 0.9,
+            "channel_severe_percent": 0.0,
+            "channel_violation_mass": 0.0,
+            "initial_condition": {
+                "channels_compared": 10,
+                "channels_unmeasured": 0,
+                "high_count": 1,
+                "minor_count": 0,
+                "deviation_count": 9,
+                "severe_count": 0,
+                "high_percent": 0.1,
+                "minor_percent": 0.0,
+                "deviation_percent": 0.9,
+                "severe_percent": 0.0,
+                "violation_mass_total": 0.0,
+                "violation_mass_mean_per_channel": 0.0,
+                "max_channel_bounded_normalized_error": 0.0,
+                "mean_channel_bounded_normalized_error": 0.0,
+                "violation_mass_mean_per_channel": 0.0
+            },
+            "worst_variables": [],
+            "state_selection": null,
+            "rumoca_sim_wall_seconds": null,
+            "rumoca_sim_seconds": null,
+            "rumoca_sim_build_seconds": null,
+            "rumoca_sim_run_seconds": null,
+            "omc_sim_system_seconds": null,
+            "omc_total_system_seconds": null,
+            "omc_wall_seconds": null
         })
     }
 
@@ -678,6 +769,7 @@ mod tests {
             policy_excluded_models: 0,
             trace_nonidentifiable_models: 0,
             agreement_high,
+            strict_high_models: agreement_high,
             agreement_high_percent: None,
             agreement_minor: models_compared - agreement_high,
             agreement_minor_percent: None,
@@ -781,6 +873,37 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_channel_accounting_is_not_misreported_as_stale_artifact() {
+        let mut metric = band_metric("High0", 10, 0);
+        metric["channel_partition"]["rumoca_only"] = serde_json::json!(["unaccounted"]);
+        let table = band_table::derive_band_table(
+            &serde_json::json!({
+                "models": { "High0": metric },
+                "missing_trace": {}, "skipped": {}, "trace_nonidentifiable": {}
+            }),
+            None,
+            &std::collections::BTreeMap::new(),
+            fixtures::fixture_meta("incomplete-accounting"),
+        )
+        .expect("derive incomplete-accounting table");
+        let cohort = MslCohortReading {
+            table,
+            transitions: None,
+            previous_not_diffable: None,
+            persisted: true,
+        };
+        let measurement = MslParityMeasurement::measured(
+            gate_input_with(Some("omc 1.0"), Some(stats_with(1, 1))),
+            cohort,
+        );
+
+        assert!(matches!(
+            measurement.unmeasured_reason(),
+            Some(MslParityUnmeasuredReason::ChannelAccountingIncomplete { .. })
+        ));
+    }
+
+    #[test]
     fn unmeasured_summary_line_names_the_headline_and_the_reason() {
         let measurement =
             MslParityMeasurement::unmeasured(MslParityUnmeasuredReason::OmcUnavailable {
@@ -876,9 +999,29 @@ mod tests {
             .unmeasured_reason()
             .expect("a stale band table must demote the reading")
             .detail();
-        assert!(detail.contains("37 strict-high"), "got: {detail}");
+        assert!(detail.contains("37 high-band models"), "got: {detail}");
         assert!(detail.contains("reference reports 38"), "got: {detail}");
         assert!(measurement.gate_failure_reason().is_some());
+    }
+
+    #[test]
+    fn reference_strict_high_is_not_inferred_from_its_high_band_count() {
+        let mut stats = stats_with(48, 38);
+        stats.strict_high_models = 37;
+        let measurement = MslParityMeasurement::measured(
+            gate_input_with(Some("OpenModelica 1.25.0"), Some(stats)),
+            MslCohortReading {
+                table: cohort_table(38, 10),
+                transitions: None,
+                previous_not_diffable: None,
+                persisted: true,
+            },
+        );
+
+        assert!(matches!(
+            measurement.unmeasured_reason(),
+            Some(MslParityUnmeasuredReason::ChannelAccountingIncomplete { .. })
+        ));
     }
 
     #[test]
@@ -945,7 +1088,8 @@ mod tests {
             &serde_json::json!({
                 "models": { "High0": band_metric("High0", 10, 0) },
                 "missing_trace": {},
-                "skipped": {}
+                "skipped": {},
+                "trace_nonidentifiable": {}
             }),
             Some(&serde_json::json!({
                 "git_commit": "cert1234",
@@ -1064,7 +1208,8 @@ mod tests {
             &serde_json::json!({
                 "models": { "Wide": band_metric("Wide", 165, 0) },
                 "missing_trace": {},
-                "skipped": {}
+                "skipped": {},
+                "trace_nonidentifiable": {}
             }),
             None,
             &std::collections::BTreeMap::new(),
@@ -1075,7 +1220,8 @@ mod tests {
             &serde_json::json!({
                 "models": { "Wide": band_metric("Wide", 3, 0) },
                 "missing_trace": {},
-                "skipped": {}
+                "skipped": {},
+                "trace_nonidentifiable": {}
             }),
             None,
             &std::collections::BTreeMap::new(),

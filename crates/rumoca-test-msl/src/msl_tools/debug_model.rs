@@ -33,9 +33,9 @@ pub struct Args {
     /// (and, for Jacobians, the differentiated/seeded variables with spans).
     #[arg(long)]
     nan_trace: bool,
-    /// Also emit the machine-exact IR JSON (`ir-*.json`) alongside the
-    /// human-readable Modelica stage dumps. Use when you need exact op/index or
-    /// span detail; the readable `ir-*.mo` files are emitted by default.
+    /// Emit machine-exact IR JSON (`ir-*.json`) for stage inspection. The
+    /// worker has no textual Modelica stage-artifact route; use JSON when you
+    /// need exact operation, index, or span detail.
     #[arg(long)]
     json: bool,
 }
@@ -61,7 +61,6 @@ pub fn run(args: Args) -> Result<()> {
         sim_timeout_secs: Some(args.timeout_secs),
         emit_json: args.json,
         nan_trace: args.nan_trace,
-        emit_modelica: true,
         source_root_path: paths.msl_dir.clone(),
         output_dir: output_dir.clone(),
     };
@@ -194,12 +193,19 @@ fn run_worker_process(
     let phase_timeout = Duration::from_secs_f64(args.timeout_secs);
     let mut phase_monitor = ModelWorkerPhaseMonitor::new();
     loop {
-        let active_phase = phase_monitor.update(&progress_jsonl);
+        let active_phase = match phase_monitor.update(&progress_jsonl) {
+            Ok(active_phase) => active_phase,
+            Err(error) => {
+                let _already_exited = child.kill();
+                let _reap_error = child.wait();
+                bail!("rumoca-worker progress protocol failure: {error}");
+            }
+        };
         if let Some(active_phase) = active_phase
             && phase_monitor.phase_elapsed() >= phase_timeout
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _already_exited = child.kill();
+            let _reap_error = child.wait();
             bail!(
                 "rumoca-worker timed out after {:.3}s in phase {}",
                 args.timeout_secs,
@@ -210,8 +216,8 @@ fn run_worker_process(
             && !phase_monitor.has_seen_progress()
             && start.elapsed() >= phase_timeout
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _already_exited = child.kill();
+            let _reap_error = child.wait();
             bail!(
                 "rumoca-worker timed out after {:.3}s before reporting progress",
                 args.timeout_secs

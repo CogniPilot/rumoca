@@ -210,9 +210,9 @@ fn execute_command_dispatches_workspace_target_catalog_command() {
             .expect("target catalog should serialize to an array");
         assert!(
             targets.iter().any(|target| {
-                target.get("id").and_then(serde_json::Value::as_str) == Some("c-ode")
+                target.get("id").and_then(serde_json::Value::as_str) == Some("rust-ode")
             }),
-            "workspace target catalog should include the checked Solve C built-in"
+            "workspace target catalog should include the checked Solve Rust built-in"
         );
     });
 }
@@ -265,7 +265,7 @@ fn reload_scenario_config_rewarms_durable_libraries_when_paths_change() {
                 )
                 .await
                 .expect("source-root load should succeed")
-                .expect("source root should load");
+                .require_loaded();
         }
 
         *server.initial_source_root_paths.write().await =
@@ -301,6 +301,71 @@ fn reload_scenario_config_rewarms_durable_libraries_when_paths_change() {
             source_root_path_keys,
             vec![canonical_path_key(&source_root_b.to_string_lossy())],
             "reloaded scenario config should publish the updated source-root path set"
+        );
+    });
+}
+
+#[test]
+fn failed_config_discovery_preserves_the_last_valid_source_root_state() {
+    run_async_test(async {
+        let temp = new_temp_dir("reload-config-failure-retains-state");
+        let prior_path = temp.join("prior-root").to_string_lossy().to_string();
+        let prior_config = ScenarioConfig::from_files(
+            &temp,
+            vec![(
+                temp.join("rumoca-scenario.toml"),
+                "[rumoca]\nversion = \"1\"\ntask = \"simulate\"\n".to_string(),
+            )],
+        );
+        let service = new_test_service();
+        let server = service.inner();
+        *server.source_root_paths.write().await = vec![prior_path.clone()];
+        *server.scenario_config.write().await = Some(prior_config);
+        let initial_epoch = server.session.read().await.source_root_state_epoch();
+
+        let nondirectory = temp.join("not-a-workspace");
+        std::fs::write(&nondirectory, "not a directory").expect("write nondirectory workspace");
+        *server.workspace_root.write().await = Some(nondirectory);
+        let scenario_error = server
+            .reload_scenario_config_with_timing()
+            .await
+            .expect_err("scenario discovery I/O failure must abort reload");
+        assert!(matches!(
+            scenario_error,
+            SourceRootPreparationError::Configuration {
+                operation: "discover colocated model configs",
+                ..
+            }
+        ));
+        assert_eq!(
+            *server.source_root_paths.read().await,
+            vec![prior_path.clone()]
+        );
+        assert!(server.scenario_config.read().await.is_some());
+        assert_eq!(
+            server.session.read().await.source_root_state_epoch(),
+            initial_epoch
+        );
+
+        std::fs::write(temp.join("rumoca-workspace.toml"), "source_roots = [")
+            .expect("write malformed workspace config");
+        *server.workspace_root.write().await = Some(temp);
+        let workspace_error = server
+            .reload_scenario_config_with_timing()
+            .await
+            .expect_err("workspace config parse failure must abort reload");
+        assert!(matches!(
+            workspace_error,
+            SourceRootPreparationError::Configuration {
+                operation: "discover workspace config",
+                ..
+            }
+        ));
+        assert_eq!(*server.source_root_paths.read().await, vec![prior_path]);
+        assert!(server.scenario_config.read().await.is_some());
+        assert_eq!(
+            server.session.read().await.source_root_state_epoch(),
+            initial_epoch
         );
     });
 }

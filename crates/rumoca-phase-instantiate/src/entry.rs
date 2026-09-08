@@ -1,24 +1,5 @@
 use super::*;
 
-/// Instantiate a [`ResolvedTree`], finding and instantiating the named model.
-pub fn instantiate(
-    resolved: ResolvedTree,
-    model_name: &str,
-) -> InstantiateResult<ast::InstancedTree> {
-    instantiate_with_options(resolved, model_name, InstantiateOptions::default())
-}
-
-/// Instantiate a resolved tree with caller-supplied instantiation options.
-pub fn instantiate_with_options(
-    resolved: ResolvedTree,
-    model_name: &str,
-    options: InstantiateOptions,
-) -> InstantiateResult<ast::InstancedTree> {
-    let tree = resolved.into_inner();
-    let overlay = instantiate_model_with_options(&tree, model_name, options)?;
-    Ok(ast::InstancedTree::new(tree, overlay))
-}
-
 pub(crate) fn description_tokens_to_string(tokens: &[rumoca_core::Token]) -> Option<String> {
     if tokens.is_empty() {
         return None;
@@ -48,6 +29,7 @@ pub fn instantiate_model_with_outcome_options(
     model_name: &str,
     options: InstantiateOptions,
 ) -> InstantiationOutcome {
+    let class_index = ast::ClassDefIndex::from_tree(tree);
     // `options` is still needed below for the missing-inner retry, so clone it
     // into the context (the inner Vec is empty on the common path).
     let mut ctx = InstantiateContext::with_options(options.clone());
@@ -80,7 +62,14 @@ pub fn instantiate_model_with_outcome_options(
     overlay.root_description = description_tokens_to_string(&model.description);
 
     // Instantiate the root model
-    if let Err(e) = instantiate_class(tree, model, None, None, &mut ctx, &mut overlay) {
+    if let Err(e) = instantiate_class(
+        tree,
+        &class_index,
+        model,
+        ClassOccurrenceConstruction::FreshRoot,
+        &mut ctx,
+        &mut overlay,
+    ) {
         return InstantiationOutcome::Error(e);
     }
 
@@ -88,7 +77,7 @@ pub fn instantiate_model_with_outcome_options(
     if ctx.has_missing_inners() {
         // MLS §5.4: Attempt to synthesize default inner declarations and retry.
         let missing = ctx.missing_inner_infos().to_vec();
-        match retry_with_synthetic_inners(tree, model, &missing, options) {
+        match retry_with_synthetic_inners(tree, &class_index, model, &missing, options) {
             Ok(mut retry_overlay) => {
                 retry_overlay.synthesized_inners = missing
                     .iter()
@@ -98,30 +87,16 @@ pub fn instantiate_model_with_outcome_options(
                     .collect();
                 successful_instantiation_outcome(tree, retry_overlay)
             }
-            Err(SyntheticInnerError::StillMissing { names }) => {
-                let span_by_name: std::collections::HashMap<_, _> = missing
-                    .iter()
-                    .map(|info| (info.name.as_str(), info.span))
-                    .collect();
-                let missing_spans = names
-                    .iter()
-                    .filter_map(|name| span_by_name.get(name.as_str()).copied())
-                    .collect();
-                InstantiationOutcome::NeedsInner {
-                    missing_inners: names,
-                    missing_spans,
-                    partial_overlay: overlay,
-                }
-            }
-            Err(SyntheticInnerError::InstantiationFailed) => {
-                // Retry failed; fall back to original NeedsInner result.
-                InstantiationOutcome::NeedsInner {
-                    missing_inners: ctx.missing_inner_names(),
-                    missing_spans: ctx.missing_inner_spans(),
-                    partial_overlay: overlay,
-                }
-            }
-            Err(SyntheticInnerError::SourceContext(error)) => InstantiationOutcome::Error(error),
+            Err(SyntheticInnerError::StillMissing {
+                missing_inners,
+                missing_spans,
+                partial_overlay,
+            }) => InstantiationOutcome::NeedsInner {
+                missing_inners,
+                missing_spans,
+                partial_overlay: *partial_overlay,
+            },
+            Err(SyntheticInnerError::Error(error)) => InstantiationOutcome::Error(error),
         }
     } else {
         successful_instantiation_outcome(tree, overlay)
@@ -132,37 +107,40 @@ fn successful_instantiation_outcome(
     tree: &ast::ClassTree,
     mut overlay: ast::InstanceOverlay,
 ) -> InstantiationOutcome {
-    match resolve_post_materialization_component_targets(tree, &mut overlay) {
-        Ok(()) => InstantiationOutcome::Success(overlay),
-        Err(error) => InstantiationOutcome::Error(error),
+    if let Err(reason) = overlay.finalize_overconstrained_record_owners() {
+        return InstantiationOutcome::Error(instance_owner_finalization_error(
+            tree, &overlay, reason,
+        ));
     }
+    InstantiationOutcome::Success(overlay)
 }
 
-/// Instantiate a model, returning an error if instantiation fails.
-///
-/// Convenience wrapper that treats missing inner declarations as errors.
-/// For more nuanced handling, use [`instantiate_model_with_outcome`].
-///
-/// # Arguments
-///
-/// * `tree` - Reference to the class tree
-/// * `model_name` - Name of the model to instantiate as root
-///
-/// # Returns
-///
-/// An `ast::InstanceOverlay` with the instantiation results, or an error.
-pub fn instantiate_model(
+fn instance_owner_finalization_error(
     tree: &ast::ClassTree,
-    model_name: &str,
-) -> InstantiateResult<ast::InstanceOverlay> {
-    instantiate_model_with_options(tree, model_name, InstantiateOptions::default())
-}
-
-/// Instantiate a model with caller-supplied instantiation options.
-pub fn instantiate_model_with_options(
-    tree: &ast::ClassTree,
-    model_name: &str,
-    options: InstantiateOptions,
-) -> InstantiateResult<ast::InstanceOverlay> {
-    instantiate_model_with_outcome_options(tree, model_name, options).into_result()
+    overlay: &ast::InstanceOverlay,
+    reason: ast::EqualityConstraintOccurrenceError,
+) -> Box<InstantiateError> {
+    let Some(occurrence) = reason.occurrence() else {
+        return Box::new(InstantiateError::missing_source_context(format!(
+            "invalid instance occurrence has no source owner: {reason}"
+        )));
+    };
+    let Some(component) = overlay.components.get(&occurrence) else {
+        return Box::new(InstantiateError::missing_source_context(format!(
+            "invalid instance occurrence {occurrence:?} is absent: {reason}"
+        )));
+    };
+    let Ok(span) = location_to_span(
+        &component.source_location,
+        &tree.source_map,
+        "invalid instance occurrence",
+    ) else {
+        return Box::new(InstantiateError::missing_source_context(format!(
+            "invalid instance occurrence {occurrence:?} has no source span: {reason}"
+        )));
+    };
+    Box::new(InstantiateError::invalid_instance_occurrence(
+        reason.to_string(),
+        span,
+    ))
 }

@@ -6,11 +6,13 @@
 
 // SPEC_0021 file-size exception - split plan: extract the Solve program validation and invariant checks into ir-solve/src/program_checks.rs, leaving this file as the module facade and re-exports; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
+mod algorithm_block;
 mod certificate;
 #[cfg(test)]
 mod certificate_tests;
 #[cfg(test)]
 mod compute_block_tests;
+mod execution_reuse;
 mod feature_query;
 pub mod fmi;
 mod layout;
@@ -22,19 +24,40 @@ mod scalar_program_tests;
 mod shape_error;
 mod typed_program;
 mod variable_bounds;
+mod variable_catalog;
 pub mod visitor;
 
 use indexmap::IndexMap;
 use rumoca_core::{
-    ExternalTableData, ProvenanceSpan, SourceId, Span, StructuredIndexDomain,
-    StructuredIndexDomainError,
+    ProvenanceSpan, SourceId, Span, StructuredIndexDomain, StructuredIndexDomainError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
+pub use algorithm_block::{
+    CallInvocationKey, CallResultKey, CallTransferConstructionError,
+    CallTransferConstructionSession, CallTransferKey, CallTransferPlan, CallTransferPlanEntry,
+    CallTransferPlanSet, CallTransferRequest, CallTransferSubject, DirectCallTransfer,
+    DirectPlacementEvidence, DirectPlacementLifetime, DirectPlacementProof, MissingDirectProof,
+    NonescapingArena, NonescapingArenaKey, OwnerStagedCallTransfer, OwnerStagedLifetime,
+    OwnerStagedPlacement, ProgramPoint, SolveAlgorithmAction, SolveAlgorithmActionExecution,
+    SolveAlgorithmActionKind, SolveAlgorithmBlock, SolveAlgorithmBlockBuilder,
+    SolveAlgorithmBlockConstructionError, SolveAlgorithmBlockStorageClass,
+    SolveAlgorithmDeclaration, SolveAlgorithmDimension, SolveAlgorithmErrorEffects,
+    SolveAlgorithmMethod, SolveAlgorithmMethodAbi, SolveAlgorithmMethodKind,
+    SolveAlgorithmMethodLocal, SolveAlgorithmProduct, SolveAlgorithmScopedLifetime,
+    SolveAlgorithmStorageTotals, SolveDeclarationInitialization, SolveDeclarationStartValue,
+    SolveLogicalStorageRun, SolveMethodLocalStorageRun, SolveProgramOperationRun,
+    SolveProgramStorageBinding, StorageOwnerKey, StorageRange, StorageTraversalAxis, StorageView,
+    UnsupportedTensorInitializationPlan, WholeInvocationActuals,
+};
 pub use certificate::{
-    derive_root_reachable_runtime_rows, derive_root_relation_refresh_roles,
+    PreparedDiscreteSolveSystem, RuntimeAssignmentProjection, derive_root_reachable_runtime_rows,
+    derive_root_relation_refresh_roles, derive_runtime_assignment_projection,
     derive_runtime_assignment_roles,
+};
+pub use execution_reuse::{
+    ExecutionReuseError, ExecutionReuseRequest, ExecutionReuseSelection, check_execution_reuse,
 };
 pub use feature_query::{
     SolveEventClass, solve_event_class, solve_has_clocks, solve_has_events,
@@ -43,7 +66,8 @@ pub use feature_query::{
 pub use layout::{
     ComponentReferenceKey, ComponentReferenceKeyError, ComponentReferenceKeyErrorKind,
     ComponentReferenceKeyPart, ComponentReferenceSubscriptKey, IndexedScalarSlot, ScalarSlot,
-    VarLayout, VarLayoutShapeContractError, scalar_slot_p, scalar_slot_y,
+    SolveStorageColumn, SolveStorageCoordinate, VarLayout, VarLayoutShapeContractError,
+    scalar_slot_p, scalar_slot_y,
 };
 pub use linear_op::{
     BinaryOp, CompareOp, FoldInitialSource, FoldTensorNode, FoldTensorUpdate,
@@ -51,44 +75,36 @@ pub use linear_op::{
     FunctionConditionalProgram, FunctionFoldProgram, LinearOp, MatrixProductShape, RandomGenerator,
     Reg, ScalarProgramRegisterError, ScalarProgramRegisterFlow, StridedOperand,
     TargetAssignmentShape, TensorConcatenateSource, TensorIndex, TensorInputKind, TensorSubscript,
-    TensorUpdateSubscript, UnaryOp, resolve_indexed_slot,
+    TensorUpdateSubscript, UnaryOp,
 };
 pub use model::*;
 pub use refresh::*;
-pub use shape_error::{AffineTensorNodeKind, SolveProblemShapeContractError};
+pub use shape_error::{
+    AffineTensorNodeKind, DerivativeOutputCoverageKind, SolveProblemShapeContractError,
+};
 pub use typed_program::*;
+pub use variable_catalog::*;
 pub use visitor::{
-    LinearOpSliceKind, SolveVisitor, walk_compute_block, walk_compute_node,
+    ComputeBlockOwner, EventMessageFormatField, EventMessageOwner, LinearOpSliceOwner,
+    ScalarProgramBlockOwner, SolveVisitor, walk_compute_block, walk_compute_node,
     walk_scalar_program_block, walk_solve_artifacts, walk_solve_model, walk_solve_problem,
 };
 
-pub const SOLVE_SCHEMA_VERSION: u16 = 61;
+pub const SOLVE_SCHEMA_VERSION: u16 = 65;
+
+/// Decode a semantically optional current-wire value without treating a
+/// missing key as `None`. Current Solve wires always write the key and use
+/// explicit `null` for absence.
+pub(crate) fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 pub fn source_span_from_offsets(source: u64, start: usize, end: usize) -> Span {
     Span::from_offsets(SourceId(source), start, end)
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExternalTables {
-    tables: Vec<ExternalTableData>,
-}
-
-impl ExternalTables {
-    pub fn new(tables: Vec<ExternalTableData>) -> Self {
-        Self { tables }
-    }
-
-    pub fn as_slice(&self) -> &[ExternalTableData] {
-        &self.tables
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.tables.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.tables.len()
-    }
 }
 
 /// A checked block of scalar programs with exact row provenance and output identity.
@@ -111,6 +127,43 @@ pub struct ScalarProgramBlock {
     /// This proof is rebuilt on wire replay and deliberately is not
     /// serialized as a second source of truth.
     program_register_counts: Box<[usize]>,
+    /// Ordered source-register projections for every stored program output.
+    program_output_sources: Box<[Box<[usize]>]>,
+    /// Exact stored-output widths proved for each program at construction.
+    program_output_counts: Box<[usize]>,
+    /// Exact total stored-output width proved at construction.
+    stored_output_count: usize,
+    /// Exact logical output extent proved at construction.
+    output_count: usize,
+}
+
+/// Borrowed execution certificate for one checked scalar program.
+///
+/// Operations, register capacity, and ordered output projection are issued
+/// together by the owning [`ScalarProgramBlock`]; a backend cannot pair them
+/// from independent sources.
+#[derive(Clone, Copy)]
+pub struct ScalarProgramExecution<'block> {
+    operations: &'block [LinearOp],
+    register_count: usize,
+    output_sources: &'block [usize],
+}
+
+impl<'block> ScalarProgramExecution<'block> {
+    #[must_use]
+    pub const fn operations(&self) -> &'block [LinearOp] {
+        self.operations
+    }
+
+    #[must_use]
+    pub const fn register_count(&self) -> usize {
+        self.register_count
+    }
+
+    #[must_use]
+    pub const fn output_sources(&self) -> &'block [usize] {
+        self.output_sources
+    }
 }
 
 #[derive(Deserialize)]
@@ -170,7 +223,13 @@ impl ScalarProgramBlock {
         programs: Vec<Vec<LinearOp>>,
         program_spans: Vec<Span>,
     ) -> Result<Self, SolveProblemShapeContractError> {
-        let output_indices = (0..stored_output_count(&programs)).collect();
+        let (_, stored_output_count) = checked_stored_output_counts(
+            "ScalarProgramBlock",
+            0,
+            &programs,
+            first_span(&program_spans),
+        )?;
+        let output_indices = (0..stored_output_count).collect();
         Self::with_output_indices(programs, program_spans, output_indices)
     }
 
@@ -179,17 +238,33 @@ impl ScalarProgramBlock {
         program_spans: Vec<Span>,
         output_indices: Vec<usize>,
     ) -> Result<Self, SolveProblemShapeContractError> {
+        let (program_output_counts, stored_output_count) = checked_stored_output_counts(
+            "ScalarProgramBlock",
+            0,
+            &programs,
+            first_span(&program_spans),
+        )?;
         validate_scalar_program_metadata_lengths(
             "ScalarProgramBlock",
             0,
             programs.len(),
             program_spans.len(),
-            stored_output_count(&programs),
+            stored_output_count,
             output_indices.len(),
             first_span(&program_spans),
         )?;
+        validate_unique_scalar_output_indices(
+            &output_indices,
+            &program_output_counts,
+            &program_spans,
+        )?;
         validate_scalar_program_provenance("ScalarProgramBlock", 0, &program_spans)?;
-        validate_scalar_program_outputs("ScalarProgramBlock", 0, &programs, &program_spans)?;
+        validate_scalar_program_outputs(
+            "ScalarProgramBlock",
+            0,
+            &program_output_counts,
+            &program_spans,
+        )?;
         validate_function_conditional_owners("ScalarProgramBlock", 0, &programs, &program_spans)?;
         let program_register_counts = derive_scalar_program_register_counts(
             "ScalarProgramBlock",
@@ -197,26 +272,31 @@ impl ScalarProgramBlock {
             &programs,
             &program_spans,
         )?;
-        Ok(Self::from_valid_parts(
+        let program_output_sources = derive_scalar_program_output_sources(
+            "ScalarProgramBlock",
+            0,
+            &programs,
+            &program_spans,
+        )?;
+        let output_count = output_indices
+            .iter()
+            .copied()
+            .try_fold(0usize, |extent, index| {
+                index.checked_add(1).map(|end| extent.max(end))
+            })
+            .ok_or_else(|| {
+                output_index_overflow("ScalarProgramBlock", 0, first_span(&program_spans))
+            })?;
+        Ok(Self {
             programs,
             program_spans,
             output_indices,
             program_register_counts,
-        ))
-    }
-
-    fn from_valid_parts(
-        programs: Vec<Vec<LinearOp>>,
-        program_spans: Vec<Span>,
-        output_indices: Vec<usize>,
-        program_register_counts: Box<[usize]>,
-    ) -> Self {
-        Self {
-            programs,
-            program_spans,
-            output_indices,
-            program_register_counts,
-        }
+            program_output_sources,
+            program_output_counts,
+            stored_output_count,
+            output_count,
+        })
     }
 
     /// Constructs dense-output programs owned by one exact source occurrence.
@@ -242,7 +322,9 @@ impl ScalarProgramBlock {
     ) -> Result<Self, SolveProblemShapeContractError> {
         let span = provenance.span();
         let program_spans = vec![span; programs.len()];
-        let output_indices = (0..stored_output_count(&programs)).collect();
+        let (_, stored_output_count) =
+            checked_stored_output_counts("ScalarProgramBlock", 0, &programs, Some(span))?;
+        let output_indices = (0..stored_output_count).collect();
         Self::with_output_indices(programs, program_spans, output_indices)
     }
 
@@ -267,6 +349,56 @@ impl ScalarProgramBlock {
         self.program_register_counts.get(index).copied()
     }
 
+    /// Exact stored-output width proved for one program at construction.
+    pub fn stored_output_count_for_program(&self, index: usize) -> Option<usize> {
+        self.program_output_counts.get(index).copied()
+    }
+
+    /// Ordered output-source projection proved with register dominance.
+    pub fn program_output_sources(&self, index: usize) -> Option<&[usize]> {
+        self.program_output_sources.get(index).map(Box::as_ref)
+    }
+
+    /// Borrow one program with the certificates issued at block construction.
+    #[must_use]
+    pub fn execution_program(&self, index: usize) -> Option<ScalarProgramExecution<'_>> {
+        Some(ScalarProgramExecution {
+            operations: self.program(index)?,
+            register_count: self.program_register_count(index)?,
+            output_sources: self.program_output_sources(index)?,
+        })
+    }
+
+    /// Borrow every program with its construction-issued execution evidence.
+    ///
+    /// The iterator is assembled only from the correlated private columns of
+    /// this block, so consumers cannot pair operations with a certificate from
+    /// another program or owner.
+    #[must_use]
+    pub fn execution_programs(
+        &self,
+    ) -> impl ExactSizeIterator<Item = ScalarProgramExecution<'_>> + DoubleEndedIterator + '_ {
+        self.programs
+            .iter()
+            .zip(self.program_register_counts.iter().copied())
+            .zip(self.program_output_sources.iter())
+            .map(
+                |((operations, register_count), output_sources)| ScalarProgramExecution {
+                    operations,
+                    register_count,
+                    output_sources,
+                },
+            )
+    }
+
+    /// Borrow the sole program of a checked single-program block.
+    #[must_use]
+    pub fn sole_execution_program(&self) -> Option<ScalarProgramExecution<'_>> {
+        (self.programs.len() == 1)
+            .then(|| self.execution_program(0))
+            .flatten()
+    }
+
     pub fn output_indices(&self) -> &[usize] {
         &self.output_indices
     }
@@ -275,28 +407,9 @@ impl ScalarProgramBlock {
         self.program_spans.first().copied()
     }
 
-    /// Number of `StoreOutput` ops in a single program.
-    ///
-    /// A program may emit more than one output: matmul/linsolve nodes lower to
-    /// one self-contained program that computes its operands once and stores
-    /// every result via consecutive `StoreOutput` ops.
-    pub fn program_output_count(program: &[LinearOp]) -> usize {
-        program
-            .iter()
-            .map(|op| match op {
-                LinearOp::StoreOutput { .. } => 1,
-                LinearOp::StoreOutputRange { count, .. } => *count,
-                _ => 0,
-            })
-            .sum()
-    }
-
     /// Total number of `StoreOutput` ops produced by this block.
     pub fn stored_output_count(&self) -> usize {
-        self.programs
-            .iter()
-            .map(|program| Self::program_output_count(program))
-            .sum()
+        self.stored_output_count
     }
 
     pub fn uses_linear_solve_component(&self) -> bool {
@@ -314,8 +427,7 @@ impl ScalarProgramBlock {
             .output_indices
             .iter()
             .position(|output_index| *output_index == output)?;
-        for (idx, program) in self.programs.iter().enumerate() {
-            let count = Self::program_output_count(program);
+        for (idx, count) in self.program_output_counts.iter().copied().enumerate() {
             if remaining < count {
                 return Some(idx);
             }
@@ -342,11 +454,7 @@ impl ScalarProgramBlock {
     }
 
     pub fn output_count(&self) -> usize {
-        self.output_indices
-            .iter()
-            .copied()
-            .max()
-            .map_or(0, |index| index + 1)
+        self.output_count
     }
 
     pub fn uses_local_contiguous_output_indices(&self) -> bool {
@@ -406,11 +514,51 @@ fn first_span(spans: &[Span]) -> Option<Span> {
     spans.first().copied()
 }
 
-fn stored_output_count(programs: &[Vec<LinearOp>]) -> usize {
-    programs
-        .iter()
-        .map(|program| ScalarProgramBlock::program_output_count(program))
-        .sum()
+fn checked_stored_output_counts(
+    context: &str,
+    node_index: usize,
+    programs: &[Vec<LinearOp>],
+    span: Option<Span>,
+) -> Result<(Box<[usize]>, usize), SolveProblemShapeContractError> {
+    let mut total = 0usize;
+    let mut counts = Vec::with_capacity(programs.len());
+    for program in programs {
+        let count = program.iter().try_fold(0usize, |count, op| {
+            let produced = match op {
+                LinearOp::StoreOutput { .. } => 1,
+                LinearOp::StoreOutputRange { count, .. } => *count,
+                _ => 0,
+            };
+            count.checked_add(produced)
+        });
+        let Some(count) = count else {
+            return Err(SolveProblemShapeContractError::OutputIndexOverflow {
+                context: context.to_string(),
+                node_index,
+                span,
+            });
+        };
+        total = total.checked_add(count).ok_or_else(|| {
+            SolveProblemShapeContractError::OutputIndexOverflow {
+                context: context.to_string(),
+                node_index,
+                span,
+            }
+        })?;
+        counts.push(count);
+    }
+    Ok((counts.into_boxed_slice(), total))
+}
+
+pub(crate) fn checked_linear_op_output_count(program: &[LinearOp]) -> Option<usize> {
+    program.iter().try_fold(0usize, |count, op| {
+        let produced = match op {
+            LinearOp::StoreOutput { .. } => 1,
+            LinearOp::StoreOutputRange { count, .. } => *count,
+            _ => 0,
+        };
+        count.checked_add(produced)
+    })
 }
 
 fn validate_scalar_program_provenance(
@@ -466,13 +614,10 @@ fn validate_scalar_program_metadata_lengths(
 fn validate_scalar_program_outputs(
     context: &str,
     node_index: usize,
-    programs: &[Vec<LinearOp>],
+    program_output_counts: &[usize],
     program_spans: &[Span],
 ) -> Result<(), SolveProblemShapeContractError> {
-    let Some(program_index) = programs
-        .iter()
-        .position(|program| ScalarProgramBlock::program_output_count(program) == 0)
-    else {
+    let Some(program_index) = program_output_counts.iter().position(|count| *count == 0) else {
         return Ok(());
     };
     let span = program_spans.get(program_index).copied();
@@ -484,19 +629,44 @@ fn validate_scalar_program_outputs(
     })
 }
 
+fn validate_unique_scalar_output_indices(
+    output_indices: &[usize],
+    program_output_counts: &[usize],
+    program_spans: &[Span],
+) -> Result<(), SolveProblemShapeContractError> {
+    let mut seen = BTreeSet::new();
+    for (ordinal, index) in output_indices.iter().copied().enumerate() {
+        if seen.insert(index) {
+            continue;
+        }
+        let mut end = 0usize;
+        let span = program_output_counts
+            .iter()
+            .enumerate()
+            .find_map(|(program_index, count)| {
+                end = end.checked_add(*count)?;
+                (ordinal < end)
+                    .then(|| program_spans.get(program_index).copied())
+                    .flatten()
+            });
+        return Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "ScalarProgramBlock.output_indices",
+            index,
+            span,
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn derive_scalar_program_register_counts(
     context: &str,
     node_index: usize,
     programs: &[Vec<LinearOp>],
     program_spans: &[Span],
 ) -> Result<Box<[usize]>, SolveProblemShapeContractError> {
-    // The enclosing constructor has already proved that each issued owner id
-    // denotes one exact body, so replay that body once even when wire decoding
-    // reconstructed several equal `Arc` allocations for its references.
-    let mut validation = linear_op::ScalarProgramValidationCache::for_checked_owner_table();
     let mut register_counts = Vec::with_capacity(programs.len());
     for (program_index, program) in programs.iter().enumerate() {
-        let flow = match ScalarProgramRegisterFlow::derive_with_cache(program, &mut validation) {
+        let flow = match ScalarProgramRegisterFlow::derive(program) {
             Ok(flow) => flow,
             Err(error) => {
                 let span = program_spans.get(program_index).copied();
@@ -514,72 +684,139 @@ pub(crate) fn derive_scalar_program_register_counts(
     Ok(register_counts.into_boxed_slice())
 }
 
+fn derive_scalar_program_output_sources(
+    context: &str,
+    node_index: usize,
+    programs: &[Vec<LinearOp>],
+    program_spans: &[Span],
+) -> Result<Box<[Box<[usize]>]>, SolveProblemShapeContractError> {
+    let mut projections = Vec::with_capacity(programs.len());
+    for (program_index, program) in programs.iter().enumerate() {
+        let mut sources = Vec::new();
+        let location = ScalarOutputSourceLocation {
+            context,
+            node_index,
+            program_index,
+            span: program_spans.get(program_index).copied(),
+        };
+        for (op_index, operation) in program.iter().enumerate() {
+            append_scalar_program_output_sources(location, op_index, operation, &mut sources)?;
+        }
+        projections.push(sources.into_boxed_slice());
+    }
+    Ok(projections.into_boxed_slice())
+}
+
+#[derive(Clone, Copy)]
+struct ScalarOutputSourceLocation<'a> {
+    context: &'a str,
+    node_index: usize,
+    program_index: usize,
+    span: Option<Span>,
+}
+
+fn append_scalar_program_output_sources(
+    location: ScalarOutputSourceLocation<'_>,
+    op_index: usize,
+    operation: &LinearOp,
+    sources: &mut Vec<usize>,
+) -> Result<(), SolveProblemShapeContractError> {
+    let LinearOp::StoreOutputRange {
+        start,
+        count,
+        stride,
+    } = *operation
+    else {
+        if let LinearOp::StoreOutput { src } = *operation {
+            sources.push(src as usize);
+        }
+        return Ok(());
+    };
+    for ordinal in 0..count {
+        let Some(source) = ordinal
+            .checked_mul(stride)
+            .and_then(|offset| usize::try_from(start).ok()?.checked_add(offset))
+        else {
+            return Err(SolveProblemShapeContractError::ScalarProgramRegisterFlow {
+                context: location.context.to_string(),
+                node_index: location.node_index,
+                program_index: location.program_index,
+                error: ScalarProgramRegisterError::RegisterRangeOverflow {
+                    op_index,
+                    operation: "StoreOutputRange",
+                    start,
+                    len: count,
+                },
+                span: location.span,
+            });
+        };
+        sources.push(source);
+    }
+    Ok(())
+}
+
 fn validate_function_conditional_owners(
     context: &str,
     node_index: usize,
     programs: &[Vec<LinearOp>],
     program_spans: &[Span],
 ) -> Result<(), SolveProblemShapeContractError> {
-    fn visit<'a>(
-        operations: &'a [LinearOp],
-        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
-    ) -> Option<u64> {
-        for operation in operations {
-            let mismatched = match operation {
-                LinearOp::FunctionConditional { program, .. } => visit_conditional(program, owners),
-                LinearOp::FunctionFold { program, .. }
-                | LinearOp::GuardedFunctionFold { program, .. }
-                | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                    visit(&program.update, owners)
-                }
-                _ => None,
+    struct ConditionalOwnerVisitor {
+        owners: HashMap<FunctionConditionalOwnerId, std::sync::Arc<FunctionConditionalProgram>>,
+        mismatched: Option<u64>,
+    }
+
+    impl ConditionalOwnerVisitor {
+        fn claim(&mut self, program: &std::sync::Arc<FunctionConditionalProgram>) {
+            let Some(owner) = program.owner() else {
+                return;
             };
-            if mismatched.is_some() {
-                return mismatched;
+            match self.owners.entry(owner) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(std::sync::Arc::clone(program));
+                }
+                std::collections::hash_map::Entry::Occupied(entry)
+                    if !std::sync::Arc::ptr_eq(entry.get(), program)
+                        && entry.get().as_ref() != program.as_ref() =>
+                {
+                    self.mismatched.get_or_insert(owner.get());
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {}
             }
         }
-        None
     }
 
-    /// Claims the conditional body for its owner id, then walks its arms and
-    /// fallback in construction order.
-    fn visit_conditional<'a>(
-        program: &'a FunctionConditionalProgram,
-        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
-    ) -> Option<u64> {
-        if let Some(owner) = claim_conditional_owner(program, owners) {
-            return Some(owner);
-        }
-        for arm in &program.arms {
-            if let Some(owner) =
-                visit(&arm.condition, owners).or_else(|| visit(&arm.result, owners))
-            {
-                return Some(owner);
+    impl SolveVisitor for ConditionalOwnerVisitor {
+        type Error = std::convert::Infallible;
+
+        fn visit_linear_op(
+            &mut self,
+            kind: LinearOpSliceOwner,
+            op_index: usize,
+            operation: &LinearOp,
+        ) -> Result<(), Self::Error> {
+            if let LinearOp::FunctionConditional { program, .. } = operation {
+                self.claim(program);
             }
+            crate::visitor::walk_linear_op(self, kind, op_index, operation)
         }
-        visit(&program.fallback, owners)
     }
 
-    /// Records the first checked body seen for an owner id, reporting the owner
-    /// when a later body claims the same id with different contents.
-    fn claim_conditional_owner<'a>(
-        program: &'a FunctionConditionalProgram,
-        owners: &mut HashMap<FunctionConditionalOwnerId, &'a FunctionConditionalProgram>,
-    ) -> Option<u64> {
-        let owner = program.owner?;
-        let Some(previous) = owners.get(&owner) else {
-            owners.insert(owner, program);
-            return None;
-        };
-        if !std::ptr::eq(*previous, program) && *previous != program {
-            return Some(owner.get());
-        }
-        None
-    }
-
-    let mut owners = HashMap::new();
+    let mut visitor = ConditionalOwnerVisitor {
+        owners: HashMap::new(),
+        mismatched: None,
+    };
     for (program_index, program) in programs.iter().enumerate() {
-        if let Some(owner) = visit(program, &mut owners) {
+        visitor
+            .visit_linear_op_slice(
+                LinearOpSliceOwner::ScalarProgramConstruction {
+                    program_index,
+                    span: program_spans.get(program_index).copied(),
+                },
+                program,
+            )
+            .unwrap_or_else(|never| match never {});
+        if let Some(owner) = visitor.mismatched {
             return Err(
                 SolveProblemShapeContractError::FunctionConditionalOwnerMismatch {
                     context: context.to_string(),
@@ -636,21 +873,37 @@ pub use tensor::{
 #[cfg(test)]
 mod tests;
 
+/// A structurally empty problem must be requested explicitly; `SolveProblem`
+/// does not implement [`Default`] because generic construction cannot express
+/// whether an empty structural aggregate was intended.
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::SolveProblem;
+///
+/// let _ = SolveProblem::default();
+/// ```
+///
+/// Invariant-bearing root fields are sealed after construction:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::{
+///     ContinuousSolveSystem, DiscreteSolveSystem, InitializationSolveSystem,
+///     SolveClockPartition, SolveEventPartition, SolveLayout, SolveProblem, VarLayout,
+/// };
+///
+/// let mut problem = SolveProblem::construct(
+///     VarLayout::default(),
+///     SolveLayout::default(),
+///     ContinuousSolveSystem::default(),
+///     InitializationSolveSystem::empty(),
+///     DiscreteSolveSystem::default(),
+///     SolveEventPartition::default(),
+///     SolveClockPartition::default(),
+/// ).unwrap();
+/// problem.continuous = ContinuousSolveSystem::default();
+/// ```
 #[derive(Clone, Debug, Serialize)]
 pub struct SolveProblem {
-    pub schema_version: u16,
-    pub layout: VarLayout,
-    pub solve_layout: SolveLayout,
-    pub continuous: ContinuousSolveSystem,
-    pub initialization: InitializationSolveSystem,
-    pub discrete: DiscreteSolveSystem,
-    pub events: SolveEventPartition,
-    pub clocks: SolveClockPartition,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SolveProblemWire {
     schema_version: u16,
     layout: VarLayout,
     solve_layout: SolveLayout,
@@ -661,18 +914,127 @@ struct SolveProblemWire {
     clocks: SolveClockPartition,
 }
 
-impl Default for SolveProblem {
-    fn default() -> Self {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolveProblemWire {
+    schema_version: u16,
+    layout: VarLayout,
+    solve_layout: SolveLayout,
+    continuous: ContinuousSolveSystemWire,
+    initialization: InitializationSolveSystemWire,
+    discrete: DiscreteSolveSystem,
+    events: SolveEventPartition,
+    clocks: SolveClockPartition,
+}
+
+impl SolveProblem {
+    /// Seal one complete Solve root after checking every cross-owner relation.
+    /// Failure exposes no partially constructed [`SolveProblem`].
+    pub fn construct(
+        layout: VarLayout,
+        solve_layout: SolveLayout,
+        continuous: ContinuousSolveSystem,
+        initialization: InitializationSolveSystem,
+        discrete: DiscreteSolveSystem,
+        events: SolveEventPartition,
+        clocks: SolveClockPartition,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let problem = Self::from_parts(
+            layout,
+            solve_layout,
+            continuous,
+            initialization,
+            discrete,
+            events,
+            clocks,
+        );
+        problem.validate_constructed_parts()?;
+        Ok(problem)
+    }
+
+    /// Seal a compiler-produced root by consuming the opaque runtime
+    /// projection proof issued from its exact discrete source facts.
+    pub fn construct_prepared(
+        layout: VarLayout,
+        solve_layout: SolveLayout,
+        continuous: ContinuousSolveSystem,
+        initialization: InitializationSolveSystem,
+        discrete: PreparedDiscreteSolveSystem,
+        clocks: SolveClockPartition,
+    ) -> Result<Self, SolveProblemShapeContractError> {
+        let (discrete, events) = discrete.into_system_for(&solve_layout)?;
+        let problem = Self::from_parts(
+            layout,
+            solve_layout,
+            continuous,
+            initialization,
+            discrete,
+            events,
+            clocks,
+        );
+        problem.validate_constructed_parts_after_prepared_runtime_projection()?;
+        Ok(problem)
+    }
+
+    fn from_parts(
+        layout: VarLayout,
+        solve_layout: SolveLayout,
+        continuous: ContinuousSolveSystem,
+        initialization: InitializationSolveSystem,
+        discrete: DiscreteSolveSystem,
+        events: SolveEventPartition,
+        clocks: SolveClockPartition,
+    ) -> Self {
         Self {
             schema_version: SOLVE_SCHEMA_VERSION,
-            layout: VarLayout::default(),
-            solve_layout: SolveLayout::default(),
-            continuous: ContinuousSolveSystem::default(),
-            initialization: InitializationSolveSystem::default(),
-            discrete: DiscreteSolveSystem::default(),
-            events: SolveEventPartition::default(),
-            clocks: SolveClockPartition::default(),
+            layout,
+            solve_layout,
+            continuous,
+            initialization,
+            discrete,
+            events,
+            clocks,
         }
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> u16 {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub const fn layout(&self) -> &VarLayout {
+        &self.layout
+    }
+
+    #[must_use]
+    pub const fn solve_layout(&self) -> &SolveLayout {
+        &self.solve_layout
+    }
+
+    #[must_use]
+    pub const fn continuous(&self) -> &ContinuousSolveSystem {
+        &self.continuous
+    }
+
+    #[must_use]
+    pub const fn initialization(&self) -> &InitializationSolveSystem {
+        &self.initialization
+    }
+
+    #[must_use]
+    pub const fn discrete(&self) -> &DiscreteSolveSystem {
+        &self.discrete
+    }
+
+    #[must_use]
+    pub const fn events(&self) -> &SolveEventPartition {
+        &self.events
+    }
+
+    #[must_use]
+    pub const fn clocks(&self) -> &SolveClockPartition {
+        &self.clocks
     }
 }
 
@@ -689,57 +1051,47 @@ impl<'de> Deserialize<'de> for SolveProblem {
             )));
         }
 
-        let mut problem = Self {
-            schema_version: wire.schema_version,
-            layout: wire.layout,
-            solve_layout: wire.solve_layout,
-            continuous: wire.continuous,
-            initialization: wire.initialization,
-            discrete: wire.discrete,
-            events: wire.events,
-            clocks: wire.clocks,
-        };
-        problem
-            .continuous
-            .refresh_owners
-            .rebuild_exact_assignment_programs(&problem.continuous.implicit_rhs)
+        let ContinuousSolveSystemWire {
+            implicit_rhs,
+            implicit_row_targets,
+            algebraic_projection_plan,
+            residual,
+            manifold_residual,
+            manifold_projection_plan,
+            derivative_rhs,
+            refresh_owners,
+        } = wire.continuous;
+        let continuous = ContinuousSolveSystem::construct(
+            &wire.solve_layout,
+            ContinuousSolveSystemInputs::new(
+                implicit_rhs,
+                implicit_row_targets,
+                algebraic_projection_plan,
+                residual,
+                (manifold_residual, manifold_projection_plan),
+                derivative_rhs,
+                refresh_owners.into_inputs(),
+            ),
+        )
+        .map_err(serde::de::Error::custom)?;
+        let initialization = wire
+            .initialization
+            .replay()
             .map_err(serde::de::Error::custom)?;
-        problem.validate().map_err(serde::de::Error::custom)?;
-        Ok(problem)
+        Self::construct(
+            wire.layout,
+            wire.solve_layout,
+            continuous,
+            initialization,
+            wire.discrete,
+            wire.events,
+            wire.clocks,
+        )
+        .map_err(serde::de::Error::custom)
     }
 }
 
 impl SolveProblem {
-    /// Build a continuous-only problem from one checked derivative program and
-    /// the variable layout that program addresses.
-    ///
-    /// The layout is a required input rather than a default: the derivative
-    /// seed space is `y_scalars + p_scalars` wide and parameter seeds start at
-    /// `y_scalars`, so a layout that does not own the program's own `Y`/`P`
-    /// loads silently aliases derivative columns. The state extent is taken
-    /// from the program's checked output count, and the finished problem is
-    /// validated before it is returned.
-    pub fn with_derivative_rhs(
-        derivative_rhs: ComputeBlock,
-        layout: VarLayout,
-    ) -> Result<Self, SolveProblemShapeContractError> {
-        let state_scalar_count = derivative_rhs.output_count("continuous.derivative_rhs")?;
-        let problem = Self {
-            layout,
-            solve_layout: SolveLayout {
-                state_scalar_count,
-                ..SolveLayout::default()
-            },
-            continuous: ContinuousSolveSystem {
-                derivative_rhs,
-                ..ContinuousSolveSystem::default()
-            },
-            ..Self::default()
-        };
-        problem.validate()?;
-        Ok(problem)
-    }
-
     pub fn compute_node_counts(&self) -> ComputeNodeCounts {
         let mut counts = self.continuous.implicit_rhs.compute_node_counts();
         counts.add_assign(self.continuous.residual.compute_node_counts());
@@ -758,52 +1110,92 @@ impl SolveProblem {
             || self.continuous.derivative_rhs.uses_linear_solve_component()
     }
 
-    pub fn validate_shape_contract(&self) -> Result<(), SolveProblemShapeContractError> {
-        if self.schema_version != SOLVE_SCHEMA_VERSION {
-            return Err(SolveProblemShapeContractError::SchemaVersion {
-                actual: self.schema_version,
-                expected: SOLVE_SCHEMA_VERSION,
-            });
-        }
+    fn validate_constructed_parts(&self) -> Result<(), SolveProblemShapeContractError> {
+        self.validate_constructed_parts_with_runtime_projection(true)
+    }
+
+    fn validate_constructed_parts_after_prepared_runtime_projection(
+        &self,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        self.validate_constructed_parts_with_runtime_projection(false)
+    }
+
+    fn validate_constructed_parts_with_runtime_projection(
+        &self,
+        derive_runtime_projection: bool,
+    ) -> Result<(), SolveProblemShapeContractError> {
         self.layout
             .validate_shape_contract()
             .map_err(SolveProblemShapeContractError::Layout)?;
+        if self.layout.y_scalars() != self.solve_layout.solver_scalar_count() {
+            return Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+                context: "layout.y_scalars/solve_layout.solver_maps.names",
+                expected: self.layout.y_scalars(),
+                actual: self.solve_layout.solver_scalar_count(),
+                span: None,
+            });
+        }
+        if self.solve_layout.static_parameter_names.len() != self.solve_layout.parameter_count {
+            return Err(SolveProblemShapeContractError::ScalarProgramCountMismatch {
+                context: "solve_layout.static_parameter_names",
+                expected: self.solve_layout.parameter_count,
+                actual: self.solve_layout.static_parameter_names.len(),
+                span: None,
+            });
+        }
+        // The three solver-column role inventories must partition the solver
+        // name inventory exactly. This is what makes the leading state prefix
+        // of every Y-aligned vector a construction fact rather than a hot-path
+        // assumption: `solver_scalar_count()` is by definition
+        // `solver_maps.names.len()`, `state_scalar_count <=
+        // solver_scalar_count` follows from the partition over `usize` counts,
+        // and `solver_scalar_count == layout.y_scalars()` is proved above, so
+        // `state_scalar_count` is bounded by both the name inventory and the Y
+        // column. Do not re-check that bound downstream.
+        let solver_scalar_count = self.solve_layout.solver_scalar_count();
+        let role_partition = self
+            .solve_layout
+            .state_scalar_count
+            .checked_add(self.solve_layout.algebraic_scalar_count)
+            .and_then(|count| count.checked_add(self.solve_layout.output_scalar_count));
+        if role_partition != Some(solver_scalar_count) {
+            return Err(SolveProblemShapeContractError::SolveLayoutPartition {
+                context: "solve_layout.state/algebraic/output_scalar_count",
+                expected: solver_scalar_count,
+                actual: role_partition,
+            });
+        }
+        // The static parameter inventory is the leading dense prefix of the P
+        // column, so it can never claim more scalars than the column holds.
+        if self.solve_layout.parameter_count > self.layout.p_scalars() {
+            return Err(SolveProblemShapeContractError::SolveLayoutPrefix {
+                context: "solve_layout.parameter_count/layout.p_scalars",
+                bound: self.layout.p_scalars(),
+                actual: self.solve_layout.parameter_count,
+            });
+        }
         validate_variable_storage_runs(self)?;
         validate_event_iteration_plan(self)?;
         validate_continuous_system_shape(self)?;
         validate_initialization_system_shape(self)?;
+        validate_root_relation_memory_alignment(self)?;
+        if derive_runtime_projection {
+            certificate::validate_runtime_assignment_source_projection(self)?;
+        }
         validate_discrete_system_shape(self)?;
-        validate_event_partition_shape(self)?;
+        validate_event_partition_shape(self, derive_runtime_projection)?;
+        variable_bounds::validate_solve_problem_variable_bounds(self)?;
         Ok(())
     }
-
-    /// Validate the complete finalized Solve-IR stage contract.
-    pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
-        self.validate_shape_contract()
-    }
 }
 
-impl SolveModel {
-    /// Validate the finalized model, including every issued pure-call
-    /// reference against this model's sole checked owner table.
-    pub fn validate(&self) -> Result<(), SolveProblemShapeContractError> {
-        self.problem.validate()?;
-        let mut validator = ModelPureCallSiteValidator {
-            table: &self.pure_calls,
-        };
-        validator.visit_solve_model(self)
-    }
-}
-
-/// Prove that every pure-call reference already present in a finalized Solve
-/// problem belongs to, and exactly matches, its sole model-level owner table.
-pub fn validate_problem_pure_call_sites(
-    problem: &SolveProblem,
-    table: &SolvePureCallTable,
+pub(crate) fn validate_solve_model_pure_call_sites(
+    model: &SolveModel,
 ) -> Result<(), SolveProblemShapeContractError> {
-    problem.validate()?;
-    let mut validator = ModelPureCallSiteValidator { table };
-    validator.visit_solve_problem(problem)
+    let mut validator = ModelPureCallSiteValidator {
+        table: model.pure_calls(),
+    };
+    validator.visit_solve_model(model)
 }
 
 struct ModelPureCallSiteValidator<'model> {
@@ -827,18 +1219,24 @@ impl SolveVisitor for ModelPureCallSiteValidator<'_> {
 
     fn visit_linear_op(
         &mut self,
-        kind: LinearOpSliceKind,
-        _op_index: usize,
+        kind: LinearOpSliceOwner,
+        op_index: usize,
         op: &LinearOp,
     ) -> Result<(), Self::Error> {
-        if let LinearOp::PureCall { site, .. } = op {
-            self.require_site(
+        match op {
+            LinearOp::PureCall { site, .. } => self.require_site(
                 "SolveModel scalar program",
                 site,
                 linear_op_slice_span(kind),
-            )?;
+            )?,
+            LinearOp::PureCallDirectional { site, .. } => self.require_directional_site(
+                "SolveModel scalar program",
+                site,
+                linear_op_slice_span(kind),
+            )?,
+            _ => {}
         }
-        Ok(())
+        crate::visitor::walk_linear_op(self, kind, op_index, op)
     }
 }
 
@@ -858,17 +1256,36 @@ impl ModelPureCallSiteValidator<'_> {
             span,
         })
     }
+
+    fn require_directional_site(
+        &self,
+        context: &'static str,
+        site: &SolvePureCallDirectionalSite,
+        span: Option<Span>,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        if self.table.matches_directional_site(site) {
+            return Ok(());
+        }
+        Err(SolveProblemShapeContractError::PureCallSiteMismatch {
+            context,
+            owner: site.owner().index(),
+            span,
+        })
+    }
 }
 
-const fn linear_op_slice_span(kind: LinearOpSliceKind) -> Option<Span> {
+const fn linear_op_slice_span(kind: LinearOpSliceOwner) -> Option<Span> {
     match kind {
-        LinearOpSliceKind::ScalarProgram { span, .. } => span,
-        LinearOpSliceKind::GuardedAssignmentProgram { span, .. }
-        | LinearOpSliceKind::MatMulLhs { span, .. }
-        | LinearOpSliceKind::MatMulRhs { span, .. }
-        | LinearOpSliceKind::LinSolveSetup { span, .. }
-        | LinearOpSliceKind::MapBase { span, .. }
-        | LinearOpSliceKind::AffineStencilBase { span, .. } => Some(span),
+        LinearOpSliceOwner::ScalarProgram { span, .. }
+        | LinearOpSliceOwner::ScalarProgramConstruction { span, .. } => span,
+        LinearOpSliceOwner::GuardedAssignmentProgram { span, .. }
+        | LinearOpSliceOwner::EventMessageValue { span, .. }
+        | LinearOpSliceOwner::EventMessageFormat { span, .. }
+        | LinearOpSliceOwner::MatMulLhs { span, .. }
+        | LinearOpSliceOwner::MatMulRhs { span, .. }
+        | LinearOpSliceOwner::LinSolveSetup { span, .. }
+        | LinearOpSliceOwner::MapBase { span, .. }
+        | LinearOpSliceOwner::AffineStencilBase { span, .. } => Some(span),
     }
 }
 
@@ -906,14 +1323,8 @@ fn validate_variable_storage_runs(
                 | SolveVariableStorageRole::DiscreteValue
         );
         let (base, extent, base_uses_p) = match storage.base {
-            ScalarSlot::P { index, .. } => (index, problem.layout.p_scalars(), true),
-            ScalarSlot::Y { index, .. } => (index, problem.layout.y_scalars(), false),
-            ScalarSlot::Time | ScalarSlot::Constant(_) => {
-                return Err(variable_storage_contract(
-                    variable,
-                    "storage base is not a mutable Y/P coordinate",
-                ));
-            }
+            SolveStorageCoordinate::P(index) => (index, problem.layout.p_scalars(), true),
+            SolveStorageCoordinate::Y(index) => (index, problem.layout.y_scalars(), false),
         };
         if role_uses_p != base_uses_p {
             return Err(variable_storage_contract(
@@ -960,7 +1371,137 @@ fn validate_variable_storage_runs(
             ));
         }
     }
+    validate_y_role_segments(problem)?;
+    validate_static_parameter_prefix(problem)
+}
+
+fn validate_y_role_segments(problem: &SolveProblem) -> Result<(), SolveProblemShapeContractError> {
+    let layout = &problem.solve_layout;
+    let state_end = layout.state_scalar_count;
+    let algebraic_end = state_end
+        .checked_add(layout.algebraic_scalar_count)
+        .ok_or_else(|| y_storage_partition(0, "role segment boundary overflowed"))?;
+    let solver_end = algebraic_end
+        .checked_add(layout.output_scalar_count)
+        .ok_or_else(|| y_storage_partition(0, "role segment boundary overflowed"))?;
+    // The declaration catalog is the order used by FMI and other interface
+    // projections. Advance one cursor per role while visiting that exact
+    // declaration order: sorting the runs here would prove only a multiset and
+    // would permit two same-role variables to exchange their Y identities.
+    let mut role_next = [0usize, state_end, algebraic_end];
+    for (variable, storage) in layout.variable_storage_runs.iter().copied().enumerate() {
+        let SolveStorageCoordinate::Y(base) = storage.base else {
+            continue;
+        };
+        if storage.scalar_count == 0 {
+            continue;
+        }
+        let (role_index, segment_end) = match storage.role {
+            SolveVariableStorageRole::State => (0, state_end),
+            SolveVariableStorageRole::Algebraic => (1, algebraic_end),
+            SolveVariableStorageRole::Output => (2, solver_end),
+            _ => {
+                return Err(y_storage_partition(
+                    variable,
+                    "Y storage has a non-Y variable role",
+                ));
+            }
+        };
+        if base != role_next[role_index] {
+            return Err(y_storage_partition(
+                variable,
+                "runs are not contiguous in declaration order within their Y role segment",
+            ));
+        }
+        let end = base
+            .checked_add(storage.scalar_count)
+            .ok_or_else(|| y_storage_partition(variable, "storage range overflowed"))?;
+        if end > segment_end {
+            return Err(y_storage_partition(
+                variable,
+                "run crosses its dense Y role segment",
+            ));
+        }
+        role_next[role_index] = end;
+    }
+    if role_next != [state_end, algebraic_end, solver_end] {
+        return Err(y_storage_partition(
+            layout.variable_storage_runs.len(),
+            "storage runs do not cover every dense Y role segment",
+        ));
+    }
     Ok(())
+}
+
+fn validate_static_parameter_prefix(
+    problem: &SolveProblem,
+) -> Result<(), SolveProblemShapeContractError> {
+    let layout = &problem.solve_layout;
+    let prefix_end = layout.parameter_count;
+    let mut static_runs = Vec::new();
+    for (variable, storage) in layout.variable_storage_runs.iter().copied().enumerate() {
+        let SolveStorageCoordinate::P(index) = storage.base else {
+            continue;
+        };
+        if storage.scalar_count == 0 {
+            continue;
+        }
+        if matches!(
+            storage.role,
+            SolveVariableStorageRole::Parameter | SolveVariableStorageRole::Constant
+        ) {
+            static_runs.push((index, variable, storage));
+        } else if index < prefix_end {
+            return Err(p_storage_partition(
+                variable,
+                "non-static storage overlaps the dense P static prefix",
+            ));
+        }
+    }
+    static_runs.sort_unstable_by_key(|(base, variable, _)| (*base, *variable));
+
+    let mut next = 0usize;
+    for (base, variable, storage) in static_runs.iter().copied() {
+        if base != next {
+            return Err(p_storage_partition(
+                variable,
+                "static runs overlap or leave a gap in the dense P static prefix",
+            ));
+        }
+        let end = base
+            .checked_add(storage.scalar_count)
+            .ok_or_else(|| p_storage_partition(variable, "storage range overflowed"))?;
+        if end > prefix_end {
+            return Err(p_storage_partition(
+                variable,
+                "static run extends beyond the dense P static prefix",
+            ));
+        }
+        next = end;
+    }
+    if next != prefix_end {
+        return Err(p_storage_partition(
+            static_runs.len(),
+            "static runs do not cover the complete dense P static prefix",
+        ));
+    }
+    Ok(())
+}
+
+fn y_storage_partition(variable: usize, detail: &'static str) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::SolveLayoutStoragePartition {
+        context: "dense Y role segment",
+        variable,
+        detail,
+    }
+}
+
+fn p_storage_partition(variable: usize, detail: &'static str) -> SolveProblemShapeContractError {
+    SolveProblemShapeContractError::SolveLayoutStoragePartition {
+        context: "dense P static prefix",
+        variable,
+        detail,
+    }
 }
 
 fn variable_time_domain_matches_role(
@@ -1100,11 +1641,7 @@ fn validate_event_iteration_bindings(
         .pre_param_bindings
         .get(run.pre_binding_start..end)
         .ok_or_else(|| event_iteration_contract(row, "binding range is out of bounds"))?;
-    let ScalarSlot::P {
-        index: current_base,
-        ..
-    } = storage.base
-    else {
+    let SolveStorageCoordinate::P(current_base) = storage.base else {
         return Err(event_iteration_contract(
             row,
             "typed discrete coordinate is not P-backed",
@@ -1242,7 +1779,7 @@ fn validate_event_transaction_owner(
         .targets()
         .get(target_index)
         .ok_or_else(|| event_iteration_contract(row, "transaction target is out of bounds"))?;
-    if target.base() != storage.base
+    if target.base() != storage.base.scalar_slot()
         || target.value_type().scalar_count() as usize != storage.scalar_count
     {
         return Err(event_iteration_contract(
@@ -1482,7 +2019,7 @@ fn exact_transaction_target_storage(
         .iter()
         .copied()
         .find(|storage| {
-            storage.base == target.base()
+            storage.base.scalar_slot() == target.base()
                 && storage.scalar_count == target.value_type().scalar_count() as usize
                 && storage.event_iteration_kind().is_some()
         })
@@ -1490,7 +2027,7 @@ fn exact_transaction_target_storage(
 
 const fn scalar_slot_index(slot: ScalarSlot) -> Option<usize> {
     match slot {
-        ScalarSlot::P { index, .. } => Some(index),
+        ScalarSlot::P { index } => Some(index),
         ScalarSlot::Y { .. } | ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
@@ -1516,10 +2053,24 @@ fn validate_complete_scalar_program_coverage(
     owners: &HashMap<usize, usize>,
 ) -> Result<(), SolveProblemShapeContractError> {
     let mut output_cursor = 0usize;
-    for program in problem.discrete.rhs.programs() {
-        let count = ScalarProgramBlock::program_output_count(program);
-        let outputs = &problem.discrete.rhs.output_indices()[output_cursor..output_cursor + count];
-        output_cursor += count;
+    for program_index in 0..problem.discrete.rhs.programs().len() {
+        let count = problem
+            .discrete
+            .rhs
+            .stored_output_count_for_program(program_index)
+            .ok_or_else(|| event_iteration_contract(0, "missing retained scalar program width"))?;
+        let end = output_cursor
+            .checked_add(count)
+            .ok_or_else(|| event_iteration_contract(0, "scalar output ordinal overflows"))?;
+        let outputs = problem
+            .discrete
+            .rhs
+            .output_indices()
+            .get(output_cursor..end)
+            .ok_or_else(|| {
+                event_iteration_contract(0, "retained scalar output width is out of bounds")
+            })?;
+        output_cursor = end;
         let Some(transaction) = outputs
             .iter()
             .find_map(|output| owners.get(output))
@@ -1591,7 +2142,7 @@ fn validate_guarded_event_owner(
         .target_ranges()
         .get(target_range_index)
         .ok_or_else(|| event_iteration_contract(row, "guarded target range is out of bounds"))?;
-    if range.base() != storage.base || range.count() != storage.scalar_count {
+    if range.base() != storage.base.scalar_slot() || range.count() != storage.scalar_count {
         return Err(event_iteration_contract(
             row,
             "guarded target range does not define the run",
@@ -1677,7 +2228,7 @@ fn validate_structured_event_owner(
     };
     let dense = TensorOutputMap::dense_contiguous(0, domain)
         .map_err(|_| event_iteration_contract(row, "structured owner domain is invalid"))?;
-    if update.target.base != storage.base
+    if update.target.base != storage.base.scalar_slot()
         || update.target.map != dense
         || domain.scalar_count().ok() != Some(storage.scalar_count)
     {
@@ -1813,7 +2364,7 @@ fn validate_guarded_event_producers(
     }
     Ok(())
 }
-fn storage_variable_for_slot(
+pub(crate) fn storage_variable_for_slot(
     layout: &SolveLayout,
     slot: ScalarSlot,
 ) -> Result<Option<usize>, &'static str> {
@@ -1838,8 +2389,8 @@ fn external_input_storage_contains(layout: &SolveLayout, slot: ScalarSlot) -> bo
 
 fn storage_run_contains(storage: SolveVariableStorageRun, slot: ScalarSlot) -> bool {
     match (storage.base, slot) {
-        (ScalarSlot::P { index: base, .. }, ScalarSlot::P { index, .. })
-        | (ScalarSlot::Y { index: base, .. }, ScalarSlot::Y { index, .. }) => base
+        (SolveStorageCoordinate::P(base), ScalarSlot::P { index })
+        | (SolveStorageCoordinate::Y(base), ScalarSlot::Y { index }) => base
             .checked_add(storage.scalar_count)
             .is_some_and(|end| (base..end).contains(&index)),
         _ => false,
@@ -1871,22 +2422,10 @@ fn validate_continuous_system_shape(
     system
         .derivative_rhs
         .validate_shape_contract("continuous.derivative_rhs")?;
-    system
-        .refresh_owners
-        .validate_against(&system.implicit_rhs)
-        .map_err(
-            |error| SolveProblemShapeContractError::ContinuousRefreshOwner {
-                detail: error.to_string(),
-            },
-        )?;
-    for (context, block) in [
-        ("continuous.implicit_rhs", &system.implicit_rhs),
-        ("continuous.residual", &system.residual),
-        ("continuous.manifold_residual", &system.manifold_residual),
-        ("continuous.derivative_rhs", &system.derivative_rhs),
-    ] {
-        variable_bounds::validate_compute_block_variable_bounds(block, context, &problem.layout)?;
-    }
+    system.derivative_rhs.validate_exact_output_coverage(
+        "continuous.derivative_rhs.exact_output_coverage",
+        problem.solve_layout.state_scalar_count(),
+    )?;
     let implicit_count = system
         .implicit_rhs
         .output_count("continuous.implicit_rhs")?;
@@ -1947,7 +2486,7 @@ fn validate_implicit_output_ownership(
         .enumerate()
         .filter_map(|(row, target)| target.map(|target| (row, target)))
     {
-        let ScalarSlot::Y { index, .. } = target else {
+        let ScalarSlot::Y { index } = target else {
             return implicit_output_ownership_error(
                 &produced,
                 &projection_pairs,
@@ -2036,6 +2575,14 @@ fn validate_initialization_system_shape(
         problem.solve_layout.solver_scalar_count(),
         problem.layout.p_scalars(),
     )?;
+    // The issuer already proved the update targets canonical, writable, and
+    // unique; this adds the one fact only the root knows, the storage bounds.
+    validate_initial_projection_unknowns(
+        "initialization.update_targets",
+        &system.update_targets,
+        problem.solve_layout.solver_scalar_count(),
+        problem.layout.p_scalars(),
+    )?;
     validate_initial_projection_plan(
         "initialization.projection_plan",
         &system.projection_plan,
@@ -2050,11 +2597,6 @@ fn validate_discrete_system_shape(
 ) -> Result<(), SolveProblemShapeContractError> {
     let system = &problem.discrete;
     certificate::validate_discrete_certificate_shape(problem)?;
-    variable_bounds::validate_scalar_program_block_variable_bounds(
-        &system.rhs,
-        "discrete.rhs",
-        &problem.layout,
-    )?;
     system
         .structured_rhs
         .validate_shape_contract("discrete.structured_rhs")?;
@@ -2119,6 +2661,7 @@ fn validate_discrete_system_shape(
         "clocks.activation_parameter_indices",
         &problem.clocks.activation_parameter_indices,
     )?;
+    system.validate_clock_partition_order()?;
     Ok(())
 }
 
@@ -2305,8 +2848,8 @@ fn validate_event_transaction_storage_range(
     span: Option<Span>,
 ) -> Result<(), SolveProblemShapeContractError> {
     let (storage, start, extent) = match slot {
-        ScalarSlot::Y { index, .. } => ("Y", index, layout.y_scalars()),
-        ScalarSlot::P { index, .. } => ("P", index, layout.p_scalars()),
+        ScalarSlot::Y { index } => ("Y", index, layout.y_scalars()),
+        ScalarSlot::P { index } => ("P", index, layout.p_scalars()),
         ScalarSlot::Time | ScalarSlot::Constant(_) => return Ok(()),
     };
     let end = start.checked_add(count).ok_or(
@@ -2335,11 +2878,6 @@ fn validate_guarded_assignment_shape(
     clock_count: usize,
 ) -> Result<(), SolveProblemShapeContractError> {
     for (program_index, program) in problem.discrete.guarded_assignments.iter().enumerate() {
-        variable_bounds::validate_guarded_assignment_variable_bounds(
-            program,
-            program_index,
-            &problem.layout,
-        )?;
         if let Some(clock) = program.clock_owner() {
             validate_indices(
                 "discrete.guarded_assignments.clock_owner",
@@ -2349,8 +2887,8 @@ fn validate_guarded_assignment_shape(
         }
         for range in program.target_ranges() {
             let (storage, base, extent) = match range.base() {
-                ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
-                ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
+                ScalarSlot::Y { index } => ("Y", index, problem.layout.y_scalars()),
+                ScalarSlot::P { index } => ("P", index, problem.layout.p_scalars()),
                 ScalarSlot::Time | ScalarSlot::Constant(_) => {
                     unreachable!("checked guarded target range uses only Y/P storage")
                 }
@@ -2390,8 +2928,8 @@ fn validate_structured_discrete_shape(
         .update_targets
         .iter()
         .filter_map(|target| match target {
-            ScalarSlot::Y { index, .. } => Some(("Y", *index)),
-            ScalarSlot::P { index, .. } => Some(("P", *index)),
+            ScalarSlot::Y { index } => Some(("Y", *index)),
+            ScalarSlot::P { index } => Some(("P", *index)),
             ScalarSlot::Time | ScalarSlot::Constant(_) => None,
         })
         .collect::<BTreeSet<_>>();
@@ -2415,8 +2953,8 @@ fn validate_structured_discrete_shape(
         }
         for (target, _) in system.structured_assignments(update_index)? {
             let (storage, index, extent) = match target {
-                ScalarSlot::Y { index, .. } => ("Y", index, problem.layout.y_scalars()),
-                ScalarSlot::P { index, .. } => ("P", index, problem.layout.p_scalars()),
+                ScalarSlot::Y { index } => ("Y", index, problem.layout.y_scalars()),
+                ScalarSlot::P { index } => ("P", index, problem.layout.p_scalars()),
                 ScalarSlot::Time | ScalarSlot::Constant(_) => {
                     unreachable!("structured_assignments admits only Y/P target bases")
                 }
@@ -2452,14 +2990,10 @@ fn validate_structured_discrete_shape(
 
 fn validate_event_partition_shape(
     problem: &SolveProblem,
+    validate_semantic_certificates: bool,
 ) -> Result<(), SolveProblemShapeContractError> {
     let events = &problem.events;
-    certificate::validate_root_certificate_shape(problem)?;
-    validate_count(
-        "events.root_relation_memory_targets",
-        events.root_conditions.len(),
-        events.root_relation_memory_targets.len(),
-    )?;
+    certificate::validate_root_certificate_shape(problem, validate_semantic_certificates)?;
     validate_count(
         "events.root_zero_domains",
         events.root_conditions.len(),
@@ -2485,6 +3019,16 @@ fn validate_event_partition_shape(
     }
     validate_terminal_event_shape(problem)?;
     validate_delay_partition_shape(problem)
+}
+
+fn validate_root_relation_memory_alignment(
+    problem: &SolveProblem,
+) -> Result<(), SolveProblemShapeContractError> {
+    validate_count(
+        "events.root_relation_memory_targets",
+        problem.events.root_conditions.len(),
+        problem.events.root_relation_memory_targets.len(),
+    )
 }
 
 fn validate_terminal_event_shape(
@@ -2749,8 +3293,8 @@ fn validate_unique_projection_indices(
 
 fn projection_unknown_key(slot: ScalarSlot) -> Option<(bool, usize)> {
     match slot {
-        ScalarSlot::Y { index, .. } => Some((false, index)),
-        ScalarSlot::P { index, .. } => Some((true, index)),
+        ScalarSlot::Y { index } => Some((false, index)),
+        ScalarSlot::P { index } => Some((true, index)),
         ScalarSlot::Time | ScalarSlot::Constant(_) => None,
     }
 }
@@ -2764,8 +3308,8 @@ fn validate_initial_projection_unknowns(
     let mut seen = BTreeSet::new();
     for unknown in unknowns {
         let key = match *unknown {
-            ScalarSlot::Y { index, .. } if index < y_upper_bound => Some((false, index)),
-            ScalarSlot::P { index, .. } if index < p_upper_bound => Some((true, index)),
+            ScalarSlot::Y { index } if index < y_upper_bound => Some((false, index)),
+            ScalarSlot::P { index } if index < p_upper_bound => Some((true, index)),
             _ => None,
         };
         let Some(key) = key else {

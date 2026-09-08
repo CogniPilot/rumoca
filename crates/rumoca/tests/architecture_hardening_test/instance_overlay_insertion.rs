@@ -1,4 +1,4 @@
-//! Checked `InstanceOverlay` insertion boundary (SPEC_0036 / AS-052).
+//! Checked `InstanceOverlay` insertion boundary (SPEC_0036).
 
 use super::architecture_hardening_support::{attributes_require_test, production_rust_sources};
 use super::*;
@@ -304,6 +304,45 @@ fn use_tree_mentions_finalized_test_overlay(tree: &syn::UseTree) -> bool {
     }
 }
 
+struct RetiredOverlayUses {
+    projections: Vec<(std::path::PathBuf, String)>,
+    fixture_helpers: Vec<(std::path::PathBuf, usize)>,
+}
+
+fn retired_overlay_uses(
+    crates: &std::path::Path,
+    root: &std::path::Path,
+    retired_projections: &[&str],
+) -> RetiredOverlayUses {
+    let mut projections = Vec::new();
+    let mut fixture_helpers = Vec::new();
+    for entry in fs::read_dir(crates).expect("read workspace crates") {
+        let entry = entry.expect("read crate entry");
+        if !entry.path().join("Cargo.toml").is_file() {
+            continue;
+        }
+        for (path, source) in production_rust_sources(&entry.path(), root) {
+            projections.extend(
+                retired_projections
+                    .iter()
+                    .filter(|retired| source.contains(**retired))
+                    .map(|retired| (path.clone(), (*retired).to_string())),
+            );
+            let syntax = syn::parse_file(&source)
+                .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+            let mut visitor = ProductionFixtureHelperUseVisitor::default();
+            visitor.visit_file(&syntax);
+            if visitor.count != 0 {
+                fixture_helpers.push((path, visitor.count));
+            }
+        }
+    }
+    RetiredOverlayUses {
+        projections,
+        fixture_helpers,
+    }
+}
+
 #[test]
 fn retired_overconstrained_flat_projections_and_fixture_authority_cannot_return() {
     const RETIRED_PROJECTIONS: [&str; 3] = [
@@ -313,29 +352,10 @@ fn retired_overconstrained_flat_projections_and_fixture_authority_cannot_return(
     ];
     let root = workspace_root();
     let crates = root.join("crates");
-    let mut retired_projection_uses = Vec::new();
-    let mut production_fixture_uses = Vec::new();
-
-    for entry in fs::read_dir(&crates).expect("read workspace crates") {
-        let entry = entry.expect("read crate entry");
-        if !entry.path().join("Cargo.toml").is_file() {
-            continue;
-        }
-        for (path, source) in production_rust_sources(&entry.path(), &root) {
-            for retired in RETIRED_PROJECTIONS {
-                if source.contains(retired) {
-                    retired_projection_uses.push((path.clone(), retired));
-                }
-            }
-            let syntax = syn::parse_file(&source)
-                .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
-            let mut visitor = ProductionFixtureHelperUseVisitor::default();
-            visitor.visit_file(&syntax);
-            if visitor.count != 0 {
-                production_fixture_uses.push((path.clone(), visitor.count));
-            }
-        }
-    }
+    let RetiredOverlayUses {
+        projections: retired_projection_uses,
+        fixture_helpers: production_fixture_uses,
+    } = retired_overlay_uses(&crates, &root, &RETIRED_PROJECTIONS);
 
     assert!(
         retired_projection_uses.is_empty(),

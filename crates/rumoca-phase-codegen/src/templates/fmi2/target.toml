@@ -1,5 +1,4 @@
 version = 1
-ir = "fmi"
 name = "fmi2"
 description = "FMI 2.0.5 source-code ME+CS FMU over one checked tensor-native component"
 execution_mode = "packaged"
@@ -14,6 +13,14 @@ Advertised profiles: FMI 2 Model Exchange and Co-Simulation."""
 root = "{{ model_name }}"
 required_files = ["modelDescription.xml", "sources/model.c"]
 
+[[package.members]]
+kind = "file"
+file = "fmu"
+
+[[package.members]]
+kind = "file"
+file = "model_source"
+
 [package.archive]
 path = "{{ model_name }}.fmu"
 format = "zip"
@@ -24,7 +31,6 @@ continuous_states = true
 residual_equations = false
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -49,10 +55,19 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+id = "fmu"
+artifact_kind = "xml"
+semantic_context = "solve"
+view = "fmi-component"
 path = "modelDescription.xml"
 template = "modelDescription.xml.jinja"
-id = "fmu"
+required_artifact_identities = ["fmu"]
 
 [[files]]
+id = "model_source"
+artifact_kind = "c-source"
+semantic_context = "solve"
+view = "fmi-component"
 path = "sources/model.c"
 template = "model.c.jinja"
+required_artifact_identities = ["fmu"]

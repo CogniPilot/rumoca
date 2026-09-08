@@ -20,7 +20,7 @@ fn test_structural_parameter_marking() {
     let resolved = resolve(parsed).expect("resolve should succeed");
     let typed = typecheck(resolved).expect("typecheck should succeed");
 
-    let tree = typed.into_inner();
+    let tree = typed;
     let test_class = tree
         .definitions
         .classes
@@ -115,7 +115,7 @@ fn instanced_variability_uses_projected_member_variability() {
         "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree.definitions.classes.get("Test").expect("Test class");
     let system_like = tree
         .definitions
@@ -150,6 +150,6 @@ fn instanced_variability_uses_projected_member_variability() {
         forwarded.binding.clone(),
     );
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("parameter projected from a parameter member should typecheck");
 }

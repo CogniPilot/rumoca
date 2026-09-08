@@ -61,14 +61,17 @@ fn gear_torque_loop_converges_to_physical_solution() -> Result<(), Box<dyn std::
     let solve_model = lower_dae_for_simulation(compiled.dae(), &opts)?;
     assert!(
         solve_model
-            .problem
+            .problem()
             .continuous()
-            .algebraic_projection_plan
+            .algebraic_projection_plan()
             .blocks
             .iter()
             .any(|block| block.rows.len() == 4 && block.y_indices.len() == 4),
         "gear torque projection must remain a 4x4 coupled block: {:?}",
-        solve_model.problem.continuous().algebraic_projection_plan
+        solve_model
+            .problem()
+            .continuous()
+            .algebraic_projection_plan()
     );
     let sim = simulate_dae(compiled.dae(), &opts)?;
 

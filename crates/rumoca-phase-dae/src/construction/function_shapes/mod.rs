@@ -86,9 +86,14 @@ const SPECIALIZATION_DEPTH_LIMIT: usize = 256;
 /// DAE function's declared extents come from.
 ///
 /// **Evidence.** `function_shapes/tests/value_proven_shapes.rs`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(super) struct ShapeEnvironment {
     shapes: HashMap<VarName, ValueShape>,
+    /// Specialization shapes keyed by the resolved identity of a function
+    /// input, output, or local. Name lookup remains available for source
+    /// expressions, but lowering plans use this map so shadowing or malformed
+    /// same-spelled declarations cannot redirect a checked target.
+    function_value_shapes: HashMap<DefId, (VarName, ValueShape)>,
     /// Conservative finite bounds for scalar Integer values whose exact value
     /// is not fixed at translation time (most notably compact loop binders).
     integer_bounds: HashMap<VarName, (i64, i64)>,
@@ -102,7 +107,7 @@ pub(super) struct ShapeEnvironment {
     ///
     /// The immutable plan is shared by the model and every specialization;
     /// specialization cloning therefore remains O(1) for this global fact.
-    record_array_fields: Option<Arc<RecordArrayFieldPlans>>,
+    record_array_fields: Arc<RecordArrayFieldPlans>,
     /// Values proven for scalar coordinates of MLS §4.4.2 dimension type.
     ///
     /// The proven values are held in the same `EvalContext` the rest of this
@@ -125,14 +130,18 @@ pub(super) struct ShapeEnvironment {
 }
 
 impl ShapeEnvironment {
-    pub(super) fn with_capacity(capacity: usize) -> Self {
+    pub(super) fn with_capacity(
+        capacity: usize,
+        record_array_fields: Arc<RecordArrayFieldPlans>,
+    ) -> Self {
         Self {
             shapes: HashMap::with_capacity(capacity),
+            function_value_shapes: HashMap::with_capacity(capacity),
             integer_bounds: HashMap::with_capacity(capacity),
-            enumeration_literals: Arc::default(),
-            enumeration_type_declarations: Arc::default(),
-            record_array_fields: None,
-            values: EvalContext::with_capacity(capacity, 0, 0),
+            enumeration_literals: Arc::new(HashSet::new()),
+            enumeration_type_declarations: Arc::new(HashSet::new()),
+            record_array_fields,
+            values: EvalContext::resolved_empty_with_capacity(capacity, 0),
             specialized: false,
         }
     }
@@ -153,6 +162,46 @@ impl ShapeEnvironment {
         self.shapes.get(name)
     }
 
+    /// Read the shape bound to one exact function-value declaration.
+    pub(super) fn function_value_shape(
+        &self,
+        name: &VarName,
+        identity: DefId,
+    ) -> Option<&ValueShape> {
+        self.function_value_shapes
+            .get(&identity)
+            .filter(|(bound_name, _)| bound_name == name)
+            .map(|(_, shape)| shape)
+    }
+
+    /// Correlate a specialization shape with its resolved declaration.
+    fn bind_function_value_shape(
+        &mut self,
+        value: &rumoca_core::FunctionParam,
+        shape: &ValueShape,
+        function: &rumoca_core::Function,
+    ) -> Result<(), ToDaeError> {
+        let Some(identity) = value.def_id.filter(|identity| identity.index() != 0) else {
+            return Ok(());
+        };
+        if let Some((established_name, _)) = self.function_value_shapes.get(&identity) {
+            return Err(ToDaeError::unsupported_flat(
+                "function shape proof",
+                format!(
+                    "function `{}` repeats identity {} for `{}` and `{}`",
+                    function.name,
+                    identity.index(),
+                    established_name,
+                    value.name
+                ),
+                value.span,
+            ));
+        }
+        self.function_value_shapes
+            .insert(identity, (VarName::new(&value.name), shape.clone()));
+        Ok(())
+    }
+
     pub(super) fn is_enumeration_literal(&self, reference: &rumoca_core::Reference) -> bool {
         self.enumeration_literals.contains(reference.var_name())
             && reference.target_def_id().is_some_and(|declaration| {
@@ -164,8 +213,8 @@ impl ShapeEnvironment {
         self.enumeration_literals.contains(name)
     }
 
-    pub(super) fn record_array_fields(&self) -> Option<&RecordArrayFieldPlans> {
-        self.record_array_fields.as_deref()
+    pub(super) fn record_array_fields(&self) -> &RecordArrayFieldPlans {
+        &self.record_array_fields
     }
 
     /// Bind a coordinate's shape and drop any value inherited for that name.
@@ -186,10 +235,31 @@ impl ShapeEnvironment {
     /// The shape and the value are inserted together because MLS §4.4.2 admits
     /// a value only for a scalar, so a bound value that disagreed with a
     /// non-scalar shape would be unrepresentable rather than merely wrong.
-    pub(super) fn bind_scalar_value(&mut self, name: VarName, value: EvalValue) {
+    pub(super) fn bind_scalar_value(
+        &mut self,
+        declaration: &rumoca_core::FunctionParam,
+        value: EvalValue,
+    ) -> Result<(), ToDaeError> {
+        let identity = declaration
+            .def_id
+            .filter(|identity| identity.index() != 0)
+            .ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "function shape proof",
+                    format!(
+                        "function value `{}` has no exact declaration identity",
+                        declaration.name
+                    ),
+                    declaration.span,
+                )
+            })?;
+        let name = VarName::new(&declaration.name);
+        self.values
+            .try_bind_resolved_declaration_value(identity, value.clone())
+            .map_err(|error| ToDaeError::internal(error.to_string()))?;
         self.integer_bounds.remove(&name);
         self.shapes.insert(name.clone(), Vec::new());
-        self.values.add_parameter(name.to_string(), value);
+        Ok(())
     }
 
     /// Bind a scalar Integer to a proved finite interval without pretending it
@@ -227,7 +297,7 @@ impl ShapeEnvironment {
             return Some(value);
         }
         let (lower, upper) = self.proven_integer_bounds(expression)?;
-        Some(ProvenValue::IntegerRange { lower, upper })
+        Some(ProvenValue::IntegerInterval { lower, upper })
     }
 
     /// The exact Integer extent this scope proves for `expression`, if any.
@@ -250,32 +320,27 @@ impl ShapeEnvironment {
 pub(super) enum ProvenValue {
     /// An Integer, or an enumeration literal read through its MLS §4.8.5.2
     /// ordinal.
-    Integer(i64),
+    Settled(ProvenSettledValue),
     /// One finite interval carried by a compact Integer domain. It keys a
     /// bounded specialization but is never mistaken for an exact value.
-    IntegerRange {
-        lower: i64,
-        upper: i64,
-    },
+    IntegerInterval { lower: i64, upper: i64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum ProvenSettledValue {
+    Integer(i64),
     Boolean(bool),
 }
 
 impl ProvenValue {
     fn from_settled(value: &EvalValue) -> Option<Self> {
         match value {
-            EvalValue::Integer(value) => Some(Self::Integer(*value)),
-            EvalValue::Bool(value) => Some(Self::Boolean(*value)),
-            _ => None,
-        }
-    }
-
-    fn into_settled(self) -> EvalValue {
-        match self {
-            Self::Integer(value) => EvalValue::Integer(value),
-            Self::IntegerRange { .. } => {
-                unreachable!("an Integer interval is not one settled value")
+            EvalValue::Integer(value) => Some(Self::Settled(ProvenSettledValue::Integer(*value))),
+            EvalValue::Bool(value) => Some(Self::Settled(ProvenSettledValue::Boolean(*value))),
+            EvalValue::ResolvedEnum(value) => {
+                Some(Self::Settled(ProvenSettledValue::Integer(value.ordinal())))
             }
-            Self::Boolean(value) => EvalValue::Bool(value),
+            _ => None,
         }
     }
 
@@ -285,8 +350,17 @@ impl ProvenValue {
     /// then 3 else 1` — and never an extent by itself.
     pub(in crate::construction) fn extent(self) -> Option<i64> {
         match self {
-            Self::Integer(value) => Some(value),
-            Self::IntegerRange { .. } | Self::Boolean(_) => None,
+            Self::Settled(ProvenSettledValue::Integer(value)) => Some(value),
+            Self::IntegerInterval { .. } | Self::Settled(ProvenSettledValue::Boolean(_)) => None,
+        }
+    }
+}
+
+impl From<ProvenSettledValue> for EvalValue {
+    fn from(value: ProvenSettledValue) -> Self {
+        match value {
+            ProvenSettledValue::Integer(value) => Self::Integer(value),
+            ProvenSettledValue::Boolean(value) => Self::Bool(value),
         }
     }
 }
@@ -310,11 +384,14 @@ pub(in crate::construction) fn proven_conditional_branch(
 ) -> Option<Option<usize>> {
     for (ordinal, block) in blocks.iter().enumerate() {
         match values.proven_value(&block.cond)? {
-            ProvenValue::Boolean(true) => return Some(Some(ordinal)),
-            ProvenValue::Boolean(false) => {}
+            ProvenValue::Settled(ProvenSettledValue::Boolean(true)) => {
+                return Some(Some(ordinal));
+            }
+            ProvenValue::Settled(ProvenSettledValue::Boolean(false)) => {}
             // MLS §11.5 requires a Boolean condition; a scope that folded one to
             // an Integer proves nothing about which branch runs.
-            ProvenValue::Integer(_) | ProvenValue::IntegerRange { .. } => return None,
+            ProvenValue::Settled(ProvenSettledValue::Integer(_))
+            | ProvenValue::IntegerInterval { .. } => return None,
         }
     }
     Some(None)
@@ -361,9 +438,9 @@ pub(super) struct FunctionShapeCertificate {
 /// exact function call.  The specialization itself consequently keeps the
 /// declared element shapes and can still pass the DAE call constructor's exact
 /// type check.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) struct FunctionCallShapeCertificate {
-    pub(super) specialization: FunctionSpecializationKey,
+    pub(super) specialization: Arc<FunctionShapeCertificate>,
     pub(super) prefix: ValueShape,
     pub(super) vectorized_inputs: Vec<bool>,
 }
@@ -379,7 +456,7 @@ pub(super) struct FunctionShapeAnalysis {
     certificates: Vec<FunctionShapeCertificate>,
     certificate_by_key: HashMap<FunctionSpecializationKey, usize>,
     call_certificates: HashMap<FunctionSpecializationKey, FunctionCallShapeCertificate>,
-    dependencies: Vec<Vec<usize>>,
+    construction_components: Vec<rumoca_core::DependencyScc>,
     constructor_instances: HashSet<FunctionInstanceId>,
     constructor_fields_by_key: HashMap<FunctionSpecializationKey, Vec<ValueShape>>,
     /// Declared input count per callable, so the MLS §12.4.2.1 partial
@@ -399,8 +476,8 @@ pub(super) struct FunctionShapeAnalysis {
 impl FunctionShapeAnalysis {
     pub(super) fn analyze(flat: &flat::Model, constants: &EvalContext) -> Result<Self, ToDaeError> {
         let record_array_fields = Arc::new(analysis::analyze_record_array_field_plans(flat)?);
-        let mut model_values = concrete_model_shapes(flat, constants)?;
-        model_values.record_array_fields = Some(record_array_fields);
+        let model_values =
+            concrete_model_shapes(flat, constants, Arc::clone(&record_array_fields))?;
         let constructor_instances = flat
             .functions
             .values()
@@ -443,23 +520,24 @@ impl FunctionShapeAnalysis {
                 certificates: Vec::new(),
                 certificate_by_key: HashMap::new(),
                 call_certificates: HashMap::new(),
-                dependencies: Vec::new(),
+                construction_components: Vec::new(),
                 constructor_instances,
                 constructor_fields_by_key: HashMap::new(),
                 declared_input_counts,
                 value_read_inputs,
             },
             active_specializations: Vec::new(),
+            dependencies: Vec::new(),
         };
         analyzer.discover_model_calls()?;
+        analyzer.analysis.construction_components =
+            rumoca_core::dependency_first_sccs(&analyzer.dependencies)
+                .map_err(|error| ToDaeError::internal(error.to_string()))?;
         Ok(analyzer.analysis)
     }
 
     pub(super) fn record_array_fields(&self) -> &Arc<RecordArrayFieldPlans> {
-        self.model_values
-            .record_array_fields
-            .as_ref()
-            .expect("function shape analysis owns the model projection plan")
+        &self.model_values.record_array_fields
     }
 
     /// The proven argument values that identify one call's specialization.
@@ -497,9 +575,8 @@ impl FunctionShapeAnalysis {
         &self.certificates
     }
 
-    pub(super) fn construction_components(&self) -> Vec<rumoca_core::DependencyScc> {
-        rumoca_core::dependency_first_sccs(&self.dependencies)
-            .expect("function shape dependencies reference known certificates")
+    pub(super) fn construction_components(&self) -> &[rumoca_core::DependencyScc] {
+        &self.construction_components
     }
 
     pub(super) fn constructor_field_shapes(
@@ -561,9 +638,7 @@ impl FunctionShapeAnalysis {
                 span,
             )
         })?;
-        self.certificate(&call.specialization)
-            .expect("a call certificate names a constructor-proven specialization");
-        Ok(call.specialization.clone())
+        Ok(call.specialization.key.clone())
     }
 
     pub(super) fn call_certificate(
@@ -605,19 +680,22 @@ impl FunctionShapeAnalysis {
         let mut resolve = |name: &rumoca_core::Reference,
                            arguments: &[Expression],
                            is_constructor: bool,
+                           call_kind: rumoca_core::FunctionCallKind,
                            span: Span| {
-            if is_constructor {
-                return self.constructor_expression_shape(name, span);
-            }
             reject_function_partial_application(
+                call_kind,
                 self.declared_input_counts.get(name.var_name()).copied(),
                 name,
                 arguments,
                 span,
             )?;
+            if is_constructor {
+                return self.constructor_expression_shape(name, span);
+            }
             let call = self.call_certificate(name, arguments, values, span)?;
-            self.certificate(&call.specialization)
-                .and_then(|certificate| certificate.results.first())
+            call.specialization
+                .results
+                .first()
                 .map(|result| {
                     call.prefix
                         .iter()
@@ -670,6 +748,7 @@ struct ShapeAnalyzer<'flat> {
     flat: &'flat flat::Model,
     analysis: FunctionShapeAnalysis,
     active_specializations: Vec<usize>,
+    dependencies: Vec<Vec<usize>>,
 }
 
 impl ShapeAnalyzer<'_> {
@@ -721,15 +800,7 @@ impl ShapeAnalyzer<'_> {
             is_matrix: true,
             ..
         } = expression
-            && elements.iter().all(|element| {
-                matches!(
-                    element,
-                    Expression::Array {
-                        is_matrix: true,
-                        ..
-                    }
-                )
-            })
+            && let Some(rows) = promoted_matrix_rows(elements)
         {
             // Parse reserves an all-matrix-child node for the `;`
             // spelling. Its child rows may contain vectors or matrices:
@@ -737,7 +808,7 @@ impl ShapeAnalyzer<'_> {
             // exact shape. Descend through the row wrappers so calls are
             // still discovered, without applying the deliberately narrower
             // top-level horizontal-row rejection to those operands.
-            return self.discover_promoted_matrix_calls(elements, values);
+            return self.discover_promoted_matrix_calls(&rows, values);
         }
         for child in expression_children(expression) {
             self.discover_calls(child, values)?;
@@ -747,16 +818,10 @@ impl ShapeAnalyzer<'_> {
 
     fn discover_promoted_matrix_calls(
         &mut self,
-        rows: &[Expression],
+        rows: &[&[Expression]],
         values: &ShapeEnvironment,
     ) -> Result<(), ToDaeError> {
-        for row in rows {
-            let Expression::Array {
-                elements: operands, ..
-            } = row
-            else {
-                unreachable!("semicolon-row predicate proves every child")
-            };
+        for &operands in rows {
             for operand in operands {
                 self.discover_calls(operand, values)?;
             }
@@ -772,15 +837,46 @@ impl ShapeAnalyzer<'_> {
         if let Expression::FunctionCall {
             name,
             args,
-            is_constructor: true,
+            is_constructor,
+            call_kind,
             span,
         } = expression
-            && !name.as_str().starts_with("__rumoca_named_arg__.")
         {
-            return self.discover_constructor(name, args, *span, values);
+            match rumoca_core::classify_named_function_arg_marker(
+                name,
+                args,
+                *is_constructor,
+                *call_kind,
+            ) {
+                rumoca_core::NamedFunctionArgMarker::Valid { .. } => {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function shape discovery",
+                        "generated named-argument wrappers must be eliminated before DAE construction",
+                        *span,
+                    ));
+                }
+                rumoca_core::NamedFunctionArgMarker::Malformed => {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function shape discovery",
+                        "a generated named argument must be a constructor invocation with one value and a nonempty name",
+                        *span,
+                    ));
+                }
+                rumoca_core::NamedFunctionArgMarker::NotMarker
+                    if *is_constructor
+                        && *call_kind == rumoca_core::FunctionCallKind::Invocation =>
+                {
+                    return self.discover_constructor(name, args, *span, values);
+                }
+                rumoca_core::NamedFunctionArgMarker::NotMarker => {}
+            }
         }
         if let Expression::FunctionCall {
-            name, args, span, ..
+            name,
+            args,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
+            span,
+            ..
         } = expression
             && enumeration_conversion(self.flat, name, args, *span)?.is_some()
         {
@@ -791,11 +887,10 @@ impl ShapeAnalyzer<'_> {
         let mut resolve = |name: &rumoca_core::Reference,
                            arguments: &[Expression],
                            is_constructor: bool,
+                           call_kind: rumoca_core::FunctionCallKind,
                            span: Span| {
-            if is_constructor {
-                return self.discover_constructor(name, arguments, span, values);
-            }
             reject_function_partial_application(
+                call_kind,
                 self.flat
                     .functions
                     .get(name.var_name())
@@ -804,6 +899,9 @@ impl ShapeAnalyzer<'_> {
                 arguments,
                 span,
             )?;
+            if is_constructor {
+                return self.discover_constructor(name, arguments, span, values);
+            }
             let inputs = arguments
                 .iter()
                 .map(|argument| self.discover_expression(argument, values))
@@ -886,14 +984,6 @@ impl ShapeAnalyzer<'_> {
                 .map(|(value, vectorized)| (!*vectorized).then_some(value).flatten())
                 .collect(),
         };
-        self.analysis.call_certificates.insert(
-            occurrence,
-            FunctionCallShapeCertificate {
-                specialization: specialization.clone(),
-                prefix: prefix.clone(),
-                vectorized_inputs,
-            },
-        );
         let index = self.ensure_specialization(specialization, span)?;
         let certificate = &self.analysis.certificates[index];
         for ((parameter, actual), declared) in function
@@ -912,6 +1002,14 @@ impl ShapeAnalyzer<'_> {
                 ));
             }
         }
+        self.analysis.call_certificates.insert(
+            occurrence,
+            FunctionCallShapeCertificate {
+                specialization: Arc::new(certificate.clone()),
+                prefix: prefix.clone(),
+                vectorized_inputs,
+            },
+        );
         Ok((index, prefix))
     }
 
@@ -1044,7 +1142,7 @@ impl ShapeAnalyzer<'_> {
         let index = self.analysis.certificates.len();
         self.analysis.certificate_by_key.insert(key, index);
         self.analysis.certificates.push(certificate);
-        self.analysis.dependencies.push(Vec::new());
+        self.dependencies.push(Vec::new());
         self.record_dependency(caller, index);
 
         let values = self.analysis.certificates[index].values.clone();
@@ -1079,7 +1177,7 @@ impl ShapeAnalyzer<'_> {
         let Some(caller) = caller else {
             return;
         };
-        let dependencies = &mut self.analysis.dependencies[caller];
+        let dependencies = &mut self.dependencies[caller];
         if !dependencies.contains(&dependency) {
             dependencies.push(dependency);
         }
@@ -1282,6 +1380,20 @@ impl ShapeAnalyzer<'_> {
     }
 }
 
+fn promoted_matrix_rows(elements: &[Expression]) -> Option<Vec<&[Expression]>> {
+    elements
+        .iter()
+        .map(|element| match element {
+            Expression::Array {
+                elements,
+                is_matrix: true,
+                ..
+            } => Some(elements.as_slice()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn bind_discovered_loop_index(values: &mut ShapeEnvironment, index: &rumoca_core::ForIndex) {
     let binder = VarName::new(&index.ident);
     match values.proven_range_bounds(&index.range) {
@@ -1358,27 +1470,6 @@ fn require_exact_vectorization_owner(
     function: &rumoca_core::Function,
     span: Span,
 ) -> Result<(), ToDaeError> {
-    if !function.transitively_non_replaceable {
-        return Err(ToDaeError::unsupported_flat(
-            "function vectorization proof",
-            format!(
-                "`{}` is replaceable or lacks the constructor-proven transitive \
-                 non-replaceability certificate (MLS §12.4.6/FUNC-026)",
-                function.name
-            ),
-            span,
-        ));
-    }
-    let expected = function.instance_id.ok_or_else(|| {
-        ToDaeError::unsupported_flat(
-            "function vectorization proof",
-            format!(
-                "`{}` has no exact selected function instance (MLS §12.4.6/FUNC-026)",
-                function.name
-            ),
-            span,
-        )
-    })?;
     let resolved = reference.resolved_function().ok_or_else(|| {
         ToDaeError::unsupported_flat(
             "function vectorization proof",
@@ -1390,35 +1481,43 @@ fn require_exact_vectorization_owner(
             span,
         )
     })?;
-    if !resolved.transitively_non_replaceable {
-        return Err(ToDaeError::unsupported_flat(
-            "function vectorization proof",
-            format!(
-                "`{}` lacks an occurrence-proven transitively non-replaceable exposure path \
-                 (MLS §12.4.6/FUNC-026)",
-                reference.as_str()
-            ),
-            span,
-        ));
-    }
-    if resolved.instance_id != expected {
-        return Err(ToDaeError::unsupported_flat(
-            "function vectorization proof",
-            format!(
-                "`{}` selects function instance {}, but `{}` is instance {} \
-                 (MLS §12.4.6/FUNC-026)",
-                reference.as_str(),
-                resolved.instance_id.index(),
-                function.name,
-                expected.index()
-            ),
-            span,
-        ));
-    }
-    Ok(())
+    function
+        .automatic_vectorization_authority(resolved)
+        .map(drop)
+        .map_err(|reason| {
+            use rumoca_core::AutomaticVectorizationRefusal as Refusal;
+            let detail = match reason {
+                Refusal::FunctionMayBeReplaceable => format!(
+                    "`{}` is replaceable or lacks the constructor-proven transitive \
+                     non-replaceability certificate (MLS §12.4.6/FUNC-026)",
+                    function.name
+                ),
+                Refusal::FunctionHasNoInstanceIdentity => format!(
+                    "`{}` has no exact selected function instance (MLS §12.4.6/FUNC-026)",
+                    function.name
+                ),
+                Refusal::OccurrenceMayBeReplaceable => format!(
+                    "`{}` lacks an occurrence-proven transitively non-replaceable exposure path \
+                     (MLS §12.4.6/FUNC-026)",
+                    reference.as_str()
+                ),
+                Refusal::InstanceIdentityMismatch {
+                    occurrence,
+                    function: expected,
+                } => format!(
+                    "`{}` selects function instance {}, but `{}` is instance {} \
+                     (MLS §12.4.6/FUNC-026)",
+                    reference.as_str(),
+                    occurrence.index(),
+                    function.name,
+                    expected.index()
+                ),
+            };
+            ToDaeError::unsupported_flat("function vectorization proof", detail, span)
+        })
 }
 
-/// Refuse an MLS §12.4.2.1 function partial application by name.
+/// Refuse an MLS §12.4.2.1 function value before scalar shape construction.
 ///
 /// MLS §12.4.2.1: "A function partial application is specified by the function
 /// keyword followed by a function call to func_name giving named formal
@@ -1428,49 +1527,38 @@ fn require_exact_vectorization_owner(
 /// the original function declaration".
 ///
 /// The value such an expression denotes is a *function*, not an array of
-/// scalars, so it has no [`ValueShape`] at all — and Flat carries no marker
-/// distinguishing it from an under-applied call, because `is_partial_application`
-/// is an AST-only field. Without that marker the shape prover would otherwise
-/// report it as the arity mismatch of a full call, which names the wrong
-/// construct and points a reader at the callee's declaration instead of at the
-/// unimplemented feature. The signature Flat does preserve is exact: a call
-/// whose every argument is a retained named-argument wrapper and which supplies
-/// fewer arguments than the callee declares is the partial-application form,
-/// since flatten materializes default and positional slots for every executable
-/// call and keeps source-shaped named arguments only for a partial application.
+/// scalars, so it has no [`ValueShape`] at all. Flat preserves that distinction
+/// explicitly as [`rumoca_core::FunctionCallKind::PartialApplication`]. Named
+/// associations and argument count are deliberately not used as semantic
+/// identity: both also occur in ordinary invocations, while a forged partial
+/// application remains a function value even if its arguments are malformed.
 fn reject_function_partial_application(
+    call_kind: rumoca_core::FunctionCallKind,
     declared_inputs: Option<usize>,
     name: &rumoca_core::Reference,
     arguments: &[Expression],
     span: Span,
 ) -> Result<(), ToDaeError> {
-    let Some(declared_inputs) = declared_inputs else {
-        return Ok(());
-    };
-    if arguments.is_empty() || arguments.len() >= declared_inputs {
+    if call_kind != rumoca_core::FunctionCallKind::PartialApplication {
         return Ok(());
     }
-    let is_named_association = |argument: &Expression| {
-        matches!(
-            argument,
-            Expression::FunctionCall {
-                name,
-                is_constructor: true,
-                ..
-            } if name.as_str().starts_with(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
-        )
-    };
-    if !arguments.iter().all(is_named_association) {
-        return Ok(());
-    }
+    let binding_count = declared_inputs.map_or_else(
+        || format!("binds {} formal parameter(s)", arguments.len()),
+        |declared_inputs| {
+            format!(
+                "binds {} of {} formal parameters",
+                arguments.len(),
+                declared_inputs
+            )
+        },
+    );
     Err(ToDaeError::unsupported_flat(
         "function partial application",
         format!(
-            "MLS §12.4.2.1 partial application of `{}` binds {} of {} formal parameters and \
-             denotes a function value, which the canonical DAE has no value shape for",
+            "MLS §12.4.2.1 partial application of `{}` {} and denotes a function value, which \
+             the canonical DAE has no value shape for",
             name.as_str(),
-            arguments.len(),
-            declared_inputs
+            binding_count,
         ),
         span,
     ))
@@ -1486,8 +1574,10 @@ fn reject_function_partial_application(
 fn concrete_model_shapes(
     flat: &flat::Model,
     constants: &EvalContext,
+    record_array_fields: Arc<RecordArrayFieldPlans>,
 ) -> Result<ShapeEnvironment, ToDaeError> {
-    let mut values = ShapeEnvironment::with_capacity(flat.variables.len());
+    let mut values = ShapeEnvironment::with_capacity(flat.variables.len(), record_array_fields);
+    values.values = constants.clone();
     values.enumeration_type_declarations = Arc::new(
         flat.type_ids_by_def_id
             .iter()
@@ -1500,21 +1590,15 @@ fn concrete_model_shapes(
     );
     for (name, variable) in &flat.variables {
         let shape = concrete_dimensions(&variable.dims, variable.source_span, "model variable")?;
-        match constants.get(name.as_str()) {
-            Some(value) if shape.is_empty() && is_scalar_value(value) => {
-                values.bind_scalar_value(name.clone(), value.clone());
-            }
-            _ => values.insert(name.clone(), shape),
-        }
+        values.insert(name.clone(), shape);
     }
     values.insert(VarName::new("time"), Vec::new());
     // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
     // so a dimension written over a literal is an exact Integer extent.
     let mut enumeration_literals = HashSet::with_capacity(flat.enum_literal_ordinals.len());
-    for (name, ordinal) in &flat.enum_literal_ordinals {
+    for name in flat.enum_literal_ordinals.keys() {
         let name = VarName::new(name);
         enumeration_literals.insert(name.clone());
-        values.bind_scalar_value(name, EvalValue::Integer(*ordinal));
     }
     values.enumeration_literals = Arc::new(enumeration_literals);
     Ok(values)
@@ -1568,20 +1652,22 @@ fn resolve_certificate(
         let shape = resolve_declared_shape(parameter, Some(actual), &values)?;
         let name = VarName::new(&parameter.name);
         match key.input_values.get(ordinal).copied().flatten() {
-            Some(ProvenValue::IntegerRange { lower, upper }) if shape.is_empty() => {
+            Some(ProvenValue::IntegerInterval { lower, upper }) if shape.is_empty() => {
                 values.bind_integer_bounds(name, lower, upper);
             }
-            Some(value) if shape.is_empty() => {
-                values.bind_scalar_value(name, value.into_settled());
+            Some(ProvenValue::Settled(value)) if shape.is_empty() => {
+                values.bind_scalar_value(parameter, value.into())?;
             }
             _ => values.insert(name, shape.clone()),
         }
+        values.bind_function_value_shape(parameter, &shape, function)?;
         parameters.push(shape);
     }
     let mut results = Vec::with_capacity(function.outputs.len());
     for result in &function.outputs {
         let shape = resolve_declared_shape(result, None, &values)?;
         values.insert(VarName::new(&result.name), shape.clone());
+        values.bind_function_value_shape(result, &shape, function)?;
         results.push(shape);
     }
     // MLS §12.2 admits a declared dimension "given by the input formal
@@ -1607,13 +1693,14 @@ fn resolve_certificate(
                 // over it is rejected by name where it is read.
                 match evaluate_shape_integer(default, &values).ok() {
                     Some(value) => {
-                        values.bind_scalar_value(name, EvalValue::Integer(value));
+                        values.bind_scalar_value(local, EvalValue::Integer(value))?;
                     }
-                    None => values.insert(name, shape),
+                    None => values.insert(name, shape.clone()),
                 }
             }
-            _ => values.insert(name, shape),
+            _ => values.insert(name, shape.clone()),
         }
+        values.bind_function_value_shape(local, &shape, function)?;
     }
     // MLS §12.2: a record value's declared fields are readable through the
     // joined reference identity Flat renders, so each field carries its own
@@ -1747,11 +1834,6 @@ fn is_dimension_typed_scalar(flat: &flat::Model, input: &rumoca_core::FunctionPa
                 dae::ScalarType::Integer | dae::ScalarType::Enumeration | dae::ScalarType::Boolean
             )
         )
-}
-
-/// Whether a settled parameter value is a scalar the shape proof can read.
-fn is_scalar_value(value: &EvalValue) -> bool {
-    !matches!(value, EvalValue::Array(_) | EvalValue::Record(_))
 }
 
 fn concrete_extent(

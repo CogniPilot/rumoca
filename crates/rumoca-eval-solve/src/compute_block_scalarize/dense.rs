@@ -228,8 +228,6 @@ fn max_reg_in_op(
         | LinearOp::LoadY { dst, .. }
         | LinearOp::LoadP { dst, .. }
         | LinearOp::LoadSeed { dst, .. }
-        | LinearOp::LoadIndexedP { dst, .. }
-        | LinearOp::LoadIndexedSeed { dst, .. }
         | LinearOp::LoadFoldCarried { dst, .. }
         | LinearOp::LoadFoldIndex { dst, .. }
         | LinearOp::LoadFoldCapture { dst, .. }
@@ -496,24 +494,6 @@ fn max_reg_in_op(
             kind,
             span,
         )?,
-        LinearOp::TableBounds { dst, table_id, .. } => dst.max(table_id),
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        }
-        | LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => dst.max(table_id).max(column).max(input),
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => dst.max(table_id).max(time),
         LinearOp::RandomInitialState {
             dst,
             local_seed,
@@ -548,13 +528,13 @@ fn max_reg_in_op(
             program,
         } => {
             let mut last =
-                checked_reg_range_last(dst_start, program.carried_count, kind, span)?.max(
-                    checked_reg_range_last(initial_start, program.carried_count, kind, span)?,
+                checked_reg_range_last(dst_start, program.carried_count(), kind, span)?.max(
+                    checked_reg_range_last(initial_start, program.carried_count(), kind, span)?,
                 );
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_reg_range_last(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     kind,
                     span,
                 )?);
@@ -568,18 +548,18 @@ fn max_reg_in_op(
             activation,
             program,
         } => {
-            let mut last = checked_reg_range_last(dst_start, program.carried_count, kind, span)?
+            let mut last = checked_reg_range_last(dst_start, program.carried_count(), kind, span)?
                 .max(checked_reg_range_last(
                     initial_start,
-                    program.carried_count,
+                    program.carried_count(),
                     kind,
                     span,
                 )?)
                 .max(activation);
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_reg_range_last(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     kind,
                     span,
                 )?);
@@ -591,11 +571,11 @@ fn max_reg_in_op(
             capture_start,
             program,
         } => {
-            let mut last = checked_reg_range_last(dst_start, program.result_count, kind, span)?;
-            if program.capture_count != 0 {
+            let mut last = checked_reg_range_last(dst_start, program.result_count(), kind, span)?;
+            if program.capture_count() != 0 {
                 last = last.max(checked_reg_range_last(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     kind,
                     span,
                 )?);
@@ -715,10 +695,10 @@ fn max_reg_in_op(
                     last = last.max(checked_reg_range_last(start, count, kind, span)?);
                 }
             }
-            if program.capture_count != 0 {
+            if program.capture_count() != 0 {
                 last = last.max(checked_reg_range_last(
                     capture_start,
-                    program.capture_count,
+                    program.capture_count(),
                     kind,
                     span,
                 )?);

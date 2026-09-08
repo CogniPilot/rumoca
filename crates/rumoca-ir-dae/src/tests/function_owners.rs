@@ -517,6 +517,7 @@ fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
         let state = dae.variables(|variables| {
             variables.state(
                 VarName::new("state_x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 state_at,
                 VariableAttributes::default(),
@@ -595,9 +596,13 @@ fn pure_functions_reject_model_runtime_coordinates_at_the_exact_use_site() {
         .map(|_| ())
     })
     .expect("rejected assignments do not mutate the function environment");
+    assert_function_statement_count(&dae, 1);
+}
+
+fn assert_function_statement_count(dae: &Dae, expected: usize) {
     dae.inspect(|view| {
         let function = view.function(view.function_id(0).unwrap()).unwrap();
-        assert_eq!(function.statements().count(), 1);
+        assert_eq!(function.statements().count(), expected);
     });
 }
 
@@ -948,7 +953,7 @@ fn function_for_loop_is_a_compact_checked_transition() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "k".to_string(),
                                 lower: 1,
                                 upper: 3,
@@ -1108,7 +1113,7 @@ fn nested_loop_domains<'dae>(
         domains.structured(
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
-                    id: 0,
+                    id: rumoca_core::StructuredIndexBinderId::new(0),
                     display_name: "i".to_string(),
                     lower: 1,
                     upper: 2,
@@ -1123,7 +1128,7 @@ fn nested_loop_domains<'dae>(
             outer_domain,
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
-                    id: 0,
+                    id: rumoca_core::StructuredIndexBinderId::new(0),
                     display_name: "j".to_string(),
                     lower: 1,
                     upper: 2,
@@ -1152,7 +1157,7 @@ fn assert_nested_folds(view: DaeView<'_>) {
 
 fn assert_invalid_function_loop_wires(encoded: &str) {
     let mut missing_parameter: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    missing_parameter["storage"]["functions"][0]["statements"][1]["for"]["targets"] =
+    missing_parameter["storage"]["functions"][0]["body"]["modelica"]["statements"][1]["for"]["targets"] =
         serde_json::json!([]);
     assert!(
         serde_json::from_value::<Dae>(missing_parameter).is_err(),
@@ -1160,16 +1165,16 @@ fn assert_invalid_function_loop_wires(encoded: &str) {
     );
 
     let mut open_initial: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    open_initial["storage"]["functions"][0]["statements"][1]["for"]["targets"][0] =
-        serde_json::json!(1);
+    open_initial["storage"]["functions"][0]["body"]["modelica"]["statements"][1]["for"]["targets"]
+        [0] = serde_json::json!(1);
     assert!(
         serde_json::from_value::<Dae>(open_initial).is_err(),
         "wire reconstruction rejects an uninitialized loop-carried local"
     );
 
     let mut nested_fold: serde_json::Value = serde_json::from_str(encoded).unwrap();
-    let outer = nested_fold["storage"]["functions"][0]["statements"][1].clone();
-    nested_fold["storage"]["functions"][0]["statements"][1]["for"]["statements"] =
+    let outer = nested_fold["storage"]["functions"][0]["body"]["modelica"]["statements"][1].clone();
+    nested_fold["storage"]["functions"][0]["body"]["modelica"]["statements"][1]["for"]["statements"] =
         serde_json::json!([outer]);
     let error = serde_json::from_value::<Dae>(nested_fold).unwrap_err();
     assert!(
@@ -1245,7 +1250,7 @@ fn function_loop_rejects_duplicate_carried_targets() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "k".to_string(),
                                 lower: 1,
                                 upper: 2,

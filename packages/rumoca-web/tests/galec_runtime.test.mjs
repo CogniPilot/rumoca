@@ -10,12 +10,8 @@ import {
   renderGalec,
 } from "../runtime/rumoca_galec.js";
 
-test("isGalecTarget recognizes exactly the three GALEC targets", () => {
-  assert.deepEqual([...GALEC_TARGETS], [
-    "galec",
-    "galec-production",
-    "embedded-c-galec",
-  ]);
+test("isGalecTarget recognizes exactly the Algorithm Code target", () => {
+  assert.deepEqual([...GALEC_TARGETS], ["galec"]);
   for (const target of GALEC_TARGETS) {
     assert.equal(isGalecTarget(target), true, target);
   }
@@ -24,41 +20,16 @@ test("isGalecTarget recognizes exactly the three GALEC targets", () => {
   }
 });
 
-test("galec target yields only the .alg (Algorithm Code), C fields ignored", () => {
-  const files = galecResultToFiles("galec", {
+test("galec target yields only the .alg Algorithm Code", () => {
+  const files = galecResultToFiles({
     model_identifier: "pkg_Model",
     alg: "DoStep{}",
-    c_header: "",
-    c_source: "",
   });
   assert.deepEqual(files, [{ path: "pkg_Model.alg", content: "DoStep{}" }]);
 });
 
-test("C targets add .h and .c named by the model identifier (matches the #include)", () => {
-  for (const target of ["galec-production", "embedded-c-galec"]) {
-    const files = galecResultToFiles(target, {
-      model_identifier: "a_b_Demo",
-      alg: "ALG",
-      c_header: "HDR",
-      c_source: "SRC",
-    });
-    assert.deepEqual(
-      files.map((file) => file.path),
-      ["a_b_Demo.alg", "a_b_Demo.h", "a_b_Demo.c"],
-      target,
-    );
-    assert.equal(files[1].content, "HDR", target);
-    assert.equal(files[2].content, "SRC", target);
-  }
-});
-
 test("galecResultToFiles tolerates missing fields and identifier", () => {
-  const files = galecResultToFiles("galec-production", {});
-  assert.deepEqual(files, [
-    { path: "model.alg", content: "" },
-    { path: "model.h", content: "" },
-    { path: "model.c", content: "" },
-  ]);
+  assert.deepEqual(galecResultToFiles({}), [{ path: "model.alg", content: "" }]);
 });
 
 test("renderGalec rejects a non-GALEC target before touching the addon wasm", async () => {

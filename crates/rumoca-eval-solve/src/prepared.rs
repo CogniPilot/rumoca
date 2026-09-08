@@ -48,7 +48,7 @@ use rumoca_ir_solve::{
     UnaryOp,
 };
 use support::*;
-pub use torn_sweep::{PreparedTornSweep, TornSweepComposite, TornSweepStatus};
+pub use torn_sweep::{PreparedTornSweep, TornSweepStatus};
 
 pub(crate) fn assignment_shape_for_program_output(
     program: &[LinearOp],
@@ -1006,12 +1006,6 @@ struct AssignmentProgramBuilder<'a> {
     next_register: u32,
 }
 
-/// Whether a constant assignment-shape coefficient can never trip the
-/// per-row singular-coefficient check.
-fn constant_coefficient_is_regular(coefficient: f64) -> bool {
-    coefficient != 0.0 && coefficient.is_finite()
-}
-
 pub(crate) fn assignment_shape_reads_y_index(
     row: &[LinearOp],
     shape: TargetAssignmentShape,
@@ -1072,65 +1066,6 @@ impl<'a> AssignmentProgramBuilder<'a> {
                 ..
             } => self.affine_residual(target_reg, residual_reg, coefficient),
         }
-    }
-
-    /// Materialize a shape for the torn sweep's compiled assignment schedule,
-    /// which cannot raise the per-row path's singular-coefficient error. For
-    /// an evaluated (register) coefficient the isolated value is poisoned to
-    /// NaN whenever the coefficient is non-finite, so the schedule's consumer
-    /// declines exactly where the per-row path raises; a zero coefficient
-    /// already yields a non-finite quotient. Shapes with a constant singular
-    /// coefficient return `None`: the per-row path declines them on every
-    /// call, and the caller keeps the interpreted path that reproduces that.
-    fn materialize_poisoning_singular(&mut self, shape: TargetAssignmentShape) -> Option<u32> {
-        match shape {
-            TargetAssignmentShape::Direct { .. } => self.materialize(shape),
-            TargetAssignmentShape::Affine {
-                offset_reg,
-                coefficient_reg: coefficient_reg @ Some(_),
-                offset_scale,
-                coefficient_scale,
-                ..
-            } => {
-                let (result, coefficient) =
-                    self.affine(offset_reg, coefficient_reg, offset_scale, coefficient_scale)?;
-                self.poison_non_finite(result, coefficient)
-            }
-            TargetAssignmentShape::Affine {
-                coefficient_reg: None,
-                coefficient_scale,
-                ..
-            } => constant_coefficient_is_regular(coefficient_scale)
-                .then(|| self.materialize(shape))
-                .flatten(),
-            TargetAssignmentShape::AffineResidual { coefficient, .. } => {
-                constant_coefficient_is_regular(coefficient)
-                    .then(|| self.materialize(shape))
-                    .flatten()
-            }
-        }
-    }
-
-    /// Emit `value - (guard - guard)`. For a finite guard the correction is
-    /// exactly +0.0 and IEEE 754 subtraction of +0.0 reproduces `value` bit
-    /// for bit (including -0.0); for an infinite or NaN guard it is NaN and
-    /// poisons the result.
-    fn poison_non_finite(&mut self, value: u32, guard: u32) -> Option<u32> {
-        let gap = self.allocate()?;
-        let poisoned = self.allocate()?;
-        self.program.push(LinearOp::Binary {
-            dst: gap,
-            op: BinaryOp::Sub,
-            lhs: guard,
-            rhs: guard,
-        });
-        self.program.push(LinearOp::Binary {
-            dst: poisoned,
-            op: BinaryOp::Sub,
-            lhs: value,
-            rhs: gap,
-        });
-        Some(poisoned)
     }
 
     fn affine(

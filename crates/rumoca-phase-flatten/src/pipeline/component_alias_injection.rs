@@ -46,7 +46,7 @@ struct ScopedConstantDelta {
     parameter_values: Vec<(String, i64)>,
     real_parameter_values: Vec<(String, f64)>,
     boolean_parameter_values: Vec<(String, bool)>,
-    enum_parameter_values: Vec<(String, String)>,
+    enum_parameter_values: Vec<(String, rumoca_eval_flat::constant::ResolvedEnumValue)>,
     constant_values: Vec<(String, rumoca_core::Expression)>,
     array_dimensions: Vec<(String, Vec<i64>)>,
     modified_constant_keys: Vec<String>,
@@ -70,7 +70,7 @@ impl ScopedConstantDelta {
                 scope,
                 &before.boolean_parameter_values,
             ),
-            enum_parameter_values: capture_string_map_delta(
+            enum_parameter_values: capture_map_delta(
                 &ctx.enum_parameter_values,
                 scope,
                 &before.enum_parameter_values,
@@ -181,21 +181,6 @@ fn capture_map_delta<V: Clone>(
         .collect()
 }
 
-fn capture_string_map_delta(
-    map: &rustc_hash::FxHashMap<String, String>,
-    scope: &str,
-    before: &rustc_hash::FxHashSet<String>,
-) -> Vec<(String, String)> {
-    map.iter()
-        .filter(|(key, value)| {
-            is_scoped_key(key, scope)
-                && !before.contains(*key)
-                && !string_mentions_scope(value, scope)
-        })
-        .map(|(key, value)| (scoped_key_suffix(key, scope).to_string(), value.clone()))
-        .collect()
-}
-
 fn capture_expression_map_delta(
     map: &rustc_hash::FxHashMap<String, rumoca_core::Expression>,
     scope: &str,
@@ -285,7 +270,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     overlay: &InstanceOverlay,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     const MAX_PASSES: usize = 5;
     let component_scopes = component_scopes_from_overlay(overlay);
     let component_index = component_index_from_scopes(&component_scopes);
@@ -341,7 +326,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                     comp_scope,
                     static_cache: &mut static_cache,
                     ctx,
-                });
+                })?;
             cache_rejected += static_result.cache_rejected;
             let static_injected = static_result.injected;
             if !static_injected {
@@ -354,7 +339,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                     &class_context,
                     comp_scope,
                     ctx,
-                );
+                )?;
             }
 
             for scan_class in classes_to_scan.into_iter().rev() {
@@ -374,7 +359,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
                         scan_context: &scan_context,
                         ctx,
                     },
-                );
+                )?;
                 specialized_delta +=
                     component_constant_footprint(ctx).saturating_sub(before_specialized);
             }
@@ -388,6 +373,7 @@ pub(crate) fn inject_component_instance_nested_class_constants(
             break;
         }
     }
+    Ok(())
 }
 
 type ComponentScopeEntry<'a> = (
@@ -439,15 +425,15 @@ struct StaticInjectResult {
 
 fn inject_cached_component_static_constants(
     mut request: ComponentStaticInjectCtx<'_, '_>,
-) -> StaticInjectResult {
+) -> Result<StaticInjectResult, FlattenError> {
     let Some(cache_key) = component_static_cache_key(request.comp, request.class_def) else {
-        return StaticInjectResult {
+        return Ok(StaticInjectResult {
             injected: false,
             cache_rejected: 0,
-        };
+        });
     };
     if let Some(result) = replay_component_static_cache(&mut request, cache_key) {
-        return result;
+        return Ok(result);
     }
     let before = ScopedKeySnapshot::capture(request.ctx, request.comp_scope);
     inject_component_static_constants(
@@ -458,8 +444,8 @@ fn inject_cached_component_static_constants(
         request.class_context,
         request.comp_scope,
         request.ctx,
-    );
-    cache_component_static_delta(request, cache_key, &before)
+    )?;
+    Ok(cache_component_static_delta(request, cache_key, &before))
 }
 
 fn component_static_cache_key(
@@ -542,7 +528,7 @@ fn inject_component_static_constants(
     class_context: &str,
     comp_scope: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     inject_component_declared_class_overrides(
         tree,
         class_index,
@@ -550,8 +536,8 @@ fn inject_component_static_constants(
         comp,
         class_context,
         ctx,
-    );
-    inject_component_enclosing_class_constants(tree, class_index, comp_scope, class_context, ctx);
+    )?;
+    inject_component_enclosing_class_constants(tree, class_index, comp_scope, class_context, ctx)?;
 
     for scan_class in classes_to_scan.iter().rev().copied() {
         let scan_context = scan_class
@@ -565,7 +551,7 @@ fn inject_component_static_constants(
             scan_class,
             &scan_context,
             ctx,
-        );
+        )?;
     }
     // The selected replacement is the outer declaration for this component
     // instance. Re-apply its complete inherited environment after the
@@ -578,7 +564,8 @@ fn inject_component_static_constants(
         comp,
         class_context,
         ctx,
-    );
+    )?;
+    Ok(())
 }
 
 fn inject_scan_class_static_constants(
@@ -588,8 +575,8 @@ fn inject_scan_class_static_constants(
     scan_class: &ClassDef,
     scan_context: &str,
     ctx: &mut Context,
-) {
-    inject_class_extends_constants(tree, class_index, comp_scope, scan_class, scan_context, ctx);
+) -> Result<(), FlattenError> {
+    inject_class_extends_constants(tree, class_index, comp_scope, scan_class, scan_context, ctx)?;
 
     for (nested_name, nested_class) in &scan_class.classes {
         let nested_scope = format!("{comp_scope}.{nested_name}");
@@ -601,7 +588,7 @@ fn inject_scan_class_static_constants(
             nested_class,
             scan_context,
             ctx,
-        );
+        )?;
     }
 
     for (alias_name, alias_comp) in &scan_class.components {
@@ -613,8 +600,9 @@ fn inject_scan_class_static_constants(
             alias_comp,
             scan_context,
             ctx,
-        );
+        )?;
     }
+    Ok(())
 }
 
 pub(crate) fn inject_component_declared_class_overrides(
@@ -624,7 +612,7 @@ pub(crate) fn inject_component_declared_class_overrides(
     comp: &rumoca_ir_ast::InstanceData,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     let active_alias = active_component_alias(&comp.type_name);
     let modifier_context = comp
         .declaration_source_scope
@@ -641,8 +629,9 @@ pub(crate) fn inject_component_declared_class_overrides(
     };
 
     for class_override in comp.class_overrides.values() {
-        inject_component_declared_class_override(&request, class_override, ctx);
+        inject_component_declared_class_override(&request, class_override, ctx)?;
     }
+    Ok(())
 }
 
 struct ComponentClassOverrideInject<'a, 'tree> {
@@ -658,14 +647,14 @@ fn inject_component_declared_class_override(
     request: &ComponentClassOverrideInject<'_, '_>,
     class_override: &rumoca_ir_ast::ClassOverride,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     let alias_name = &class_override.alias;
     let def_id = class_override.target_def_id;
     let Some(alias_class) = request.class_index.get(def_id) else {
-        return;
+        return Ok(());
     };
     if !matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
-        return;
+        return Ok(());
     }
 
     let alias_resolve_context = request
@@ -682,7 +671,7 @@ fn inject_component_declared_class_override(
         alias_class,
         alias_resolve_context,
         ctx,
-    );
+    )?;
     let lowered_alias_name = lower_initial(alias_name);
     if lowered_alias_name != *alias_name {
         let lowered_alias_scope = format!("{}.{lowered_alias_name}", request.comp_scope);
@@ -693,7 +682,7 @@ fn inject_component_declared_class_override(
             alias_class,
             alias_resolve_context,
             ctx,
-        );
+        )?;
         for ext in &alias_class.extends {
             apply_extends_constants_for_scope(
                 request.tree,
@@ -702,7 +691,7 @@ fn inject_component_declared_class_override(
                 ext,
                 alias_resolve_context,
                 ctx,
-            );
+            )?;
         }
     }
     for ext in &alias_class.extends {
@@ -713,7 +702,7 @@ fn inject_component_declared_class_override(
             ext,
             alias_resolve_context,
             ctx,
-        );
+        )?;
     }
     extract_class_occurrence_modifiers(
         request.tree,
@@ -750,7 +739,7 @@ fn inject_component_declared_class_override(
     // collisions from unrelated package aliases that happen to define the same
     // constant names (e.g., fixedX, nX) in different media packages.
     if request.active_alias != Some(alias_name.as_str()) {
-        return;
+        return Ok(());
     }
 
     inject_active_component_class_override(
@@ -759,7 +748,7 @@ fn inject_component_declared_class_override(
         alias_class,
         alias_resolve_context,
         ctx,
-    );
+    )
 }
 
 fn inject_active_component_class_override(
@@ -768,7 +757,7 @@ fn inject_active_component_class_override(
     alias_class: &ClassDef,
     alias_resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     extract_constants_from_class_with_prefix_and_imports(
         request.tree,
         request.class_index,
@@ -776,7 +765,7 @@ fn inject_active_component_class_override(
         alias_class,
         alias_resolve_context,
         ctx,
-    );
+    )?;
     for ext in &alias_class.extends {
         apply_extends_constants_for_scope(
             request.tree,
@@ -785,7 +774,7 @@ fn inject_active_component_class_override(
             ext,
             alias_resolve_context,
             ctx,
-        );
+        )?;
     }
     apply_class_override_constant_modifiers(
         request.tree,
@@ -796,6 +785,7 @@ fn inject_active_component_class_override(
         request.modifier_context,
         ctx,
     );
+    Ok(())
 }
 
 fn lower_initial(name: &str) -> String {
@@ -864,13 +854,13 @@ pub(crate) fn inject_component_enclosing_class_constants(
     comp_scope: &str,
     class_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     let Some(enclosing_name) = crate::path_utils::enclosing_scope(class_context) else {
-        return;
+        return Ok(());
     };
     let ancestors = collect_ancestor_classes_with_index(tree, class_index, enclosing_name);
     if ancestors.is_empty() {
-        return;
+        return Ok(());
     }
 
     const MAX_PASSES: usize = 5;
@@ -895,7 +885,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
                     ext,
                     &resolve_context,
                     ctx,
-                );
+                )?;
             }
             extract_constants_from_class_with_prefix_and_imports(
                 tree,
@@ -904,7 +894,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
                 ancestor,
                 &resolve_context,
                 ctx,
-            );
+            )?;
         }
 
         let new = ctx.parameter_values.len()
@@ -917,6 +907,7 @@ pub(crate) fn inject_component_enclosing_class_constants(
             break;
         }
     }
+    Ok(())
 }
 
 /// Inject alias package constants by matching declared child component types
@@ -939,7 +930,7 @@ pub(crate) struct SpecializedChildAliasCtx<'a, 'tree> {
 
 pub(crate) fn inject_alias_constants_from_specialized_child_components(
     request: SpecializedChildAliasCtx<'_, '_>,
-) {
+) -> Result<(), FlattenError> {
     let parent_class_overrides = request
         .component_index
         .get(request.comp_scope_path)
@@ -990,7 +981,7 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                         ctx: &mut *request.ctx,
                     },
                     package_class,
-                );
+                )?;
                 continue;
             }
         }
@@ -1034,8 +1025,9 @@ pub(crate) fn inject_alias_constants_from_specialized_child_components(
                 ctx: &mut *request.ctx,
             },
             package_class,
-        );
+        )?;
     }
+    Ok(())
 }
 
 struct AliasPackageConstantCtx<'a, 'tree> {
@@ -1051,7 +1043,7 @@ struct AliasPackageConstantCtx<'a, 'tree> {
 fn inject_alias_package_constants(
     request: AliasPackageConstantCtx<'_, '_>,
     package_class: &ClassDef,
-) {
+) -> Result<(), FlattenError> {
     for scope in [request.alias_scope, request.comp_scope, request.child_scope] {
         extract_constants_from_class_with_prefix_and_imports(
             request.tree,
@@ -1060,7 +1052,7 @@ fn inject_alias_package_constants(
             package_class,
             request.package_context,
             &mut *request.ctx,
-        );
+        )?;
     }
     for ext in &package_class.extends {
         for scope in [request.alias_scope, request.comp_scope, request.child_scope] {
@@ -1071,9 +1063,10 @@ fn inject_alias_package_constants(
                 ext,
                 request.package_context,
                 &mut *request.ctx,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn split_alias_declared_type(type_name: &str) -> Option<(&str, &str)> {
@@ -1203,14 +1196,19 @@ end ComponentModifierUse;
 ";
 
     fn flatten_source(model: &str) -> flat::Model {
-        let instanced = instantiate_source(model);
-        let ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+        let (resolved, overlay) = instantiate_source(model);
+        let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
             .expect("fixture should typecheck");
-        crate::flatten_ref(&tree, &overlay, model).expect("fixture should flatten")
+        crate::flatten_typed(typed, crate::FlattenOptions::default())
+            .expect("fixture should flatten")
     }
 
-    fn instantiate_source(model: &str) -> ast::InstancedTree {
+    fn instantiate_source(
+        model: &str,
+    ) -> (
+        rumoca_phase_resolve::ResolvedTree,
+        rumoca_ir_ast::InstanceOverlay,
+    ) {
         let file_name = "<component_redeclare_flatten_test>";
         let stored =
             rumoca_phase_parse::parse_to_ast(SOURCE, file_name).expect("fixture should parse");
@@ -1218,7 +1216,21 @@ end ComponentModifierUse;
         tree.source_map.add(file_name, SOURCE);
         let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("fixture should resolve");
-        rumoca_phase_instantiate::instantiate(resolved, model).expect("fixture should instantiate")
+        let overlay =
+            match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model)
+            {
+                rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+                rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                    missing_inners,
+                    ..
+                } => {
+                    panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+                }
+                rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                    panic!("fixture instantiation failed: {error}")
+                }
+            };
+        (resolved, overlay)
     }
 
     fn real_binding(model: &flat::Model, name: &str) -> f64 {
@@ -1249,7 +1261,7 @@ end ComponentModifierUse;
         let instanced = instantiate_source("ComponentModifierUse");
         let instance = |name: &str| {
             instanced
-                .overlay()
+                .1
                 .components
                 .values()
                 .find(|component| component.qualified_name.to_flat_string() == name)
@@ -1295,10 +1307,14 @@ end ComponentModifierUse;
         assert_eq!(binding_target(a_y), modifier_target(a_override));
         assert_eq!(binding_target(b_y), modifier_target(b_override));
 
-        let ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "ComponentModifierUse")
-            .expect("fixture should typecheck");
-        let model = crate::flatten_ref(&tree, &overlay, "ComponentModifierUse")
+        let (resolved, overlay) = instanced;
+        let typed = rumoca_phase_typecheck::typecheck_instanced_tree(
+            &resolved,
+            overlay,
+            "ComponentModifierUse",
+        )
+        .expect("fixture should typecheck");
+        let model = crate::flatten_typed(typed, crate::FlattenOptions::default())
             .expect("fixture should flatten");
 
         assert_eq!(real_binding(&model, "a.y"), 25.0);

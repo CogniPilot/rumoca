@@ -8,10 +8,7 @@ fn apply_discrete_slot_value_reports_out_of_bounds_target() {
     let mut p = [];
 
     let err = crate::apply_discrete_slot_value(
-        solve::ScalarSlot::Y {
-            index: 2,
-            byte_offset: 16,
-        },
+        solve::ScalarSlot::Y { index: 2 },
         1.0,
         &mut y,
         &mut p,

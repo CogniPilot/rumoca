@@ -73,11 +73,16 @@ fn redeclare_override(
     name: &str,
     def_id: DefId,
     function_slot: FunctionSlot,
-) -> (String, OverrideTarget) {
+) -> (DefId, OverrideTarget) {
+    let alias_slot = match function_slot {
+        FunctionSlot::Exact(slot) => slot,
+        FunctionSlot::Unrelated => def_id,
+    };
     (
-        "F".to_string(),
+        alias_slot,
         OverrideTarget {
             alias: "F".to_string(),
+            alias_slot,
             name: name.to_string(),
             def_id,
             class_type: ClassType::Function,
@@ -98,6 +103,7 @@ fn slot_call() -> (Expression, DefId) {
             ),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         ids.slot_def,
@@ -116,7 +122,7 @@ fn exact_slot_redeclare_retargets_call_to_redeclared_implementation() {
         FunctionSlot::Exact(ids.slot_def),
     );
     override_functions.insert(alias, target);
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -159,7 +165,7 @@ fn redeclare_of_a_different_slot_keeps_the_declared_default() {
         FunctionSlot::Exact(ids.consumer_def),
     );
     override_functions.insert(alias, target);
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -177,28 +183,71 @@ fn redeclare_of_a_different_slot_keeps_the_declared_default() {
     assert_eq!(name.target_def_id(), Some(ids.double_def));
 }
 
+/// A function redeclare whose replaceable slot has no resolved identity
+/// cannot be keyed into the identity-keyed alias table at all; collection
+/// refuses it with a typed error instead of letting calls silently select
+/// the declared default.
 #[test]
-fn unresolved_redeclare_slot_refuses_instead_of_defaulting() {
-    let (tree, ids) = redeclare_fixture_tree();
+fn unresolved_redeclare_slot_refuses_at_collection() {
+    let (mut tree, ids) = redeclare_fixture_tree();
+    let uses_triple_def = DefId::new(6);
+    let redeclared_def = DefId::new(7);
+
+    let source_id = tree
+        .source_map
+        .add("redeclared_slot_selection.mo", "redeclare F");
+    let mut redeclared = class("F", ClassType::Function);
+    redeclared.def_id = Some(redeclared_def);
+    redeclared.is_redeclare = true;
+    redeclared.redeclare_target_def_id = None;
+    redeclared.location = rumoca_core::Location {
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: 11,
+        start: 0,
+        end: 11,
+        source: source_id,
+    };
+    redeclared.extends.push(Extend {
+        base_name: Name::from_string("Triple"),
+        base_def_id: Some(ids.triple_def),
+        ..Extend::default()
+    });
+    let mut uses_triple = class("UsesTriple", ClassType::Block);
+    uses_triple.def_id = Some(uses_triple_def);
+    uses_triple.classes.insert("F".to_string(), redeclared);
+    tree.def_map
+        .insert(uses_triple_def, "Pkg.UsesTriple".to_string());
+    tree.def_map
+        .insert(redeclared_def, "Pkg.UsesTriple.F".to_string());
+    let pkg = tree
+        .definitions
+        .classes
+        .get_mut("Pkg")
+        .expect("fixture package");
+    pkg.classes.insert("UsesTriple".to_string(), uses_triple);
+
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let override_packages = Vec::new();
-    let mut override_functions = OverrideFunctionMap::default();
-    let (alias, target) =
-        redeclare_override("Pkg.Triple", ids.triple_def, FunctionSlot::Unresolved);
-    override_functions.insert(alias, target);
-    let ctx = FunctionOverrideRewriteContext::new(
+    let uses_triple = class_index
+        .get(uses_triple_def)
+        .expect("fixture derived block");
+    let mut overrides = AliasOverrideTable::default();
+    let mut visited = FxHashSet::default();
+    let error = collect_component_constructor_aliases_for_class(
         &tree,
         &class_index,
-        &override_packages,
-        &override_functions,
-    );
-
-    let (mut expr, _) = slot_call();
-    let error = rewrite_function_overrides_in_expression_with_ctx(&mut expr, &ctx)
-        .expect_err("an unresolved redeclare slot must refuse, never silently default");
+        uses_triple,
+        "Pkg.UsesTriple",
+        true,
+        &mut visited,
+        &mut overrides,
+    )
+    .expect_err("a slotless redeclare must refuse at collection, never silently default");
+    let rendered = format!("{error:?}");
     assert!(
-        matches!(error, FlattenError::UnhonoredFunctionRedeclare { .. }),
-        "expected UnhonoredFunctionRedeclare, got {error:?}"
+        rendered.contains("F"),
+        "the refusal must name the redeclare, got {rendered}"
     );
 }
 
@@ -240,7 +289,7 @@ fn element_redeclare_collection_records_exact_slot_identity() {
     let uses_triple = class_index
         .get(uses_triple_def)
         .expect("fixture derived block");
-    let mut overrides = rustc_hash::FxHashMap::default();
+    let mut overrides = AliasOverrideTable::default();
     let mut visited = FxHashSet::default();
     collect_component_constructor_aliases_for_class(
         &tree,
@@ -250,10 +299,11 @@ fn element_redeclare_collection_records_exact_slot_identity() {
         true,
         &mut visited,
         &mut overrides,
-    );
+    )
+    .expect("alias collection succeeds");
 
     let target = overrides
-        .get("F")
+        .get(&ids.slot_def)
         .expect("element redeclare must contribute an override");
     assert_eq!(target.def_id, redeclared_def);
     assert_eq!(target.class_type, ClassType::Function);
@@ -274,7 +324,10 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
         modifications: vec![rumoca_ir_ast::ExtendModification {
             expr: rumoca_ir_ast::Expression::Modification {
                 target: comp_ref(&["F"]),
-                value: std::sync::Arc::new(resolved_ast_var(&[("Triple", ids.triple_def)])),
+                value: Some(std::sync::Arc::new(resolved_ast_var(&[(
+                    "Triple",
+                    ids.triple_def,
+                )]))),
                 span: test_span(),
             },
             each: false,
@@ -296,7 +349,7 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
     let uses_triple = class_index
         .get(uses_triple_def)
         .expect("fixture derived block");
-    let mut overrides = rustc_hash::FxHashMap::default();
+    let mut overrides = AliasOverrideTable::default();
     let mut visited = FxHashSet::default();
     collect_component_constructor_aliases_for_class(
         &tree,
@@ -306,10 +359,11 @@ fn extends_modification_redeclare_collection_records_exact_slot_identity() {
         true,
         &mut visited,
         &mut overrides,
-    );
+    )
+    .expect("alias collection succeeds");
 
     let target = overrides
-        .get("F")
+        .get(&ids.slot_def)
         .expect("extends-modification redeclare must contribute an override");
     assert_eq!(target.def_id, ids.triple_def);
     assert_eq!(target.class_type, ClassType::Function);

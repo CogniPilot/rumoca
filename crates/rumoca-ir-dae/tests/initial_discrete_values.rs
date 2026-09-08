@@ -33,6 +33,7 @@ fn discrete_initial_values_construct_and_round_trip_through_checked_wire() {
         let start_time = dae.variables(|variables| {
             variables.parameter(
                 VarName::new("startTime"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -41,6 +42,7 @@ fn discrete_initial_values_construct_and_round_trip_through_checked_wire() {
         let t_start = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("T_start"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -49,6 +51,7 @@ fn discrete_initial_values_construct_and_round_trip_through_checked_wire() {
         let count = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("count"),
+                rumoca_core::InstanceId::new(3),
                 integer,
                 declaration,
                 VariableAttributes::default(),
@@ -138,6 +141,7 @@ fn discrete_initial_value_rejects_a_read_that_is_not_settled_at_initialization()
         let state = dae.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -146,6 +150,7 @@ fn discrete_initial_value_rejects_a_read_that_is_not_settled_at_initialization()
         let t_start = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("T_start"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -182,6 +187,7 @@ fn discrete_initial_value_rejects_a_second_definition_of_one_coordinate() {
         let t_start = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("T_start"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -216,6 +222,7 @@ fn discrete_initial_value_rejects_a_value_of_another_primitive_type() {
         let t_start = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("T_start"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),

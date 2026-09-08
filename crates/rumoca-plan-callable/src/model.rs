@@ -126,17 +126,11 @@ impl CallableCounters {
     pub const fn source_definitions(self) -> usize {
         self.source_definitions
     }
-    pub const fn source_assertions(self) -> usize {
-        self.source_assertions
-    }
     pub const fn source_conditionals(self) -> usize {
         self.source_conditionals
     }
     pub const fn source_calls(self) -> usize {
         self.source_calls
-    }
-    pub const fn source_folds(self) -> usize {
-        self.source_folds
     }
     pub const fn evidence_discharges(self) -> usize {
         self.evidence_discharges
@@ -161,9 +155,6 @@ impl CallableCounters {
     }
     pub const fn effects(self) -> usize {
         self.effects
-    }
-    pub const fn call_edges(self) -> usize {
-        self.call_edges
     }
 }
 

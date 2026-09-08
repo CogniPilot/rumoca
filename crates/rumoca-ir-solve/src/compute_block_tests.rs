@@ -9,7 +9,7 @@ use crate::{
 fn test_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: count as i64,
@@ -20,6 +20,39 @@ fn test_domain(count: usize) -> StructuredIndexDomain {
 
 fn fixture_span() -> Span {
     Span::from_offsets(SourceId::from_source_name(file!()), 0, 1)
+}
+
+fn empty_continuous_system() -> crate::ContinuousSolveSystem {
+    let implicit_rhs = ComputeBlock::default();
+    crate::ContinuousSolveSystem::construct(
+        &crate::SolveLayout::default(),
+        crate::ContinuousSolveSystemInputs::new(
+            implicit_rhs,
+            Vec::new(),
+            crate::AlgebraicProjectionPlan::default(),
+            ComputeBlock::default(),
+            (
+                ComputeBlock::default(),
+                crate::AlgebraicProjectionPlan::default(),
+            ),
+            ComputeBlock::default(),
+            crate::ContinuousRefreshPlanInputs::empty(),
+        ),
+    )
+    .expect("empty fixture has a checked continuous system")
+}
+
+fn empty_solve_problem() -> SolveProblem {
+    SolveProblem::construct(
+        crate::VarLayout::default(),
+        crate::SolveLayout::default(),
+        empty_continuous_system(),
+        crate::InitializationSolveSystem::empty(),
+        crate::DiscreteSolveSystem::default(),
+        crate::SolveEventPartition::default(),
+        crate::SolveClockPartition::default(),
+    )
+    .expect("the explicit zero-equation test root satisfies every construction relation")
 }
 
 fn provenance(span: Span) -> rumoca_core::ProvenanceSpan {
@@ -47,21 +80,21 @@ fn wide_2d_domain() -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 2,
                 step: 1,
             },
             StructuredIndexBinder {
-                id: 1,
+                id: rumoca_core::StructuredIndexBinderId::new(1),
                 display_name: "j".to_string(),
                 lower: 1,
                 upper: i64::MAX,
                 step: 1,
             },
             StructuredIndexBinder {
-                id: 2,
+                id: rumoca_core::StructuredIndexBinderId::new(2),
                 display_name: "k".to_string(),
                 lower: 1,
                 upper: 2,
@@ -322,6 +355,62 @@ fn compute_block_len_rejects_output_map_start_overflow_with_span() {
 }
 
 #[test]
+fn produced_output_inventory_refuses_native_and_cross_node_duplicates() {
+    let span = fixture_span();
+    let native = ComputeBlock {
+        nodes: vec![ComputeNode::Map {
+            domain: test_domain(2),
+            output_map: TensorOutputMap {
+                start: 0,
+                strides: vec![AffineStencilIndexStrideTerm {
+                    dimension: 0,
+                    stride: 0,
+                }],
+            },
+            base_ops: vec![LinearOp::StoreOutput { src: 0 }],
+            load_strides: Vec::new(),
+            const_strides: Vec::new(),
+            metadata: TensorNodeMetadata::default(),
+            span,
+        }],
+    };
+    assert_eq!(
+        native.produced_output_indices("test.produced_outputs"),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "test.produced_outputs",
+            index: 0,
+            span: Some(span),
+        })
+    );
+
+    let scalar_program = || {
+        ScalarProgramBlock::with_output_indices(
+            vec![vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ]],
+            vec![span],
+            vec![1],
+        )
+        .expect("one explicit scalar output identity is locally unique")
+    };
+    let cross_node = ComputeBlock {
+        nodes: vec![
+            ComputeNode::ScalarPrograms(scalar_program()),
+            ComputeNode::ScalarPrograms(scalar_program()),
+        ],
+    };
+    assert_eq!(
+        cross_node.produced_output_indices("test.produced_outputs"),
+        Err(SolveProblemShapeContractError::DuplicateIndex {
+            context: "test.produced_outputs",
+            index: 1,
+            span: Some(span),
+        })
+    );
+}
+
+#[test]
 fn compute_block_is_not_empty_for_rank_zero_tensor_domain() {
     let domain = StructuredIndexDomain {
         binders: Vec::new(),
@@ -380,7 +469,7 @@ fn compute_node_counts_cover_blocks_and_problem() {
     assert_eq!(counts.affine_stencil, 1);
     assert_eq!(block.tensor_node_count(), 4);
 
-    let mut problem = SolveProblem::default();
+    let mut problem = empty_solve_problem();
     problem.continuous.implicit_rhs = block;
     problem.continuous.derivative_rhs = ComputeBlock {
         nodes: vec![matmul, linsolve, map, stencil],
@@ -401,13 +490,13 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::Const { dst: 1, value: 2.0 },
             LinearOp::LinearSolveComponent {
-                dst: 1,
+                dst: 2,
                 matrix_start: 0,
                 rhs_start: 1,
                 n: 1,
                 component: 0,
             },
-            LinearOp::StoreOutput { src: 1 },
+            LinearOp::StoreOutput { src: 2 },
         ]],
         provenance(fixture_span()),
     )
@@ -424,7 +513,7 @@ fn linear_solve_component_query_covers_scalar_programs_and_nodes() {
     };
     assert!(tensor_block.uses_linear_solve_component());
 
-    let mut problem = SolveProblem::default();
+    let mut problem = empty_solve_problem();
     problem.continuous.derivative_rhs = scalar_block;
     assert!(problem.uses_linear_solve_component());
 }

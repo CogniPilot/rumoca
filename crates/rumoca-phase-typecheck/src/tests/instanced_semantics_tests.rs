@@ -4,7 +4,8 @@ fn parsed_tree(source: &str) -> ClassTree {
     let parsed = parse(source);
     resolve(parsed)
         .expect("resolve should succeed")
-        .into_inner()
+        .inner()
+        .clone()
 }
 
 fn add_model_components(
@@ -44,7 +45,7 @@ fn clocked_two_argument_sample_preserves_sampled_value_type() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["u", "y", "clock"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("sample(value, clock) should have the sampled value type");
 }
 
@@ -72,7 +73,7 @@ fn function_call_named_output_projection_uses_output_type() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["payload"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a named function output is a valid call projection");
 }
 
@@ -103,7 +104,7 @@ fn function_call_type_uses_first_output_even_when_it_is_an_array() {
         .expect("values instance")
         .dims = vec![2];
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("the first shaped function output determines the call value type");
 }
 
@@ -131,7 +132,7 @@ fn resolved_user_function_can_overload_a_predefined_function_name() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["value", "magnitude"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a resolved user function named abs must not use builtin argument rules");
 }
 
@@ -170,7 +171,7 @@ fn predefined_function_def_id_is_not_captured_by_an_import_alias_from_another_sc
         .expect("values instance")
         .dims = vec![2];
 
-    typecheck_instanced(&tree, &mut overlay, "Test").expect(
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test").expect(
         "the builtin sum DefId must remain authoritative across scope-local import aliases",
     );
 }
@@ -202,7 +203,7 @@ fn redeclared_function_signature_includes_inherited_inputs_before_local_inputs()
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["state", "result"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a function extension retains inherited inputs ahead of local defaulted inputs");
 }
 
@@ -238,7 +239,7 @@ fn package_alias_specializes_an_inherited_function_result_type() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["state"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test").expect(
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test").expect(
         "an inherited function's virtual result type uses the package alias's declaration slot",
     );
 }
@@ -286,7 +287,7 @@ fn package_alias_specializes_a_result_type_redeclared_to_a_composite_name() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Lib.Test", &["state"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Lib.Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Lib.Test")
         .expect("a redeclaration written as a composite name specializes the function result type");
 }
 
@@ -328,7 +329,7 @@ fn enclosing_package_specializes_an_unqualified_inherited_function_result_type()
         true,
     );
 
-    typecheck_instanced(&tree, &mut overlay, "ConcreteMedium.Properties").expect(
+    typecheck_instanced_test_projection(&tree, &mut overlay, "ConcreteMedium.Properties").expect(
         "an inherited function's virtual result type uses its enclosing package specialization",
     );
 }
@@ -357,7 +358,7 @@ fn fill_prepends_dimensions_to_the_filled_values_shape() {
             .dims = dims;
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("fill(array, dims...) prepends dimensions to the array shape");
 }
 
@@ -390,7 +391,7 @@ fn partial_function_application_has_the_concrete_function_type() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["result"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a partial application is a compatible function value, not its Real result");
 }
 
@@ -413,7 +414,7 @@ fn single_row_matrix_constructor_has_row_major_shape() {
         .expect("row instance")
         .dims = vec![1, 4];
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a single matrix row has shape [1, columns]");
 }
 
@@ -435,7 +436,7 @@ fn structural_size_does_not_inherit_array_value_variability() {
         .expect("values instance")
         .dims = vec![3];
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("size(array, dimension) has parameter variability");
 }
 
@@ -476,7 +477,7 @@ fn subscripts_are_validated_on_the_component_prefix_that_owns_the_array() {
         port.components.get("occupied").expect("occupied"),
         true,
     );
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("member access after indexing an array component should typecheck");
 }
 
@@ -534,7 +535,7 @@ fn member_access_through_an_array_component_preserves_the_owner_shape() {
             true,
         );
     }
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("an unsubscripted array component contributes its domain to member access");
 }
 
@@ -578,7 +579,7 @@ fn member_access_shape_repeats_an_extent_that_matches_the_owner_domain() {
             true,
         );
     }
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("every reference part contributes its own declared extents");
 }
 
@@ -599,10 +600,22 @@ fn subscript_arity_uses_the_composed_owner_and_member_extents() {
         end Test;
     "#;
     let resolved = resolve(parse(source)).expect("resolve should succeed");
-    let mut instanced = rumoca_phase_instantiate::instantiate(resolved, "Test")
-        .expect("instantiate should succeed");
+    let mut instanced = {
+        let tree = resolved.inner().clone();
+        let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(&tree, "Test")
+        {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+        rumoca_ir_ast::InstancedTree::new(tree, overlay)
+    };
 
-    typecheck_instanced(&instanced.tree, &mut instanced.overlay, "Test")
+    typecheck_instanced_test_projection(&instanced.tree, &mut instanced.overlay, "Test")
         .expect("two subscripts address the composed two-dimensional reference shape");
 }
 
@@ -620,7 +633,7 @@ fn unknown_array_extent_is_not_treated_as_scalar_during_subscript_validation() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["values", "first"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("an unresolved array extent still carries a non-scalar shape contract");
 }
 
@@ -638,7 +651,7 @@ fn colon_dimension_with_literal_suffix_is_not_treated_as_lower_rank() {
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["lines", "first"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a `[:, 2, 2]` declaration has unknown extent, not rank two");
 }
 
@@ -658,6 +671,6 @@ fn qualified_package_array_absent_from_instance_overlay_is_not_treated_as_scalar
     let mut overlay = InstanceOverlay::new();
     add_model_components(&tree, &mut overlay, "Test", &["first"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("package constants outside the instance overlay retain their declared array rank");
 }

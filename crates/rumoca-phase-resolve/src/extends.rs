@@ -9,6 +9,19 @@ use rumoca_core::{Diagnostic, PrimaryLabel};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
+enum ImportPathResolution {
+    /// The path resolved: `prefix` holds the identities of the containing
+    /// segments (outermost first, excluding the target) and `target` the
+    /// imported definition itself.
+    Found {
+        prefix: Vec<DefId>,
+        target: DefId,
+    },
+    Absent,
+    AmbiguousInherited,
+    AmbiguousUnqualifiedImport,
+}
+
 impl Resolver {
     /// Resolve all imports and extends clauses level-by-level (Phase 2a).
     ///
@@ -49,6 +62,7 @@ impl Resolver {
             .imports
             .iter()
             .filter_map(|import| self.resolve_import(import, emit_errors))
+            .flatten()
             .collect();
         self.scope_tree.set_imports(scope, imports);
         for nested in class.classes.values() {
@@ -177,15 +191,50 @@ impl Resolver {
             // clause of its own replaces the same-named element inherited by
             // the *enclosing* class. That enclosing class is the owner of the
             // parent scope (SPEC_0002), addressed by its `DefId` (SPEC_0001).
-            let inherited_target = self
-                .enclosing_class_def_id(class_def_id)
-                .and_then(|container| self.lookup_inherited_class_member(container, class_name));
+            let inherited_target = self.resolve_redeclare_target(
+                class_def_id,
+                class_name,
+                &class.name.location,
+                emit_errors,
+            );
             class.redeclare_target_def_id = class_extends_target
                 .or(inherited_target)
                 .filter(|target| *target != class_def_id);
         }
 
         self.resolving_extends.remove(&class_def_id);
+    }
+
+    fn resolve_redeclare_target(
+        &mut self,
+        class_def_id: DefId,
+        class_name: &str,
+        location: &rumoca_core::Location,
+        emit_errors: bool,
+    ) -> Option<DefId> {
+        let container = self.enclosing_class_def_id(class_def_id)?;
+        match self.lookup_inherited_class_member(container, class_name) {
+            ast::LookupOutcome::Found(definition) => Some(definition),
+            ast::LookupOutcome::Absent => None,
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.note_ambiguous_inherited_name(
+                    location,
+                    class_name,
+                    "redeclare target",
+                    emit_errors,
+                );
+                None
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.note_ambiguous_unqualified_name(
+                    location,
+                    class_name,
+                    "redeclare target",
+                    emit_errors,
+                );
+                None
+            }
+        }
     }
 
     /// Resolve an extends clause (MLS §7.1).
@@ -222,20 +271,40 @@ impl Resolver {
             self.resolve_qualified_name_excluding(base_name, scope, Some(current_class_def_id));
 
         match def_id {
-            Some(base_def_id) => self.record_resolved_base(
+            ast::LookupOutcome::Found(base_def_id) => self.record_resolved_base(
                 extend,
                 class_name,
                 current_class_def_id,
                 base_def_id,
                 emit_errors,
             ),
-            None => {
-                self.resolve_base_by_inheritance(
-                    extend,
-                    class_name,
-                    current_class_def_id,
+            ast::LookupOutcome::Absent => {
+                if emit_errors {
+                    self.emit_base_class_not_found(&extend.location, &extend.base_name);
+                    self.stats.extends_unresolved += 1;
+                }
+            }
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.note_ambiguous_inherited_name(
+                    &extend.location,
+                    &extend.base_name.to_string(),
+                    "extends clause",
                     emit_errors,
                 );
+                if emit_errors {
+                    self.stats.extends_unresolved += 1;
+                }
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.note_ambiguous_unqualified_name(
+                    &extend.location,
+                    &extend.base_name.to_string(),
+                    "extends clause",
+                    emit_errors,
+                );
+                if emit_errors {
+                    self.stats.extends_unresolved += 1;
+                }
             }
         }
     }
@@ -262,85 +331,6 @@ impl Resolver {
         // Record edge for Phase 3 cycle detection and O(1) lookup
         self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
         self.stats.extends_resolved += 1;
-    }
-
-    /// Normal lookup failed: fall back to inherited member lookup for simple
-    /// names, and report the base class as missing when that also fails.
-    fn resolve_base_by_inheritance(
-        &mut self,
-        extend: &mut ast::Extend,
-        class_name: &str,
-        current_class_def_id: DefId,
-        emit_errors: bool,
-    ) {
-        if let Some(inherited_def_id) =
-            self.try_inherited_member_lookup(&extend.base_name, current_class_def_id)
-        {
-            self.record_extends_result(
-                extend,
-                class_name,
-                current_class_def_id,
-                inherited_def_id,
-                emit_errors,
-            );
-            self.stats.extends_inherited += 1;
-            return;
-        }
-
-        if emit_errors {
-            self.emit_base_class_not_found(&extend.location, &extend.base_name);
-            self.stats.extends_unresolved += 1;
-        }
-    }
-
-    /// Try inherited member lookup for "redeclare extends SameName" pattern.
-    ///
-    /// MLS §7.3: When a nested class extends an INHERITED class with the same short name,
-    /// we search the containing class's inheritance chain.
-    ///
-    /// Example:
-    /// ```modelica
-    /// package Base record State end State; end Base;
-    /// package Derived extends Base
-    ///     redeclare record extends State end State;  // State from Base
-    /// end Derived;
-    /// ```
-    fn try_inherited_member_lookup(
-        &self,
-        base_name: &rumoca_ir_ast::Name,
-        current_class_def_id: DefId,
-    ) -> Option<DefId> {
-        // Only applies to simple (single-part) names
-        if base_name.name.len() != 1 {
-            return None;
-        }
-
-        let member_name = &base_name.name[0].text;
-
-        // The containing class, found through the scope tree rather than by
-        // re-parsing the qualified name.
-        let container = self.enclosing_class_def_id(current_class_def_id)?;
-
-        self.lookup_inherited_class_member(container, member_name)
-    }
-
-    /// Record a successful extends resolution, checking for cycles.
-    fn record_extends_result(
-        &mut self,
-        extend: &mut ast::Extend,
-        class_name: &str,
-        current_class_def_id: DefId,
-        base_def_id: DefId,
-        emit_errors: bool,
-    ) {
-        if self.resolving_extends.contains(&base_def_id) {
-            if emit_errors {
-                self.emit_circular_extends(&extend.location, class_name, &extend.base_name);
-            }
-        } else {
-            extend.base_def_id = Some(base_def_id);
-            self.add_inheritance_edge(current_class_def_id, base_def_id, extend.location.clone());
-        }
     }
 
     fn emit_circular_extends(
@@ -387,6 +377,48 @@ impl Resolver {
         ));
     }
 
+    fn note_ambiguous_inherited_name(
+        &mut self,
+        location: &rumoca_core::Location,
+        name: &str,
+        context: &str,
+        emit_errors: bool,
+    ) {
+        if !emit_errors {
+            return;
+        }
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            context,
+        ) else {
+            return;
+        };
+        self.emit_ambiguous_inherited_lookup(name, span);
+    }
+
+    fn note_ambiguous_unqualified_name(
+        &mut self,
+        location: &rumoca_core::Location,
+        name: &str,
+        context: &str,
+        emit_errors: bool,
+    ) {
+        if !emit_errors {
+            return;
+        }
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            context,
+        ) else {
+            return;
+        };
+        self.emit_ambiguous_unqualified_import(name, span);
+    }
+
     /// Report an import whose path did not resolve, when diagnostics are enabled.
     ///
     /// The `emit_errors` check lives here so the call sites stay flat: this
@@ -413,119 +445,156 @@ impl Resolver {
         &mut self,
         import: &ast::Import,
         emit_errors: bool,
-    ) -> Option<ast::scope::Import> {
-        let scope_import = match import {
+    ) -> Option<Vec<ast::scope::Import>> {
+        let scope_imports = match import {
             ast::Import::Qualified { path, .. } => {
                 // import A.B.C; -> makes C available as C
-                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
-                    self.note_unresolved_import(import, emit_errors);
-                    return None;
-                };
-                if !self.qualified_import_target_is_valid(&path_ids) {
+                let (prefix, def_id) =
+                    self.resolve_import_path_or_emit(import, path, emit_errors)?;
+                if !self.qualified_import_target_is_valid(&prefix, def_id) {
                     self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
-                let path_strs: Vec<String> = path.name.iter().map(|t| t.text.to_string()).collect();
-                ast::scope::Import::Qualified {
-                    path: path_strs,
+                let imported_name = path.name.last()?;
+                vec![ast::scope::Import::SingleDefinition {
+                    name: ComponentPath::from_flat_path(&imported_name.text),
+                    prefix,
                     def_id,
-                }
+                }]
             }
             ast::Import::Renamed { alias, path, .. } => {
                 // import D = A.B.C; -> makes C available as D
-                let Some((path_ids, def_id)) = self.resolve_import_path(path) else {
-                    self.note_unresolved_import(import, emit_errors);
-                    return None;
-                };
-                if !self.qualified_import_target_is_valid(&path_ids) {
+                let (prefix, def_id) =
+                    self.resolve_import_path_or_emit(import, path, emit_errors)?;
+                if !self.qualified_import_target_is_valid(&prefix, def_id) {
                     self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
-                ast::scope::Import::Renamed {
-                    alias: ComponentPath::from_flat_path(&alias.text),
-                    path: path.name.iter().map(|t| t.text.to_string()).collect(),
+                vec![ast::scope::Import::SingleDefinition {
+                    name: ComponentPath::from_flat_path(&alias.text),
+                    prefix,
                     def_id,
-                }
+                }]
             }
             ast::Import::Unqualified { path, .. } => {
-                // import A.B.*; -> imports all public names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
-                    self.note_unresolved_import(import, emit_errors);
-                    return None;
-                };
-                if !self.package_import_target_is_valid(&path_ids) {
+                // import A.B.*; -> imports the package member snapshot
+                let (mut prefix, pkg_def_id) =
+                    self.resolve_import_path_or_emit(import, path, emit_errors)?;
+                if !self.package_import_target_is_valid(&prefix, pkg_def_id) {
                     self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
                 let names = self.collect_package_children(pkg_def_id);
-                ast::scope::Import::Unqualified {
-                    path: path.name.iter().map(|t| t.text.to_string()).collect(),
-                    names,
-                }
+                prefix.push(pkg_def_id);
+                vec![ast::scope::Import::Wildcard { prefix, names }]
             }
             ast::Import::Selective { path, names, .. } => {
                 // import A.B.{C, D}; -> imports specific names from A.B
-                let Some((path_ids, pkg_def_id)) = self.resolve_import_path(path) else {
-                    self.note_unresolved_import(import, emit_errors);
-                    return None;
-                };
-                if !self.package_import_target_is_valid(&path_ids) {
+                let (mut prefix, pkg_def_id) =
+                    self.resolve_import_path_or_emit(import, path, emit_errors)?;
+                if !self.package_import_target_is_valid(&prefix, pkg_def_id) {
                     self.note_invalid_import_target(import, emit_errors);
                     return None;
                 }
                 let resolved_names =
                     self.resolve_selective_import_entries(import, pkg_def_id, names, emit_errors)?;
-                ast::scope::Import::Unqualified {
-                    path: path.name.iter().map(|t| t.text.to_string()).collect(),
-                    names: resolved_names,
-                }
+                prefix.push(pkg_def_id);
+                resolved_names
+                    .into_iter()
+                    .map(|(name, def_id)| ast::scope::Import::SingleDefinition {
+                        name,
+                        prefix: prefix.clone(),
+                        def_id,
+                    })
+                    .collect()
             }
         };
 
-        Some(scope_import)
+        Some(scope_imports)
     }
 
-    fn resolve_import_path(&self, path: &ast::Name) -> Option<(Vec<DefId>, DefId)> {
+    fn resolve_import_path_or_emit(
+        &mut self,
+        import: &ast::Import,
+        path: &ast::Name,
+        emit_errors: bool,
+    ) -> Option<(Vec<DefId>, DefId)> {
+        match self.resolve_import_path(path) {
+            ImportPathResolution::Found { prefix, target } => Some((prefix, target)),
+            ImportPathResolution::Absent => {
+                self.note_unresolved_import(import, emit_errors);
+                None
+            }
+            ImportPathResolution::AmbiguousInherited => {
+                self.note_ambiguous_inherited_name(
+                    import.location(),
+                    &path.to_string(),
+                    "import clause",
+                    emit_errors,
+                );
+                None
+            }
+            ImportPathResolution::AmbiguousUnqualifiedImport => {
+                self.note_ambiguous_unqualified_name(
+                    import.location(),
+                    &path.to_string(),
+                    "import clause",
+                    emit_errors,
+                );
+                None
+            }
+        }
+    }
+
+    fn resolve_import_path(&self, path: &ast::Name) -> ImportPathResolution {
         if path.name.is_empty() {
-            return None;
+            return ImportPathResolution::Absent;
         }
 
         let first_part = &path.name[0].text;
         let first_path = ComponentPath::from_flat_path(first_part);
         // MLS §13.2.2: unlike ordinary lexical lookup, every import path
         // starts by resolving its first segment in the top-level scope.
-        let mut current_def_id = self.scope_tree.lookup_local(ScopeId::GLOBAL, &first_path)?;
-        let mut path_ids = vec![current_def_id];
+        let Some(mut current_def_id) = self.scope_tree.lookup_local(ScopeId::GLOBAL, &first_path)
+        else {
+            return ImportPathResolution::Absent;
+        };
+        let mut prefix = Vec::new();
 
         for part in path.name.iter().skip(1) {
-            current_def_id = self.lookup_class_member(current_def_id, &part.text)?;
-            path_ids.push(current_def_id);
+            prefix.push(current_def_id);
+            current_def_id = match self.lookup_class_member(current_def_id, &part.text) {
+                ast::LookupOutcome::Found(definition) => definition,
+                ast::LookupOutcome::Absent => return ImportPathResolution::Absent,
+                ast::LookupOutcome::AmbiguousInherited => {
+                    return ImportPathResolution::AmbiguousInherited;
+                }
+                ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                    return ImportPathResolution::AmbiguousUnqualifiedImport;
+                }
+            };
         }
 
-        Some((path_ids, current_def_id))
+        ImportPathResolution::Found {
+            prefix,
+            target: current_def_id,
+        }
     }
 
-    fn qualified_import_target_is_valid(&self, path_ids: &[DefId]) -> bool {
-        if path_ids.is_empty() {
-            return false;
-        }
-        if path_ids.len() == 1 {
+    fn qualified_import_target_is_valid(&self, prefix: &[DefId], target: DefId) -> bool {
+        if prefix.is_empty() {
             // MLS §13.2: a single-segment import may name a class directly
             // (for example `import Complex;` inside an operator record).
-            return self.class_types.contains_key(&path_ids[0]);
+            return self.class_types.contains_key(&target);
         }
-        path_ids[..path_ids.len() - 1]
+        prefix
             .iter()
             .copied()
             .all(|def_id| self.is_package_def(def_id))
     }
 
-    fn package_import_target_is_valid(&self, path_ids: &[DefId]) -> bool {
-        self.qualified_import_target_is_valid(path_ids)
-            && path_ids
-                .last()
-                .copied()
-                .is_some_and(|def_id| self.is_package_def(def_id))
+    fn package_import_target_is_valid(&self, prefix: &[DefId], target: DefId) -> bool {
+        self.qualified_import_target_is_valid(prefix, target) && self.is_package_def(target)
     }
 
     fn is_package_def(&self, def_id: DefId) -> bool {
@@ -609,11 +678,33 @@ impl Resolver {
         let mut resolved_names = IndexMap::default();
         let mut has_missing_name = false;
         for name_token in names {
-            if let Some(def_id) = self.lookup_class_member(package, &name_token.text) {
-                resolved_names.insert(ComponentPath::from_flat_path(&name_token.text), def_id);
-            } else {
-                has_missing_name = true;
-                self.note_unresolved_selective_import_member(import, name_token, emit_errors);
+            match self.lookup_class_member(package, &name_token.text) {
+                ast::LookupOutcome::Found(definition) => {
+                    resolved_names
+                        .insert(ComponentPath::from_flat_path(&name_token.text), definition);
+                }
+                ast::LookupOutcome::Absent => {
+                    has_missing_name = true;
+                    self.note_unresolved_selective_import_member(import, name_token, emit_errors);
+                }
+                ast::LookupOutcome::AmbiguousInherited => {
+                    has_missing_name = true;
+                    self.note_ambiguous_inherited_name(
+                        &name_token.location,
+                        &name_token.text,
+                        "selective import member",
+                        emit_errors,
+                    );
+                }
+                ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                    has_missing_name = true;
+                    self.note_ambiguous_unqualified_name(
+                        &name_token.location,
+                        &name_token.text,
+                        "selective import member",
+                        emit_errors,
+                    );
+                }
             }
         }
         if has_missing_name {
@@ -671,10 +762,15 @@ impl Resolver {
     }
 
     /// Collect the authoritative direct-and-inherited member view of a package.
-    fn collect_package_children(&self, package: DefId) -> IndexMap<ComponentPath, DefId> {
-        self.class_def_scopes
+    fn collect_package_children(
+        &self,
+        package: DefId,
+    ) -> IndexMap<ComponentPath, ast::WildcardMember> {
+        let scope = self
+            .class_def_scopes
             .get(&package)
-            .map(|scope| self.scope_tree.effective_members(*scope))
-            .unwrap_or_default()
+            .copied()
+            .expect("a resolved package declaration must own its registered class scope");
+        self.scope_tree.importable_members(scope)
     }
 }

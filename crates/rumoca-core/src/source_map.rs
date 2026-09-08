@@ -150,6 +150,37 @@ impl SourceMap {
         Self::default()
     }
 
+    /// Retain the exact immutable source snapshot under shared ownership.
+    ///
+    /// This clones only the internal [`Arc`]. If either owner is subsequently
+    /// mutated, copy-on-write keeps the already-issued snapshot unchanged.
+    /// Artifact provenance uses this operation instead of rebuilding an
+    /// equivalent map from names or source ids.
+    #[must_use]
+    pub fn shared_snapshot(&self) -> Self {
+        Self {
+            storage: Arc::clone(&self.storage),
+        }
+    }
+
+    /// Deterministic digest of the exact ordered source-map snapshot.
+    ///
+    /// Length-prefixing every name and source body makes the byte stream
+    /// unambiguous. The stable source identity, name, and UTF-8 bytes are all
+    /// covered; a same-name map with different source bytes therefore cannot
+    /// share this audit identity.
+    #[must_use]
+    pub fn content_digest(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"rumoca-source-map-v1\0");
+        for (source_id, name, content) in &self.storage.files {
+            hasher.update(&source_id.0.to_le_bytes());
+            update_digest_field(&mut hasher, name.as_bytes());
+            update_digest_field(&mut hasher, content.as_bytes());
+        }
+        *hasher.finalize().as_bytes()
+    }
+
     /// Add a source file and return its SourceId.
     ///
     /// If the file was already added, returns the existing SourceId.
@@ -266,6 +297,14 @@ impl SourceMap {
             }),
         }
     }
+}
+
+const _: () = assert!(usize::BITS <= u64::BITS);
+
+fn update_digest_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    let length = bytes.len() as u64;
+    hasher.update(&length.to_le_bytes());
+    hasher.update(bytes);
 }
 
 #[cfg(test)]

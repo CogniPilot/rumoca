@@ -1,10 +1,12 @@
-//! Runtime acceptance checks for the Modelica interchange targets.
+//! Runtime acceptance checks for the remaining checked Modelica interchange target.
 
 use std::fs;
 use std::process::Command;
 
 use rumoca::{Compiler, render_target_files};
-use rumoca_compile::codegen::targets::RenderedTargetFile;
+use rumoca_compile::codegen::targets::CompletedRenderedFile;
+
+use crate::artifact_session::pinned_artifact_input;
 
 const SMOKE_MODEL: &str = "Smoke";
 const SMOKE_SOURCE: &str = r#"
@@ -16,15 +18,15 @@ equation
 end Smoke;
 "#;
 
-fn rendered_targets() -> Vec<(&'static str, RenderedTargetFile)> {
+fn rendered_targets() -> Vec<(&'static str, CompletedRenderedFile)> {
     let compiled = Compiler::new()
         .model(SMOKE_MODEL)
         .compile_str(SMOKE_SOURCE, "Smoke.mo")
         .expect("compile Modelica interchange fixture");
-    ["base-modelica", "flat-modelica", "dae-modelica"]
+    ["dae-modelica"]
         .into_iter()
         .map(|target| {
-            let files = render_target_files(&compiled, SMOKE_MODEL, target, None)
+            let files = render_target_files(&compiled, target, pinned_artifact_input())
                 .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
             assert_eq!(files.len(), 1, "{target} must emit one source document");
             (target, files.into_iter().next().expect("one rendered file"))
@@ -37,11 +39,11 @@ fn targets_round_trip_through_the_compiler() {
     for (target, file) in rendered_targets() {
         Compiler::new()
             .model(SMOKE_MODEL)
-            .compile_str(&file.content, &file.path)
+            .compile_str(file.content(), file.path())
             .unwrap_or_else(|error| {
                 panic!(
                     "{target} output must recompile through Rumoca: {error:#}\n{}",
-                    file.content
+                    file.content()
                 )
             });
     }
@@ -59,13 +61,13 @@ fn targets_are_accepted_by_required_omc() {
 
     for (target, file) in rendered_targets() {
         let directory = tempfile::tempdir().expect("temporary OMC interchange directory");
-        fs::write(directory.path().join(&file.path), &file.content)
+        fs::write(directory.path().join(file.path()), file.content())
             .expect("write Modelica interchange source");
         fs::write(
             directory.path().join("check.mos"),
             format!(
                 "loadFile(\"{}\");\ncheckModel({SMOKE_MODEL});\ngetErrorString();\n",
-                file.path
+                file.path()
             ),
         )
         .expect("write OMC interchange script");
@@ -83,7 +85,7 @@ fn targets_are_accepted_by_required_omc() {
             output.status.success()
                 && transcript.contains(&format!("Check of {SMOKE_MODEL} completed successfully")),
             "OMC rejected {target} output:\n{transcript}\n{}",
-            file.content,
+            file.content(),
         );
     }
 }

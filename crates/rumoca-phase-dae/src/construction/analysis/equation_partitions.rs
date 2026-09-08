@@ -1,17 +1,16 @@
 use super::*;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
-#[derive(Clone)]
 pub(in crate::construction) enum EquationPartition<'flat> {
     Continuous,
-    DiscreteReal { target: &'flat VarName },
+    DiscreteReal { target: VarName },
     DiscreteValue(DiscreteValueAssignmentPlan<'flat>),
     ConsumedDiscreteValue,
 }
 
-#[derive(Clone)]
 pub(in crate::construction) struct DiscreteValueAssignmentPlan<'flat> {
-    pub(in crate::construction) target: &'flat VarName,
+    pub(in crate::construction) target: VarName,
     pub(in crate::construction) value: Cow<'flat, Expression>,
     pub(in crate::construction) generated: bool,
     pub(in crate::construction) scalar_count: Option<usize>,
@@ -23,10 +22,9 @@ pub(in crate::construction) struct DiscreteValueAssignmentPlan<'flat> {
     pub(in crate::construction) ordered_scalar_self_dependencies: bool,
 }
 
-#[derive(Default)]
 pub(in crate::construction) struct AggregateDiscreteConnections {
-    owners: HashMap<usize, AggregateDiscreteConnection>,
-    members: HashSet<usize>,
+    owners: BTreeMap<usize, AggregateDiscreteConnection>,
+    members: BTreeMap<usize, Span>,
 }
 
 struct AggregateDiscreteConnection {
@@ -34,28 +32,143 @@ struct AggregateDiscreteConnection {
     value: Expression,
     scalar_count: usize,
     ordered_scalar_self_dependencies: bool,
+    span: Span,
 }
 
-pub(in crate::construction) fn equation_partition<'flat>(
+impl AggregateDiscreteConnections {
+    fn new() -> Self {
+        Self {
+            owners: BTreeMap::new(),
+            members: BTreeMap::new(),
+        }
+    }
+}
+
+/// The one source-ordered classification of ordinary model equations.
+///
+/// Keeping the exact borrowed root and equation occurrences beside their
+/// issued roles prevents analysis and construction from independently
+/// reclassifying an equal-looking row. Structured families retain their
+/// separate compact owner; initialization equations have a distinct MLS
+/// partition and therefore do not enter this sequence.
+pub(in crate::construction) struct ModelEquationSequence<'flat> {
+    model: &'flat flat::Model,
+    rows: Box<[ModelEquationRow<'flat>]>,
+}
+
+pub(in crate::construction) struct ModelEquationRow<'flat> {
+    index: usize,
+    equation: &'flat flat::Equation,
+    partition: EquationPartition<'flat>,
+}
+
+impl<'flat> ModelEquationSequence<'flat> {
+    pub(super) fn issue(
+        model: &'flat flat::Model,
+        roles: &HashMap<VarName, PlannedRole>,
+        connection_ranks: &HashMap<VarName, usize>,
+        mut aggregate_connections: AggregateDiscreteConnections,
+    ) -> Result<Self, ToDaeError> {
+        let rows = model
+            .equations
+            .iter()
+            .enumerate()
+            .map(|(index, equation)| {
+                let aggregate_owner = aggregate_connections.owners.remove(&index);
+                let aggregate_member = aggregate_connections.members.remove(&index).is_some();
+                Ok(ModelEquationRow {
+                    index,
+                    equation,
+                    partition: equation_partition(
+                        model,
+                        equation,
+                        roles,
+                        connection_ranks,
+                        aggregate_owner,
+                        aggregate_member,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, ToDaeError>>()?;
+        if let Some((_, owner)) = aggregate_connections.owners.into_iter().next() {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "an aggregate discrete owner must name an ordinary model-equation row",
+                owner.span,
+            ));
+        }
+        if let Some((_, span)) = aggregate_connections.members.into_iter().next() {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "an aggregate discrete member must name an ordinary model-equation row",
+                span,
+            ));
+        }
+        Ok(Self {
+            model,
+            rows: rows.into_boxed_slice(),
+        })
+    }
+
+    pub(in crate::construction) fn model(&self) -> &'flat flat::Model {
+        self.model
+    }
+
+    pub(in crate::construction) fn rows(&self) -> &[ModelEquationRow<'flat>] {
+        &self.rows
+    }
+
+    pub(in crate::construction) fn into_rows(
+        self,
+    ) -> impl ExactSizeIterator<Item = ModelEquationRow<'flat>> {
+        self.rows.into_vec().into_iter()
+    }
+}
+
+impl<'flat> ModelEquationRow<'flat> {
+    pub(in crate::construction) fn index(&self) -> usize {
+        self.index
+    }
+
+    pub(in crate::construction) fn equation(&self) -> &'flat flat::Equation {
+        self.equation
+    }
+
+    pub(in crate::construction) fn partition(&self) -> &EquationPartition<'flat> {
+        &self.partition
+    }
+
+    pub(in crate::construction) fn into_parts(
+        self,
+    ) -> (usize, &'flat flat::Equation, EquationPartition<'flat>) {
+        (self.index, self.equation, self.partition)
+    }
+}
+
+fn equation_partition<'flat>(
     flat: &'flat flat::Model,
-    row: usize,
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
     connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &'flat AggregateDiscreteConnections,
+    aggregate_owner: Option<AggregateDiscreteConnection>,
+    aggregate_member: bool,
 ) -> Result<EquationPartition<'flat>, ToDaeError> {
-    if let Some(plan) = aggregate_connections.owners.get(&row) {
+    if let Some(plan) = aggregate_owner {
+        if !aggregate_member {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "an aggregate discrete owner must also consume its source member row",
+                plan.span,
+            ));
+        }
         return Ok(EquationPartition::DiscreteValue(
             DiscreteValueAssignmentPlan {
-                target: &plan.target,
-                value: Cow::Borrowed(&plan.value),
+                target: plan.target,
+                value: Cow::Owned(plan.value),
                 generated: true,
                 scalar_count: Some(plan.scalar_count),
                 ordered_scalar_self_dependencies: plan.ordered_scalar_self_dependencies,
             },
         ));
     }
-    if aggregate_connections.members.contains(&row) {
+    if aggregate_member {
         return Ok(EquationPartition::ConsumedDiscreteValue);
     }
     if connection_bridges_discrete_real_to_continuous(equation, roles) {
@@ -97,23 +210,19 @@ pub(in crate::construction) fn equation_partition<'flat>(
         ));
     }
     let target = discrete_targets[0];
-    match roles[target] {
-        PlannedRole::DiscreteReal => Ok(EquationPartition::DiscreteReal { target }),
-        PlannedRole::DiscreteValue => {
-            unreachable!("discrete-value equations are classified before residual equations")
-        }
-        PlannedRole::UnusedExpandable
-        | PlannedRole::Parameter
-        | PlannedRole::Constant
-        | PlannedRole::Input
-        | PlannedRole::State
-        | PlannedRole::Algebraic
-        | PlannedRole::Output
-        | PlannedRole::Clock
-        | PlannedRole::EnumerationLiteral
-        | PlannedRole::Aggregate => {
-            unreachable!("the target was selected as a discrete coordinate")
-        }
+    match roles.get(*target) {
+        Some(PlannedRole::DiscreteReal) => Ok(EquationPartition::DiscreteReal {
+            target: (*target).clone(),
+        }),
+        Some(PlannedRole::DiscreteValue) => Err(ToDaeError::discrete_solved_form_violation(
+            "a discrete-value equation must have one checked solved-form owner",
+            equation.span,
+        )),
+        _ => Err(ToDaeError::unsupported_flat(
+            "ordinary equation partition",
+            "a selected discrete target must retain its analyzed discrete role",
+            equation.span,
+        )),
     }
 }
 
@@ -185,7 +294,7 @@ fn discrete_connection_assignment<'flat>(
         equation.span,
     )?;
     Ok(Some(DiscreteValueAssignmentPlan {
-        target,
+        target: target.clone(),
         generated: matches!(&value, Cow::Owned(_)),
         value,
         scalar_count: None,
@@ -272,13 +381,18 @@ pub(super) fn aggregate_discrete_connections(
             equation,
         )?;
     }
-    let mut result = AggregateDiscreteConnections::default();
+    let mut result = AggregateDiscreteConnections::new();
     for target in flat.variables.keys() {
         if let Some(group) = groups.remove(target) {
             group.finish(target.clone(), &mut result)?;
         }
     }
-    debug_assert!(groups.is_empty(), "every group names a Flat variable");
+    if let Some(group) = groups.into_values().next() {
+        return Err(ToDaeError::discrete_solved_form_violation(
+            "an aggregate discrete group must retain its declared Flat coordinate",
+            group.first_span,
+        ));
+    }
     Ok(result)
 }
 
@@ -352,17 +466,12 @@ impl AggregateConnectionGroup {
         target: VarName,
         result: &mut AggregateDiscreteConnections,
     ) -> Result<(), ToDaeError> {
-        if self.members.iter().any(Option::is_none) {
+        let Some(members) = self.members.into_iter().collect::<Option<Vec<_>>>() else {
             return Err(ToDaeError::discrete_solved_form_violation(
                 "element assignments must cover a discrete coordinate exactly once",
                 self.first_span,
             ));
-        }
-        let members = self
-            .members
-            .into_iter()
-            .map(|member| member.expect("complete coverage has one member per prefix coordinate"))
-            .collect::<Vec<_>>();
+        };
         let owner_row = members[0].row;
         let owner_span = members[0].span;
         let values = members
@@ -374,18 +483,33 @@ impl AggregateConnectionGroup {
         let ordered_scalar_self_dependencies = members
             .iter()
             .any(|member| member.ordered_scalar_self_dependencies);
-        result
-            .members
-            .extend(members.iter().map(|member| member.row));
-        result.owners.insert(
-            owner_row,
-            AggregateDiscreteConnection {
-                target,
-                value,
-                scalar_count,
-                ordered_scalar_self_dependencies,
-            },
-        );
+        for member in &members {
+            if result.members.insert(member.row, member.span).is_some() {
+                return Err(ToDaeError::discrete_solved_form_violation(
+                    "one ordinary equation row cannot belong to two aggregate discrete owners",
+                    member.span,
+                ));
+            }
+        }
+        if result
+            .owners
+            .insert(
+                owner_row,
+                AggregateDiscreteConnection {
+                    target,
+                    value,
+                    scalar_count,
+                    ordered_scalar_self_dependencies,
+                    span: owner_span,
+                },
+            )
+            .is_some()
+        {
+            return Err(ToDaeError::discrete_solved_form_violation(
+                "one ordinary equation row cannot own two aggregate discrete coordinates",
+                owner_span,
+            ));
+        }
         Ok(())
     }
 }
@@ -398,10 +522,33 @@ fn discrete_element_assignment<'flat>(
     equation: &'flat flat::Equation,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Option<(&'flat VarName, &'flat [Subscript], &'flat Expression)> {
-    if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+    if !ordinary_equation_owns_solved_lhs(equation) {
         return None;
     }
     discrete_element_expression(&equation.residual, roles)
+}
+
+/// Whether this ordinary equation's source-written left side is its checked
+/// solved-form owner for discrete values.
+///
+/// Direct connection equalities, generated outside-stream equalities, and
+/// overconstrained equality-constraint rows require topology orientation
+/// instead; treating their rendered left side as causal would make generation
+/// or source order semantic. Flow-balance origins remain in the positive arm:
+/// their residual shape cannot name a discrete-value solved target.
+pub(super) fn ordinary_equation_owns_solved_lhs(equation: &flat::Equation) -> bool {
+    match equation.origin {
+        flat::EquationOrigin::Connection { .. }
+        | flat::EquationOrigin::OutsideStream { .. }
+        | flat::EquationOrigin::EqualityConstraint { .. } => false,
+        flat::EquationOrigin::ComponentEquation { .. }
+        | flat::EquationOrigin::FlowSum { .. }
+        | flat::EquationOrigin::UnconnectedFlow { .. }
+        | flat::EquationOrigin::Algorithm { .. }
+        | flat::EquationOrigin::Reinit { .. }
+        | flat::EquationOrigin::WhenAssignment { .. }
+        | flat::EquationOrigin::Binding { .. } => true,
+    }
 }
 
 fn discrete_element_expression<'flat>(
@@ -506,7 +653,8 @@ fn pack_connection_prefix(values: &[Expression], extents: &[usize], span: Span) 
 pub(super) fn discrete_connection_ranks(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-) -> HashMap<VarName, usize> {
+    record_equations: &HashMap<usize, RecordEquationPlan>,
+) -> Result<HashMap<VarName, usize>, ToDaeError> {
     let mut producers = flat
         .variables
         .iter()
@@ -515,8 +663,17 @@ pub(super) fn discrete_connection_ranks(
         })
         .map(|(name, _)| name.clone())
         .collect::<HashSet<_>>();
-    for equation in &flat.equations {
-        if matches!(equation.origin, flat::EquationOrigin::Connection { .. }) {
+    for (row, equation) in flat.equations.iter().enumerate() {
+        if let Some(plan) = record_equations.get(&row) {
+            producers.extend(record_discrete_value_targets(plan).cloned());
+            continue;
+        }
+        if matches!(
+            equation.origin,
+            flat::EquationOrigin::Connection { .. }
+                | flat::EquationOrigin::OutsideStream { .. }
+                | flat::EquationOrigin::EqualityConstraint { .. }
+        ) {
             continue;
         }
         if let Ok(Some(plan)) = discrete_value_assignment(&equation.residual, roles, equation.span)
@@ -567,7 +724,15 @@ pub(super) fn discrete_connection_ranks(
             frontier.push(neighbor.clone());
         }
     }
-    ranks
+    Ok(ranks)
+}
+
+fn record_discrete_value_targets(plan: &RecordEquationPlan) -> impl Iterator<Item = &VarName> {
+    plan.fields.iter().filter_map(|field| match field {
+        RecordEquationFieldPlan::DiscreteValueDefinition { target, .. } => Some(target.name()),
+        RecordEquationFieldPlan::ContinuousRealResidual { .. }
+        | RecordEquationFieldPlan::DiscreteRealResidual { .. } => None,
+    })
 }
 
 /// Turn an element connection into a whole-coordinate definition only when
@@ -649,7 +814,7 @@ pub(in crate::construction) fn discrete_value_assignment<'flat>(
                 return Err(invalid_discrete_lhs(owner));
             }
             Ok(Some(DiscreteValueAssignmentPlan {
-                target: name.var_name(),
+                target: name.var_name().clone(),
                 value: Cow::Borrowed(rhs),
                 generated: false,
                 scalar_count: None,
@@ -722,19 +887,14 @@ pub(in crate::construction) fn structured_discrete_assignments<'flat>(
     if assignments.iter().all(Option::is_none) {
         return Ok(None);
     }
-    if assignments.iter().any(Option::is_none) {
+    let Some(assignments) = assignments.into_iter().collect::<Option<Vec<_>>>() else {
         return Err(ToDaeError::unsupported_flat(
             "mixed structured equation partition",
             "one structured family cannot mix continuous residual and discrete-value bodies",
             owner,
         ));
-    }
-    Ok(Some(
-        assignments
-            .into_iter()
-            .map(|assignment| assignment.expect("the complete family is discrete-valued"))
-            .collect(),
-    ))
+    };
+    Ok(Some(assignments))
 }
 
 fn expression_mentions_discrete_value(
@@ -822,11 +982,11 @@ fn collect_assignment_target_names<'flat>(
 }
 
 pub(super) fn defined_discrete_targets(
-    flat: &flat::Model,
+    equations: &ModelEquationSequence<'_>,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
-) -> Result<HashSet<VarName>, ToDaeError> {
+    record_equations: &HashMap<usize, RecordEquationPlan>,
+) -> HashSet<VarName> {
+    let flat = equations.model();
     let mut targets = event_targets(flat);
     targets.extend(algorithm_targets(flat).into_iter().filter(|target| {
         matches!(
@@ -834,15 +994,15 @@ pub(super) fn defined_discrete_targets(
             Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
         )
     }));
-    for (row, equation) in flat.equations.iter().enumerate() {
-        match equation_partition(
-            flat,
-            row,
-            equation,
-            roles,
-            connection_ranks,
-            aggregate_connections,
-        )? {
+    for row in equations.rows() {
+        let index = row.index();
+        let equation = row.equation();
+        if let Some(plan) = record_equations.get(&index) {
+            add_record_discrete_coordinates(plan, &mut targets);
+            targets.extend(discrete_references(&equation.residual, roles));
+            continue;
+        }
+        match row.partition() {
             EquationPartition::Continuous => continue,
             EquationPartition::DiscreteReal { target } => {
                 targets.insert(target.clone());
@@ -859,7 +1019,25 @@ pub(super) fn defined_discrete_targets(
         // count the equation without counting its unknown.
         targets.extend(discrete_references(&equation.residual, roles));
     }
-    Ok(targets)
+    targets
+}
+
+fn add_record_discrete_coordinates(plan: &RecordEquationPlan, targets: &mut HashSet<VarName>) {
+    for field in &plan.fields {
+        if matches!(
+            field,
+            RecordEquationFieldPlan::DiscreteRealResidual { .. }
+                | RecordEquationFieldPlan::DiscreteValueDefinition { .. }
+        ) {
+            targets.insert(field.target().name().clone());
+        }
+        let RecordEquationFieldValue::Coordinate(source) = field.value() else {
+            continue;
+        };
+        if source.is_discrete_unknown() {
+            targets.insert(source.name().clone());
+        }
+    }
 }
 
 fn discrete_references(
@@ -875,4 +1053,248 @@ fn discrete_references(
         )
     });
     references
+}
+
+#[cfg(test)]
+mod solved_lhs_origin_tests {
+    use super::*;
+    use rumoca_core::{BytePos, FunctionInstanceId, InstanceId, SourceId};
+
+    fn equation(origin: flat::EquationOrigin) -> flat::Equation {
+        let span = Span::new(
+            SourceId::from_source_name("solved-lhs-origin.mo"),
+            BytePos(0),
+            BytePos(1),
+        );
+        flat::Equation::new(
+            Expression::Literal {
+                value: Literal::Integer(0),
+                span,
+            },
+            span,
+            origin,
+        )
+    }
+
+    #[test]
+    fn connection_derived_origins_never_claim_source_lhs_ownership() {
+        for origin in [
+            flat::EquationOrigin::Connection {
+                lhs: "a".to_owned(),
+                rhs: "b".to_owned(),
+            },
+            flat::EquationOrigin::OutsideStream {
+                variable: "stream".to_owned(),
+            },
+            flat::EquationOrigin::EqualityConstraint {
+                lhs_record: InstanceId::new(1),
+                rhs_record: InstanceId::new(2),
+                function: FunctionInstanceId::new(3),
+            },
+        ] {
+            assert!(!ordinary_equation_owns_solved_lhs(&equation(origin)));
+        }
+    }
+
+    #[test]
+    fn established_non_connection_origins_retain_lhs_classification() {
+        for origin in [
+            flat::EquationOrigin::ComponentEquation {
+                component: "m".to_owned(),
+            },
+            flat::EquationOrigin::FlowSum {
+                description: "flow".to_owned(),
+            },
+            flat::EquationOrigin::UnconnectedFlow {
+                variable: "f".to_owned(),
+            },
+            flat::EquationOrigin::Algorithm {
+                component: "m".to_owned(),
+            },
+            flat::EquationOrigin::Reinit {
+                state: "x".to_owned(),
+            },
+            flat::EquationOrigin::WhenAssignment {
+                target: "d".to_owned(),
+            },
+            flat::EquationOrigin::Binding {
+                variable: "p".to_owned(),
+            },
+        ] {
+            assert!(ordinary_equation_owns_solved_lhs(&equation(origin)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_equation_sequence_tests {
+    use super::*;
+    use rumoca_core::{BytePos, Reference, SourceId};
+
+    macro_rules! assert_not_implemented {
+        ($ty:ty, $bound:path) => {
+            const _: fn() = || {
+                trait AmbiguousIfImplemented<Marker> {
+                    fn probe() {}
+                }
+                impl<T> AmbiguousIfImplemented<()> for T {}
+                struct Implements;
+                impl<T: $bound> AmbiguousIfImplemented<Implements> for T {}
+                let _ = <$ty as AmbiguousIfImplemented<_>>::probe;
+            };
+        };
+    }
+
+    assert_not_implemented!(ModelEquationSequence<'static>, ::core::clone::Clone);
+    assert_not_implemented!(ModelEquationSequence<'static>, ::core::marker::Copy);
+    assert_not_implemented!(ModelEquationSequence<'static>, ::core::default::Default);
+
+    fn span(offset: usize) -> Span {
+        Span::new(
+            SourceId::from_source_name("model-equation-sequence.mo"),
+            BytePos(offset),
+            BytePos(offset + 1),
+        )
+    }
+
+    fn equation(residual: Expression, offset: usize) -> flat::Equation {
+        flat::Equation::new(
+            residual,
+            span(offset),
+            flat::EquationOrigin::ComponentEquation {
+                component: String::new(),
+            },
+        )
+    }
+
+    fn reference(name: &str, offset: usize) -> Expression {
+        Expression::VarRef {
+            name: Reference::new(name),
+            subscripts: Vec::new(),
+            span: span(offset),
+        }
+    }
+
+    #[test]
+    fn model_equation_sequence_is_an_affine_api_product() {}
+
+    #[test]
+    fn issued_sequence_retains_exact_root_source_order_and_partition() {
+        let mut model = flat::Model::new();
+        model.add_equation(equation(
+            Expression::Literal {
+                value: Literal::Real(0.0),
+                span: span(0),
+            },
+            0,
+        ));
+        model.add_equation(equation(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(reference("m", 1)),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: span(2),
+                }),
+                span: span(1),
+            },
+            1,
+        ));
+        let roles = HashMap::from([(VarName::new("m"), PlannedRole::DiscreteValue)]);
+
+        let sequence = ModelEquationSequence::issue(
+            &model,
+            &roles,
+            &HashMap::new(),
+            AggregateDiscreteConnections::new(),
+        )
+        .expect("the fixture has a complete ordinary-equation partition");
+
+        assert!(std::ptr::eq(sequence.model(), &model));
+        assert_eq!(sequence.rows().len(), 2);
+        for (index, row) in sequence.rows().iter().enumerate() {
+            assert_eq!(row.index(), index);
+            assert!(std::ptr::eq(row.equation(), &model.equations[index]));
+        }
+        assert!(matches!(
+            sequence.rows()[0].partition(),
+            EquationPartition::Continuous
+        ));
+        let EquationPartition::DiscreteValue(plan) = sequence.rows()[1].partition() else {
+            panic!("the second source row must retain its issued B.1c role");
+        };
+        assert_eq!(plan.target, VarName::new("m"));
+        assert!(matches!(
+            plan.value.as_ref(),
+            Expression::Literal {
+                value: Literal::Boolean(true),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn sequence_issuance_refuses_a_mixed_discrete_owner_atomically() {
+        let mut model = flat::Model::new();
+        model.add_equation(equation(
+            Expression::Binary {
+                op: OpBinary::Sub,
+                lhs: Box::new(Expression::Array {
+                    elements: vec![reference("m", 0), reference("x", 1)],
+                    is_matrix: false,
+                    span: span(0),
+                }),
+                rhs: Box::new(Expression::Literal {
+                    value: Literal::Integer(0),
+                    span: span(2),
+                }),
+                span: span(0),
+            },
+            0,
+        ));
+        let roles = HashMap::from([
+            (VarName::new("m"), PlannedRole::DiscreteReal),
+            (VarName::new("x"), PlannedRole::Algebraic),
+        ]);
+
+        let result = ModelEquationSequence::issue(
+            &model,
+            &roles,
+            &HashMap::new(),
+            AggregateDiscreteConnections::new(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ToDaeError::UnsupportedFlatSemantics { .. })
+        ));
+    }
+
+    #[test]
+    fn sequence_issuance_refuses_an_unconsumed_aggregate_owner() {
+        let model = flat::Model::new();
+        let mut aggregates = AggregateDiscreteConnections::new();
+        aggregates.members.insert(1, span(1));
+        aggregates.owners.insert(
+            1,
+            AggregateDiscreteConnection {
+                target: VarName::new("m"),
+                value: Expression::Literal {
+                    value: Literal::Boolean(true),
+                    span: span(1),
+                },
+                scalar_count: 1,
+                ordered_scalar_self_dependencies: false,
+                span: span(1),
+            },
+        );
+
+        let result =
+            ModelEquationSequence::issue(&model, &HashMap::new(), &HashMap::new(), aggregates);
+
+        assert!(matches!(
+            result,
+            Err(ToDaeError::DiscreteSolvedFormViolation { .. })
+        ));
+    }
 }

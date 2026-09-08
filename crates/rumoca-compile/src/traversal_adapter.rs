@@ -58,7 +58,12 @@ impl RedeclareSubstitutions {
         class_index: &ast::ClassDefIndex<'_>,
         modification: &ast::Expression,
     ) {
-        let ast::Expression::Modification { target, value, .. } = modification else {
+        let ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = modification
+        else {
             return;
         };
         let ast::Expression::ClassModification {
@@ -184,8 +189,8 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
             .scope_id
             .and_then(|scope_id| self.tree.scope_tree.get(scope_id))
             .map(|scope| scope.imports.as_slice());
-        for import in &class.imports {
-            self.collect_import(import, scope_imports);
+        if let Some(scope_imports) = scope_imports {
+            self.collect_resolved_imports(scope_imports);
         }
         for subscript in &class.array_subscripts {
             self.visit_subscript(subscript)?;
@@ -290,96 +295,35 @@ impl<'tree, 'index, 'name> ClassDependencyCollector<'tree, 'index, 'name> {
         Continue(())
     }
 
-    fn collect_import(
-        &mut self,
-        import: &ast::Import,
-        scope_imports: Option<&[ast::scope::Import]>,
-    ) {
-        // MLS §13.2: qualified, renamed, and selective imports bind concrete
-        // imported definitions into the class scope. Use the resolved scope
-        // imports rather than Name::def_id so the dependency graph tracks the
-        // imported classes instead of only the package path.
-        match import {
-            ast::Import::Qualified { path, .. } => {
-                if !self.add_resolved_import_dep(path, scope_imports) {
-                    self.add_class_dep_from_name(path);
-                }
-            }
-            ast::Import::Renamed { path, .. } => {
-                if !self.add_resolved_import_dep(path, scope_imports) {
-                    self.add_class_dep_from_name(path);
-                }
-            }
-            ast::Import::Selective { path, names, .. } => {
-                if !self.add_selective_import_deps(path, names, scope_imports) {
-                    self.add_class_dep_from_name(path);
-                }
-            }
-            ast::Import::Unqualified { path, .. } => self.add_class_dep_from_name(path),
-        }
-    }
-
-    fn add_resolved_import_dep(
-        &mut self,
-        path: &ast::Name,
-        scope_imports: Option<&[ast::scope::Import]>,
-    ) -> bool {
-        let Some(scope_imports) = scope_imports else {
-            return false;
-        };
+    /// Retain every exact identity Resolve issued for this class's own import
+    /// clauses.
+    ///
+    /// Scope imports are already the authoritative per-clause projection:
+    /// their prefixes contain every package declaration on the resolved path,
+    /// and their targets are the imported declaration identities. Walking that
+    /// projection as a whole avoids matching source spellings or re-running
+    /// lookup, and it does not inherit another class's imports (MLS §13.2.2).
+    fn collect_resolved_imports(&mut self, scope_imports: &[ast::scope::Import]) {
         for import in scope_imports {
             match import {
-                ast::scope::Import::Qualified {
-                    path: import_path,
-                    def_id,
+                ast::scope::Import::SingleDefinition { prefix, def_id, .. } => {
+                    self.add_import_route(prefix, std::iter::once(*def_id));
                 }
-                | ast::scope::Import::Renamed {
-                    path: import_path,
-                    def_id,
-                    ..
-                } if import_path_matches(path, import_path) => {
-                    self.add_class_dep_by_def_id(*def_id);
-                    return true;
+                ast::scope::Import::Wildcard { prefix, names } => {
+                    let targets = names.values().filter_map(|member| match member {
+                        ast::WildcardMember::Unique(def_id) => Some(*def_id),
+                        ast::WildcardMember::AmbiguousInherited => None,
+                    });
+                    self.add_import_route(prefix, targets);
                 }
-                _ => {}
             }
         }
-        false
     }
 
-    fn add_selective_import_deps(
-        &mut self,
-        path: &ast::Name,
-        names: &[rumoca_core::Token],
-        scope_imports: Option<&[ast::scope::Import]>,
-    ) -> bool {
-        let Some(scope_imports) = scope_imports else {
-            return false;
-        };
-        let mut found = false;
-        for import in scope_imports {
-            let ast::scope::Import::Unqualified {
-                path: import_path,
-                names: resolved_names,
-            } = import
-            else {
-                continue;
-            };
-            if !import_path_matches(path, import_path) {
-                continue;
-            }
-            for def_id in names.iter().filter_map(|name| {
-                resolved_names
-                    .get(&rumoca_core::ComponentPath::from_flat_path(
-                        name.text.as_ref(),
-                    ))
-                    .copied()
-            }) {
-                self.add_class_dep_by_def_id(def_id);
-                found = true;
-            }
+    fn add_import_route(&mut self, prefix: &[DefId], targets: impl IntoIterator<Item = DefId>) {
+        for def_id in prefix.iter().copied().chain(targets) {
+            self.add_class_dep_by_def_id(def_id);
         }
-        found
     }
 
     fn add_class_dep_from_name(&mut self, name: &ast::Name) {
@@ -506,15 +450,6 @@ fn component_modifier_target(modification: &ast::Expression) -> Option<&ast::Com
     }
 }
 
-fn import_path_matches(path: &ast::Name, import_path: &[String]) -> bool {
-    path.name.len() == import_path.len()
-        && path
-            .name
-            .iter()
-            .zip(import_path)
-            .all(|(token, import_part)| token.text.as_ref() == import_part)
-}
-
 impl Visitor for ClassDependencyCollector<'_, '_, '_> {
     fn visit_expr_function_call_ctx(
         &mut self,
@@ -563,3 +498,6 @@ impl Visitor for ClassDependencyCollector<'_, '_, '_> {
         Continue(())
     }
 }
+
+#[cfg(test)]
+mod import_tests;

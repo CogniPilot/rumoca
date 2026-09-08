@@ -28,6 +28,15 @@ pub enum GalecParseError {
     Invalid(#[from] PackageError),
 }
 
+/// Internal failure while closing a parsed document for semantic diagnostics.
+///
+/// Language rejections remain ordinary [`DocumentDiagnostic`] values. This
+/// error preserves constructor failures that have no registered `EG0xx`
+/// identity instead of misreporting them as source diagnostics or panicking.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("GALEC document semantic analysis failed: {0}")]
+pub struct DocumentDiagnosticsError(#[source] PackageError);
+
 /// Opaque syntax document retained only for editor diagnostics/navigation.
 ///
 /// The unvalidated block never escapes this phase. Production compilation uses
@@ -89,18 +98,19 @@ impl DocumentDiagnostic {
 
 impl GalecDocument {
     /// Collect semantic diagnostics without exposing the unchecked block.
-    #[must_use]
-    pub fn diagnostics(&self) -> Vec<DocumentDiagnostic> {
-        match rumoca_ir_galec::validate(&self.block) {
-            Ok(()) => Vec::new(),
-            Err(errors) => errors
+    pub fn diagnostics(&self) -> Result<Vec<DocumentDiagnostic>, DocumentDiagnosticsError> {
+        match CheckedAlgorithmBlock::construct(self.block.clone()) {
+            Ok(_) => Ok(Vec::new()),
+            Err(PackageError::Block(diagnostics)) => Ok(diagnostics
+                .errors()
                 .iter()
                 .map(|error| DocumentDiagnostic {
                     code: error.code(),
                     message: error.to_string(),
                     span: rumoca_ir_galec::span_of(&self.block, error.location()),
                 })
-                .collect(),
+                .collect()),
+            Err(error) => Err(DocumentDiagnosticsError(error)),
         }
     }
 

@@ -25,7 +25,7 @@ spec, it's not a rule — propose a spec change first.
 | Valid-by-construction IR aggregates and proofs | [SPEC_0036](spec/SPEC_0036_VALID_BY_CONSTRUCTION_IR.md) — construction rules; row catalog in [SPEC_0043](spec/SPEC_0043_CONSTRUCTION_CATALOG.md) |
 | Proof harnesses, trusted-base checkers, reference semantics | [SPEC_0037](spec/SPEC_0037_FORMALLY_VERIFIED_COMPILER.md): verification architecture, checker discipline, and the proof ladder; witness precedent in [SPEC_0039](spec/SPEC_0039_PROOF_CARRYING_SPARSITY.md) |
 | Range-preserving array/tensor/stencil IR | [SPEC_0032](spec/SPEC_0032_RANGE_PRESERVING_TENSORS.md) — compact domains, scalar views, Map/AffineStencil ownership |
-| Crate dependencies, foundation types, re-exports, single-source helpers | [SPEC_0029](spec/SPEC_0029_CRATE_BOUNDARIES.md) — boundary rules; ownership catalog in [SPEC_0041](spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) |
+| Crate dependencies, foundation types, re-exports, single-source helpers | [SPEC_0029](spec/SPEC_0029_CRATE_BOUNDARIES.md) — boundary rules; ownership catalogs in [SPEC_0041](spec/SPEC_0041_CRATE_OWNERSHIP_CATALOG.md) and [SPEC_0054](spec/SPEC_0054_RUNTIME_LAYERING_CATALOG.md) |
 | eFMI/GALEC export targets | [SPEC_0034](spec/SPEC_0034_GALEC_EFMI_EXPORT.md) — GAL-NNN rules; language traps and decisions in [SPEC_0042](spec/SPEC_0042_GALEC_LANGUAGE_CATALOG.md) |
 | Modelica semantics (any MLS-affecting change) | [SPEC_0022](spec/SPEC_0022_MLS_COMPILER_COMPLIANCE.md) (use its section index) |
 | Name lookup, scopes, `DefId` | [SPEC_0001](spec/SPEC_0001_DEFID.md), [SPEC_0002](spec/SPEC_0002_SCOPE_TREE.md) |
@@ -33,14 +33,16 @@ spec, it's not a rule — propose a spec change first.
 | Tool config (`rumoca-tool-*`) | [SPEC_0018](spec/SPEC_0018_TOOL_CONFIG.md) |
 | Function length, nesting, file size, deterministic collections, code-size policy | [SPEC_0021](spec/SPEC_0021_CODE_COMPLEXITY.md) |
 | Development workflow, bug triage, root-cause proof, upstream-first fixes | [SPEC_0033](spec/SPEC_0033_DEVELOPMENT_PROCESS.md); trace-evidence rows in [SPEC_0050](spec/SPEC_0050_TRACE_EVIDENCE_CATALOG.md) |
+| Embedded-C competitor metrics and benchmark claims | [SPEC_0033](spec/SPEC_0033_DEVELOPMENT_PROCESS.md); row catalog in [SPEC_0052](spec/SPEC_0052_EMBEDDED_C_COMPETITOR_MATRIX_CATALOG.md) |
+| Target refinement, prepared products, or final emission policy | [SPEC_0048](spec/SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md); row catalog in [SPEC_0055](spec/SPEC_0055_TARGET_REFINEMENT_CATALOG.md) |
 | Opening a PR (branch naming, workflow, metrics, verification commands, MSL gates, done criteria) | [SPEC_0025](spec/SPEC_0025_PR_REVIEW_PROCESS.md) |
 
 ## Rules of thumb
 
 - Active specs (`ACCEPTED` / `REFERENCE`) are mandatory. Archived specs are
   historical context only.
-- A `REFERENCE` annex (`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`, or
-  `SPEC_0050`) holds the lookup catalog for its
+- A `REFERENCE` annex (`SPEC_0040`–`SPEC_0044`, `SPEC_0047`, `SPEC_0049`,
+  `SPEC_0050`, or `SPEC_0052`–`SPEC_0055`) holds the lookup catalog for its
   parent spec. Its rows are normative by reference from the parent section that
   links them; read the parent first, then the catalog row it cites.
 - If you cannot find the spec for what you're about to change, stop and ask

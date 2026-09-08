@@ -9,7 +9,7 @@ fn representative_scalar_model_compiles_and_simulates_through_checked_ir() {
         .compile_str(source, "decay.mo")
         .expect("checked compiler pipeline succeeds");
     let simulation = rumoca_sim::simulate_dae(
-        &result.dae,
+        result.dae().as_ref(),
         &SimOptions {
             t_end: 0.1,
             ..SimOptions::default()

@@ -7,9 +7,15 @@ use super::*;
 fn inherited_function_body_rewrites_self_package_calls_to_exposed_package() {
     let (tree, mut function) = inherited_function_alias_rewrite_fixture();
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
-    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
-        .expect("function alias rewrite");
+    rewrite_function_extends_aliases_in_function(
+        &mut function,
+        &tree,
+        &class_index,
+        &semantic_catalogs,
+    )
+    .expect("function alias rewrite");
 
     let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
         panic!("expected assignment");
@@ -31,9 +37,15 @@ fn inherited_function_body_keeps_identity_for_synthesized_exposed_name() {
         .shift_remove("ConcreteMedium.specificEnthalpy");
     tree.name_map.shift_remove("ConcreteMedium.setState_pTX");
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
-    rewrite_function_extends_aliases_in_function(&mut function, &tree, &class_index)
-        .expect("function alias rewrite");
+    rewrite_function_extends_aliases_in_function(
+        &mut function,
+        &tree,
+        &class_index,
+        &semantic_catalogs,
+    )
+    .expect("function alias rewrite");
 
     let rumoca_core::Statement::Assignment { value, .. } = &function.body[0] else {
         panic!("expected assignment");
@@ -183,8 +195,11 @@ fn inherited_alias_function_body(ids: InheritedAliasIds) -> rumoca_core::Functio
         ("PartialMedium", ids.partial_pkg),
         ("setState_pTX", ids.partial_set_state),
     ]);
-    let mut function =
-        rumoca_core::Function::new("ConcreteMedium.specificEnthalpy_pTX", test_span());
+    let mut function = rumoca_core::Function::new(
+        "ConcreteMedium.specificEnthalpy_pTX",
+        rumoca_core::DefId::new(61_011),
+        test_span(),
+    );
     function.body.push(rumoca_core::Statement::Assignment {
         comp: core_comp_ref(&[("h", ids.output_h)]),
         value: Expression::FunctionCall {
@@ -199,9 +214,11 @@ fn inherited_alias_function_body(ids: InheritedAliasIds) -> rumoca_core::Functio
                 ),
                 args: vec![core_var(&[("p", ids.input_p)])],
                 is_constructor: false,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         span: test_span(),

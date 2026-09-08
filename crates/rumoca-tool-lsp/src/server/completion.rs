@@ -3,13 +3,15 @@ use std::time::Instant;
 
 use crate::completion_metrics::extract_namespace_completion_prefix;
 use rumoca_compile::compile::{
-    PhaseResult, SessionCacheStatsSnapshot, SessionSnapshot, StrictCompileReport,
+    Document, PhaseResult, SessionCacheStatsSnapshot, SessionSnapshot, StrictCompileReport,
     session_cache_stats,
 };
-use tower_lsp::lsp_types::Position;
+use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::{CompletionParams, CompletionResponse, Position};
 
 use super::{
-    ModelicaLanguageServer, maybe_log_completion_debug, write_completion_progress_summary,
+    AnalysisRequestToken, ModelicaLanguageServer, SourceRootPreparationError, handlers,
+    maybe_log_completion_debug, write_completion_progress_summary, write_completion_timing_summary,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +66,16 @@ pub(super) struct CompletionTimingContext {
     pub(super) total_ms: u64,
     pub(super) class_name_count_after_ensure: usize,
     pub(super) session_cache_delta: SessionCacheStatsSnapshot,
+}
+
+struct CompletionRequestContext {
+    started: Instant,
+    request_token: AnalysisRequestToken,
+    uri_path: String,
+    position: Position,
+    document: Option<Document>,
+    stats_before: SessionCacheStatsSnapshot,
+    has_namespace_prefix: bool,
 }
 
 impl<'a> CompletionProgressContext<'a> {
@@ -200,13 +212,145 @@ impl CompletionSourceRootPreparation {
 }
 
 impl ModelicaLanguageServer {
+    pub(super) async fn handle_completion_request(
+        &self,
+        params: CompletionParams,
+    ) -> Result<Option<CompletionResponse>> {
+        let started = Instant::now();
+        let request_token = self.begin_analysis_request().await;
+        let uri = &params.text_document_position.text_document.uri;
+        let uri_path = super::session_document_uri_key(uri);
+        let position = params.text_document_position.position;
+        let document = self.document_snapshot(&uri_path).await;
+        let source = document
+            .as_ref()
+            .map(|document| document.content.clone())
+            .unwrap_or_default();
+        let has_namespace_prefix = extract_namespace_completion_prefix(&source, position).is_some();
+        if has_namespace_prefix {
+            self.wait_for_source_root_read_prewarm_if_pending().await;
+        }
+        let stats_before = session_cache_stats();
+        let preparation = match self
+            .prepare_completion(&source, position, &uri_path, request_token.mutation_epoch)
+            .await
+        {
+            Ok(preparation) => preparation,
+            Err(error) => {
+                self.client
+                    .log_message(tower_lsp::lsp_types::MessageType::ERROR, error.to_string())
+                    .await;
+                return Ok(None);
+            }
+        };
+        self.execute_prepared_completion(
+            CompletionRequestContext {
+                started,
+                request_token,
+                uri_path,
+                position,
+                document,
+                stats_before,
+                has_namespace_prefix,
+            },
+            preparation,
+        )
+        .await
+    }
+
+    async fn execute_prepared_completion(
+        &self,
+        mut request: CompletionRequestContext,
+        preparation: CompletionPreparation,
+    ) -> Result<Option<CompletionResponse>> {
+        let ast = request
+            .document
+            .as_ref()
+            .and_then(|document| document.recovered().or(document.parsed()));
+        let mut session_snapshot = None;
+        let mut class_name_count_after_ensure = 0usize;
+        let _interactive_lane = if preparation.request_was_stale {
+            None
+        } else {
+            Some(self.work_lanes.interactive.lock().await)
+        };
+        if !preparation.request_was_stale {
+            request.request_token = self
+                .refresh_analysis_request_revision(request.request_token)
+                .await;
+            let snapshot = if request.has_namespace_prefix {
+                self.session_snapshot().await
+            } else if let Some(snapshot) =
+                self.document_lightweight_snapshot(&request.uri_path).await
+            {
+                snapshot
+            } else {
+                self.session_snapshot().await
+            };
+            class_name_count_after_ensure = Self::cached_completion_class_name_count(
+                &snapshot,
+                preparation.completion_prefix.as_deref(),
+            );
+            session_snapshot = Some(snapshot);
+        }
+        maybe_log_completion_debug(
+            &self.client,
+            format!("cached class names after ensure={class_name_count_after_ensure}"),
+        )
+        .await;
+        let document_source = request
+            .document
+            .as_ref()
+            .map(|document| document.content.as_ref())
+            .unwrap_or("");
+        let handler_started = Instant::now();
+        let mut response = None;
+        let mut semantic_layer = "stale".to_string();
+        if !preparation.request_was_stale {
+            let result = handlers::handle_completion_with_snapshot_and_provenance(
+                document_source,
+                ast,
+                session_snapshot.as_ref(),
+                Some(&request.uri_path),
+                request.position.line,
+                request.position.character,
+            );
+            semantic_layer = result.semantic_layer.label().to_string();
+            response = Some(CompletionResponse::Array(result.items));
+        }
+        let completion_handler_ms = handler_started.elapsed().as_millis() as u64;
+        let total_ms = request.started.elapsed().as_millis() as u64;
+        let session_cache_delta = session_cache_stats().delta_since(request.stats_before);
+        let request_was_stale = preparation.request_was_stale
+            || self.analysis_request_is_stale(request.request_token).await;
+        if request_was_stale {
+            response = None;
+            semantic_layer = "stale".to_string();
+        }
+        let timing_path = self.completion_timing_path.read().await.clone();
+        let timing_summary = build_completion_timing_summary(
+            preparation,
+            CompletionTimingContext {
+                request_edit_epoch: request.request_token.mutation_epoch,
+                uri: request.uri_path,
+                semantic_layer,
+                completion_handler_ms,
+                total_ms,
+                class_name_count_after_ensure,
+                session_cache_delta,
+            },
+        );
+        write_completion_timing_summary(&timing_summary, timing_path.as_deref());
+        Ok(response)
+    }
+
     pub(super) async fn prepare_completion(
         &self,
         source: &str,
         pos: Position,
         uri_path: &str,
         request_edit_epoch: u64,
-    ) -> CompletionPreparation {
+    ) -> std::result::Result<CompletionPreparation, SourceRootPreparationError> {
         let prepare_started = Instant::now();
         let completion_progress_path = self.completion_progress_path.read().await.clone();
         let progress = CompletionProgressContext {
@@ -216,26 +360,29 @@ impl ModelicaLanguageServer {
             completion_progress_path: completion_progress_path.as_deref(),
         };
         if self.completion_request_is_stale(request_edit_epoch) {
-            return CompletionPreparation::stale(
+            return Ok(CompletionPreparation::stale(
                 extract_namespace_completion_prefix(source, pos),
                 CompletionStageTimings::default(),
-            );
+            ));
         }
 
         let source_roots = self
             .prepare_completion_source_roots(source, pos, request_edit_epoch, progress)
-            .await;
+            .await?;
         if source_roots.request_was_stale {
-            return source_roots.stale();
+            return Ok(source_roots.stale());
         }
         if self.completion_request_is_stale(request_edit_epoch) {
-            return CompletionPreparation::stale(
+            return Ok(CompletionPreparation::stale(
                 source_roots.completion_prefix,
                 source_roots.timings,
-            );
+            ));
         }
 
-        CompletionPreparation::ready(source_roots.completion_prefix, source_roots.timings)
+        Ok(CompletionPreparation::ready(
+            source_roots.completion_prefix,
+            source_roots.timings,
+        ))
     }
 
     async fn maybe_prime_namespace_completion_cache(
@@ -278,35 +425,63 @@ impl ModelicaLanguageServer {
         pos: Position,
         request_edit_epoch: u64,
         progress: CompletionProgressContext<'_>,
-    ) -> CompletionSourceRootPreparation {
+    ) -> std::result::Result<CompletionSourceRootPreparation, SourceRootPreparationError> {
         let mut source_roots = CompletionSourceRootPreparation::default();
         let completion_prefix = extract_namespace_completion_prefix(source, pos);
 
         progress.log("source_root_load", "start", None, None, None);
         let source_root_load_started = Instant::now();
         let source_root_paths = self.source_root_paths.read().await.clone();
-        self.ensure_source_roots_loaded_with_paths(source, progress.uri_path, &source_root_paths)
-            .await;
+        if let Err(error) = self
+            .ensure_source_roots_loaded_with_paths(source, progress.uri_path, &source_root_paths)
+            .await
+        {
+            source_roots.timings.source_root_load_ms =
+                source_root_load_started.elapsed().as_millis() as u64;
+            progress.log_with_detail(
+                "source_root_load",
+                "error",
+                completion_prefix.as_deref(),
+                None,
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
         source_roots.timings.source_root_load_ms =
             source_root_load_started.elapsed().as_millis() as u64;
         progress.log("source_root_load", "end", None, None, None);
         if self.completion_request_is_stale(request_edit_epoch) {
             source_roots.request_was_stale = true;
             source_roots.completion_prefix = completion_prefix;
-            return source_roots;
+            return Ok(source_roots);
         }
 
         progress.log("completion_source_root_load", "start", None, None, None);
         let completion_source_root_load_started = Instant::now();
-        self.ensure_completion_source_roots(source, pos, progress.uri_path)
-            .await;
+        if let Err(error) = self
+            .ensure_completion_source_roots(source, pos, progress.uri_path)
+            .await
+        {
+            source_roots.timings.completion_source_root_load_ms =
+                completion_source_root_load_started.elapsed().as_millis() as u64;
+            progress.log_with_detail(
+                "completion_source_root_load",
+                "error",
+                completion_prefix.as_deref(),
+                None,
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
         source_roots.timings.completion_source_root_load_ms =
             completion_source_root_load_started.elapsed().as_millis() as u64;
         progress.log("completion_source_root_load", "end", None, None, None);
         if self.completion_request_is_stale(request_edit_epoch) {
             source_roots.request_was_stale = true;
             source_roots.completion_prefix = completion_prefix;
-            return source_roots;
+            return Ok(source_roots);
         }
 
         source_roots.completion_prefix = completion_prefix;
@@ -330,7 +505,7 @@ impl ModelicaLanguageServer {
             prime.detail.as_deref(),
         );
         source_roots.request_was_stale = self.completion_request_is_stale(request_edit_epoch);
-        source_roots
+        Ok(source_roots)
     }
 
     pub(super) fn cached_completion_class_name_count(

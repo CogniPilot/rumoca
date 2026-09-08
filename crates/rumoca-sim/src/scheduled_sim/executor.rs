@@ -10,14 +10,20 @@
 //!   7. push to WebSocket
 //!   8. optional realtime pacing
 
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+mod signal_controller;
+mod trace_logger;
+
+use signal_controller::{SignalController, SignalControllerShutdownFailure};
+#[cfg(test)]
+use signal_controller::{SignalStage, signal_action_after_cleanup};
+use std::collections::BTreeSet;
+use std::io::Write;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use trace_logger::{TraceLogger, open_trace_logger};
 
 use crate::{SimPacingMode, SimulationSessionApi};
 use anyhow::{Context, Result};
@@ -26,14 +32,19 @@ use rumoca_input::{
     InputEngine, KeyCode, KeyModifiers, KeyboardEvent, RuntimeContext, SignalMapper,
 };
 use rumoca_transport_udp::{UdpConfig, UdpTransport};
-use rumoca_transport_websocket::run_broadcast_server;
+use rumoca_transport_websocket::{
+    BroadcastServer, BroadcastServerEvent, BroadcastServerShutdown,
+    BroadcastServerTerminalFailures, PeerFailureRecord, RunningBroadcastServer,
+    ViewerControlCommand, ViewerKeyCode, ViewerKeyCommand,
+};
 use rumoca_transport_zenoh::ZenohTransport;
-use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use crate::scheduled_sim::devices::{self, Devices};
+use crate::scheduled_sim::devices::Devices;
 
 use crate::scenario_config::{LockstepConfig, ResetConfig, SimulationConfig};
+
+const VIEWER_CONTROL_QUEUE_CAPACITY: usize = 64;
 
 fn wall_ms_since_unix_epoch() -> Result<f64> {
     Ok(SystemTime::now()
@@ -45,21 +56,96 @@ fn wall_ms_since_unix_epoch() -> Result<f64> {
 // ── External-interface subprocess ──────────────────────────────────────────
 
 struct ExternalInterfaceProcess {
-    child: Option<Child>,
+    state: ExternalInterfaceProcessState,
     command: String,
+}
+
+enum ExternalInterfaceProcessState {
+    Idle,
+    Owned {
+        child: Child,
+        target: ExternalInterfaceStopTarget,
+        stop_phase: ExternalInterfaceStopPhase,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalInterfaceStopPhase {
+    Running,
+    KillIssued,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalInterfaceStopTarget {
+    #[cfg(not(unix))]
+    DirectChild { pid: u32 },
+    #[cfg(unix)]
+    ProcessGroup { leader_pid: u32, pgid: u32 },
+}
+
+impl std::fmt::Display for ExternalInterfaceStopTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            #[cfg(not(unix))]
+            Self::DirectChild { pid } => write!(formatter, "pid {pid}"),
+            #[cfg(unix)]
+            Self::ProcessGroup { leader_pid, pgid } => {
+                write!(formatter, "leader pid {leader_pid}, process group {pgid}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ExternalInterfaceStopFailure {
+    #[cfg(not(unix))]
+    #[error("failed to inspect external-interface {target} before shutdown: {detail}")]
+    Inspect {
+        target: ExternalInterfaceStopTarget,
+        detail: String,
+    },
+    #[error("failed to kill external-interface {target}: {detail}")]
+    Kill {
+        target: ExternalInterfaceStopTarget,
+        detail: String,
+    },
+    #[error("failed to wait for external-interface {target}: {detail}")]
+    Wait {
+        target: ExternalInterfaceStopTarget,
+        detail: String,
+    },
+    #[error("external-interface {target} did not exit within 500ms")]
+    Timeout { target: ExternalInterfaceStopTarget },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ExternalInterfaceStartFailure {
+    #[error("external-interface startup refused because shutdown was requested")]
+    ShutdownRequested,
+    #[error(transparent)]
+    Stop(#[from] ExternalInterfaceStopFailure),
+    #[error("failed to start external interface `{command}`: {source}")]
+    Spawn {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl ExternalInterfaceProcess {
     fn new(command: &str) -> Self {
         Self {
-            child: None,
+            state: ExternalInterfaceProcessState::Idle,
             command: command.to_string(),
         }
     }
 
-    fn start(&mut self) -> Result<()> {
-        self.stop();
-        eprintln!("[external_interface] starting: {}", self.command);
+    fn start(&mut self) -> std::result::Result<(), ExternalInterfaceStartFailure> {
+        self.stop()?;
+        write_control_diagnostic(format_args!(
+            "[external_interface] starting: {}",
+            self.command
+        ));
         let mut cmd = Command::new(&self.command);
         cmd.stdin(Stdio::null());
         // Enabling the `rumoca_sim::external_interface` (or `::autopilot`) trace
@@ -80,155 +166,421 @@ impl ExternalInterfaceProcess {
             use std::os::unix::process::CommandExt;
             cmd.process_group(0);
         }
-        // On Linux: tell the kernel to send SIGKILL to this child if rumoca
-        // ever dies — covers SIGKILL, panic, OOM, anything that skips Drop.
-        // Without this, process_group(0) actually makes orphaning worse: the
-        // child outlives us in its own pgrp with no one to clean it up.
+        // On Linux, ask the kernel to signal only the direct child if rumoca
+        // dies before owned cleanup runs. PR_SET_PDEATHSIG is not inherited by
+        // descendants, so crash-path descendant cleanup is not claimed here;
+        // handled shutdown paths explicitly terminate and inspect the PGID.
         #[cfg(target_os = "linux")]
         install_pdeathsig(&mut cmd);
         let child = cmd
             .spawn()
-            .with_context(|| format!("Failed to start external interface: {}", self.command))?;
-        eprintln!("[external_interface] pid {}", child.id());
-        self.child = Some(child);
+            .map_err(|source| ExternalInterfaceStartFailure::Spawn {
+                command: self.command.clone(),
+                source,
+            })?;
+        let pid = child.id();
+        #[cfg(unix)]
+        let target = ExternalInterfaceStopTarget::ProcessGroup {
+            leader_pid: pid,
+            pgid: pid,
+        };
+        #[cfg(not(unix))]
+        let target = ExternalInterfaceStopTarget::DirectChild { pid };
+        self.state = ExternalInterfaceProcessState::Owned {
+            child,
+            target,
+            stop_phase: ExternalInterfaceStopPhase::Running,
+        };
+        write_control_diagnostic(format_args!("[external_interface] pid {pid}"));
         Ok(())
     }
 
-    fn stop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
+    fn stop(&mut self) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+        self.stop_with(kill_external_interface, wait_for_external_interface_exit)
+    }
+
+    fn stop_with<K, W>(
+        &mut self,
+        kill: K,
+        wait: W,
+    ) -> std::result::Result<(), ExternalInterfaceStopFailure>
+    where
+        K: FnOnce(
+            &mut Child,
+            ExternalInterfaceStopTarget,
+        ) -> std::result::Result<(), ExternalInterfaceStopFailure>,
+        W: FnOnce(
+            &mut Child,
+            ExternalInterfaceStopTarget,
+        ) -> std::result::Result<(), ExternalInterfaceStopFailure>,
+    {
+        let ExternalInterfaceProcessState::Owned {
+            child,
+            target,
+            stop_phase,
+        } = &mut self.state
+        else {
+            return Ok(());
         };
-        let pid = child.id();
-        eprintln!("[external_interface] killing pid {pid}");
-        let _ = child.kill();
-        // Best-effort wait; if the child won't die within 500ms (e.g., a
-        // ptrace'd debugger is eating SIGKILL), abandon the wait rather
-        // than blocking shutdown.
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => thread::sleep(Duration::from_millis(20)),
-                Err(_) => return,
+        if *stop_phase == ExternalInterfaceStopPhase::Running {
+            kill(child, *target)?;
+            *stop_phase = ExternalInterfaceStopPhase::KillIssued;
+        }
+        let result = wait(child, *target);
+        if result.is_ok() {
+            self.state = ExternalInterfaceProcessState::Idle;
+        }
+        result
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_external_interface(
+    child: &mut Child,
+    target: ExternalInterfaceStopTarget,
+) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+    let leader_exited =
+        child
+            .try_wait()
+            .map_err(|error| ExternalInterfaceStopFailure::Inspect {
+                target,
+                detail: error.to_string(),
+            })?;
+    if leader_exited.is_some() {
+        return Ok(());
+    }
+    write_control_diagnostic(format_args!("[external_interface] killing {target}"));
+    if let Err(kill_error) = kill_external_interface_target(child, target) {
+        return match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(ExternalInterfaceStopFailure::Kill {
+                target,
+                detail: kill_error.to_string(),
+            }),
+            Err(wait_error) => Err(ExternalInterfaceStopFailure::Inspect {
+                target,
+                detail: format!(
+                    "kill failed ({kill_error}); follow-up inspection failed ({wait_error})"
+                ),
+            }),
+        };
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn wait_for_external_interface_exit(
+    child: &mut Child,
+    target: ExternalInterfaceStopTarget,
+) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                return Err(ExternalInterfaceStopFailure::Wait {
+                    target,
+                    detail: error.to_string(),
+                });
             }
         }
-        eprintln!("[external_interface] pid {pid} did not exit within 500ms; abandoning");
+    }
+    Err(ExternalInterfaceStopFailure::Timeout { target })
+}
+
+#[cfg(unix)]
+fn kill_external_interface(
+    _child: &mut Child,
+    target: ExternalInterfaceStopTarget,
+) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+    write_control_diagnostic(format_args!("[external_interface] killing {target}"));
+    kill_external_interface_target(target).map_err(|error| ExternalInterfaceStopFailure::Kill {
+        target,
+        detail: error.to_string(),
+    })
+}
+
+#[cfg(unix)]
+fn wait_for_external_interface_exit(
+    child: &mut Child,
+    target: ExternalInterfaceStopTarget,
+) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut leader_exited = false;
+    while Instant::now() < deadline {
+        if !leader_exited {
+            leader_exited = child
+                .try_wait()
+                .map_err(|error| ExternalInterfaceStopFailure::Wait {
+                    target,
+                    detail: error.to_string(),
+                })?
+                .is_some();
+        }
+        let group_is_live = process_group_has_live_members(target).map_err(|error| {
+            ExternalInterfaceStopFailure::Wait {
+                target,
+                detail: error.to_string(),
+            }
+        })?;
+        if leader_exited && !group_is_live {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    Err(ExternalInterfaceStopFailure::Timeout { target })
+}
+
+#[cfg(not(unix))]
+fn kill_external_interface_target(
+    child: &mut Child,
+    target: ExternalInterfaceStopTarget,
+) -> std::io::Result<()> {
+    let ExternalInterfaceStopTarget::DirectChild { .. } = target;
+    child.kill()
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn kill_external_interface_target(target: ExternalInterfaceStopTarget) -> std::io::Result<()> {
+    let ExternalInterfaceStopTarget::ProcessGroup { pgid, .. } = target;
+    let pgid = libc::pid_t::try_from(pgid).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("process-group identifier is outside pid_t: {error}"),
+        )
+    })?;
+    let result = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error)
+}
+
+#[cfg(target_os = "linux")]
+fn process_group_has_live_members(target: ExternalInterfaceStopTarget) -> std::io::Result<bool> {
+    let ExternalInterfaceStopTarget::ProcessGroup { pgid, .. } = target;
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .iter()
+            .all(u8::is_ascii_digit)
+        {
+            continue;
+        }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let (state, process_group) = parse_linux_process_stat(&stat)?;
+        if process_group == pgid && !matches!(state, 'Z' | 'X') {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_linux_process_stat(stat: &str) -> std::io::Result<(char, u32)> {
+    let command_end = stat.rfind(')').ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Linux process stat lacks command terminator",
+        )
+    })?;
+    let mut fields = stat[command_end + 1..].split_whitespace();
+    let state = fields
+        .next()
+        .and_then(|field| field.chars().next())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Linux process stat lacks state",
+            )
+        })?;
+    let _parent = fields.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Linux process stat lacks parent pid",
+        )
+    })?;
+    let process_group = fields
+        .next()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Linux process stat lacks process group",
+            )
+        })?
+        .parse()
+        .map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Linux process stat has invalid process group: {error}"),
+            )
+        })?;
+    Ok((state, process_group))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+#[allow(unsafe_code)]
+fn process_group_has_live_members(target: ExternalInterfaceStopTarget) -> std::io::Result<bool> {
+    let ExternalInterfaceStopTarget::ProcessGroup { pgid, .. } = target;
+    let pgid = libc::pid_t::try_from(pgid).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("process-group identifier is outside pid_t: {error}"),
+        )
+    })?;
+    let result = unsafe { libc::kill(-pgid, 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
     }
 }
 
 impl Drop for ExternalInterfaceProcess {
     fn drop(&mut self) {
-        self.stop();
+        if let Err(failure) = self.stop() {
+            write_control_diagnostic(format_args!(
+                "[external_interface] shutdown failure during drop: {failure}"
+            ));
+        }
     }
 }
 
-/// Set `PR_SET_PDEATHSIG = SIGKILL` on the child via `pre_exec`, so the
-/// kernel reaps the child if the parent dies for any reason (SIGKILL,
-/// panic, OOM) — not just clean shutdown paths that run Drop.
+struct ExternalInterfaceLifecycle {
+    cancelled: bool,
+    process: Option<ExternalInterfaceProcess>,
+}
+
+#[derive(Clone)]
+struct ExternalInterfaceHandle {
+    lifecycle: Arc<Mutex<ExternalInterfaceLifecycle>>,
+}
+
+impl ExternalInterfaceHandle {
+    fn configured(command: Option<&str>) -> Self {
+        Self {
+            lifecycle: Arc::new(Mutex::new(ExternalInterfaceLifecycle {
+                cancelled: false,
+                process: command.map(ExternalInterfaceProcess::new),
+            })),
+        }
+    }
+
+    fn start(&self) -> std::result::Result<(), ExternalInterfaceStartFailure> {
+        self.start_with(ExternalInterfaceProcess::start)
+    }
+
+    fn start_with<F>(&self, start: F) -> std::result::Result<(), ExternalInterfaceStartFailure>
+    where
+        F: FnOnce(
+            &mut ExternalInterfaceProcess,
+        ) -> std::result::Result<(), ExternalInterfaceStartFailure>,
+    {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if lifecycle.cancelled {
+            return Err(ExternalInterfaceStartFailure::ShutdownRequested);
+        }
+        match lifecycle.process.as_mut() {
+            Some(process) => start(process),
+            None => Ok(()),
+        }
+    }
+
+    fn cancel(&self) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lifecycle.cancelled = true;
+        match lifecycle.process.as_mut() {
+            Some(process) => process.stop(),
+            None => Ok(()),
+        }
+    }
+}
+
+struct ExternalInterfaceOwner {
+    handle: ExternalInterfaceHandle,
+}
+
+impl ExternalInterfaceOwner {
+    fn new(command: Option<&str>) -> Self {
+        Self {
+            handle: ExternalInterfaceHandle::configured(command),
+        }
+    }
+
+    fn handle(&self) -> &ExternalInterfaceHandle {
+        &self.handle
+    }
+
+    fn start(&self) -> std::result::Result<(), ExternalInterfaceStartFailure> {
+        self.handle.start()
+    }
+
+    fn stop(&self) -> std::result::Result<(), ExternalInterfaceStopFailure> {
+        self.handle.cancel()
+    }
+}
+
+impl Drop for ExternalInterfaceOwner {
+    fn drop(&mut self) {
+        if let Err(failure) = self.stop() {
+            write_control_diagnostic(format_args!(
+                "[external_interface] owner cleanup failure: {failure}"
+            ));
+        }
+    }
+}
+
+fn write_control_diagnostic(arguments: std::fmt::Arguments<'_>) {
+    if let Err(error) = writeln!(std::io::stderr().lock(), "{arguments}") {
+        tracing::debug!(%error, "control diagnostic stream unavailable");
+    }
+}
+
+/// Set `PR_SET_PDEATHSIG = SIGKILL` on the direct child via `pre_exec`.
+/// Linux clears this setting in forked descendants, so this is a direct-child
+/// crash-path backstop, not a process-group or descendant cleanup proof.
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn install_pdeathsig(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
+    let expected_parent = unsafe { libc::getpid() };
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != expected_parent {
+                libc::raise(libc::SIGKILL);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "simulation parent exited before PR_SET_PDEATHSIG installation",
+                ));
             }
             Ok(())
         });
     }
-}
-
-// ── Trace log (streaming CSV of captured fields, one row per frame) ───────
-//
-// Activated by a `[debug_log]` section in the scenario config (path defaults to
-// `rumoca_trace.csv`, override with `path = ...`). Fields come from
-// `debug_log.capture`, evaluated
-// each frame. Writes through a BufWriter and flushes on Drop. Designed
-// for offline plotting — load into a notebook with pandas.read_csv.
-
-struct TraceLogger {
-    writer: BufWriter<File>,
-    fields: Vec<String>,
-    path: PathBuf,
-}
-
-impl TraceLogger {
-    fn open(path: PathBuf, fields: Vec<String>) -> Result<Self> {
-        let file =
-            File::create(&path).with_context(|| format!("Open trace log {}", path.display()))?;
-        let mut writer = BufWriter::new(file);
-        let header = fields.join(",");
-        writeln!(writer, "{header}")?;
-        eprintln!("  Trace log: {} ({} columns)", path.display(), fields.len());
-        Ok(Self {
-            writer,
-            fields,
-            path,
-        })
-    }
-
-    fn record(&mut self, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<()> {
-        let mut first = true;
-        for name in &self.fields {
-            if !first {
-                self.writer.write_all(b",")?;
-            }
-            first = false;
-            let v = resolve_trace_field(name, engine, rt)?;
-            write!(self.writer, "{v}")?;
-        }
-        self.writer.write_all(b"\n")?;
-        Ok(())
-    }
-}
-
-fn open_trace_logger(cfg: &SimulationConfig) -> Result<Option<TraceLogger>> {
-    let Some(dbg) = cfg.debug_log.as_ref() else {
-        return Ok(None);
-    };
-    // Default: drop `rumoca_trace.csv` in the cwd so you always have a log to
-    // share with no setup. Override with `path = "/path/other.csv"` under the
-    // scenario's [debug_log] config.
-    let logger = TraceLogger::open(PathBuf::from(dbg.path.clone()), dbg.capture.clone())?;
-    Ok(Some(logger))
-}
-
-impl Drop for TraceLogger {
-    fn drop(&mut self) {
-        let _ = self.writer.flush();
-        eprintln!("[trace] flushed to {}", self.path.display());
-    }
-}
-
-/// Resolve a `debug_log.capture` field to an f64 using the same prefix
-/// scheme as signal mapper: `model:`, `local:` (supports `.idx`),
-/// `runtime:frame_num|wall_ms|input_connected|model_time`. Missing
-fn resolve_trace_field(name: &str, engine: &InputEngine, rt: &RuntimeContext<'_>) -> Result<f64> {
-    if let Some(rest) = name.strip_prefix("model:") {
-        if rest == "time" {
-            return Ok(rt.model_time);
-        }
-        return (rt.model_get)(rest)?
-            .ok_or_else(|| anyhow::anyhow!("trace field model:{rest} did not resolve"));
-    }
-    if let Some(rest) = name.strip_prefix("local:") {
-        return engine
-            .get(rest)
-            .ok_or_else(|| anyhow::anyhow!("trace field local:{rest} did not resolve"));
-    }
-    if let Some(rest) = name.strip_prefix("runtime:") {
-        return match rest {
-            "frame_num" => Ok(rt.frame_num as f64),
-            "wall_ms" => Ok(rt.wall_ms),
-            "input_connected" => Ok(f64::from(u8::from(rt.input_connected))),
-            "model_time" => Ok(rt.model_time),
-            _ => Err(anyhow::anyhow!("unknown trace runtime field '{rest}'")),
-        };
-    }
-    Err(anyhow::anyhow!(
-        "trace field '{name}' must use model:, local:, or runtime:"
-    ))
 }
 
 // ── UDP config resolution ───────────────────────────────────────────────────
@@ -282,124 +634,8 @@ fn map_message_name(
         .map(str::to_owned)
 }
 
-#[derive(Deserialize)]
-struct ViewerInputCommand {
-    key: Option<ViewerKeyCommand>,
-    #[serde(default)]
-    quit: bool,
-}
-
-#[derive(Deserialize)]
-struct ViewerKeyCommand {
-    code: String,
-    key: Option<String>,
-    #[serde(default = "default_key_pressed")]
-    pressed: bool,
-    #[serde(default)]
-    shift: bool,
-    #[serde(default)]
-    ctrl: bool,
-    #[serde(default)]
-    alt: bool,
-}
-
-fn default_key_pressed() -> bool {
-    true
-}
-
-#[derive(Default)]
-struct ViewerInputDrain {
-    keys: Vec<KeyboardEvent>,
-    labels: Vec<String>,
-    quit: bool,
-}
-
-fn drain_viewer_input(
-    rx: &mpsc::Receiver<String>,
-    first_packet_timeout: Option<Duration>,
-    debug: bool,
-) -> ViewerInputDrain {
-    let mut drained = ViewerInputDrain::default();
-    let mut events = Vec::new();
-    if let Some(timeout) = first_packet_timeout
-        && let Ok(text) = rx.recv_timeout(timeout)
-    {
-        drain_viewer_command_text(text, &mut drained, &mut events);
-    }
-    while let Ok(text) = rx.try_recv() {
-        drain_viewer_command_text(text, &mut drained, &mut events);
-    }
-    if debug && !events.is_empty() {
-        eprintln!(
-            "\r[input] viewer keys: {}                    ",
-            drained.labels.join(", ")
-        );
-    }
-    drained.keys = events;
-    drained
-}
-
-fn drain_viewer_command_text(
-    text: String,
-    drained: &mut ViewerInputDrain,
-    events: &mut Vec<KeyboardEvent>,
-) {
-    let Ok(command) = serde_json::from_str::<ViewerInputCommand>(&text) else {
-        return;
-    };
-    if command.quit {
-        drained.quit = true;
-    }
-    if let Some(key) = command.key
-        && let Some(event) = browser_key_to_event(&key)
-    {
-        let suffix = if key.pressed { "" } else { " up" };
-        drained.labels.push(format!("{}{}", key.code, suffix));
-        events.push(event);
-    }
-}
-
-fn browser_key_to_event(key: &ViewerKeyCommand) -> Option<KeyboardEvent> {
-    let code = match key.code.as_str() {
-        "ArrowUp" => KeyCode::Up,
-        "ArrowDown" => KeyCode::Down,
-        "ArrowLeft" => KeyCode::Left,
-        "ArrowRight" => KeyCode::Right,
-        "Enter" => KeyCode::Enter,
-        "Tab" => KeyCode::Tab,
-        "Escape" => KeyCode::Esc,
-        "Backspace" => KeyCode::Backspace,
-        "Delete" => KeyCode::Delete,
-        "Space" => KeyCode::Char(' '),
-        code if code.starts_with("Key") && code.len() == 4 => {
-            KeyCode::Char(code.chars().nth(3)?.to_ascii_lowercase())
-        }
-        code if code.starts_with("Digit") && code.len() == 6 => KeyCode::Char(code.chars().nth(5)?),
-        _ => {
-            let key_text = key.key.as_deref()?;
-            if key_text.chars().count() == 1 {
-                KeyCode::Char(key_text.chars().next()?.to_ascii_lowercase())
-            } else {
-                return None;
-            }
-        }
-    };
-    let mut modifiers = KeyModifiers::NONE;
-    if key.shift {
-        modifiers |= KeyModifiers::SHIFT;
-    }
-    if key.ctrl {
-        modifiers |= KeyModifiers::CONTROL;
-    }
-    if key.alt {
-        modifiers |= KeyModifiers::ALT;
-    }
-    Some(if key.pressed {
-        KeyboardEvent::holdable_press(code, modifiers)
-    } else {
-        KeyboardEvent::released(code, modifiers)
-    })
-}
+mod viewer_input;
+use viewer_input::{ViewerInputDrain, drain_viewer_input};
 
 // ── Main loop ──────────────────────────────────────────────────────────────
 
@@ -422,11 +658,12 @@ struct FrameCtx<'a> {
     cfg: &'a SimulationConfig,
     fb: Option<&'a FbTransport>,
     mapper: &'a SignalMapper,
-    viewer_input_rx: &'a mpsc::Receiver<String>,
-    state_tx: &'a mpsc::Sender<String>,
+    payload_observation_lookup_names: &'a [String],
+    viewer_input_rx: &'a mpsc::Receiver<ViewerControlCommand>,
+    websocket: &'a RunningBroadcastServer,
     realtime: &'a Arc<AtomicBool>,
     quit: &'a Arc<AtomicBool>,
-    external_interface: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
+    external_interface: &'a ExternalInterfaceHandle,
     debug: bool,
     dt: f64,
     mode: SimPacingMode,
@@ -440,11 +677,29 @@ struct FrameState {
     pkt_count: u64,
     send_count: u64,
     frame_num: u64,
+    websocket_peer_failures: u64,
     last_poll: Instant,
     trace: Option<TraceLogger>,
     lockstep_schedule_initialized: bool,
     next_lockstep_send_time: f64,
     next_lockstep_control_time: f64,
+}
+
+impl FrameState {
+    fn new(trace: Option<TraceLogger>) -> Self {
+        Self {
+            recv_buf: [0u8; 512],
+            pkt_count: 0,
+            send_count: 0,
+            frame_num: 0,
+            websocket_peer_failures: 0,
+            last_poll: Instant::now(),
+            trace,
+            lockstep_schedule_initialized: false,
+            next_lockstep_send_time: 0.0,
+            next_lockstep_control_time: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -472,32 +727,195 @@ pub struct SimLoopArgs<'a> {
 }
 
 struct SessionFrameSnapshot {
-    values: Option<indexmap::IndexMap<String, f64>>,
+    values: indexmap::IndexMap<String, f64>,
 }
 
 impl SessionFrameSnapshot {
-    fn new(session: &impl SimulationSessionApi, names: &[String]) -> Result<Self> {
-        Ok(Self {
-            values: session.values_for(names)?,
-        })
+    fn new(
+        session: &impl SimulationSessionApi,
+        names: &[String],
+        purpose: &'static str,
+    ) -> Result<Self> {
+        let values = session.values_for(names)?;
+        let missing: Vec<&str> = names
+            .iter()
+            .filter(|name| !values.contains_key(name.as_str()))
+            .map(String::as_str)
+            .collect();
+        let unexpected: Vec<&str> = values
+            .keys()
+            .filter(|name| !names.iter().any(|requested| requested == *name))
+            .map(String::as_str)
+            .collect();
+        if values.len() != names.len() || !missing.is_empty() || !unexpected.is_empty() {
+            anyhow::bail!(
+                "{purpose} session batch read did not exactly cover the {} requested names: \
+                 received {}, missing {missing:?}, unexpected {unexpected:?}",
+                names.len(),
+                values.len()
+            );
+        }
+        Ok(Self { values })
     }
 
-    fn get(&self, session: &impl SimulationSessionApi, name: &str) -> Result<Option<f64>> {
-        if let Some(value) = self
-            .values
-            .as_ref()
-            .and_then(|values| values.get(name).copied())
-        {
-            return Ok(Some(value));
-        }
-        session.get(name).map_err(Into::into)
+    fn get(&self, name: &str) -> Result<Option<f64>> {
+        Ok(self.values.get(name).copied())
     }
+}
+
+fn payload_observation_lookup_names<'a>(
+    mapper: &SignalMapper,
+    trace_fields: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut names: BTreeSet<String> = mapper
+        .payload_observation_lookup_names()
+        .iter()
+        .cloned()
+        .collect();
+    names.extend(trace_fields.into_iter().filter_map(|field| {
+        field
+            .strip_prefix("model:")
+            .filter(|name| *name != "time")
+            .map(str::to_owned)
+    }));
+    names.into_iter().collect()
 }
 
 enum FrameControl {
     Continue,
     Break,
+    WebSocketTerminated,
 }
+
+enum ScheduledLoopCompletion {
+    Complete,
+    WebSocketTerminated,
+}
+
+enum ScheduledWebSocketPrimary {
+    SetupFailure(anyhow::Error),
+    StartupFailure(BroadcastServerTerminalFailures),
+    Scoped {
+        loop_result: Result<ScheduledLoopCompletion>,
+        shutdown: BroadcastServerShutdown,
+    },
+}
+
+#[derive(Debug)]
+struct ScheduledWebSocketRunFailure {
+    setup_failure: Option<anyhow::Error>,
+    loop_failure: Option<anyhow::Error>,
+    peer_observation_failure: Option<PeerFailureObservationFailure>,
+    signal_shutdown_failure: Option<SignalControllerShutdownFailure>,
+    external_cleanup_failure: Option<ExternalInterfaceStopFailure>,
+    termination_without_failure: bool,
+    terminal_failures: BroadcastServerTerminalFailures,
+}
+
+impl std::fmt::Display for ScheduledWebSocketRunFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut separator = "";
+        if let Some(failure) = &self.setup_failure {
+            write!(formatter, "scheduled setup: {failure}")?;
+            separator = "; ";
+        }
+        if let Some(failure) = &self.loop_failure {
+            write!(formatter, "scheduled loop: {failure}")?;
+            separator = "; ";
+        }
+        if let Some(failure) = &self.peer_observation_failure {
+            write!(formatter, "{separator}peer-failure observer: {failure}")?;
+            separator = "; ";
+        }
+        if let Some(failure) = &self.signal_shutdown_failure {
+            write!(
+                formatter,
+                "{separator}signal-controller shutdown: {failure}"
+            )?;
+            separator = "; ";
+        }
+        if let Some(failure) = &self.external_cleanup_failure {
+            write!(
+                formatter,
+                "{separator}external-interface cleanup: {failure}"
+            )?;
+            separator = "; ";
+        }
+        if self.termination_without_failure {
+            write!(
+                formatter,
+                "{separator}WebSocket startup/termination had no typed terminal cause"
+            )?;
+            separator = "; ";
+        }
+        if !self.terminal_failures.is_empty() {
+            write!(
+                formatter,
+                "{separator}WebSocket shutdown: {}",
+                self.terminal_failures
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ScheduledWebSocketRunFailure {}
+
+struct ScheduledSimulationPanic {
+    original: Box<dyn std::any::Any + Send>,
+    signal_shutdown_failure: Option<SignalControllerShutdownFailure>,
+    external_cleanup_failure: Option<ExternalInterfaceStopFailure>,
+}
+
+impl std::fmt::Debug for ScheduledSimulationPanic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScheduledSimulationPanic")
+            .field("original_type_id", &(*self.original).type_id())
+            .field("signal_shutdown_failure", &self.signal_shutdown_failure)
+            .field("external_cleanup_failure", &self.external_cleanup_failure)
+            .finish_non_exhaustive()
+    }
+}
+
+fn resume_scheduled_panic(
+    original: Box<dyn std::any::Any + Send>,
+    signal_shutdown_failure: Option<SignalControllerShutdownFailure>,
+    external_cleanup_failure: Option<ExternalInterfaceStopFailure>,
+) -> ! {
+    std::panic::panic_any(ScheduledSimulationPanic {
+        original,
+        signal_shutdown_failure,
+        external_cleanup_failure,
+    })
+}
+
+#[derive(Debug)]
+enum PeerFailureObservationFailureKind {
+    CounterOverflow,
+}
+
+#[derive(Debug)]
+struct PeerFailureObservationFailure {
+    kind: PeerFailureObservationFailureKind,
+    failed: PeerFailureRecord,
+    unobserved: Box<[PeerFailureRecord]>,
+}
+
+impl std::fmt::Display for PeerFailureObservationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{:?} while recording peer={} kind={:?}; {} later peer records retained",
+            self.kind,
+            self.failed.peer(),
+            self.failed.classification(),
+            self.unobserved.len()
+        )
+    }
+}
+
+impl std::error::Error for PeerFailureObservationFailure {}
 
 /// Log the selected schedule. In standalone mode (no `[schema]`/`[receive]`/
 /// `[send]` in config) the UDP socket and codecs are not created and no
@@ -539,6 +957,99 @@ fn log_pacing_status(
     }
 }
 
+struct ScheduledSimulationScope<'a> {
+    cfg: &'a SimulationConfig,
+    http_port: u16,
+    debug: bool,
+    websocket_server: BroadcastServer,
+    external_interface: &'a ExternalInterfaceOwner,
+    quit: &'a Arc<AtomicBool>,
+    realtime: &'a Arc<AtomicBool>,
+    mode: SimPacingMode,
+    steps_per_packet: usize,
+    lockstep_schedule: Option<LockstepSchedule>,
+}
+
+impl ScheduledSimulationScope<'_> {
+    fn run(
+        self,
+        session: &mut impl SimulationSessionApi,
+        state: &mut FrameState,
+    ) -> Result<ScheduledWebSocketPrimary> {
+        let fb = setup_fb_transport(self.cfg)?;
+        let input_cfg = self
+            .cfg
+            .input
+            .as_ref()
+            .context("Config missing [input] section")?;
+        let signals_cfg = self
+            .cfg
+            .signals
+            .as_ref()
+            .context("Config missing [signals] section")?;
+        let mut engine = InputEngine::new(input_cfg, &self.cfg.locals, &self.cfg.derive)
+            .context("Build input engine")?;
+        let mut input_runtime =
+            Devices::new(input_cfg.mode.as_str()).context("Initialize input devices")?;
+        engine.set_mode(input_runtime.mode());
+        let mapper =
+            SignalMapper::new(signals_cfg, &self.cfg.locals).context("Compile signal mapper")?;
+        let payload_observation_lookup_names = payload_observation_lookup_names(
+            &mapper,
+            state
+                .trace
+                .as_ref()
+                .into_iter()
+                .flat_map(TraceLogger::field_names),
+        );
+        let (viewer_input_tx, viewer_input_rx) =
+            mpsc::sync_channel::<ViewerControlCommand>(VIEWER_CONTROL_QUEUE_CAPACITY);
+        let scoped_run = match self
+            .websocket_server
+            .run_scoped(viewer_input_tx, |websocket| {
+                self.external_interface.start()?;
+                log_pacing_status(
+                    self.mode,
+                    self.lockstep_schedule,
+                    self.steps_per_packet,
+                    self.cfg.sim.dt,
+                );
+                status_line("");
+                status_line("Ready. Simulation running.");
+                status_line(&format!(
+                    "  Open http://localhost:{} in a browser.",
+                    self.http_port
+                ));
+                notify_editor_viewer_ready(self.http_port);
+                let ctx = FrameCtx {
+                    cfg: self.cfg,
+                    fb: fb.as_ref(),
+                    mapper: &mapper,
+                    payload_observation_lookup_names: &payload_observation_lookup_names,
+                    viewer_input_rx: &viewer_input_rx,
+                    websocket,
+                    realtime: self.realtime,
+                    quit: self.quit,
+                    external_interface: self.external_interface.handle(),
+                    debug: self.debug,
+                    dt: self.cfg.sim.dt,
+                    mode: self.mode,
+                    steps_per_packet: self.steps_per_packet,
+                    lockstep_schedule: self.lockstep_schedule,
+                };
+                run_frames(&ctx, state, session, &mut engine, &mut input_runtime)
+            }) {
+            Ok(scoped_run) => scoped_run,
+            Err(failures) => return Ok(ScheduledWebSocketPrimary::StartupFailure(failures)),
+        };
+        let (loop_result, shutdown) = scoped_run.into_parts();
+        Ok(ScheduledWebSocketPrimary::Scoped {
+            loop_result,
+            shutdown,
+        })
+    }
+}
+
 pub(crate) fn run_sim_loop<S>(session: &mut S, args: SimLoopArgs<'_>) -> Result<()>
 where
     S: SimulationSessionApi,
@@ -549,115 +1060,145 @@ where
         ws_port,
         debug,
     } = args;
+    let trace = open_trace_logger(cfg)?;
+    let websocket_server = BroadcastServer::bind(ws_port).context("Bind WebSocket server")?;
 
-    // ── Signal handler FIRST, before any other thread or child spawns. ───
-    // signal_hook masks the target signals on threads spawned after it, so
-    // installing it ahead of the input engine / WS thread / external child
-    // ensures SIGINT/SIGTERM funnel to our dedicated signal thread — not a
-    // gilrs worker, not zephyr's pgrp.
-    let external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>> =
-        Arc::new(Mutex::new(None));
+    // Install the owned signal controller before any input, WebSocket, or
+    // external-interface worker can start. Setup below is captured so every
+    // returned path explicitly closes and joins this controller.
+    let external_interface = ExternalInterfaceOwner::new(
+        cfg.external_interface
+            .as_ref()
+            .map(|interface| interface.command.as_str()),
+    );
     let quit = Arc::new(AtomicBool::new(false));
-    spawn_sigint_handler(Arc::clone(&external_interface), Arc::clone(&quit));
+    let mut signal_controller =
+        SignalController::install(external_interface.handle().clone(), Arc::clone(&quit))
+            .context("Install owned simulation signal controller")?;
 
-    let fb = setup_fb_transport(cfg)?;
-
-    // ── Input engine + signal mapper (config-driven) ──────────────────────
-    let input_cfg = cfg
-        .input
-        .as_ref()
-        .context("Config missing [input] section")?;
-    let signals_cfg = cfg
-        .signals
-        .as_ref()
-        .context("Config missing [signals] section")?;
-    let mut engine =
-        InputEngine::new(input_cfg, &cfg.locals, &cfg.derive).context("Build input engine")?;
-    let mut input_runtime =
-        Devices::new(input_cfg.mode.as_str()).context("Initialize input devices")?;
-    engine.set_mode(input_runtime.mode());
-    let mapper = SignalMapper::new(signals_cfg, &cfg.locals).context("Compile signal mapper")?;
-
-    // ── External interface + WS thread ────────────────────────────────────
-    start_external_interface_into(cfg, &external_interface)?;
-    let (state_tx, state_rx) = mpsc::channel::<String>();
-    let (viewer_input_tx, viewer_input_rx) = mpsc::channel::<String>();
     let mode = cfg.effective_pacing_mode();
     let realtime = Arc::new(AtomicBool::new(matches!(mode, SimPacingMode::Realtime)));
-    let realtime_ws = Arc::clone(&realtime);
-    let quit_ws = Arc::clone(&quit);
-    let (ws_ready_tx, ws_ready_rx) = mpsc::channel();
-    thread::spawn(move || {
-        run_broadcast_server(
-            ws_port,
-            state_rx,
-            Some(viewer_input_tx),
-            Some(ws_ready_tx),
-            realtime_ws,
-            quit_ws,
-        )
-    });
-    let ws_ready = ws_ready_rx
-        .recv()
-        .context("WebSocket server exited before reporting readiness")?;
-    if let Err(error) = ws_ready {
-        anyhow::bail!(error);
-    }
-
     let steps_per_packet = cfg.sim.steps_per_packet;
     let lockstep_schedule = cfg
         .lockstep
         .as_ref()
         .map(|lockstep| LockstepSchedule::from_config(lockstep, cfg.sim.dt));
-    log_pacing_status(mode, lockstep_schedule, steps_per_packet, cfg.sim.dt);
-    status_line("");
-    status_line("Ready. Simulation running.");
-    status_line(&format!(
-        "  Open http://localhost:{http_port} in a browser."
-    ));
-    notify_editor_viewer_ready(http_port);
-
-    // ── Loop ──────────────────────────────────────────────────────────────
-    let ctx = FrameCtx {
+    let mut state = FrameState::new(trace);
+    let scope = ScheduledSimulationScope {
         cfg,
-        fb: fb.as_ref(),
-        mapper: &mapper,
-        viewer_input_rx: &viewer_input_rx,
-        state_tx: &state_tx,
-        realtime: &realtime,
-        quit: &quit,
-        external_interface: &external_interface,
+        http_port,
         debug,
-        dt: cfg.sim.dt,
+        websocket_server,
+        external_interface: &external_interface,
+        quit: &quit,
+        realtime: &realtime,
         mode,
         steps_per_packet,
         lockstep_schedule,
     };
-    let trace = open_trace_logger(cfg)?;
-    let mut state = FrameState {
-        recv_buf: [0u8; 512],
-        pkt_count: 0,
-        send_count: 0,
-        frame_num: 0,
-        last_poll: Instant::now(),
-        trace,
-        lockstep_schedule_initialized: false,
-        next_lockstep_send_time: 0.0,
-        next_lockstep_control_time: 0.0,
-    };
-    while let FrameControl::Continue =
-        ctx.run_one_frame(&mut state, session, &mut engine, &mut input_runtime)?
-    {}
+    let primary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        scope.run(session, &mut state)
+    }));
 
-    // Explicit stop: the signal-handler thread still holds an Arc clone of
-    // `external_interface`, so Drop would not fire on normal exit and a child
-    // process could orphan. Kill the child here, deterministically.
-    if let Ok(mut ap) = external_interface.lock()
-        && let Some(proc) = ap.as_mut()
-    {
-        proc.stop();
+    let signal_shutdown_failure = signal_controller.shutdown().err();
+    let external_cleanup_failure = external_interface.stop().err();
+    match primary {
+        Ok(primary) => complete_websocket_run(
+            primary.unwrap_or_else(ScheduledWebSocketPrimary::SetupFailure),
+            signal_shutdown_failure,
+            external_cleanup_failure,
+            &mut state,
+        ),
+        Err(original) => {
+            resume_scheduled_panic(original, signal_shutdown_failure, external_cleanup_failure)
+        }
     }
-    Ok(())
+}
+
+fn run_frames(
+    ctx: &FrameCtx<'_>,
+    state: &mut FrameState,
+    session: &mut impl SimulationSessionApi,
+    engine: &mut InputEngine,
+    input_runtime: &mut Devices,
+) -> Result<ScheduledLoopCompletion> {
+    loop {
+        match ctx.run_one_frame(state, session, engine, input_runtime)? {
+            FrameControl::Continue => {}
+            FrameControl::Break => return Ok(ScheduledLoopCompletion::Complete),
+            FrameControl::WebSocketTerminated => {
+                return Ok(ScheduledLoopCompletion::WebSocketTerminated);
+            }
+        }
+    }
+}
+
+fn complete_websocket_run(
+    primary: ScheduledWebSocketPrimary,
+    signal_shutdown_failure: Option<SignalControllerShutdownFailure>,
+    external_cleanup_failure: Option<ExternalInterfaceStopFailure>,
+    state: &mut FrameState,
+) -> Result<()> {
+    let (
+        setup_failure,
+        loop_failure,
+        peer_failures,
+        terminal_failures,
+        termination_without_failure,
+    ) = match primary {
+        ScheduledWebSocketPrimary::SetupFailure(failure) => (
+            Some(failure),
+            None,
+            Box::default(),
+            BroadcastServerTerminalFailures::default(),
+            false,
+        ),
+        ScheduledWebSocketPrimary::StartupFailure(terminal_failures) => {
+            let missing = terminal_failures.is_empty();
+            (None, None, Box::default(), terminal_failures, missing)
+        }
+        ScheduledWebSocketPrimary::Scoped {
+            loop_result,
+            shutdown,
+        } => {
+            let (peer_failures, terminal_failures) = shutdown.into_parts();
+            let (loop_failure, missing) = match loop_result {
+                Ok(ScheduledLoopCompletion::Complete) => (None, false),
+                Ok(ScheduledLoopCompletion::WebSocketTerminated) => {
+                    (None, terminal_failures.is_empty())
+                }
+                Err(failure) => (Some(failure), false),
+            };
+            (
+                None,
+                loop_failure,
+                peer_failures,
+                terminal_failures,
+                missing,
+            )
+        }
+    };
+    let peer_observation_failure = observe_joined_peer_failures(state, peer_failures).err();
+    if setup_failure.is_none()
+        && loop_failure.is_none()
+        && peer_observation_failure.is_none()
+        && signal_shutdown_failure.is_none()
+        && external_cleanup_failure.is_none()
+        && !termination_without_failure
+        && terminal_failures.is_empty()
+    {
+        return Ok(());
+    }
+    Err(ScheduledWebSocketRunFailure {
+        setup_failure,
+        loop_failure,
+        peer_observation_failure,
+        signal_shutdown_failure,
+        external_cleanup_failure,
+        termination_without_failure,
+        terminal_failures,
+    }
+    .into())
 }
 
 /// Emit a machine-parseable readiness marker on stderr once the HTTP server is
@@ -670,7 +1211,7 @@ fn notify_editor_viewer_ready(http_port: u16) {
 }
 
 fn status_line(message: &str) {
-    let _ = write!(std::io::stderr(), "{message}\r\n");
+    let _status_result = write!(std::io::stderr(), "{message}\r\n");
 }
 
 fn setup_fb_transport(cfg: &SimulationConfig) -> Result<Option<FbTransport>> {
@@ -759,6 +1300,9 @@ impl FrameCtx<'_> {
         engine: &mut InputEngine,
         input_runtime: &mut Devices,
     ) -> Result<FrameControl> {
+        if let FrameControl::WebSocketTerminated = self.observe_websocket_events(state)? {
+            return Ok(FrameControl::WebSocketTerminated);
+        }
         let frame_start = Instant::now();
 
         let first_packet_timeout =
@@ -771,6 +1315,10 @@ impl FrameCtx<'_> {
             drain_viewer_input(self.viewer_input_rx, first_packet_timeout, self.debug);
         let viewer_packet = !viewer_input.keys.is_empty();
 
+        if let Some(enabled) = viewer_input.realtime {
+            self.realtime.store(enabled, Ordering::Release);
+            eprintln!("[sim] realtime: {enabled}");
+        }
         if viewer_input.quit {
             self.quit.store(true, Ordering::Relaxed);
         }
@@ -916,17 +1464,25 @@ impl FrameCtx<'_> {
     ) -> Result<()> {
         let wall_ms = wall_ms_since_unix_epoch()?;
         let model_time = session.time();
-        let model_get = |name: &str| session.get(name).map_err(Into::into);
-        let rt = RuntimeContext {
-            frame_num: state.frame_num,
-            wall_ms,
-            input_connected: input_runtime.is_connected(),
-            input_mode: input_runtime.mode(),
-            input_message: engine.last_message(),
-            model_time,
-            model_get: &model_get,
+        let model_inputs = {
+            let snapshot = SessionFrameSnapshot::new(
+                session,
+                self.mapper.model_input_lookup_names(),
+                "pre-input",
+            )?;
+            let model_get = |name: &str| snapshot.get(name);
+            let rt = RuntimeContext {
+                frame_num: state.frame_num,
+                wall_ms,
+                input_connected: input_runtime.is_connected(),
+                input_mode: input_runtime.mode(),
+                input_message: engine.last_message(),
+                model_time,
+                model_get: &model_get,
+            };
+            self.mapper.build_model_inputs(engine, &rt)?
         };
-        for (name, val) in self.mapper.build_model_inputs(engine, &rt)? {
+        for (name, val) in model_inputs {
             session
                 .set_input(&name, val)
                 .with_context(|| format!("set session input '{name}'"))?;
@@ -946,8 +1502,12 @@ impl FrameCtx<'_> {
         let wall_ms = wall_ms_since_unix_epoch()?;
         let (send_frame, json) = {
             let model_time = session.time();
-            let snapshot = SessionFrameSnapshot::new(session, self.mapper.model_lookup_names())?;
-            let model_get = |name: &str| snapshot.get(session, name);
+            let snapshot = SessionFrameSnapshot::new(
+                session,
+                self.payload_observation_lookup_names,
+                "post-advance payload",
+            )?;
+            let model_get = |name: &str| snapshot.get(name);
             let rt = RuntimeContext {
                 frame_num: state.frame_num,
                 wall_ms,
@@ -970,7 +1530,7 @@ impl FrameCtx<'_> {
         if let (Some(fb), Some(frame)) = (self.fb, send_frame) {
             let bytes = fb.pack.pack(&frame);
             if let Some(udp) = &fb.udp {
-                udp.send(&bytes);
+                udp.send(&bytes)?;
             }
             if let (Some(zenoh), Some(message)) = (&fb.zenoh, &fb.send_publish) {
                 zenoh.publish(message, &bytes)?;
@@ -978,7 +1538,7 @@ impl FrameCtx<'_> {
             state.send_count += 1;
         }
         let json = self.with_runtime_transport_fields(json, state, session.time())?;
-        let _ = self.state_tx.send(json);
+        self.websocket.publish_state(json)?;
         Ok(())
     }
 
@@ -995,6 +1555,11 @@ impl FrameCtx<'_> {
             .context("viewer JSON root must be an object")?;
         insert_u64(obj, "runtime_tx_count", state.send_count);
         insert_u64(obj, "runtime_rx_count", state.pkt_count);
+        insert_u64(
+            obj,
+            "runtime_ws_peer_failure_count",
+            state.websocket_peer_failures,
+        );
         if model_time > 0.0 {
             obj.insert(
                 "runtime_tx_actual_hz".to_string(),
@@ -1016,6 +1581,20 @@ impl FrameCtx<'_> {
             );
         }
         Ok(value.to_string())
+    }
+
+    fn observe_websocket_events(&self, state: &mut FrameState) -> Result<FrameControl> {
+        loop {
+            match self.websocket.try_next_event()? {
+                Some(BroadcastServerEvent::PeerFailure(record)) => {
+                    observe_peer_failure(state, record)?;
+                }
+                Some(BroadcastServerEvent::TerminalFailure) => {
+                    return Ok(FrameControl::WebSocketTerminated);
+                }
+                None => return Ok(FrameControl::Continue),
+            }
+        }
     }
 
     fn emit_status(&self, state: &FrameState, session: &impl SimulationSessionApi) {
@@ -1055,7 +1634,7 @@ impl FrameCtx<'_> {
         let Some(udp) = &fb.udp else {
             return Ok(false);
         };
-        let Some(n) = udp.recv_blocking(&mut state.recv_buf) else {
+        let Some(n) = udp.recv_blocking(&mut state.recv_buf)? else {
             return Ok(false);
         };
         state.pkt_count += 1;
@@ -1131,12 +1710,59 @@ impl FrameCtx<'_> {
                 return;
             }
             error = apply_fb_datagram(fb, datagram, session, engine).err();
-        });
+        })?;
         if let Some(error) = error {
             return Err(error);
         }
         Ok(())
     }
+}
+
+fn observe_joined_peer_failures(
+    state: &mut FrameState,
+    peer_failures: Box<[PeerFailureRecord]>,
+) -> std::result::Result<(), PeerFailureObservationFailure> {
+    let mut records = Vec::from(peer_failures).into_iter();
+    while let Some(record) = records.next() {
+        if let Err(mut failure) = observe_peer_failure(state, record) {
+            failure.unobserved = records.collect::<Vec<_>>().into_boxed_slice();
+            return Err(failure);
+        }
+    }
+    Ok(())
+}
+
+fn observe_peer_failure(
+    state: &mut FrameState,
+    record: PeerFailureRecord,
+) -> std::result::Result<(), PeerFailureObservationFailure> {
+    let next_count = match next_peer_failure_count(state.websocket_peer_failures) {
+        Ok(next_count) => next_count,
+        Err(kind) => {
+            return Err(PeerFailureObservationFailure {
+                kind,
+                failed: record,
+                unobserved: Box::default(),
+            });
+        }
+    };
+    state.websocket_peer_failures = next_count;
+    eprintln!(
+        "[WS] isolated peer failure #{}: peer={} kind={:?} detail={}",
+        state.websocket_peer_failures,
+        record.peer(),
+        record.classification(),
+        record.detail()
+    );
+    Ok(())
+}
+
+fn next_peer_failure_count(
+    current: u64,
+) -> std::result::Result<u64, PeerFailureObservationFailureKind> {
+    current
+        .checked_add(1)
+        .ok_or(PeerFailureObservationFailureKind::CounterOverflow)
 }
 
 /// Drain the Zenoh subscribe key, applying each datagram to the session. Split
@@ -1163,82 +1789,6 @@ fn drain_zenoh_subscribe(
         return Err(error);
     }
     Ok(())
-}
-
-fn start_external_interface_into(
-    cfg: &SimulationConfig,
-    external_interface: &Arc<Mutex<Option<ExternalInterfaceProcess>>>,
-) -> Result<()> {
-    if let Some(interface_cfg) = &cfg.external_interface {
-        let mut ap = ExternalInterfaceProcess::new(&interface_cfg.command);
-        ap.start()?;
-        *external_interface
-            .lock()
-            .map_err(|_| anyhow::anyhow!("external-interface lock poisoned"))? = Some(ap);
-    }
-    Ok(())
-}
-
-/// Set up a robust shutdown path for SIGINT/SIGTERM:
-/// - 1st signal: clean shutdown (kill external interface with timeout, disable raw
-///   mode, ask the main loop to exit)
-/// - 2nd signal: hard exit 130 (skip cleanup)
-///
-/// Uses `signal_hook::iterator::Signals` — a blocking iterator that wakes
-/// exactly when a signal arrives. No polling, no race windows. Unix-only;
-/// on Windows the std runtime's default Ctrl-C handler is used.
-#[cfg(not(unix))]
-fn spawn_sigint_handler(
-    _external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>,
-    _quit: Arc<AtomicBool>,
-) {
-}
-
-#[cfg(unix)]
-fn spawn_sigint_handler(
-    external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>,
-    quit: Arc<AtomicBool>,
-) {
-    use signal_hook::consts::{SIGINT, SIGTERM};
-    use signal_hook::iterator::Signals;
-
-    let mut signals = match Signals::new([SIGINT, SIGTERM]) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Warning: could not install signal handler: {e}");
-            return;
-        }
-    };
-    eprintln!("  Shutdown: Ctrl-C once for clean exit; twice to force quit.");
-
-    thread::spawn(move || {
-        let mut presses: u32 = 0;
-        for sig in signals.forever() {
-            presses += 1;
-            eprintln!("\r[sim] signal {sig} received (press {presses})                    \r");
-            if presses == 1 {
-                eprintln!("[sim] shutdown requested — press Ctrl-C again to force quit");
-                quit.store(true, Ordering::Relaxed);
-                spawn_cleanup_thread(Arc::clone(&external_interface));
-            } else {
-                eprintln!("[sim] force quit");
-                devices::disable_terminal_raw_mode();
-                std::process::exit(130);
-            }
-        }
-    });
-}
-
-#[cfg(unix)]
-fn spawn_cleanup_thread(external_interface: Arc<Mutex<Option<ExternalInterfaceProcess>>>) {
-    thread::spawn(move || {
-        if let Ok(mut ap) = external_interface.lock()
-            && let Some(proc) = ap.as_mut()
-        {
-            proc.stop();
-        }
-        devices::disable_terminal_raw_mode();
-    });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -1283,7 +1833,7 @@ fn apply_received(
 }
 
 struct ResetRuntime<'a> {
-    external_handle: &'a Arc<Mutex<Option<ExternalInterfaceProcess>>>,
+    external_handle: &'a ExternalInterfaceHandle,
 }
 
 fn handle_reset<S>(
@@ -1299,17 +1849,16 @@ where
     if reset_cfg.reset_locals {
         engine.reset();
     }
-    if reset_cfg.restart_external_interface
-        && let Ok(mut ap) = runtime.external_handle.lock()
-        && let Some(proc) = ap.as_mut()
-        && let Err(e) = proc.start()
-    {
-        eprintln!("[reset] external-interface restart failed: {e}");
+    if reset_cfg.restart_external_interface {
+        runtime
+            .external_handle
+            .start()
+            .context("reset: external-interface restart failed")?;
     }
     if reset_cfg.reset_session {
         let reset_time = session.time();
         session
-            .reset(reset_time)
+            .retime(reset_time)
             .context("reset: session reset failed")?;
         eprintln!("[reset] session reset");
     }
@@ -1350,7 +1899,6 @@ fn advance_session_with_max_dt(
         } else {
             session.time() + sub_dt
         };
-        session.ensure_end_time(sub_target);
         if let Err(e) = session.advance_to(sub_target) {
             eprintln!(
                 "\r[sim] advance {}/{n_steps} failed (sub_dt={sub_dt:.4}): {e}",
@@ -1370,118 +1918,4 @@ fn advance_session_with_max_dt(
 // HTTP viewer server lives in rumoca-sim::web.
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct HorizonSession {
-        time: f64,
-        end_time: f64,
-    }
-
-    impl SimulationSessionApi for HorizonSession {
-        type Error = std::convert::Infallible;
-
-        fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-            self.time = t_start;
-            Ok(())
-        }
-
-        fn set_input(&mut self, _name: &str, _value: f64) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn ensure_end_time(&mut self, target_time: f64) {
-            self.end_time = self.end_time.max(target_time);
-        }
-
-        fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
-            self.time = target_time.min(self.end_time);
-            Ok(())
-        }
-
-        fn time(&self) -> f64 {
-            self.time
-        }
-
-        fn get(&self, _name: &str) -> Result<Option<f64>, Self::Error> {
-            Ok(None)
-        }
-    }
-
-    #[test]
-    fn scheduled_advance_extends_past_initial_end_time() {
-        let mut session = HorizonSession {
-            time: 0.0,
-            end_time: 0.05,
-        };
-
-        advance_session_to(&mut session, 0.1).expect("live session should advance");
-
-        assert!((session.time - 0.1).abs() <= f64::EPSILON);
-        assert!(session.end_time >= 0.1);
-    }
-
-    fn browser_key(code: &str, key: &str) -> ViewerKeyCommand {
-        ViewerKeyCommand {
-            code: code.to_string(),
-            key: Some(key.to_string()),
-            pressed: true,
-            shift: false,
-            ctrl: false,
-            alt: false,
-        }
-    }
-
-    #[test]
-    fn browser_arrow_key_maps_to_keyboard_event() {
-        let event = browser_key_to_event(&browser_key("ArrowUp", "ArrowUp")).unwrap();
-        assert_eq!(event.code, KeyCode::Up);
-        assert_eq!(event.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn browser_letter_key_maps_to_lowercase_keyboard_event() {
-        let event = browser_key_to_event(&browser_key("KeyW", "W")).unwrap();
-        assert_eq!(event.code, KeyCode::Char('w'));
-        assert_eq!(event.modifiers, KeyModifiers::NONE);
-    }
-
-    #[test]
-    fn browser_space_key_maps_to_space_keyboard_event() {
-        let event = browser_key_to_event(&browser_key("Space", " ")).unwrap();
-        assert_eq!(event.code, KeyCode::Char(' '));
-    }
-
-    #[test]
-    fn viewer_input_drain_preserves_keys_before_quit() {
-        let (tx, rx) = mpsc::channel();
-        tx.send(
-            r#"{"key":{"code":"Space","key":" ","shift":false,"ctrl":false,"alt":false}}"#
-                .to_string(),
-        )
-        .unwrap();
-        tx.send(r#"{"quit":true}"#.to_string()).unwrap();
-
-        let drained = drain_viewer_input(&rx, None, false);
-        assert!(drained.quit);
-        assert_eq!(drained.keys.len(), 1);
-        assert_eq!(drained.labels, ["Space"]);
-        assert_eq!(drained.keys[0].code, KeyCode::Char(' '));
-    }
-
-    #[test]
-    fn viewer_input_drain_preserves_key_release() {
-        let (tx, rx) = mpsc::channel();
-        tx.send(
-            r#"{"key":{"code":"ArrowUp","key":"ArrowUp","pressed":false,"shift":false,"ctrl":false,"alt":false}}"#
-                .to_string(),
-        )
-        .unwrap();
-
-        let drained = drain_viewer_input(&rx, None, false);
-        assert_eq!(drained.keys.len(), 1);
-        assert_eq!(drained.labels, ["ArrowUp up"]);
-        assert_eq!(drained.keys[0].code, KeyCode::Up);
-        assert!(!drained.keys[0].pressed);
-    }
-}
+mod tests;

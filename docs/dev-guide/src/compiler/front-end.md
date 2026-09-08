@@ -57,8 +57,10 @@ function bodies stay structured, and Modelica operators (`der`, `pre`,
 
 ```bash
 rumoca compile Model.mo --emit ast-json  # checked semantic tree
-rumoca compile Model.mo --emit flat-mo   # what flattening produced
+rumoca compile Model.mo --emit flat-json # exact result of flattening
 ```
 
-Comparing `flat-mo` against your mental model of the hierarchy is the
-fastest way to debug modification and connection handling.
+Inspecting `flat-json` is the lossless way to debug modification and connection
+handling. `--emit flat-mo` fails with the stable
+`unsupported-feature:flat-modelica-text-export` refusal until Flat owns every
+equation body needed for an exact reconstruction.

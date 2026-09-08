@@ -1,13 +1,51 @@
+use super::conditions::{algorithm_condition_owner_clock, lower_algorithm_condition};
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) struct AlgorithmEnvironment<'scope, 'shape, 'dae> {
-    pub(super) coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+pub(super) struct AlgorithmBaseEnvironment<'scope, 'shape, 'dae> {
+    pub(super) coordinates: &'scope ModelCoordinates<'dae>,
     pub(super) functions: &'scope FunctionRegistry<'shape, 'dae>,
     pub(super) sample_lattices: &'scope [(Span, PeriodicClockSchedule)],
-    pub(super) tensor_loops: Option<&'scope HashMap<Span, ModelEventTensorLoopPlan>>,
-    pub(super) function_calls: Option<&'scope HashMap<Span, ModelEventFunctionCallPlan>>,
-    pub(super) transaction_steps: Option<&'scope RefCell<Vec<dae::ModelEventStep<'dae>>>>,
+}
+
+#[derive(Clone, Copy)]
+struct EventAlgorithmEnvironment<'scope, 'shape, 'dae> {
+    base: AlgorithmBaseEnvironment<'scope, 'shape, 'dae>,
+    transaction: EventTransactionSink<'scope, 'dae>,
+}
+
+#[derive(Clone, Copy)]
+enum EventTransactionSink<'scope, 'dae> {
+    NoTargets,
+    Steps(&'scope RefCell<Vec<dae::ModelEventStep<'dae>>>),
+}
+
+enum EventTransactionBuffer<'dae> {
+    NoTargets,
+    Steps {
+        targets: Vec<VarName>,
+        steps: RefCell<Vec<dae::ModelEventStep<'dae>>>,
+    },
+}
+
+impl<'dae> EventTransactionBuffer<'dae> {
+    fn issued(product: &EventLoweringProduct<'_>) -> Self {
+        if product.targets().is_empty() {
+            Self::NoTargets
+        } else {
+            Self::Steps {
+                targets: product.targets().to_vec(),
+                steps: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    fn sink(&self) -> EventTransactionSink<'_, 'dae> {
+        match self {
+            Self::NoTargets => EventTransactionSink::NoTargets,
+            Self::Steps { steps, .. } => EventTransactionSink::Steps(steps),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -64,155 +102,178 @@ fn unconditional_algorithm_activation<'dae>(
     })
 }
 
-pub(super) struct ModelAlgorithmsRequest<'scope, 'shape, 'dae> {
-    pub(super) flat: &'scope flat::Model,
-    pub(super) environment: AlgorithmEnvironment<'scope, 'shape, 'dae>,
-    pub(super) plans: &'scope [ModelAlgorithmPlan],
+pub(super) struct ModelAlgorithmsRequest<'scope, 'flat, 'shape, 'dae> {
+    pub(super) environment: AlgorithmBaseEnvironment<'scope, 'shape, 'dae>,
+    pub(super) algorithms: &'scope ModelAlgorithmSequence<'flat>,
     pub(super) topology: &'scope DiscreteValueTopologyPlan,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "exhaustive ModelAlgorithmPlan lowering keeps every checked plan variant visible"
-)]
 pub(super) fn lower_algorithms<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    request: ModelAlgorithmsRequest<'_, '_, 'dae>,
+    request: ModelAlgorithmsRequest<'_, '_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
-    debug_assert_eq!(request.flat.algorithms.len(), request.plans.len());
     // Claim every sampled algorithm coordinate before lowering any body. A
     // consumer is allowed to precede its producer in Flat order; the unique
     // clock owner is an analysis fact, not an artifact of lowering order.
-    for (algorithm, plan) in request.flat.algorithms.iter().zip(request.plans) {
-        let environment = match plan {
-            ModelAlgorithmPlan::Event {
-                tensor_loops,
-                function_calls,
-            } => AlgorithmEnvironment {
-                tensor_loops: Some(tensor_loops),
-                function_calls: Some(function_calls),
-                ..request.environment
-            },
-            _ => request.environment,
-        };
-        preclaim_algorithm_clock_targets(construction, environment, &algorithm.statements, None)?;
-    }
-    for (algorithm, plan) in request.flat.algorithms.iter().zip(request.plans) {
-        let owner_provenance =
-            dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
-        let discrete_owner = discrete_values.owner(
-            owner_provenance,
-            model_algorithm_targets(request.flat, algorithm),
-            request.environment.coordinates,
-            request.topology,
-        )?;
-        let mut lowering = ModelAlgorithmLowering {
-            construction,
-            discrete_values,
-            discrete_owner,
-            coordinates: request.environment.coordinates,
-            functions: request.environment.functions,
-        };
-        match plan {
-            ModelAlgorithmPlan::Declarative { target } => {
-                lower_declarative_model_algorithm(&mut lowering, algorithm, target)?;
-            }
-            ModelAlgorithmPlan::TotalArrayDefinition {
-                target,
-                domain,
-                binder_spans,
-            } => {
-                lower_total_array_model_algorithm(
-                    &mut lowering,
-                    algorithm,
-                    target,
-                    domain,
-                    binder_spans,
-                )?;
-            }
-            ModelAlgorithmPlan::SeparatedArraySum {
-                array_target,
-                scalar_target,
-                domain,
-                binder_spans,
-            } => {
-                lower_separated_array_sum_model_algorithm(
-                    &mut lowering,
-                    algorithm,
-                    array_target,
-                    scalar_target,
-                    domain,
-                    binder_spans,
-                )?;
-            }
-            ModelAlgorithmPlan::Event {
-                tensor_loops,
-                function_calls,
-            } => {
-                let targets = model_algorithm_targets(request.flat, algorithm);
-                let mut values = seed_event_algorithm_values(
-                    lowering.construction,
-                    request.environment.coordinates,
-                    targets.iter().cloned(),
-                    algorithm.span,
-                )?;
-                let transaction_steps = RefCell::new(Vec::new());
-                let environment = AlgorithmEnvironment {
-                    tensor_loops: Some(tensor_loops),
-                    function_calls: Some(function_calls),
-                    transaction_steps: Some(&transaction_steps),
-                    ..request.environment
-                };
-                let unconditional =
-                    unconditional_algorithm_activation(lowering.construction, algorithm.span)?;
-                lower_algorithm_statements(
-                    lowering.construction,
-                    lowering.discrete_values,
-                    environment,
-                    AlgorithmOwner {
-                        discrete_owner,
-                        parent: None,
-                        unconditional,
-                        span: algorithm.span,
-                    },
-                    &mut values,
-                    &algorithm.statements,
-                )?;
-                if targets.is_empty() {
-                    debug_assert!(transaction_steps.borrow().is_empty());
-                    continue;
-                }
-                let transaction_targets = targets
-                    .into_iter()
-                    .map(|target| model_event_target(request.environment.coordinates[&target]));
-                lowering.construction.model_events(|events| {
-                    events.transaction(
-                        transaction_targets,
-                        transaction_steps.into_inner(),
-                        owner_provenance,
-                    )
-                })?;
-            }
+    for (_, plan) in request.algorithms.entries() {
+        if let ModelAlgorithmPlan::Event(product) = plan {
+            preclaim_algorithm_clock_targets(
+                construction,
+                request.environment,
+                product.statements(),
+                None,
+            )?;
         }
+    }
+    for (algorithm, plan) in request.algorithms.entries() {
+        lower_model_algorithm_entry(construction, discrete_values, &request, algorithm, plan)?;
     }
     Ok(())
 }
 
+fn lower_model_algorithm_entry<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    request: &ModelAlgorithmsRequest<'_, '_, '_, 'dae>,
+    algorithm: &flat::Algorithm,
+    plan: &ModelAlgorithmPlan<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let owner_provenance =
+        dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, algorithm.span)?;
+    let targets = match plan {
+        ModelAlgorithmPlan::Event(product) => product.targets().to_vec(),
+        _ => model_algorithm_targets(request.algorithms.flat(), algorithm),
+    };
+    let discrete_owner = discrete_values.owner(
+        owner_provenance,
+        targets.clone(),
+        request.environment.coordinates,
+        request.topology,
+    )?;
+    let mut lowering = ModelAlgorithmLowering {
+        construction,
+        discrete_values,
+        discrete_owner,
+        coordinates: request.environment.coordinates,
+        functions: request.environment.functions,
+    };
+    match plan {
+        ModelAlgorithmPlan::Declarative { target } => {
+            lower_declarative_model_algorithm(&mut lowering, algorithm, target)?;
+        }
+        ModelAlgorithmPlan::TotalArrayDefinition {
+            target,
+            domain,
+            binder_spans,
+        } => {
+            lower_total_array_model_algorithm(
+                &mut lowering,
+                algorithm,
+                target,
+                domain,
+                binder_spans,
+            )?;
+        }
+        ModelAlgorithmPlan::SeparatedArraySum {
+            array_target,
+            scalar_target,
+            domain,
+            binder_spans,
+        } => {
+            lower_separated_array_sum_model_algorithm(
+                &mut lowering,
+                algorithm,
+                array_target,
+                scalar_target,
+                domain,
+                binder_spans,
+            )?;
+        }
+        ModelAlgorithmPlan::Event(product) => lower_event_algorithm(
+            &mut lowering,
+            request.environment,
+            algorithm,
+            product,
+            owner_provenance,
+        )?,
+    }
+    Ok(())
+}
+
+fn lower_event_algorithm<'dae>(
+    lowering: &mut ModelAlgorithmLowering<'_, '_, 'dae>,
+    base: AlgorithmBaseEnvironment<'_, '_, 'dae>,
+    algorithm: &flat::Algorithm,
+    product: &EventLoweringProduct<'_>,
+    owner_provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let mut values = seed_event_algorithm_values(
+        lowering.construction,
+        base.coordinates,
+        product.targets().iter().cloned(),
+        algorithm.span,
+    )?;
+    let transaction = EventTransactionBuffer::issued(product);
+    let environment = EventAlgorithmEnvironment {
+        base,
+        transaction: transaction.sink(),
+    };
+    let unconditional = unconditional_algorithm_activation(lowering.construction, algorithm.span)?;
+    lower_algorithm_statements(
+        lowering.construction,
+        lowering.discrete_values,
+        environment,
+        AlgorithmOwner {
+            discrete_owner: lowering.discrete_owner,
+            parent: None,
+            unconditional,
+            span: algorithm.span,
+        },
+        &mut values,
+        product.statements(),
+    )?;
+    finish_event_transaction(
+        lowering.construction,
+        base.coordinates,
+        transaction,
+        algorithm.span,
+        owner_provenance,
+    )
+}
+
+fn finish_event_transaction<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &ModelCoordinates<'dae>,
+    transaction: EventTransactionBuffer<'dae>,
+    span: Span,
+    provenance: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    match transaction {
+        EventTransactionBuffer::NoTargets => Ok(()),
+        EventTransactionBuffer::Steps { targets, steps } => {
+            let transaction_targets = targets
+                .into_iter()
+                .map(|target| model_event_target(coordinates, &target, span))
+                .collect::<Result<Vec<_>, _>>()?;
+            construction.model_events(|events| {
+                events.transaction(transaction_targets, steps.into_inner(), provenance)
+            })?;
+            Ok(())
+        }
+    }
+}
+
 fn seed_event_algorithm_values<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    coordinates: &ModelCoordinates<'dae>,
     targets: impl IntoIterator<Item = VarName>,
     span: Span,
 ) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, span)?;
     let mut values = HashMap::new();
     for target in targets {
-        let coordinate = match coordinates[&target] {
-            Coordinate::DiscreteReal(id) => dae::CoordinateInput::PreDiscreteReal(id),
-            Coordinate::DiscreteValue(id) => dae::CoordinateInput::PreDiscreteValue(id),
-            _ => continue,
-        };
+        let coordinate = coordinates.event(&target, span)?.previous();
         let value = construction
             .expressions(|expressions| expressions.at(provenance).coordinate(coordinate))?;
         values.insert(target, value);
@@ -222,8 +283,8 @@ fn seed_event_algorithm_values<'dae>(
 
 fn preclaim_algorithm_clock_targets<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
-    statements: &[rumoca_core::Statement],
+    environment: AlgorithmBaseEnvironment<'_, '_, 'dae>,
+    statements: &[EventStatementPlan<'_>],
     inherited: Option<dae::PeriodicClockId<'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
     if let Some(clock) = inherited {
@@ -231,45 +292,41 @@ fn preclaim_algorithm_clock_targets<'dae>(
             construction,
             environment.coordinates,
             clock.into(),
-            environment
-                .function_calls
-                .expect("event analysis supplies clocked function-call plans"),
             statements,
         );
     }
     for statement in statements {
         match statement {
-            rumoca_core::Statement::When { blocks, .. } => {
+            EventStatementPlan::When { blocks, .. } => {
                 for block in blocks {
-                    let clock = condition_owner_clock(environment.functions, &block.cond)?;
+                    let clock =
+                        algorithm_condition_owner_clock(environment.functions, &block.condition)?;
                     preclaim_algorithm_clock_targets(
                         construction,
                         environment,
-                        &block.stmts,
+                        &block.statements,
                         clock,
                     )?;
                 }
             }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
+            EventStatementPlan::If {
+                blocks,
+                else_product,
                 ..
             } => {
-                for block in cond_blocks {
-                    let clock = condition_owner_clock(environment.functions, &block.cond)?;
+                for block in blocks {
+                    let clock =
+                        algorithm_condition_owner_clock(environment.functions, &block.condition)?;
                     preclaim_algorithm_clock_targets(
                         construction,
                         environment,
-                        &block.stmts,
+                        &block.statements,
                         clock,
                     )?;
                 }
-                if let Some(statements) = else_block {
+                if let EventElseProduct::Statements(statements) = else_product {
                     preclaim_algorithm_clock_targets(construction, environment, statements, None)?;
                 }
-            }
-            rumoca_core::Statement::For { equations, .. } => {
-                preclaim_algorithm_clock_targets(construction, environment, equations, None)?;
             }
             _ => {}
         }
@@ -280,10 +337,10 @@ fn preclaim_algorithm_clock_targets<'dae>(
 fn lower_algorithm_statements<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
-    statements: &[rumoca_core::Statement],
+    statements: &[EventStatementPlan<'_>],
 ) -> Result<(), dae::DaeConstructionError> {
     for statement in statements {
         lower_algorithm_statement(
@@ -301,30 +358,33 @@ fn lower_algorithm_statements<'dae>(
 fn lower_algorithm_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
-    statement: &rumoca_core::Statement,
+    statement: &EventStatementPlan<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let context = algorithm_statement_context(environment, owner, values);
     match statement {
-        rumoca_core::Statement::Assignment { comp, value, span } => {
-            lower_algorithm_assignment_statement(
-                construction,
-                discrete_values,
-                environment,
-                owner,
-                values,
-                AlgorithmAssignment {
-                    comp,
-                    value,
-                    span: *span,
-                },
-            )
-        }
-        rumoca_core::Statement::If {
-            cond_blocks,
-            else_block,
+        EventStatementPlan::Assignment {
+            component,
+            value,
+            span,
+            route,
+        } => lower_algorithm_assignment_statement(
+            construction,
+            discrete_values,
+            environment,
+            owner,
+            values,
+            AlgorithmAssignment {
+                comp: component,
+                value,
+                span: *span,
+                route,
+            },
+        ),
+        EventStatementPlan::If {
+            blocks,
+            else_product,
             span,
         } => lower_algorithm_if(
             construction,
@@ -333,12 +393,12 @@ fn lower_algorithm_statement<'dae>(
             AlgorithmIfInput {
                 owner,
                 values,
-                blocks: cond_blocks,
-                fallback: else_block.as_deref().unwrap_or_default(),
+                blocks,
+                else_product,
                 span: *span,
             },
         ),
-        rumoca_core::Statement::When { blocks, span } => lower_algorithm_when(
+        EventStatementPlan::When { blocks, span } => lower_algorithm_when(
             construction,
             discrete_values,
             environment,
@@ -347,47 +407,33 @@ fn lower_algorithm_statement<'dae>(
             blocks,
             *span,
         ),
-        rumoca_core::Statement::FunctionCall {
-            comp,
-            args,
-            outputs: _,
+        EventStatementPlan::FunctionCall {
+            component,
+            arguments,
             span,
-        } => {
-            let updates = lower_algorithm_call_statement(
-                construction,
-                discrete_values,
-                owner,
-                context,
-                AlgorithmFunctionCall {
-                    component: comp,
-                    arguments: args,
-                    span: *span,
-                    plan: &environment
-                        .function_calls
-                        .expect("event analysis supplies function-call receiver plans")[span],
-                },
-            )?;
-            record_model_event_step(environment, owner, &updates, *span)?;
-            values.extend(updates);
-            Ok(())
-        }
-        rumoca_core::Statement::For {
-            equations, span, ..
-        } => {
-            let updates = lower_algorithm_for_statement(
-                construction,
-                discrete_values,
-                environment,
-                owner.discrete_owner,
-                context,
-                equations,
-                *span,
-            )?;
-            record_model_event_step(environment, owner, &updates, *span)?;
-            values.extend(updates);
-            Ok(())
-        }
-        rumoca_core::Statement::Assert {
+            plan,
+        } => lower_planned_function_call(
+            construction,
+            discrete_values,
+            environment,
+            owner,
+            values,
+            AlgorithmFunctionCall {
+                component,
+                arguments,
+                span: *span,
+                plan,
+            },
+        ),
+        EventStatementPlan::TensorLoop(plan) => lower_planned_tensor_loop(
+            construction,
+            discrete_values,
+            environment,
+            owner,
+            values,
+            plan,
+        ),
+        EventStatementPlan::Assert {
             condition,
             message,
             level,
@@ -401,8 +447,45 @@ fn lower_algorithm_statement<'dae>(
             level.as_deref(),
             *span,
         ),
-        _ => unreachable!("algorithm analysis restricts the checked statement grammar"),
     }
+}
+
+fn lower_planned_function_call<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    call: AlgorithmFunctionCall<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let span = call.span;
+    let context = algorithm_statement_context(environment, owner, values);
+    let updates =
+        lower_algorithm_call_statement(construction, discrete_values, owner, context, call)?;
+    record_model_event_step(environment, owner, &updates, span)?;
+    values.extend(updates);
+    Ok(())
+}
+
+fn lower_planned_tensor_loop<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
+    owner: AlgorithmOwner<'dae>,
+    values: &mut HashMap<VarName, dae::ExprId<'dae>>,
+    plan: &ModelEventTensorLoopPlan<'_>,
+) -> Result<(), dae::DaeConstructionError> {
+    let context = algorithm_statement_context(environment, owner, values);
+    let updates = lower_algorithm_for_statement(
+        construction,
+        discrete_values,
+        owner.discrete_owner,
+        context,
+        plan,
+    )?;
+    record_model_event_step(environment, owner, &updates, plan.span)?;
+    values.extend(updates);
+    Ok(())
 }
 
 /// One algorithm assignment, as written in source.
@@ -410,6 +493,7 @@ struct AlgorithmAssignment<'a> {
     comp: &'a rumoca_core::ComponentReference,
     value: &'a Expression,
     span: rumoca_core::Span,
+    route: &'a EventAssignmentRoute<'a>,
 }
 
 /// Lower one algorithm assignment, routing a direct call assignment through the
@@ -417,79 +501,99 @@ struct AlgorithmAssignment<'a> {
 fn lower_algorithm_assignment_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
     assignment: AlgorithmAssignment<'_>,
 ) -> Result<(), dae::DaeConstructionError> {
-    let AlgorithmAssignment { comp, value, span } = assignment;
+    let AlgorithmAssignment {
+        comp,
+        value,
+        span,
+        route,
+    } = assignment;
     let context = algorithm_statement_context(environment, owner, values);
-    if let Some(plan) = environment
-        .function_calls
-        .and_then(|plans| plans.get(&span))
-    {
-        let Expression::FunctionCall { name, args, .. } = value else {
-            unreachable!("event call proof is issued only for direct call assignments")
-        };
-        let updates = lower_algorithm_call_statement(
+    let updates = match route {
+        EventAssignmentRoute::FunctionCall {
+            component,
+            arguments,
+            plan,
+        } => lower_algorithm_call_statement(
             construction,
             discrete_values,
             owner,
             context,
             AlgorithmFunctionCall {
-                component: name,
-                arguments: args,
+                component,
+                arguments,
                 span,
                 plan,
             },
-        )?;
-        record_model_event_step(environment, owner, &updates, span)?;
-        values.extend(updates);
-        return Ok(());
-    }
-    let updates = lower_algorithm_assignment(
-        construction,
-        discrete_values,
-        owner.discrete_owner,
-        context,
-        comp,
-        value,
-        span,
-    )?;
+        )?,
+        EventAssignmentRoute::Coordinate => lower_algorithm_assignment(
+            construction,
+            discrete_values,
+            owner.discrete_owner,
+            context,
+            LoweredAlgorithmAssignment {
+                component: comp,
+                value,
+                span,
+                structured_plan: None,
+            },
+        )?,
+        EventAssignmentRoute::Structured(plan) => lower_algorithm_assignment(
+            construction,
+            discrete_values,
+            owner.discrete_owner,
+            context,
+            LoweredAlgorithmAssignment {
+                component: comp,
+                value,
+                span,
+                structured_plan: Some(plan),
+            },
+        )?,
+    };
     record_model_event_step(environment, owner, &updates, span)?;
     values.extend(updates);
     Ok(())
 }
 
-fn model_event_target(coordinate: Coordinate<'_>) -> dae::ModelEventTarget<'_> {
-    match coordinate {
-        Coordinate::DiscreteReal(variable) => dae::ModelEventTarget::DiscreteReal(variable),
-        Coordinate::DiscreteValue(variable) => dae::ModelEventTarget::DiscreteValue(variable),
-        _ => unreachable!("event-algorithm analysis restricts transaction targets"),
-    }
+fn model_event_target<'dae>(
+    coordinates: &ModelCoordinates<'dae>,
+    name: &VarName,
+    span: Span,
+) -> Result<dae::ModelEventTarget<'dae>, dae::DaeConstructionError> {
+    Ok(coordinates.event(name, span)?.target())
 }
 
 fn record_model_event_step<'dae>(
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     updates: &[(VarName, dae::ExprId<'dae>)],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
-    let Some(steps) = environment.transaction_steps else {
-        return Ok(());
+    let steps = match (environment.transaction, updates.is_empty()) {
+        (EventTransactionSink::NoTargets, true) | (EventTransactionSink::Steps(_), true) => {
+            return Ok(());
+        }
+        (EventTransactionSink::NoTargets, false) => {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
+        }
+        (EventTransactionSink::Steps(steps), false) => steps,
     };
-    if updates.is_empty() {
-        return Ok(());
-    }
     let guard = owner.activation();
     let provenance = dae::DaeProvenance::source(span)?;
-    let definitions = updates.iter().map(|(target, value)| {
-        dae::ModelEventDefinition::new(
-            model_event_target(environment.coordinates[target]),
+    let mut definitions = Vec::with_capacity(updates.len());
+    for (target, value) in updates {
+        let event_target = model_event_target(environment.base.coordinates, target, span)?;
+        definitions.push(dae::ModelEventDefinition::new(
+            event_target,
             *value,
             provenance,
-        )
-    });
+        ));
+    }
     steps.borrow_mut().push(dae::ModelEventStep::new(
         guard.trigger,
         guard.condition,
@@ -501,13 +605,13 @@ fn record_model_event_step<'dae>(
 }
 
 fn algorithm_statement_context<'scope, 'shape, 'dae>(
-    environment: AlgorithmEnvironment<'scope, 'shape, 'dae>,
+    environment: EventAlgorithmEnvironment<'scope, 'shape, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &'scope HashMap<VarName, dae::ExprId<'dae>>,
 ) -> AlgorithmStatementContext<'scope, 'shape, 'dae> {
     AlgorithmStatementContext {
-        coordinates: environment.coordinates,
-        functions: environment.functions,
+        coordinates: environment.base.coordinates,
+        functions: environment.base.functions,
         values,
         parent: Some(owner.activation()),
         owner_span: owner.span,
@@ -533,29 +637,16 @@ fn lower_algorithm_call_statement<'dae>(
 fn lower_algorithm_for_statement<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
     discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
-    statements: &[rumoca_core::Statement],
-    span: Span,
+    plan: &ModelEventTensorLoopPlan<'_>,
 ) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
-    let plan = &environment
-        .tensor_loops
-        .expect("event analysis supplies tensor-loop plans")[&span];
-    lower_algorithm_tensor_loop(
-        construction,
-        discrete_values,
-        discrete_owner,
-        context,
-        plan,
-        statements,
-        span,
-    )
+    lower_algorithm_tensor_loop(construction, discrete_values, discrete_owner, context, plan)
 }
 
 fn lower_algorithm_assertion<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     condition: &Expression,
     message: &Expression,
@@ -564,9 +655,9 @@ fn lower_algorithm_assertion<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let (condition, _) = lower_condition(
         construction,
-        environment.coordinates,
-        environment.functions,
-        environment.sample_lattices,
+        environment.base.coordinates,
+        environment.base.functions,
+        environment.base.sample_lattices,
         condition,
     )?;
     let failed = negate_condition(construction, condition, span)?;
@@ -581,15 +672,15 @@ fn lower_algorithm_assertion<'dae>(
     let trigger = activation.trigger;
     let message = lower_expression(
         construction,
-        environment.coordinates,
-        environment.functions,
+        environment.base.coordinates,
+        environment.base.functions,
         message,
         None,
     )?;
     let level = lower_optional_expression(
         construction,
-        environment.coordinates,
-        environment.functions,
+        environment.base.coordinates,
+        environment.base.functions,
         level,
     )?;
     let provenance = dae::DaeProvenance::source(span)?;
@@ -602,22 +693,22 @@ fn lower_algorithm_assertion<'dae>(
 struct AlgorithmIfInput<'values, 'source, 'dae> {
     owner: AlgorithmOwner<'dae>,
     values: &'values mut HashMap<VarName, dae::ExprId<'dae>>,
-    blocks: &'source [rumoca_core::StatementBlock],
-    fallback: &'source [rumoca_core::Statement],
+    blocks: &'source [EventBlockPlan<'source>],
+    else_product: &'source EventElseProduct<'source>,
     span: Span,
 }
 
 fn lower_algorithm_if<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     input: AlgorithmIfInput<'_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let AlgorithmIfInput {
         owner,
         values,
         blocks,
-        fallback: else_block,
+        else_product,
         span,
     } = input;
     let incoming = values.clone();
@@ -625,73 +716,34 @@ fn lower_algorithm_if<'dae>(
     let mut condition_values = Vec::with_capacity(blocks.len());
     let mut branch_values = Vec::with_capacity(blocks.len());
     for block in blocks {
-        let (condition_value, condition, owner_clock) =
-            lower_algorithm_if_condition(construction, environment, owner, &incoming, &block.cond)?;
-        condition_values.push(condition_value);
-        let available = match previous {
-            Some(previous) => {
-                let not_previous = negate_condition(construction, previous, span)?;
-                combine_conditions(construction, condition, not_previous, false, span)?
-            }
-            None => condition,
-        };
-        let condition_span = block
-            .cond
-            .span()
-            .expect("analysis proves algorithm condition provenance");
-        let guard = algorithm_if_guard(
-            construction,
-            owner.parent,
-            available,
-            owner_clock,
-            condition_span,
-            span,
-        )?;
-        if let Some(clock) = guard.owner_clock {
-            own_clocked_algorithm_targets(
-                construction,
-                environment.coordinates,
-                clock.into(),
-                environment
-                    .function_calls
-                    .expect("event analysis supplies clocked function-call plans"),
-                &block.stmts,
-            )?;
-        }
-        let mut branch = incoming.clone();
-        lower_algorithm_statements(
+        let branch = lower_algorithm_if_branch(
             construction,
             discrete_values,
             environment,
-            AlgorithmOwner {
-                parent: Some(guard),
-                span,
-                ..owner
-            },
-            &mut branch,
-            &block.stmts,
-        )?;
-        branch_values.push(branch);
-        previous = Some(match previous {
-            Some(previous) => combine_conditions(construction, previous, condition, true, span)?,
-            None => condition,
-        });
-    }
-    let mut fallback = incoming.clone();
-    if !else_block.is_empty() {
-        lower_algorithm_else(
-            construction,
-            discrete_values,
-            environment,
-            AlgorithmElseInput {
+            AlgorithmIfBranchInput {
                 owner,
+                incoming: &incoming,
                 previous,
-                values: &mut fallback,
-                statements: else_block,
+                block,
                 span,
             },
         )?;
+        condition_values.push(branch.value);
+        branch_values.push(branch.values);
+        previous = Some(branch.cumulative);
     }
+    let else_values = lower_algorithm_if_else(
+        construction,
+        discrete_values,
+        environment,
+        AlgorithmIfElseInput {
+            owner,
+            previous,
+            incoming: &incoming,
+            else_product,
+            span,
+        },
+    )?;
     let updates = join_algorithm_if_values(
         construction,
         values,
@@ -700,19 +752,129 @@ fn lower_algorithm_if<'dae>(
             incoming: &incoming,
             conditions: &condition_values,
             branches: &branch_values,
-            fallback: &fallback,
+            else_values: &else_values,
             span,
         },
     )?;
     record_model_event_join(environment, owner, &updates, span)
 }
 
+struct AlgorithmIfBranchInput<'values, 'source, 'dae> {
+    owner: AlgorithmOwner<'dae>,
+    incoming: &'values HashMap<VarName, dae::ExprId<'dae>>,
+    previous: Option<dae::ConditionId<'dae>>,
+    block: &'source EventBlockPlan<'source>,
+    span: Span,
+}
+
+struct AlgorithmIfBranch<'dae> {
+    value: Option<dae::ExprId<'dae>>,
+    values: HashMap<VarName, dae::ExprId<'dae>>,
+    cumulative: dae::ConditionId<'dae>,
+}
+
+fn lower_algorithm_if_branch<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
+    input: AlgorithmIfBranchInput<'_, '_, 'dae>,
+) -> Result<AlgorithmIfBranch<'dae>, dae::DaeConstructionError> {
+    let (value, condition, owner_clock) = lower_algorithm_if_condition(
+        construction,
+        environment,
+        input.owner,
+        input.incoming,
+        &input.block.condition,
+    )?;
+    let available = match input.previous {
+        Some(previous) => {
+            let not_previous = negate_condition(construction, previous, input.span)?;
+            combine_conditions(construction, condition, not_previous, false, input.span)?
+        }
+        None => condition,
+    };
+    let condition_span = input.block.condition.span();
+    let guard = algorithm_if_guard(
+        construction,
+        input.owner.parent,
+        available,
+        owner_clock,
+        condition_span,
+        input.span,
+    )?;
+    if let Some(clock) = guard.owner_clock {
+        own_clocked_algorithm_targets(
+            construction,
+            environment.base.coordinates,
+            clock.into(),
+            &input.block.statements,
+        )?;
+    }
+    let mut values = input.incoming.clone();
+    lower_algorithm_statements(
+        construction,
+        discrete_values,
+        environment,
+        AlgorithmOwner {
+            parent: Some(guard),
+            span: input.span,
+            ..input.owner
+        },
+        &mut values,
+        &input.block.statements,
+    )?;
+    let cumulative = match input.previous {
+        Some(previous) => combine_conditions(construction, previous, condition, true, input.span)?,
+        None => condition,
+    };
+    Ok(AlgorithmIfBranch {
+        value,
+        values,
+        cumulative,
+    })
+}
+
+struct AlgorithmIfElseInput<'values, 'source, 'dae> {
+    owner: AlgorithmOwner<'dae>,
+    previous: Option<dae::ConditionId<'dae>>,
+    incoming: &'values HashMap<VarName, dae::ExprId<'dae>>,
+    else_product: &'source EventElseProduct<'source>,
+    span: Span,
+}
+
+fn lower_algorithm_if_else<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    discrete_values: &mut DiscreteValueStaging<'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
+    input: AlgorithmIfElseInput<'_, '_, 'dae>,
+) -> Result<HashMap<VarName, dae::ExprId<'dae>>, dae::DaeConstructionError> {
+    let mut values = input.incoming.clone();
+    match input.else_product {
+        EventElseProduct::Absent => {}
+        EventElseProduct::Statements(statements) => {
+            lower_algorithm_else(
+                construction,
+                discrete_values,
+                environment,
+                AlgorithmElseInput {
+                    owner: input.owner,
+                    previous: input.previous,
+                    values: &mut values,
+                    statements,
+                    span: input.span,
+                },
+            )?;
+        }
+    }
+    Ok(values)
+}
+
 fn lower_algorithm_if_condition<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &HashMap<VarName, dae::ExprId<'dae>>,
-    expression: &Expression,
+    product: &AlgorithmConditionProduct<'_>,
 ) -> Result<
     (
         Option<dae::ExprId<'dae>>,
@@ -721,36 +883,35 @@ fn lower_algorithm_if_condition<'dae>(
     ),
     dae::DaeConstructionError,
 > {
+    let expression = product.source();
     if is_event_condition(expression) {
-        let (condition, clock) = lower_condition(
+        let (condition, clock) = lower_algorithm_condition(
             construction,
-            environment.coordinates,
-            environment.functions,
-            environment.sample_lattices,
-            expression,
+            environment.base.coordinates,
+            environment.base.functions,
+            product,
         )?;
         return Ok((None, condition, clock));
     }
     let value = lower_model_algorithm_expression(
         construction,
-        environment.coordinates,
-        environment.functions,
+        environment.base.coordinates,
+        environment.base.functions,
         values,
         expression,
     )?;
     if owner.parent.is_none() {
-        let (condition, clock) = lower_condition(
+        let (condition, clock) = lower_algorithm_condition(
             construction,
-            environment.coordinates,
-            environment.functions,
-            environment.sample_lattices,
-            expression,
+            environment.base.coordinates,
+            environment.base.functions,
+            product,
         )?;
         return Ok((Some(value), condition, clock));
     }
     let span = expression
         .span()
-        .expect("analysis proves event-algorithm condition provenance");
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: owner.span })?;
     let provenance = dae::DaeProvenance::source(span)?;
     let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
     construction.conditions(|conditions| {
@@ -760,11 +921,11 @@ fn lower_algorithm_if_condition<'dae>(
 }
 
 struct AlgorithmIfJoin<'scope, 'shape, 'values, 'dae> {
-    environment: AlgorithmEnvironment<'scope, 'shape, 'dae>,
+    environment: EventAlgorithmEnvironment<'scope, 'shape, 'dae>,
     incoming: &'values HashMap<VarName, dae::ExprId<'dae>>,
     conditions: &'values [Option<dae::ExprId<'dae>>],
     branches: &'values [HashMap<VarName, dae::ExprId<'dae>>],
-    fallback: &'values HashMap<VarName, dae::ExprId<'dae>>,
+    else_values: &'values HashMap<VarName, dae::ExprId<'dae>>,
     span: Span,
 }
 
@@ -780,7 +941,7 @@ fn join_algorithm_if_values<'dae>(
         return Ok(Vec::new());
     };
     let mut targets = HashSet::new();
-    targets.extend(input.fallback.iter().filter_map(|(target, value)| {
+    targets.extend(input.else_values.iter().filter_map(|(target, value)| {
         (input.incoming.get(target) != Some(value)).then_some(target.clone())
     }));
     for branch in input.branches {
@@ -792,8 +953,8 @@ fn join_algorithm_if_values<'dae>(
         dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, input.span)?;
     let mut updates = Vec::with_capacity(targets.len());
     for target in targets {
-        let fallback =
-            algorithm_ssa_value(construction, &input, input.fallback, &target, provenance)?;
+        let else_value =
+            algorithm_ssa_value(construction, &input, input.else_values, &target, provenance)?;
         let mut arms = Vec::with_capacity(input.branches.len());
         for branch in input.branches {
             arms.push(algorithm_ssa_value(
@@ -807,7 +968,7 @@ fn join_algorithm_if_values<'dae>(
         let joined = construction.expressions(|expressions| {
             expressions
                 .at(provenance)
-                .conditional(conditions.iter().copied().zip(arms), fallback)
+                .conditional(conditions.iter().copied().zip(arms), else_value)
         })?;
         values.insert(target.clone(), joined);
         updates.push((target, joined));
@@ -824,26 +985,31 @@ fn join_algorithm_if_values<'dae>(
 /// backend from reconstructing independent source `if` statements as one
 /// mutually-exclusive guarded-assignment ladder.
 fn record_model_event_join<'dae>(
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     updates: &[(VarName, dae::ExprId<'dae>)],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
-    let Some(steps) = environment.transaction_steps else {
-        return Ok(());
+    let steps = match (environment.transaction, updates.is_empty()) {
+        (EventTransactionSink::NoTargets, true) | (EventTransactionSink::Steps(_), true) => {
+            return Ok(());
+        }
+        (EventTransactionSink::NoTargets, false) => {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
+        }
+        (EventTransactionSink::Steps(steps), false) => steps,
     };
-    if updates.is_empty() {
-        return Ok(());
-    }
     let activation = owner.activation();
     let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::AlgorithmEquation, span)?;
-    let definitions = updates.iter().map(|(target, value)| {
-        dae::ModelEventDefinition::new(
-            model_event_target(environment.coordinates[target]),
+    let mut definitions = Vec::with_capacity(updates.len());
+    for (target, value) in updates {
+        let event_target = model_event_target(environment.base.coordinates, target, span)?;
+        definitions.push(dae::ModelEventDefinition::new(
+            event_target,
             *value,
             provenance,
-        )
-    });
+        ));
+    }
     steps.borrow_mut().push(dae::ModelEventStep::new(
         activation.trigger,
         activation.condition,
@@ -864,11 +1030,15 @@ fn algorithm_ssa_value<'dae>(
     if let Some(value) = branch.get(target).or_else(|| input.incoming.get(target)) {
         return Ok(*value);
     }
-    construction.expressions(|expressions| {
-        expressions
-            .at(provenance)
-            .coordinate(input.environment.coordinates[target].current())
-    })
+    let coordinate = input
+        .environment
+        .base
+        .coordinates
+        .get(target)
+        .copied()
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: input.span })?;
+    construction
+        .expressions(|expressions| expressions.at(provenance).coordinate(coordinate.current()))
 }
 
 fn algorithm_if_guard<'dae>(
@@ -904,14 +1074,14 @@ struct AlgorithmElseInput<'values, 'source, 'dae> {
     owner: AlgorithmOwner<'dae>,
     previous: Option<dae::ConditionId<'dae>>,
     values: &'values mut HashMap<VarName, dae::ExprId<'dae>>,
-    statements: &'source [rumoca_core::Statement],
+    statements: &'source [EventStatementPlan<'source>],
     span: Span,
 }
 
 fn lower_algorithm_else<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     input: AlgorithmElseInput<'_, '_, 'dae>,
 ) -> Result<(), dae::DaeConstructionError> {
     let AlgorithmElseInput {
@@ -943,20 +1113,19 @@ fn lower_algorithm_else<'dae>(
 fn lower_algorithm_when<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     discrete_values: &mut DiscreteValueStaging<'dae>,
-    environment: AlgorithmEnvironment<'_, '_, 'dae>,
+    environment: EventAlgorithmEnvironment<'_, '_, 'dae>,
     owner: AlgorithmOwner<'dae>,
     values: &mut HashMap<VarName, dae::ExprId<'dae>>,
-    blocks: &[rumoca_core::StatementBlock],
+    blocks: &[EventBlockPlan<'_>],
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     let mut guarded_blocks = Vec::with_capacity(blocks.len());
     for block in blocks {
-        let (condition, owner_clock) = lower_condition(
+        let (condition, owner_clock) = lower_algorithm_condition(
             construction,
-            environment.coordinates,
-            environment.functions,
-            environment.sample_lattices,
-            &block.cond,
+            environment.base.coordinates,
+            environment.base.functions,
+            &block.condition,
         )?;
         // MLS §8.3.5 activates each branch of a `when`/`elsewhen` chain on its
         // own rising edge; the textual order of the branches resolves the
@@ -975,12 +1144,7 @@ fn lower_algorithm_when<'dae>(
                     span,
                 )?,
                 owner_clock: parent.owner_clock.or(owner_clock),
-                branch_provenance: dae::DaeProvenance::source(
-                    block
-                        .cond
-                        .span()
-                        .expect("analysis proves algorithm condition provenance"),
-                )?,
+                branch_provenance: dae::DaeProvenance::source(block_condition_span(block, span)?)?,
                 always: false,
                 parent_activation: Some((parent.trigger, parent.condition)),
             },
@@ -988,12 +1152,7 @@ fn lower_algorithm_when<'dae>(
                 trigger: available,
                 condition: available,
                 owner_clock,
-                branch_provenance: dae::DaeProvenance::source(
-                    block
-                        .cond
-                        .span()
-                        .expect("analysis proves algorithm condition provenance"),
-                )?,
+                branch_provenance: dae::DaeProvenance::source(block_condition_span(block, span)?)?,
                 always: false,
                 parent_activation: None,
             },
@@ -1004,12 +1163,9 @@ fn lower_algorithm_when<'dae>(
         if let Some(clock) = guard.owner_clock {
             own_clocked_algorithm_targets(
                 construction,
-                environment.coordinates,
+                environment.base.coordinates,
                 clock.into(),
-                environment
-                    .function_calls
-                    .expect("event analysis supplies clocked function-call plans"),
-                &block.stmts,
+                &block.statements,
             )?;
         }
     }
@@ -1025,8 +1181,16 @@ fn lower_algorithm_when<'dae>(
                 ..owner
             },
             &mut branch_values,
-            &block.stmts,
+            &block.statements,
         )?;
     }
     Ok(())
+}
+
+fn block_condition_span(
+    block: &EventBlockPlan<'_>,
+    owner_span: Span,
+) -> Result<Span, dae::DaeConstructionError> {
+    let _ = owner_span;
+    Ok(block.condition.span())
 }

@@ -12,8 +12,6 @@ pub(crate) use context::{ConstantOccurrenceId, Context};
 pub(crate) use function_resolution::resolve_function_name;
 pub(crate) use structural_asserts::fold_structural_initial_asserts;
 
-const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
-
 fn required_owner_span(
     span: rumoca_core::Span,
     context: &'static str,
@@ -30,7 +28,7 @@ pub(crate) fn inject_class_extends_constants(
     class_def: &ClassDef,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     extract_constants_from_class_with_prefix_and_imports(
         tree,
         class_index,
@@ -38,10 +36,11 @@ pub(crate) fn inject_class_extends_constants(
         class_def,
         resolve_context,
         ctx,
-    );
+    )?;
     for ext in &class_def.extends {
-        apply_extends_constants_for_scope(tree, class_index, scope, ext, resolve_context, ctx);
+        apply_extends_constants_for_scope(tree, class_index, scope, ext, resolve_context, ctx)?;
     }
+    Ok(())
 }
 
 pub(crate) fn apply_extends_constants_for_scope(
@@ -51,7 +50,7 @@ pub(crate) fn apply_extends_constants_for_scope(
     ext: &rumoca_ir_ast::Extend,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     extract_extends_modification_constants(tree, class_index, scope, ext, resolve_context, ctx);
     if let Some(base_qname) =
         resolve_extends_base_qname(class_index, &ext.base_name.to_string(), resolve_context)
@@ -73,7 +72,7 @@ pub(crate) fn apply_extends_constants_for_scope(
         ext,
         resolve_context,
         ctx,
-    );
+    )?;
     extract_extends_chain_constants(
         tree,
         class_index,
@@ -81,7 +80,8 @@ pub(crate) fn apply_extends_constants_for_scope(
         &ext.base_name.to_string(),
         resolve_context,
         ctx,
-    );
+    )?;
+    Ok(())
 }
 
 pub(crate) fn inject_nested_class_constants(
@@ -92,7 +92,7 @@ pub(crate) fn inject_nested_class_constants(
     nested_class: &ClassDef,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     // `<comp>.<alias>.<const>`
     extract_constants_from_class_with_prefix_and_imports(
         tree,
@@ -101,7 +101,7 @@ pub(crate) fn inject_nested_class_constants(
         nested_class,
         resolve_context,
         ctx,
-    );
+    )?;
     // `<comp>.<const>`
     extract_constants_from_class_with_prefix_and_imports(
         tree,
@@ -110,7 +110,7 @@ pub(crate) fn inject_nested_class_constants(
         nested_class,
         resolve_context,
         ctx,
-    );
+    )?;
 
     for ext in &nested_class.extends {
         apply_extends_constants_for_scope(
@@ -120,9 +120,17 @@ pub(crate) fn inject_nested_class_constants(
             ext,
             resolve_context,
             ctx,
-        );
-        apply_extends_constants_for_scope(tree, class_index, comp_scope, ext, resolve_context, ctx);
+        )?;
+        apply_extends_constants_for_scope(
+            tree,
+            class_index,
+            comp_scope,
+            ext,
+            resolve_context,
+            ctx,
+        )?;
     }
+    Ok(())
 }
 
 pub(crate) fn inject_alias_component_package_constants(
@@ -133,15 +141,15 @@ pub(crate) fn inject_alias_component_package_constants(
     alias_comp: &rumoca_ir_ast::Component,
     resolve_context: &str,
     ctx: &mut Context,
-) {
+) -> Result<(), FlattenError> {
     if !alias_name.starts_with(char::is_uppercase) {
-        return;
+        return Ok(());
     }
 
     let Some((alias_class, alias_context)) =
         resolve_alias_component_class(tree, class_index, alias_comp, resolve_context)
     else {
-        return;
+        return Ok(());
     };
     if !matches!(
         alias_class.class_type,
@@ -149,7 +157,7 @@ pub(crate) fn inject_alias_component_package_constants(
             | rumoca_core::ClassType::Record
             | rumoca_core::ClassType::Class
     ) {
-        return;
+        return Ok(());
     }
 
     let alias_scope = format!("{comp_scope}.{alias_name}");
@@ -160,7 +168,7 @@ pub(crate) fn inject_alias_component_package_constants(
         alias_class,
         &alias_context,
         ctx,
-    );
+    )?;
     let type_alias = crate::path_utils::leaf_segment(&alias_context);
     let type_alias_scope = (!type_alias.is_empty() && type_alias != alias_name)
         .then(|| format!("{comp_scope}.{type_alias}"));
@@ -172,7 +180,7 @@ pub(crate) fn inject_alias_component_package_constants(
             alias_class,
             &alias_context,
             ctx,
-        );
+        )?;
     }
     if matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
         extract_constants_from_class_with_prefix_and_imports(
@@ -182,7 +190,7 @@ pub(crate) fn inject_alias_component_package_constants(
             alias_class,
             &alias_context,
             ctx,
-        );
+        )?;
     }
     for ext in &alias_class.extends {
         apply_extends_constants_for_scope(
@@ -192,7 +200,7 @@ pub(crate) fn inject_alias_component_package_constants(
             ext,
             &alias_context,
             ctx,
-        );
+        )?;
         if let Some(type_alias_scope) = &type_alias_scope {
             apply_extends_constants_for_scope(
                 tree,
@@ -201,7 +209,7 @@ pub(crate) fn inject_alias_component_package_constants(
                 ext,
                 &alias_context,
                 ctx,
-            );
+            )?;
         }
         if matches!(alias_class.class_type, rumoca_core::ClassType::Package) {
             apply_extends_constants_for_scope(
@@ -211,9 +219,10 @@ pub(crate) fn inject_alias_component_package_constants(
                 ext,
                 &alias_context,
                 ctx,
-            );
+            )?;
         }
     }
+    Ok(())
 }
 
 fn resolve_alias_component_class<'tree>(
@@ -361,9 +370,9 @@ pub(crate) fn extract_ancestor_constants_multi_pass(
                     ext,
                     &ancestor_scope,
                     ctx,
-                );
+                )?;
             }
-            extract_constants_from_class(ancestor, ctx);
+            extract_constants_from_class(class_index, ancestor, ctx);
         }
         let new = ctx.parameter_values.len()
             + ctx.array_dimensions.len()
@@ -401,7 +410,11 @@ fn class_scope_name(tree: &ClassTree, class_def: &ClassDef) -> Result<String, Fl
 }
 
 /// Extract integer constants and array dimensions from a class definition (MLS §4.5).
-pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Context) {
+pub(crate) fn extract_constants_from_class(
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
+    class_def: &ClassDef,
+    ctx: &mut Context,
+) {
     for (name, comp) in &class_def.components {
         if !matches!(
             comp.variability,
@@ -416,14 +429,15 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         let Some(expr) = comp.binding.as_ref() else {
             continue;
         };
-        let type_name = comp.type_name.to_string();
         if !ctx.constant_values.contains_key(name)
-            && let Some(val) = try_extract_record_array_constructor_constant(expr, ctx, "", name)
+            && let Some(val) =
+                try_extract_record_array_constructor_constant(expr, class_index, ctx, "", name)
         {
             ctx.constant_values.insert(name.clone(), val);
         }
         if !ctx.constant_values.contains_key(name)
-            && let Some(val) = try_extract_named_record_constructor_constant(expr, ctx, "", name)
+            && let Some(val) =
+                try_extract_named_record_constructor_constant(expr, class_index, ctx, "", name)
         {
             ctx.constant_values.insert(name.clone(), val);
         }
@@ -432,19 +446,38 @@ pub(crate) fn extract_constants_from_class(class_def: &ClassDef, ctx: &mut Conte
         {
             ctx.constant_values.insert(name.clone(), val);
         }
-        // Integer constants
-        if type_name == "Integer"
-            && !ctx.parameter_values.contains_key(name)
-            && let Some(val) = try_eval_const_integer_with_scope(expr, ctx, "")
-        {
-            ctx.parameter_values.insert(name.clone(), val);
-        }
-        // Boolean constants
-        if type_name == "Boolean"
-            && !ctx.boolean_parameter_values.contains_key(name)
-            && let Some(val) = try_eval_const_boolean_with_scope(expr, ctx, "")
-        {
-            ctx.boolean_parameter_values.insert(name.clone(), val);
+        match crate::functions::effective_component_constant_kind(class_index, comp) {
+            Some(crate::functions::ComponentConstantKind::Integer)
+                if !ctx.parameter_values.contains_key(name) =>
+            {
+                if let Some(val) = try_eval_const_integer_with_scope(expr, ctx, "") {
+                    ctx.parameter_values.insert(name.clone(), val);
+                }
+            }
+            Some(crate::functions::ComponentConstantKind::Real)
+                if !ctx.real_parameter_values.contains_key(name) =>
+            {
+                if let Some(val) = try_eval_const_real_with_scope(expr, ctx, "")
+                    && val.is_finite()
+                {
+                    ctx.real_parameter_values.insert(name.clone(), val);
+                }
+            }
+            Some(crate::functions::ComponentConstantKind::Boolean)
+                if !ctx.boolean_parameter_values.contains_key(name) =>
+            {
+                if let Some(val) = try_eval_const_boolean_with_scope(expr, ctx, "") {
+                    ctx.boolean_parameter_values.insert(name.clone(), val);
+                }
+            }
+            Some(crate::functions::ComponentConstantKind::Enumeration)
+                if !ctx.enum_parameter_values.contains_key(name) =>
+            {
+                if let Some(val) = try_eval_const_enum_identity_with_scope(expr, ctx, "") {
+                    ctx.enum_parameter_values.insert(name.clone(), val);
+                }
+            }
+            _ => {}
         }
         // Array dimensions from shape
         if !ctx.array_dimensions.contains_key(name) && !comp.shape.is_empty() {
@@ -709,19 +742,12 @@ fn try_eval_const_field_access_expr(
             span,
         });
     }
-    if let Some(value) = lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
-    {
-        return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated(value),
-            subscripts: vec![],
-            span,
-        });
-    }
     None
 }
 
 pub(crate) fn try_extract_named_record_constructor_constant(
     expr: &ast::Expression,
+    class_index: &ast::ClassDefIndex<'_>,
     ctx: &mut Context,
     scope: &str,
     full_name: &str,
@@ -745,6 +771,7 @@ pub(crate) fn try_extract_named_record_constructor_constant(
                 let field_full_name = format!("{full_name}.{field_name}");
                 register_named_record_field_constant(
                     ctx,
+                    named_record_field_kind(class_index, &constructor, &field_name),
                     full_name,
                     &field_name,
                     &field_full_name,
@@ -776,6 +803,7 @@ pub(crate) fn try_extract_named_record_constructor_constant(
         name: constructor,
         args: ctor_args,
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: expr.span(),
     })
 }
@@ -789,10 +817,12 @@ fn named_record_constructor_arg(
         .or_else(|| (!owner_span.is_dummy()).then_some(owner_span))?;
     Some(rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::generated(format!(
-            "{NAMED_CONSTRUCTOR_ARG_PREFIX}{field_name}"
+            "{}{field_name}",
+            rumoca_core::NAMED_FUNCTION_ARG_PREFIX
         )),
         args: vec![value],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     })
 }
@@ -838,7 +868,11 @@ fn extract_named_record_constructor_fields(
                     ast::Expression::NamedArgument { name, value, .. } => {
                         named_fields.push((name.text.to_string(), value.as_ref().clone()));
                     }
-                    ast::Expression::Modification { target, value, .. } => {
+                    ast::Expression::Modification {
+                        target,
+                        value: Some(value),
+                        ..
+                    } => {
                         let field_name = single_target_field_name(target)?;
                         named_fields.push((field_name, value.as_ref().clone()));
                     }
@@ -860,6 +894,7 @@ fn single_target_field_name(target: &ast::ComponentReference) -> Option<String> 
 
 fn register_named_record_field_constant(
     ctx: &mut Context,
+    kind: Option<crate::functions::ComponentConstantKind>,
     record_prefix: &str,
     field_name: &str,
     field_full_name: &str,
@@ -872,11 +907,14 @@ fn register_named_record_field_constant(
         field_full_name,
         value.clone(),
     );
-    match value {
-        rumoca_core::Expression::Literal {
-            value: Literal::Integer(v),
-            ..
-        } => {
+    match (kind, value) {
+        (
+            Some(crate::functions::ComponentConstantKind::Integer),
+            rumoca_core::Expression::Literal {
+                value: Literal::Integer(v),
+                ..
+            },
+        ) => {
             insert_with_prefix(
                 &mut ctx.parameter_values,
                 record_prefix,
@@ -885,10 +923,13 @@ fn register_named_record_field_constant(
                 *v,
             );
         }
-        rumoca_core::Expression::Literal {
-            value: Literal::Real(v),
-            ..
-        } if v.is_finite() => {
+        (
+            Some(crate::functions::ComponentConstantKind::Real),
+            rumoca_core::Expression::Literal {
+                value: Literal::Real(v),
+                ..
+            },
+        ) if v.is_finite() => {
             insert_with_prefix(
                 &mut ctx.real_parameter_values,
                 record_prefix,
@@ -897,10 +938,31 @@ fn register_named_record_field_constant(
                 *v,
             );
         }
-        rumoca_core::Expression::Literal {
-            value: Literal::Boolean(v),
-            ..
-        } => {
+        (
+            Some(crate::functions::ComponentConstantKind::Real),
+            rumoca_core::Expression::Literal {
+                value: Literal::Integer(v),
+                ..
+            },
+        ) => {
+            let value = *v as f64;
+            if value.is_finite() {
+                insert_with_prefix(
+                    &mut ctx.real_parameter_values,
+                    record_prefix,
+                    field_name,
+                    field_full_name,
+                    value,
+                );
+            }
+        }
+        (
+            Some(crate::functions::ComponentConstantKind::Boolean),
+            rumoca_core::Expression::Literal {
+                value: Literal::Boolean(v),
+                ..
+            },
+        ) => {
             insert_with_prefix(
                 &mut ctx.boolean_parameter_values,
                 record_prefix,
@@ -909,19 +971,35 @@ fn register_named_record_field_constant(
                 *v,
             );
         }
-        rumoca_core::Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty() => {
+        (
+            Some(crate::functions::ComponentConstantKind::Enumeration),
+            rumoca_core::Expression::VarRef {
+                name, subscripts, ..
+            },
+        ) if subscripts.is_empty() => {
+            let Some(value) = ctx.resolved_enum_catalog.get_reference(name).cloned() else {
+                return;
+            };
             insert_with_prefix(
                 &mut ctx.enum_parameter_values,
                 record_prefix,
                 field_name,
                 field_full_name,
-                name.as_str().to_string(),
+                value,
             );
         }
         _ => {}
     }
+}
+
+fn named_record_field_kind(
+    class_index: &ast::ClassDefIndex<'_>,
+    constructor: &rumoca_core::Reference,
+    field_name: &str,
+) -> Option<crate::functions::ComponentConstantKind> {
+    let record = class_index.get(constructor.target_def_id()?)?;
+    let field = crate::functions::component_in_class_scope(class_index, record, field_name)?;
+    crate::functions::effective_component_constant_kind(class_index, field)
 }
 
 pub(crate) fn try_eval_const_component_ref_expr(
@@ -991,16 +1069,6 @@ pub(crate) fn try_eval_const_component_ref_expr(
             span: owner_span,
         });
     }
-    if let Some(enum_name) =
-        lookup_with_qualified_scope(&name, &scope_path, &ctx.enum_parameter_values)
-    {
-        let component = core_component_reference_from_ast(cr)?;
-        return Some(rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::with_component_reference(enum_name, component),
-            subscripts: vec![],
-            span: owner_span,
-        });
-    }
     let resolved = resolve_component_ref_through_constant_aliases(&name, ctx, scope);
     let resolved_text = resolved.as_ref().unwrap_or(&name).to_flat_string();
     try_eval_resolved_const_ref(&resolved_text, ctx, owner_span).or_else(|| {
@@ -1050,13 +1118,7 @@ fn try_eval_resolved_const_ref(
             span: owner_span,
         });
     }
-    lookup_with_scope(name, "", &ctx.enum_parameter_values).map(|enum_name| {
-        rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated(enum_name),
-            subscripts: vec![],
-            span: owner_span,
-        }
-    })
+    None
 }
 
 fn component_ref_has_array_shape(name: &QualifiedName, ctx: &Context, scope: &str) -> bool {
@@ -1168,6 +1230,7 @@ fn try_eval_const_function_call_expr(
         ),
         args: evaluated_args,
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: owner_span,
     })
 }
@@ -1333,27 +1396,22 @@ pub(crate) fn try_eval_const_boolean_with_scope(
     crate::boolean_eval::try_eval_boolean_with_scope(expr, ctx, scope)
 }
 
-/// Scope-aware constant enum evaluation.
-///
-/// Supports direct enum literals (`Type.Literal`), references to enum-valued
-/// constants/parameters in scope, and if-expressions with constant conditions.
-pub(crate) fn try_eval_const_enum_with_scope(
+pub(crate) fn try_eval_const_enum_identity_with_scope(
     expr: &ast::Expression,
     ctx: &Context,
     scope: &str,
-) -> Option<String> {
+) -> Option<rumoca_eval_flat::constant::ResolvedEnumValue> {
     match expr {
         ast::Expression::ComponentReference(cr) => {
             let name = QualifiedName::from_component_reference(cr).to_flat_string();
-
             lookup_with_scope(&name, scope, &ctx.enum_parameter_values).or_else(|| {
-                // Enum literals are valid constant references even when no
-                // enum-valued parameter exists at the same path.
-                looks_like_enum_literal_path(&name).then_some(name)
+                let component = core_component_reference_from_ast(cr)?;
+                let reference = rumoca_core::Reference::from_component_reference(component);
+                ctx.resolved_enum_catalog.get_reference(&reference).cloned()
             })
         }
         ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_const_enum_with_scope(inner, ctx, scope)
+            try_eval_const_enum_identity_with_scope(inner, ctx, scope)
         }
         ast::Expression::If {
             branches,
@@ -1361,7 +1419,7 @@ pub(crate) fn try_eval_const_enum_with_scope(
             ..
         } => {
             let selected = select_const_if_branch(branches, else_branch, ctx, scope)?;
-            try_eval_const_enum_with_scope(selected, ctx, scope)
+            try_eval_const_enum_identity_with_scope(selected, ctx, scope)
         }
         _ => None,
     }
@@ -1429,9 +1487,9 @@ pub(crate) fn infer_dims_from_expr(
     scope: &str,
 ) -> Option<Vec<i64>> {
     match expr {
-        ast::Expression::Array { .. } | ast::Expression::Range { .. } => {
-            infer_dims_via_eval_ast_i64(expr, ctx, scope)
-        }
+        ast::Expression::Array { .. }
+        | ast::Expression::Range { .. }
+        | ast::Expression::DerivativeCall { .. } => infer_dims_via_eval_ast_i64(expr, ctx, scope),
         ast::Expression::FunctionCall { comp, args, .. } => {
             let fn_name = comp
                 .parts
@@ -1528,16 +1586,34 @@ pub(crate) fn pre_evaluate_structural_equations(
     ctx: &mut Context,
     overlay: &InstanceOverlay,
     tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<(), FlattenError> {
-    let eval_ctx = build_structural_eval_context(ctx, overlay, tree)?;
+    let eval_ctx = build_structural_eval_context(ctx, overlay, tree, class_index)?;
+    let mut call_canonicalizer = crate::functions::StructuralFoldCallCanonicalizer::new(
+        ctx.functions.values(),
+        tree,
+        class_index,
+    )?;
 
     // Scan all class instances for structural Boolean equations
     for (_def_id, class_data) in &overlay.classes {
         let prefix = &class_data.qualified_name;
         for eq_entry in &class_data.equations {
-            if let Some((var_name, bool_val)) =
-                try_eval_structural_equation(&eq_entry.equation, prefix, ctx, &eval_ctx)?
-            {
+            if !equation_targets_boolean_instance(
+                &eq_entry.equation,
+                class_data.instance_id,
+                overlay,
+                tree.type_table.boolean(),
+            ) {
+                continue;
+            }
+            if let Some((var_name, bool_val)) = try_eval_structural_equation(
+                &eq_entry.equation,
+                prefix,
+                ctx,
+                &eval_ctx,
+                &mut call_canonicalizer,
+            )? {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(
                     var = %var_name,
@@ -1551,36 +1627,159 @@ pub(crate) fn pre_evaluate_structural_equations(
     Ok(())
 }
 
+fn equation_targets_boolean_instance(
+    equation: &rumoca_ir_ast::Equation,
+    owner_class_id: rumoca_core::InstanceId,
+    overlay: &InstanceOverlay,
+    boolean_type: rumoca_core::TypeId,
+) -> bool {
+    let ast::Equation::Simple {
+        lhs: ast::Expression::ComponentReference(reference),
+        ..
+    } = equation
+    else {
+        return false;
+    };
+    if reference.parts.len() != 1 || reference.parts[0].subs.is_some() {
+        return false;
+    }
+    let Some(target_def_id) = reference.target_def_id() else {
+        return false;
+    };
+    let Some(owner) = overlay.classes.get(&owner_class_id) else {
+        return false;
+    };
+    let target_path = owner
+        .qualified_name
+        .join(&ast::QualifiedName::from_component_reference(reference))
+        .to_component_path();
+    if overlay.array_parent_dims.contains_key(&target_path) {
+        return false;
+    }
+
+    overlay.components.values().any(|instance| {
+        instance.owner_class_id == Some(owner_class_id)
+            && instance.dims.is_empty()
+            && instance.qualified_name.to_component_path() == target_path
+            && overlay
+                .type_roots
+                .get(&instance.type_id)
+                .copied()
+                .unwrap_or(instance.type_id)
+                == boolean_type
+            && instance
+                .component_ref
+                .as_ref()
+                .is_some_and(|component_ref| component_ref.target_def_id() == target_def_id)
+    })
+}
+
 /// Build an evaluation context populated with known parameters, functions, constants,
 /// and component bindings from the overlay.
 pub(crate) fn build_structural_eval_context(
     ctx: &Context,
     overlay: &InstanceOverlay,
     tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
 ) -> Result<rumoca_eval_flat::constant::EvalContext, FlattenError> {
     use rumoca_eval_flat::constant::{EvalContext, Value};
+
+    reject_overlapping_typed_parameter_caches(ctx)?;
 
     let parameter_capacity = ctx.parameter_values.len()
         + ctx.real_parameter_values.len()
         + ctx.boolean_parameter_values.len();
-    let mut eval_ctx = EvalContext::with_capacity(parameter_capacity, 0, ctx.functions.len() * 2);
+    let enum_catalog = resolved_tree_enum_catalog(tree)?;
+    let mut eval_ctx = EvalContext::structural_preidentity_with_catalog(
+        parameter_capacity,
+        ctx.functions.len() * 2,
+        enum_catalog,
+    );
     for (name, value) in &ctx.parameter_values {
-        eval_ctx.add_parameter(name.clone(), Value::Integer(*value));
+        if parameter_is_scalar(ctx, name) {
+            eval_ctx.add_parameter(name.clone(), Value::Integer(*value));
+        }
     }
     for (name, value) in &ctx.real_parameter_values {
-        eval_ctx.add_parameter(name.clone(), Value::Real(*value));
+        if parameter_is_scalar(ctx, name) {
+            eval_ctx.add_parameter(name.clone(), Value::Real(*value));
+        }
     }
     for (name, value) in &ctx.boolean_parameter_values {
-        eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
+        if parameter_is_scalar(ctx, name) {
+            eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
+        }
     }
-    for func in ctx.functions.values() {
-        eval_ctx.add_function(func.clone());
+    for (name, dimensions) in &ctx.array_dimensions {
+        eval_ctx.add_array_dimensions(name.clone(), dimensions.clone());
     }
+    crate::equations::try_issue_eval_function_facts(&mut eval_ctx, ctx.functions.values())
+        .map_err(|error| FlattenError::internal(error.to_string()))?;
 
     resolve_constants_from_tree(tree, &mut eval_ctx)?;
-    collect_component_binding_values(overlay, &mut eval_ctx)?;
+    let mut call_canonicalizer = crate::functions::StructuralFoldCallCanonicalizer::new(
+        ctx.functions.values(),
+        tree,
+        class_index,
+    )?;
+    collect_component_binding_values(ctx, overlay, &mut eval_ctx, &mut call_canonicalizer)?;
 
     Ok(eval_ctx)
+}
+
+fn reject_overlapping_typed_parameter_caches(ctx: &Context) -> Result<(), FlattenError> {
+    let mut conflicts = ctx
+        .parameter_values
+        .keys()
+        .chain(ctx.real_parameter_values.keys())
+        .chain(ctx.boolean_parameter_values.keys())
+        .chain(ctx.enum_parameter_values.keys())
+        .filter(|name| {
+            usize::from(ctx.parameter_values.contains_key(*name))
+                + usize::from(ctx.real_parameter_values.contains_key(*name))
+                + usize::from(ctx.boolean_parameter_values.contains_key(*name))
+                + usize::from(ctx.enum_parameter_values.contains_key(*name))
+                > 1
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    conflicts.sort();
+    conflicts.dedup();
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(FlattenError::internal(format!(
+        "typed structural parameter cache ownership overlaps for: {}",
+        conflicts.join(", ")
+    )))
+}
+
+pub(in crate::pipeline) fn resolved_tree_enum_catalog(
+    tree: &ClassTree,
+) -> Result<rumoca_eval_flat::constant::ResolvedEnumCatalog, FlattenError> {
+    let mut declarations = Vec::new();
+    for (def_id, qualified_name) in &tree.def_map {
+        let Some(class_def) = tree.get_class_by_def_id(*def_id) else {
+            continue;
+        };
+        if !class_def.enum_literals.is_empty() {
+            declarations.push(rumoca_eval_flat::constant::ResolvedEnumDeclaration {
+                declaration: *def_id,
+                type_name: qualified_name.clone(),
+                literals: class_def
+                    .enum_literals
+                    .iter()
+                    .map(|literal| literal.ident.text.to_string())
+                    .collect(),
+            });
+        }
+    }
+    rumoca_eval_flat::constant::ResolvedEnumCatalog::try_from_declarations(declarations)
+        .map_err(|error| FlattenError::internal(error.to_string()))
+}
+
+fn parameter_is_scalar(ctx: &Context, name: &str) -> bool {
+    ctx.array_dimensions.get(name).is_none_or(Vec::is_empty)
 }
 
 /// Try to evaluate a simple equation as a structural Boolean assignment.
@@ -1590,6 +1789,7 @@ pub(crate) fn try_eval_structural_equation(
     prefix: &QualifiedName,
     ctx: &Context,
     eval_ctx: &rumoca_eval_flat::constant::EvalContext,
+    call_canonicalizer: &mut crate::functions::StructuralFoldCallCanonicalizer<'_>,
 ) -> Result<Option<(String, bool)>, FlattenError> {
     let ast::Equation::Simple { lhs, rhs } = equation else {
         return Ok(None);
@@ -1613,14 +1813,15 @@ pub(crate) fn try_eval_structural_equation(
         return Ok(None);
     }
 
-    let flat_rhs = qualify_expression(rhs, prefix)?;
-    let val = match rumoca_eval_flat::constant::eval_expr(&flat_rhs, eval_ctx) {
-        Ok(v) => v,
-        Err(_e) => {
-            return Ok(None);
-        }
-    };
-    let Some(bool_val) = val.as_bool() else {
+    let mut flat_rhs = qualify_expression(rhs, prefix)?;
+    call_canonicalizer.canonicalize(&mut flat_rhs)?;
+    let Some(bool_val) = crate::constant_eval::evaluate_optional_boolean(
+        &flat_rhs,
+        eval_ctx,
+        "evaluating a structural Boolean equation",
+        rhs.span(),
+    )?
+    else {
         return Ok(None);
     };
 
@@ -1631,10 +1832,11 @@ pub(crate) fn try_eval_structural_equation(
 /// Uses the ClassTree to resolve def_ids to fully qualified names.
 pub(crate) fn collect_function_calls_from_equation(
     eq: &rumoca_ir_ast::Equation,
+    owner_span: rumoca_core::Span,
     calls: &mut crate::functions::FunctionRequests,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) {
+) -> Result<(), FlattenError> {
     match eq {
         ast::Equation::Simple { lhs, rhs } => {
             collect_function_calls_from_expression(lhs, calls, tree, class_index);
@@ -1645,7 +1847,13 @@ pub(crate) fn collect_function_calls_from_equation(
                 collect_function_calls_from_expression(&idx.range, calls, tree, class_index);
             }
             for inner_eq in equations {
-                collect_function_calls_from_equation(inner_eq, calls, tree, class_index);
+                collect_function_calls_from_equation(
+                    inner_eq,
+                    owner_span,
+                    calls,
+                    tree,
+                    class_index,
+                )?;
             }
         }
         ast::Equation::If {
@@ -1655,12 +1863,24 @@ pub(crate) fn collect_function_calls_from_equation(
             for block in cond_blocks {
                 collect_function_calls_from_expression(&block.cond, calls, tree, class_index);
                 for inner_eq in &block.eqs {
-                    collect_function_calls_from_equation(inner_eq, calls, tree, class_index);
+                    collect_function_calls_from_equation(
+                        inner_eq,
+                        owner_span,
+                        calls,
+                        tree,
+                        class_index,
+                    )?;
                 }
             }
             if let Some(else_eqs) = else_block {
                 for inner_eq in else_eqs {
-                    collect_function_calls_from_equation(inner_eq, calls, tree, class_index);
+                    collect_function_calls_from_equation(
+                        inner_eq,
+                        owner_span,
+                        calls,
+                        tree,
+                        class_index,
+                    )?;
                 }
             }
         }
@@ -1668,7 +1888,13 @@ pub(crate) fn collect_function_calls_from_equation(
             for block in blocks {
                 collect_function_calls_from_expression(&block.cond, calls, tree, class_index);
                 for inner_eq in &block.eqs {
-                    collect_function_calls_from_equation(inner_eq, calls, tree, class_index);
+                    collect_function_calls_from_equation(
+                        inner_eq,
+                        owner_span,
+                        calls,
+                        tree,
+                        class_index,
+                    )?;
                 }
             }
         }
@@ -1693,8 +1919,14 @@ pub(crate) fn collect_function_calls_from_equation(
                 collect_function_calls_from_expression(level, calls, tree, class_index);
             }
         }
-        ast::Equation::Empty => {}
+        ast::Equation::Empty => {
+            return Err(FlattenError::invalid_ast_recovery(
+                "Equation::Empty is a parser-recovery node",
+                owner_span,
+            ));
+        }
     }
+    Ok(())
 }
 
 fn resolve_function_request(
@@ -1742,7 +1974,7 @@ pub(crate) fn collect_function_calls_from_expression(
         tree,
         class_index,
     };
-    let _ = collector.visit_expression(expr);
+    let _visit_outcome = collector.visit_expression(expr);
 }
 
 #[cfg(test)]

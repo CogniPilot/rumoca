@@ -183,7 +183,7 @@ Verification-surface classification:
 nix develop .#full --command cargo test --release -p rumoca-test-msl \
   --features backend-stress-tests --test backend_stress_test -- --nocapture
 nix develop .#default --command cargo test --release -p rumoca-test-msl \
-  --features msl-external-tests --test c_ode_msl_test -- --nocapture
+  --features msl-external-tests --test casadi_msl_test -- --nocapture
 ```
 
 Command discovery:

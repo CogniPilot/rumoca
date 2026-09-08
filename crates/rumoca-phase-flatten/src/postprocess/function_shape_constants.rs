@@ -234,7 +234,7 @@ mod tests {
         };
         let output = crate::test_support::integer_param("state", vec![0], span)
             .with_shape_expr(vec![Subscript::expr(Box::new(shape), span)]);
-        let mut function = Function::new(name, span);
+        let mut function = Function::new(name, rumoca_core::DefId::new(61_009), span);
         function.add_output(output);
         function
     }

@@ -6,9 +6,16 @@ use super::*;
 
 impl Context {
     /// Return the shared `rumoca_eval_const` context used by complex-expression fallback.
-    pub(crate) fn eval_fallback_context(&self) -> &rumoca_eval_flat::constant::EvalContext {
-        self.eval_fallback_context
+    pub(crate) fn eval_fallback_context(
+        &self,
+    ) -> Result<&rumoca_eval_flat::constant::EvalContext, FlattenError> {
+        match self
+            .eval_fallback_context
             .get_or_init(|| equations::build_eval_context(self, None))
+        {
+            Ok(context) => Ok(context),
+            Err(error) => Err(FlattenError::internal(error.to_string())),
+        }
     }
 
     #[cfg(test)]
@@ -32,17 +39,8 @@ impl Context {
     ///
     /// Returns the original name if no alias applies.
     pub(super) fn resolve_alias(&self, name: &str) -> String {
-        const MAX_DEPTH: usize = 10; // Prevent infinite loops
-        let mut current = rumoca_core::ComponentPath::from_flat_path(name);
-        for _iteration in 0..MAX_DEPTH {
-            let resolved = self.resolve_alias_once_path(&current);
-            if resolved == current {
-                // No alias applied, we're done
-                break;
-            }
-            current = resolved;
-        }
-        current.to_flat_string()
+        self.resolve_alias_once_path(&rumoca_core::ComponentPath::from_flat_path(name))
+            .to_flat_string()
     }
 
     /// Apply one level of alias resolution.
@@ -96,16 +94,10 @@ impl rumoca_core::EvalLookup for Context {
             }
         }
 
-        if crate::path_utils::is_nested_name(name) {
-            if let Some(value) = lookup_with_scope(name, scope, &self.parameter_values) {
-                return Some(value);
-            }
-            if let Some(value) = lookup_with_scope(name, scope, &self.real_parameter_values)
-                && value.is_finite()
-                && value.fract() == 0.0
-            {
-                return Some(value as i64);
-            }
+        if crate::path_utils::is_nested_name(name)
+            && let Some(value) = lookup_with_scope(name, scope, &self.parameter_values)
+        {
+            return Some(value);
         }
         None
     }
@@ -148,27 +140,6 @@ impl rumoca_core::EvalLookup for Context {
 
         if crate::path_utils::is_nested_name(name) {
             return lookup_with_scope(name, scope, &self.boolean_parameter_values);
-        }
-        None
-    }
-
-    fn lookup_enum<'a>(&'a self, name: &str, scope: &str) -> Option<std::borrow::Cow<'a, str>> {
-        for candidate in scoped_lookup_candidates(name, scope) {
-            if let Some(value) = self.enum_parameter_values.get(&candidate) {
-                return Some(std::borrow::Cow::Borrowed(value.as_str()));
-            }
-
-            let resolved = self.resolve_alias(&candidate);
-            if resolved != candidate
-                && let Some(value) = self.enum_parameter_values.get(&resolved)
-            {
-                return Some(std::borrow::Cow::Borrowed(value.as_str()));
-            }
-        }
-
-        if crate::path_utils::is_nested_name(name) {
-            return lookup_with_scope(name, scope, &self.enum_parameter_values)
-                .map(std::borrow::Cow::Owned);
         }
         None
     }

@@ -113,6 +113,10 @@ impl DelayRuntime {
         DelayRuntimeSnapshot(self.state.borrow().clone())
     }
 
+    pub(crate) fn snapshot_into(&self, snapshot: &mut DelayRuntimeSnapshot) {
+        snapshot.0.clone_from(&self.state.borrow());
+    }
+
     pub(crate) fn restore(&self, snapshot: &DelayRuntimeSnapshot) {
         self.state.borrow_mut().clone_from(&snapshot.0);
     }

@@ -9,7 +9,6 @@ use syn::{
 
 const COVERED_FILES: &[&str] = &[
     "crates/rumoca-phase-resolve/src/contents.rs",
-    "crates/rumoca-phase-resolve/src/validation.rs",
     "crates/rumoca-phase-resolve/src/semantic_checks/mod.rs",
     "crates/rumoca-phase-resolve/src/semantic_checks/expr.rs",
     "crates/rumoca-phase-typecheck/src/typechecker/late_methods.rs",
@@ -114,7 +113,6 @@ fn allowed_recursive_functions(file: &str) -> BTreeSet<&'static str> {
         "crates/rumoca-phase-resolve/src/contents.rs" => {
             BTreeSet::from(["resolve_contents_class", "resolve_component_types_class"])
         }
-        "crates/rumoca-phase-resolve/src/validation.rs" => BTreeSet::from(["visit_class_def"]),
         "crates/rumoca-phase-resolve/src/semantic_checks/mod.rs" => {
             BTreeSet::from(["visit_class_def"])
         }

@@ -2,19 +2,17 @@
 
 mod composed_contraction;
 mod contraction;
-#[cfg(debug_assertions)]
-mod contraction_fission;
+mod contraction_instantiation;
 mod materialized_contraction;
 mod selector_axis;
 
 use super::*;
 use composed_contraction::{
-    ComposedContraction, ContractionAccumulator, IntermediateElement, attest_row_contraction,
-    composed_left_contraction, intermediate_element,
+    ComposedContraction, ContractionAccumulator, IntermediateElement, composed_left_contraction,
+    intermediate_element, issue_real_matrix_multiply_occurrence,
 };
 use contraction::{TensorContraction, contraction_indices, sum_terms, tensor_contraction};
-#[cfg(debug_assertions)]
-use contraction_fission::{ContractionFission, fission_contraction_body};
+use contraction_instantiation::instantiate_iteration;
 pub(in crate::lower) use selector_axis::{AxisBounds, collapse_selector_axes};
 
 pub(super) struct SelectionValue {
@@ -608,6 +606,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     pub(super) fn lower_array_at(
         &mut self,
+        expression: dae::ExprId<'dae>,
         elements: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],
         span: Span,
@@ -647,12 +646,19 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .iter()
             .map(|element| element.index())
             .collect::<Vec<_>>();
+        let selection = self.selection_point(
+            ConditionalActivationKind::ArraySelection,
+            expression,
+            &activation_operands,
+            indices,
+        )?;
         let mut selected = Vec::with_capacity(elements.len());
         for (ordinal, element) in elements.iter().enumerate() {
             self.conditional_activation_path
                 .push(ConditionalActivationKey {
                     kind: ConditionalActivationKind::ArraySelection,
                     operands: activation_operands.clone(),
+                    selection,
                     branch: u32::try_from(ordinal).map_err(|_| {
                         GalecTargetError::LoweringInternal {
                             detail: "array-selection ordinal exceeds the activation-key capacity"
@@ -699,6 +705,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     pub(super) fn lower_elementwise_builtin(
         &mut self,
+        expression: dae::ExprId<'dae>,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],
@@ -719,6 +726,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             dae::PureBuiltin::PromotedCat1 | dae::PureBuiltin::PromotedCat2
         ) {
             return self.lower_promoted_concatenation_element(
+                expression,
                 builtin,
                 arguments,
                 indices,
@@ -822,6 +830,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn lower_promoted_concatenation_element(
         &mut self,
+        expression: dae::ExprId<'dae>,
         builtin: dae::PureBuiltin,
         arguments: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],
@@ -834,6 +843,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .expect("checked concatenation projection has its concatenated axis");
         let Some(coordinate) = constant_integer(selected) else {
             return self.lower_dynamic_concatenation_element(
+                expression,
                 arguments,
                 indices,
                 axis,
@@ -871,6 +881,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     fn lower_dynamic_concatenation_element(
         &mut self,
+        expression: dae::ExprId<'dae>,
         arguments: dae::ExpressionOperands<'dae>,
         indices: &[gast::Expression],
         axis: usize,
@@ -880,11 +891,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let coordinate = indices
             .get(axis)
             .expect("checked concatenation projection has its concatenated axis");
-        let mut offset = 0_i64;
         let activation_operands = arguments
             .iter()
             .map(|argument| argument.index())
             .collect::<Vec<_>>();
+        let selection = self.selection_point(
+            ConditionalActivationKind::Concatenation,
+            expression,
+            &activation_operands,
+            indices,
+        )?;
+        let mut offset = 0_i64;
         let mut values = Vec::with_capacity(arguments.len());
         for (ordinal, argument) in arguments.iter().enumerate() {
             let dimensions = self
@@ -910,6 +927,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 .push(ConditionalActivationKey {
                     kind: ConditionalActivationKind::Concatenation,
                     operands: activation_operands.clone(),
+                    selection,
                     branch: u32::try_from(ordinal).map_err(|_| {
                         GalecTargetError::LoweringInternal {
                             detail: "concatenation ordinal exceeds the activation-key capacity"
@@ -1127,7 +1145,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 self.function_parameter_coordinate(parameter, indices, span)
             }
             _ => {
-                if let Some(value) = self.inline_algebraic_coordinate(coordinate, indices)? {
+                if let Some(value) = self.inline_algebraic_coordinate(coordinate, indices, span)? {
                     return Ok(value);
                 }
                 self.variable_coordinate(coordinate, indices, span)
@@ -1159,41 +1177,41 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         &mut self,
         coordinate: dae::CoordinateView<'dae>,
         indices: &[gast::Expression],
+        span: Span,
     ) -> Result<Option<TypedExpression>, GalecTargetError> {
-        let materialized_algebraic = match coordinate {
-            dae::CoordinateView::Algebraic(variable) => {
-                self.by_id
-                    .get(&dae::VariableId::from(variable).index())
-                    .is_some_and(|variable| variable.class == VariableClass::Local)
-                    && !self.inline_causal_locals
-            }
-            _ => false,
-        };
-        if let dae::CoordinateView::Algebraic(variable) = coordinate
-            && !materialized_algebraic
-            && let Some(definition) = self.definitions.definition(variable)
-        {
-            return self.lower_at(definition, indices).map(Some);
-        }
-        if let dae::CoordinateView::Algebraic(variable) = coordinate
-            && !materialized_algebraic
-        {
-            let variable_id = dae::VariableId::from(variable);
-            let dimensions = self
-                .view
-                .variable(variable_id)
-                .expect("checked algebraic variable resolves")
-                .value_type()
-                .dimensions();
-            if let Some(scalar) = literal_scalar_index(dimensions, indices)
-                && let Some(definition) = self
+        let substitution = causal_substitution::CausalSubstitutionPlan::new(
+            self.view,
+            self.definitions,
+            self.by_id,
+        );
+        let definition =
+            substitution.exact_definition(coordinate, indices, self.inline_causal_locals);
+        let Some(definition) = definition else {
+            if self.inline_causal_locals
+                && let dae::CoordinateView::Algebraic(variable) = coordinate
+                && self.definitions.definition(variable).is_none()
+                && self
                     .definitions
-                    .scalar_definition_for_variable(variable_id, scalar)
+                    .fully_defines_variable(dae::VariableId::from(variable))
             {
-                return self.lower_at(definition, &[]).map(Some);
+                return Err(unsupported(
+                    "dynamic-scalar-causal-read",
+                    format!(
+                        "scalar-defined algebraic #{} is read through an index that is not a compile-time coordinate; GALEC cannot schedule its materialization before this clocked use",
+                        variable.index()
+                    ),
+                    span,
+                ));
             }
-        }
-        Ok(None)
+            return Ok(None);
+        };
+        let projected = matches!(
+            coordinate,
+            dae::CoordinateView::Algebraic(variable)
+                if self.definitions.definition(variable).is_none()
+        );
+        self.lower_at(definition, if projected { &[] } else { indices })
+            .map(Some)
     }
 
     fn function_parameter_coordinate(
@@ -1203,17 +1221,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
         if self.function_scope != Some(parameter.function()) {
-            let argument = self
-                .call_frames
-                .iter()
-                .rev()
-                .find(|frame| frame.function == parameter.function())
-                .and_then(|frame| frame.arguments.get(parameter.ordinal() as usize))
-                .copied()
-                .ok_or_else(|| GalecTargetError::LoweringInternal {
-                    detail: "function parameter used without its checked call frame".to_owned(),
-                })?;
-            return self.lower_at(argument, indices);
+            return self.lower_prepared_function_parameter(parameter, indices, span);
         }
         let parameter = self
             .view
@@ -1239,6 +1247,45 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 span,
             )?,
             scalar_type,
+        })
+    }
+
+    fn lower_prepared_function_parameter(
+        &mut self,
+        parameter: dae::FunctionParameterId<'dae>,
+        indices: &[gast::Expression],
+        span: Span,
+    ) -> Result<TypedExpression, GalecTargetError> {
+        let PreparedInlineArgument::Primitive(value) = self.prepared_inline_argument(parameter)?
+        else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "primitive function parameter has a record prepared argument".to_owned(),
+            });
+        };
+        if value.dimensions.is_empty() {
+            if !indices.is_empty() {
+                return Err(GalecTargetError::LoweringInternal {
+                    detail: "scalar prepared argument received array indices".to_owned(),
+                });
+            }
+            return Ok(TypedExpression {
+                expression: value.expression,
+                scalar_type: value.scalar_type,
+            });
+        }
+        let gast::Expression::Ref(gast::Reference::Local(reference)) = value.expression else {
+            return Err(GalecTargetError::LoweringInternal {
+                detail: "prepared aggregate argument is not local storage".to_owned(),
+            });
+        };
+        Ok(TypedExpression {
+            expression: self.lower_local_reference(
+                reference.name,
+                &value.dimensions,
+                indices,
+                span,
+            )?,
+            scalar_type: value.scalar_type,
         })
     }
 
@@ -1339,6 +1386,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         span: Span,
     ) -> Result<TypedExpression, GalecTargetError> {
         let (variable, previous) = coordinate_variable(coordinate, span)?;
+        if !previous && let Some(reads) = self.call_argument_read_captures.last_mut() {
+            reads.insert(variable.index());
+        }
         let classified = self.by_id.get(&variable.index()).ok_or_else(|| {
             GalecTargetError::UnknownVariableReference {
                 name: format!("#{}", variable.index()),
@@ -1384,6 +1434,7 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
 
     pub(super) fn lower_comprehension_at(
         &mut self,
+        comprehension: dae::ExprId<'dae>,
         domain: dae::DomainId<'dae>,
         body: dae::ExprId<'dae>,
         indices: &[gast::Expression],
@@ -1408,12 +1459,15 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             .zip(ordinals)
             .map(|(binder, ordinal)| comprehension_binder_value(binder, ordinal.clone()))
             .collect();
-        self.comprehension_frames.push(ComprehensionFrame {
-            domain: domain.index(),
+        self.enter_iteration_point(
+            IterationOwner::Comprehension {
+                expression: comprehension.index(),
+            },
+            domain.index(),
             binders,
-        });
+        )?;
         let result = self.lower_at(body, body_indices);
-        self.comprehension_frames.pop();
+        self.leave_iteration_point();
         result
     }
 

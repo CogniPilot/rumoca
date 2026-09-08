@@ -33,12 +33,20 @@ fn flatten_source(source: &str, model: &str) -> flat::Model {
     tree.source_map.add(file_name, source);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let instanced =
-        rumoca_phase_instantiate::instantiate(resolved, model).expect("model instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+    let overlay =
+        match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model) {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
         .expect("instanced model typechecks");
-    rumoca_phase_flatten::flatten_ref(&tree, &overlay, model).expect("model flattens")
+    rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+        .expect("model flattens")
 }
 
 /// Every equation residual, rendered.

@@ -24,6 +24,7 @@ fn dynamic_time_event_deadline_lowers_to_owned_row() {
         let next_event = model.variables(|variables| {
             variables.parameter(
                 VarName::new("nextEvent"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 owner,
                 dae::VariableAttributes::default(),
@@ -62,20 +63,14 @@ fn fmi_inventory_promotes_a_state_dependent_deadline_to_an_indicator() {
                 declaration,
             )
         })?;
-        let start = model.expressions(|expressions| {
-            expressions
-                .at(declaration)
-                .literal(dae::DaeLiteral::Real(0.0))
-        })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
-                dae::VariableAttributes {
-                    start: Some(start),
-                    ..dae::VariableAttributes::default()
-                },
+                state_attributes,
             )
         })?;
         let (deadline, residual) = model.expressions(|expressions| {
@@ -142,20 +137,14 @@ fn fmi_inventory_keeps_a_time_only_root_as_an_indicator() {
                 declaration,
             )
         })?;
-        let start = model.expressions(|expressions| {
-            expressions
-                .at(declaration)
-                .literal(dae::DaeLiteral::Real(0.0))
-        })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 declaration,
-                dae::VariableAttributes {
-                    start: Some(start),
-                    ..dae::VariableAttributes::default()
-                },
+                state_attributes,
             )
         })?;
         let (residual, relation_expression) = model.expressions(|expressions| {
@@ -229,12 +218,14 @@ fn terminal_coordinate_lowers_to_the_driver_owned_final_event_slot() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let residual = model.expressions(|expressions| {
@@ -310,6 +301,7 @@ fn explicit_string_format_fails_at_its_exact_solve_lowering_span() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 declaration_at,
                 dae::VariableAttributes::default(),
@@ -386,12 +378,14 @@ fn primitive_relation_root_lowers_to_signed_event_program() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(6),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let (residual, relation_expression) = model.expressions(|expressions| {
@@ -462,12 +456,14 @@ fn roots_from_one_source_owner_lower_to_one_multi_output_program() {
             Ok((
                 variables.parameter(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(7),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.parameter(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(8),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
@@ -542,6 +538,7 @@ fn exact_unconditional_b1c_relation_owns_the_root_post_side() {
         let active = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("active"),
+                rumoca_core::InstanceId::new(9),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -603,18 +600,21 @@ fn relation_bearing_follow_current_model() -> dae::Dae {
             Ok((
                 variables.discrete_value(
                     VarName::new("fire"),
+                    rumoca_core::InstanceId::new(10),
                     boolean,
                     owner,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("off"),
+                    rumoca_core::InstanceId::new(11),
                     boolean,
                     owner,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("gated"),
+                    rumoca_core::InstanceId::new(12),
                     boolean,
                     owner,
                     dae::VariableAttributes::default(),
@@ -727,6 +727,11 @@ fn root_refresh_excludes_relation_bearing_follow_current_owner() {
         ],
         "event iteration retains both root-driven owners while pre is frozen"
     );
+    assert_eq!(
+        solve.discrete().runtime_assignment_source_rows,
+        [1, 2],
+        "runtime rows retain their exact main B.1c output identities in owner order"
+    );
 }
 
 #[test]
@@ -750,12 +755,14 @@ fn multiply_owned_relation_fails_closed_without_an_arbitrary_root_target() {
             Ok((
                 variables.discrete_value(
                     VarName::new("a"),
+                    rumoca_core::InstanceId::new(13),
                     boolean,
                     declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("b"),
+                    rumoca_core::InstanceId::new(14),
                     boolean,
                     declaration,
                     dae::VariableAttributes::default(),

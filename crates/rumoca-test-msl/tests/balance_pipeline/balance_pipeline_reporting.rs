@@ -6,9 +6,10 @@ use rumoca_sim::sim_trace_compare::{
 };
 use std::collections::{BTreeMap, HashSet};
 
-// =============================================================================
-// Result JSON write + balance summary printing
-// =============================================================================
+mod report_helpers;
+use report_helpers::*;
+
+// Result JSON write + balance summary printing.
 
 #[derive(Serialize)]
 struct MslTargetModelList<'a> {
@@ -135,6 +136,15 @@ struct MslPackageTraceAccuracyReport {
     model_count: usize,
     rows: Vec<MslPackageTraceAccuracyRow>,
     overall: MslPackageTraceAccuracyRow,
+}
+
+#[derive(Serialize)]
+struct SourceBoundTraceAccuracyReport<'a> {
+    trace_comparison_digest: &'a str,
+    omc_reference_digest: &'a str,
+    source_evidence_digest: &'a str,
+    #[serde(flatten)]
+    report: &'a MslPackageTraceAccuracyReport,
 }
 
 #[derive(Default)]
@@ -280,29 +290,6 @@ fn result_solved_initial_conditions(result: &MslModelResult) -> bool {
                 result.timeout_phase,
                 Some(rumoca_worker::WorkerProgressPhase::Sim)
             ))
-}
-
-fn rounded_percent(passed: usize, total: usize) -> f64 {
-    if total == 0 {
-        0.0
-    } else {
-        ((passed as f64 / total as f64) * 100.0).round()
-    }
-}
-
-fn percent_cell(passed: usize, total: usize) -> String {
-    format!("{:.0}%", rounded_percent(passed, total))
-}
-
-fn count_map_cell(counts: &BTreeMap<String, usize>) -> String {
-    if counts.is_empty() {
-        return "-".to_string();
-    }
-    counts
-        .iter()
-        .map(|(key, count)| format!("{key}:{count}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn mls_contract_category(result: &MslModelResult) -> &'static str {
@@ -601,20 +588,27 @@ fn pass_rate_parity_from_trace_payload(
         })?;
     let mut parity = MslPackagePassRateParity::default();
     for (model_name, model_payload) in models {
-        let mut metric = serde_json::from_value::<ModelDeviationMetric>(model_payload.clone())
+        let metric =
+            rumoca_test_msl::msl_tools::omc_simulation_reference::parse_trace_model_metric(
+                model_payload.clone(),
+            )
             .map_err(|error| {
                 io::Error::other(format!(
                     "failed to parse trace metric for {model_name}: {error}"
                 ))
             })?;
-        if metric.model_name.is_empty() {
-            metric.model_name.clone_from(model_name);
+        if metric.model_name() != model_name.as_str() {
+            return Err(io::Error::other(format!(
+                "trace metric key `{model_name}` does not match embedded model `{}`",
+                metric.model_name()
+            )));
         }
         parity.models.insert(
-            metric.model_name.clone(),
+            metric.model_name().to_string(),
             MslPackagePassRateParityModel {
-                ic_matches: (metric.initial_condition.channels_compared > 0)
-                    .then_some(metric.initial_condition.deviation_count == 0),
+                ic_matches: metric
+                    .has_complete_initial_condition_coverage()
+                    .then_some(metric.initial_condition().deviation_count == 0),
                 sim_matches: trace_metric_has_data(&metric)
                     .then(|| trace_metric_matches_omc(&metric)),
             },
@@ -637,7 +631,9 @@ fn trace_metric_matches_omc(metric: &ModelDeviationMetric) -> bool {
 }
 
 fn trace_metric_has_data(metric: &ModelDeviationMetric) -> bool {
-    metric.compared_variables > 0 && metric.samples_compared > 0
+    metric.has_complete_channel_coverage()
+        && metric.compared_variables() > 0
+        && metric.samples_compared() > 0
 }
 
 fn add_result_to_pass_rate_counts(
@@ -1150,16 +1146,22 @@ fn build_msl_package_trace_accuracy_report(
         })?;
 
     for (model_name, model_payload) in models {
-        let mut metric = serde_json::from_value::<ModelDeviationMetric>(model_payload.clone())
+        let metric =
+            rumoca_test_msl::msl_tools::omc_simulation_reference::parse_trace_model_metric(
+                model_payload.clone(),
+            )
             .map_err(|error| {
                 io::Error::other(format!(
                     "failed to parse trace metric for {model_name}: {error}"
                 ))
             })?;
-        if metric.model_name.is_empty() {
-            metric.model_name.clone_from(model_name);
+        if metric.model_name() != model_name.as_str() {
+            return Err(io::Error::other(format!(
+                "trace metric key `{model_name}` does not match embedded model `{}`",
+                metric.model_name()
+            )));
         }
-        let Some(package_name) = root_msl_package_name(&metric.model_name) else {
+        let Some(package_name) = root_msl_package_name(metric.model_name()) else {
             continue;
         };
         let counts = by_package.entry(package_name).or_default();
@@ -1200,10 +1202,10 @@ fn add_trace_metric_to_counts(
     metric: &ModelDeviationMetric,
 ) {
     counts.compared += 1;
-    counts.compared_channels += metric.compared_variables;
-    counts.bad_channels += metric.channel_deviation_count;
-    counts.severe_channels += metric.channel_severe_count;
-    if metric.channel_severe_count == 0 {
+    counts.compared_channels += metric.compared_variables();
+    counts.bad_channels += metric.channel_deviation_count();
+    counts.severe_channels += metric.channel_severe_count();
+    if metric.channel_severe_count() == 0 {
         counts.no_severe_models += 1;
     }
     match classify_trace_metric_channel_distribution(
@@ -1273,20 +1275,20 @@ fn append_trace_accuracy_markdown_row(markdown: &mut String, row: &MslPackageTra
     ));
 }
 
-pub(super) fn write_msl_package_trace_accuracy_report(summary: &MslSummary) -> io::Result<bool> {
+pub(super) fn write_msl_package_trace_accuracy_report(
+    summary: &MslSummary,
+    trace_comparison: &CurrentRunTraceComparison,
+) -> io::Result<()> {
     let results_dir = msl_results_dir();
-    let trace_file = results_dir.join("sim_trace_comparison.json");
-    if !trace_file.is_file() {
-        println!(
-            "MSL package trace accuracy: skipped; {} does not exist.",
-            trace_file.display()
-        );
-        return Ok(false);
-    }
-    let payload = serde_json::from_slice::<serde_json::Value>(&fs::read(&trace_file)?)
-        .map_err(|error| io::Error::other(format!("failed to parse trace comparison: {error}")))?;
-    let report = build_msl_package_trace_accuracy_report(summary, &payload)?;
-    let json = serde_json::to_string_pretty(&report)?;
+    let payload = trace_comparison.payload();
+    let report = build_msl_package_trace_accuracy_report(summary, payload)?;
+    let bound_report = SourceBoundTraceAccuracyReport {
+        trace_comparison_digest: trace_comparison.exact_digest(),
+        omc_reference_digest: trace_comparison.reference_digest(),
+        source_evidence_digest: trace_comparison.source_evidence_digest(),
+        report: &report,
+    };
+    let json = serde_json::to_string_pretty(&bound_report)?;
     let mut json_file = File::create(results_dir.join("msl_package_trace_accuracy.json"))?;
     json_file.write_all(json.as_bytes())?;
     let markdown = format_msl_package_trace_accuracy_markdown(&report);
@@ -1296,10 +1298,9 @@ pub(super) fn write_msl_package_trace_accuracy_report(summary: &MslSummary) -> i
     println!("\n=== MSL Package Trace Accuracy vs OMC ===");
     print!("{markdown}");
 
-    let pass_rate_report =
-        build_msl_package_pass_rate_report_with_trace_payload(summary, &payload)?;
+    let pass_rate_report = build_msl_package_pass_rate_report_with_trace_payload(summary, payload)?;
     write_msl_package_pass_rate_report(&results_dir, &pass_rate_report, true)?;
-    Ok(true)
+    Ok(())
 }
 
 /// Write MSL test results to a JSON file.
@@ -1730,10 +1731,20 @@ mod tests {
         ic_channels: usize,
         ic_deviation: usize,
     ) -> serde_json::Value {
+        let compared_count = high + near + deviation;
+        let compared = (0..compared_count)
+            .map(|index| format!("channel-{index:08}"))
+            .collect::<Vec<_>>();
+        let ic_total = ic_channels.max(1) as f64;
         serde_json::json!({
             "model_name": model_name,
-            "compared_variables": high + near + deviation,
-            "samples_compared": 10,
+            "channel_partition": {
+                "compared": compared,
+                "shared_unmeasured": [],
+                "rumoca_only": [],
+                "reference_only": []
+            },
+            "samples_compared": compared_count * 2,
             "bounded_normalized_l1_score": 0.0,
             "mean_channel_bounded_normalized_l1": 0.0,
             "max_channel_bounded_normalized_l1": 0.0,
@@ -1741,22 +1752,36 @@ mod tests {
             "channel_minor_count": near,
             "channel_deviation_count": deviation,
             "channel_severe_count": severe,
+            "channel_high_percent": high as f64 / compared_count as f64,
+            "channel_minor_percent": near as f64 / compared_count as f64,
+            "channel_deviation_percent": deviation as f64 / compared_count as f64,
+            "channel_severe_percent": severe as f64 / compared_count as f64,
+            "channel_violation_mass": 0.0,
             "initial_condition": {
                 "channels_compared": ic_channels,
+                "channels_unmeasured": compared_count - ic_channels,
                 "high_count": ic_channels.saturating_sub(ic_deviation),
                 "minor_count": 0,
                 "deviation_count": ic_deviation,
                 "severe_count": 0,
-                "high_percent": 0.0,
+                "high_percent": ic_channels.saturating_sub(ic_deviation) as f64 / ic_total,
                 "minor_percent": 0.0,
-                "deviation_percent": 0.0,
+                "deviation_percent": ic_deviation as f64 / ic_total,
                 "severe_percent": 0.0,
                 "violation_mass_total": 0.0,
                 "violation_mass_mean_per_channel": 0.0,
                 "mean_channel_bounded_normalized_error": 0.0,
                 "max_channel_bounded_normalized_error": 0.0
             },
-            "worst_variables": []
+            "worst_variables": [],
+            "state_selection": null,
+            "rumoca_sim_wall_seconds": null,
+            "rumoca_sim_seconds": null,
+            "rumoca_sim_build_seconds": null,
+            "rumoca_sim_run_seconds": null,
+            "omc_sim_system_seconds": null,
+            "omc_total_system_seconds": null,
+            "omc_wall_seconds": null
         })
     }
 

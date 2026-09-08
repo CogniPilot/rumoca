@@ -13,6 +13,9 @@ experiments, Jacobian products, and implicit residual kernels.
 - Output: MLIR containing derivative, residual, tensor map/stencil, matrix
   multiply, linear solve, and available Jacobian-vector functions.
 - Affine tensor domains remain compact loops; scalar fallback is explicit.
+- `SolveProblem` construction proves exact-once dense derivative coverage, so
+  the backend emits only semantic stores and never repairs missing rows by
+  pre-filling the derivative buffer.
 - `rumoca-exec-mlir` owns toolchain invocation and execution.
 
 ## Unsupported
@@ -25,8 +28,9 @@ execution. Missing optional Solve artifacts cannot become empty functions.
 
 - `rumoca-exec-mlir/tests` parses, lowers, compiles, and executes CPU kernels,
   including integration, tensor matmul, and linear solve.
-- `solve_template_context_tests` and `solve_sparse_output_tests` cover function
-  inventory and sparse output placement.
+- `solve_template_context_tests` and the WGSL mixed-schedule tests cover function
+  inventory, native/scalar output placement, exact-once coverage, and the
+  absence of a backend derivative prefill.
 - `mlir_verification_wiring` keeps the required external-toolchain lane live.
 
 ## Example

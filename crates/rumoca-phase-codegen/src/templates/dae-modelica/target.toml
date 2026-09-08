@@ -1,5 +1,4 @@
 version = 1
-ir = "dae"
 name = "dae-modelica"
 description = "Modelica source reconstructed from DAE IR"
 readiness_level = 1
@@ -7,6 +6,7 @@ execution_mode = "source-transform"
 deployment_class = "modelica"
 
 [capabilities]
+scalar_fallback = false
 runtime_events = false
 structured_equation_families = true
 # The dae_modelica template's function_decl macro has no rendering for an
@@ -20,5 +20,7 @@ structured_equation_families = true
 external_functions = false
 
 [[files]]
+artifact_kind = "modelica-source"
+semantic_context = "dae"
 path = "{{ model_name }}_dae.mo"
 template = "dae_modelica.mo.jinja"

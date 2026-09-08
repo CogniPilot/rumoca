@@ -73,14 +73,6 @@ fn enum_class_for_literal_reference<'a>(
 /// Count the literals of the enumeration type a dimension reference names
 /// (MLS §10.1: an enumeration type used as a dimension has as many elements as
 /// the type has literals).
-///
-/// The reference names its type at the segment it resolves to, not at its
-/// root: `Modelica.Electrical.Digital.Interfaces.Logic` resolves `Logic`
-/// through four enclosing packages, and a renaming import such as
-/// `import L = ...Interfaces.Logic` resolves the single segment `L` to that
-/// same declaration. Both spellings carry the enumeration's exact `DefId` on
-/// the segment they resolve to, so the target segment is the only one that
-/// identifies the type; a root package segment identifies no type at all.
 fn enum_literal_count_for_reference(
     reference: &ast::ComponentReference,
     tree: &ClassTree,
@@ -147,12 +139,24 @@ end Lib;
         tree.source_map.add(file_name, SOURCE);
         let resolved = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("fixture should resolve");
-        let instanced = rumoca_phase_instantiate::instantiate(resolved, model)
-            .expect("fixture should instantiate");
-        let ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model)
+        let overlay =
+            match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), model)
+            {
+                rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+                rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                    missing_inners,
+                    ..
+                } => {
+                    panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+                }
+                rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                    panic!("fixture instantiation failed: {error}")
+                }
+            };
+        let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model)
             .expect("fixture should typecheck");
-        crate::flatten_ref(&tree, &overlay, model).expect("fixture should flatten")
+        crate::flatten_typed(typed, crate::FlattenOptions::default())
+            .expect("fixture should flatten")
     }
 
     fn dims_of(model: &flat::Model, name: &str) -> Vec<i64> {

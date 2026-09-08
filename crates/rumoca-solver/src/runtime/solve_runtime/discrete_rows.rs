@@ -4,16 +4,16 @@ use rumoca_ir_solve as solve;
 use crate::runtime::solve_events::event_eval_params_with_relation_overrides;
 use crate::{RuntimeSolveError, discrete_row_active_at, row_reads_solver_or_time};
 
-use super::SolveRuntime;
 use super::event_update::{
     DiscretePreSnapshot, DiscreteRowEvalInput, DiscreteRowsSettleInput, EventEvalParamCache,
     EventUpdateRowFilter,
 };
-use super::native_specialization::{RowEvalPoint, SpecializedRows};
+use super::selected_rows::{RowEvalPoint, SelectedRows};
 use super::support::{
     copy_runtime_values, copy_runtime_values_into, reserve_runtime_vec_capacity,
     resize_runtime_values,
 };
+use super::{InterpreterPermit, SolveRuntime};
 
 #[derive(Clone)]
 pub(super) struct PreparedStructuredDiscreteRows {
@@ -59,10 +59,16 @@ impl PreparedStructuredDiscreteRows {
     ) -> Result<Self, solve_eval::EvalSolveError> {
         let rhs = solve_eval::PreparedScalarProgramBlock::new(scalar)?;
         let mut rows = Vec::new();
-        for (update_index, update) in model.problem.discrete.structured_updates.iter().enumerate() {
+        for (update_index, update) in model
+            .problem()
+            .discrete()
+            .structured_updates
+            .iter()
+            .enumerate()
+        {
             for (target, source_lane) in model
-                .problem
-                .discrete
+                .problem()
+                .discrete()
                 .structured_assignments(update_index)?
             {
                 let source_row = rhs.single_output_row_for_output_index(source_lane).ok_or(
@@ -114,13 +120,7 @@ impl SolveRuntime {
         let eval_p = copy_runtime_values(p, "unfiltered discrete p snapshot")?;
         let ordered_clocked = self.clock_partition_owns_clocked_rows();
         let mut evaluated_transactions = Vec::new();
-        for transaction_index in 0..self.event_transaction_programs.len() {
-            if self.model.problem.discrete.event_transactions[transaction_index].is_clock_owned() {
-                continue;
-            }
-            self.eval_event_transaction_outputs(transaction_index, &eval_y, &eval_p, t)?;
-            evaluated_transactions.push(transaction_index);
-        }
+        self.eval_unclocked_event_transactions(&eval_y, &eval_p, t, &mut evaluated_transactions)?;
         let mut assignments = Vec::new();
         let mut guarded_values = Vec::with_capacity(self.guarded_assignment_programs.len());
         // SOLVE-C57: clock-owned producers execute in issued causal order over
@@ -139,11 +139,11 @@ impl SolveRuntime {
                 evaluated_transactions: &mut evaluated_transactions,
             },
         )?;
-        for row_idx in 0..self.model.problem.discrete.rhs.len() {
+        for row_idx in 0..self.model.problem().discrete().rhs.len() {
             if self.event_transaction_coverage.discrete_rows[row_idx] {
                 continue;
             }
-            if ordered_clocked && self.model.problem.discrete.clock_owners[row_idx].is_some() {
+            if ordered_clocked && self.model.problem().discrete().clock_owners[row_idx].is_some() {
                 continue;
             }
             let (program, output) = self
@@ -156,16 +156,22 @@ impl SolveRuntime {
                 &eval_y,
                 &eval_p,
                 t,
-                self.row_eval_context(),
+                self.execution_plan
+                    .interpreter
+                    .discrete_scalar_rows
+                    .row_eval_context(self),
             )?;
-            assignments.push((self.model.problem.discrete.update_targets[row_idx], value));
+            assignments.push((
+                self.model.problem().discrete().update_targets[row_idx],
+                value,
+            ));
         }
         for program_index in 0..self.guarded_assignment_programs.len() {
             if self.event_transaction_coverage.guarded_assignments[program_index] {
                 continue;
             }
             if ordered_clocked
-                && self.model.problem.discrete.guarded_assignments[program_index]
+                && self.model.problem().discrete().guarded_assignments[program_index]
                     .clock_owner()
                     .is_some()
             {
@@ -193,10 +199,30 @@ impl SolveRuntime {
                     &eval_y,
                     &eval_p,
                     t,
-                    self.row_eval_context(),
+                    self.execution_plan
+                        .interpreter
+                        .structured_discrete_rows
+                        .row_eval_context(self),
                 )?;
             assignments.push((row.target, value));
         }
+        self.commit_unfiltered_discrete_values(
+            assignments,
+            guarded_values,
+            evaluated_transactions,
+            y,
+            p,
+        )
+    }
+
+    fn commit_unfiltered_discrete_values(
+        &self,
+        assignments: Vec<DiscreteRowValue>,
+        guarded_values: Vec<GuardedRowValues>,
+        evaluated_transactions: Vec<usize>,
+        y: &mut [f64],
+        p: &mut [f64],
+    ) -> Result<bool, RuntimeSolveError> {
         let mut changed = false;
         for (target, value) in assignments {
             changed |= solve_eval::apply_scalar_slot_value_exact(target, value, y, p)?;
@@ -206,6 +232,25 @@ impl SolveRuntime {
         }
         changed |= self.commit_successful_event_transactions(evaluated_transactions, y, p)?;
         Ok(changed)
+    }
+
+    fn eval_unclocked_event_transactions(
+        &self,
+        eval_y: &[f64],
+        eval_p: &[f64],
+        t: f64,
+        evaluated_transactions: &mut Vec<usize>,
+    ) -> Result<(), RuntimeSolveError> {
+        for transaction_index in 0..self.event_transaction_programs.len() {
+            if self.model.problem().discrete().event_transactions[transaction_index]
+                .is_clock_owned()
+            {
+                continue;
+            }
+            self.eval_event_transaction_outputs(transaction_index, eval_y, eval_p, t)?;
+            evaluated_transactions.push(transaction_index);
+        }
+        Ok(())
     }
 
     pub(super) fn structured_discrete_row_active_at(
@@ -218,8 +263,8 @@ impl SolveRuntime {
         };
         let schedule = self
             .model
-            .problem
-            .clocks
+            .problem()
+            .clocks()
             .periodic_schedule(owner)
             .ok_or_else(|| {
                 RuntimeSolveError::solve_ir(format!(
@@ -261,7 +306,7 @@ impl SolveRuntime {
             row_p
         } else {
             row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                &self.model.problem.events.root_relation_memory_targets,
+                &self.model.problem().events().root_relation_memory_targets,
                 snapshot.root_relation_overrides,
                 row_p,
             )?;
@@ -274,7 +319,10 @@ impl SolveRuntime {
                 eval_y,
                 row_p,
                 t,
-                self.row_eval_context(),
+                self.execution_plan
+                    .interpreter
+                    .structured_discrete_rows
+                    .row_eval_context(self),
             )
             .map(Some)
             .map_err(Into::into)
@@ -358,7 +406,7 @@ impl SolveRuntime {
             guarded_values,
             evaluated_transactions,
         } = outputs;
-        let order = &self.model.problem.discrete.clock_partition_order;
+        let order = &self.model.problem().discrete().clock_partition_order;
         if order.is_empty() {
             return Ok(());
         }
@@ -466,8 +514,8 @@ impl SolveRuntime {
         for (root_idx, value) in snapshot.root_relation_overrides {
             let Some(Some(solve::ScalarSlot::P { index, .. })) = self
                 .model
-                .problem
-                .events
+                .problem()
+                .events()
                 .root_relation_memory_targets
                 .get(*root_idx)
                 .copied()
@@ -494,13 +542,11 @@ impl SolveRuntime {
             RuntimeSolveError::solve_ir("clock partition scalar step row overflow")
         })?;
         for row_idx in start_row..end {
-            if self
-                .event_transaction_coverage
-                .discrete_rows
-                .get(row_idx)
-                .copied()
-                .unwrap_or(true)
-            {
+            if clock_partition_coverage(
+                &self.event_transaction_coverage.discrete_rows,
+                "scalar discrete row",
+                row_idx,
+            )? {
                 continue;
             }
             if let ClockPartitionPassMode::Filtered { snapshot, scope } = mode
@@ -525,7 +571,7 @@ impl SolveRuntime {
                     "discrete program {program} omitted output offset {output}"
                 ))
             })?;
-            let target = self.model.problem.discrete.update_targets[row_idx];
+            let target = self.model.problem().discrete().update_targets[row_idx];
             row_values.push((target, value));
             solve_eval::apply_scalar_slot_value_exact(target, value, work.y, work.p)?;
         }
@@ -541,7 +587,7 @@ impl SolveRuntime {
         scope: DiscreteRowEvalScope,
         t: f64,
     ) -> Result<bool, RuntimeSolveError> {
-        let role = self.model.problem.discrete.row_roles[row_idx];
+        let role = self.model.problem().discrete().row_roles[row_idx];
         if scope.observation_only && !self.observation_refresh_row(row_idx)? {
             return Ok(false);
         }
@@ -554,7 +600,8 @@ impl SolveRuntime {
         if !self.discrete_row_active_at(row_idx, t)? {
             return Ok(false);
         }
-        let pre_mode = crate::EventPreMode::from(self.model.problem.discrete.pre_modes[row_idx]);
+        let pre_mode =
+            crate::EventPreMode::from(self.model.problem().discrete().pre_modes[row_idx]);
         Ok(snapshot.row_filter.accepts(pre_mode, true))
     }
 
@@ -565,16 +612,14 @@ impl SolveRuntime {
         work: &mut ClockPartitionWork<'_>,
         guarded_values: &mut Vec<GuardedRowValues>,
     ) -> Result<(), RuntimeSolveError> {
-        if self
-            .event_transaction_coverage
-            .guarded_assignments
-            .get(program_index)
-            .copied()
-            .unwrap_or(true)
-        {
+        if clock_partition_coverage(
+            &self.event_transaction_coverage.guarded_assignments,
+            "guarded assignment",
+            program_index,
+        )? {
             return Ok(());
         }
-        let owner = &self.model.problem.discrete.guarded_assignments[program_index];
+        let owner = &self.model.problem().discrete().guarded_assignments[program_index];
         match mode {
             ClockPartitionPassMode::Filtered { snapshot, scope } => {
                 if scope.observation_only && !owner.observation_refresh() {
@@ -612,13 +657,11 @@ impl SolveRuntime {
         work: &mut ClockPartitionWork<'_>,
         row_values: &mut Vec<DiscreteRowValue>,
     ) -> Result<(), RuntimeSolveError> {
-        if self
-            .event_transaction_coverage
-            .structured_updates
-            .get(update_index)
-            .copied()
-            .unwrap_or(true)
-        {
+        if clock_partition_coverage(
+            &self.event_transaction_coverage.structured_updates,
+            "structured discrete update",
+            update_index,
+        )? {
             return Ok(());
         }
         // The rows of one structured update are indexed once at preparation:
@@ -643,7 +686,10 @@ impl SolveRuntime {
                     work.y,
                     work.p,
                     work.t,
-                    self.row_eval_context(),
+                    self.execution_plan
+                        .interpreter
+                        .structured_discrete_rows
+                        .row_eval_context(self),
                 )?;
             row_values.push((row.target, value));
             solve_eval::apply_scalar_slot_value_exact(row.target, value, work.y, work.p)?;
@@ -690,8 +736,8 @@ impl SolveRuntime {
         }
         let target = self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .clock_partition_intermediate_targets
             .get(row)
             .copied()
@@ -715,9 +761,8 @@ impl SolveRuntime {
                 return Ok(());
             }
         }
-        // An intermediate refresh runs once per row per tick on the deadline
-        // path, so it takes the same native specialization route the discrete
-        // rows take; the reference interpreter is the fallback, not the plan.
+        // Dynamic specialization requires a concrete guard trace. Preparation
+        // therefore seals this owner to the interpreter for the whole session.
         let value = {
             let mut scratch = self.clock_partition_intermediate_scratch.borrow_mut();
             if scratch.len() <= row {
@@ -728,11 +773,13 @@ impl SolveRuntime {
                     "clock partition intermediate scratch",
                 )?;
             }
-            self.eval_single_output_rows_with_native(
-                SpecializedRows {
+            self.eval_single_output_rows(
+                &self
+                    .execution_plan
+                    .interpreter
+                    .clock_partition_intermediates,
+                SelectedRows {
                     block: &self.clock_partition_intermediates,
-                    cache: &self.compiled_clock_partition_intermediates,
-                    failed: &self.failed_clock_partition_intermediates,
                 },
                 &[row],
                 RowEvalPoint {
@@ -767,8 +814,8 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         let clocks = self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .clock_partition_intermediate_clocks
             .get(row)
             .ok_or_else(|| {
@@ -788,7 +835,12 @@ impl SolveRuntime {
     /// of this pass (it does whenever it is non-empty; construction validates
     /// exact coverage).
     fn clock_partition_owns_clocked_rows(&self) -> bool {
-        !self.model.problem.discrete.clock_partition_order.is_empty()
+        !self
+            .model
+            .problem()
+            .discrete()
+            .clock_partition_order
+            .is_empty()
     }
 
     /// Whether any periodic clock the issued order carries ticks at this exact
@@ -902,15 +954,14 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
         tol,
     } = input;
     if model
-        .problem
-        .events
+        .problem()
+        .events()
         .condition_memory_parameter_indices
         .is_empty()
-        || model.problem.discrete.rhs.is_empty()
+        || model.problem().discrete().rhs.is_empty()
     {
         return Ok(Vec::new());
     }
-    super::validate_discrete_event_rows(model)?;
     // MLS §8.6: "Before the start of the integration, it must be guaranteed
     // that for all variables `v`, `v = pre(v)`." A condition that reads
     // `pre(s)` must therefore be seeded against `s` itself, not against
@@ -925,8 +976,9 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
     super::set_initial_event_flag(model, &mut seed_p, false);
     let mut seeded = Vec::new();
     let mut writes = Vec::new();
-    for row_idx in 0..model.problem.discrete.rhs.len() {
-        if model.problem.discrete.row_roles[row_idx] != solve::DiscreteRowRole::ConditionMemory {
+    for row_idx in 0..model.problem().discrete().rhs.len() {
+        if model.problem().discrete().row_roles[row_idx] != solve::DiscreteRowRole::ConditionMemory
+        {
             continue;
         }
         // A clocked buffer is only defined on its own ticks (MLS §16.5).
@@ -946,7 +998,7 @@ pub(crate) fn seed_condition_memory_for_initialization_core(
             t,
             row_eval_context,
         )?;
-        let target = model.problem.discrete.update_targets[row_idx];
+        let target = model.problem().discrete().update_targets[row_idx];
         let solve::ScalarSlot::P { index, .. } = target else {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "condition-memory row {row_idx} does not target a parameter slot"
@@ -1007,7 +1059,11 @@ impl SolveRuntime {
         let mut seeded = seed_condition_memory_for_initialization_core(ConditionMemorySeedInput {
             model: &self.model,
             discrete_rhs: &self.discrete_rhs,
-            row_eval_context: self.row_eval_context(),
+            row_eval_context: self
+                .execution_plan
+                .interpreter
+                .discrete_scalar_rows
+                .row_eval_context(self),
             y,
             p,
             t,
@@ -1033,7 +1089,10 @@ impl SolveRuntime {
                     y,
                     &seed_p,
                     t,
-                    self.row_eval_context(),
+                    self.execution_plan
+                        .interpreter
+                        .structured_discrete_rows
+                        .row_eval_context(self),
                 )?;
             let solve::ScalarSlot::P { index, .. } = row.target else {
                 return Err(RuntimeSolveError::solve_ir(
@@ -1167,7 +1226,7 @@ impl SolveRuntime {
         let mut row_values = Vec::new();
         reserve_runtime_vec_capacity(
             &mut row_values,
-            self.model.problem.discrete.rhs.len(),
+            self.model.problem().discrete().rhs.len(),
             "discrete row values",
         )?;
         // SOLVE-C57: clock-owned producers execute once, in issued causal
@@ -1215,14 +1274,14 @@ impl SolveRuntime {
         row_values: &mut Vec<DiscreteRowValue>,
     ) -> Result<(), RuntimeSolveError> {
         let ordered_clocked = self.clock_partition_owns_clocked_rows();
-        for row_idx in 0..self.model.problem.discrete.rhs.len() {
+        for row_idx in 0..self.model.problem().discrete().rhs.len() {
             if self.event_transaction_coverage.discrete_rows[row_idx] {
                 continue;
             }
-            if ordered_clocked && self.model.problem.discrete.clock_owners[row_idx].is_some() {
+            if ordered_clocked && self.model.problem().discrete().clock_owners[row_idx].is_some() {
                 continue;
             }
-            let role = self.model.problem.discrete.row_roles[row_idx];
+            let role = self.model.problem().discrete().row_roles[row_idx];
             if input.scope.observation_only && !self.observation_refresh_row(row_idx)? {
                 continue;
             }
@@ -1248,7 +1307,10 @@ impl SolveRuntime {
             else {
                 continue;
             };
-            row_values.push((self.model.problem.discrete.update_targets[row_idx], value));
+            row_values.push((
+                self.model.problem().discrete().update_targets[row_idx],
+                value,
+            ));
         }
         Ok(())
     }
@@ -1278,7 +1340,7 @@ impl SolveRuntime {
             if self.event_transaction_coverage.guarded_assignments[program_index] {
                 continue;
             }
-            let owner = &self.model.problem.discrete.guarded_assignments[program_index];
+            let owner = &self.model.problem().discrete().guarded_assignments[program_index];
             if ordered_clocked && owner.clock_owner().is_some() {
                 continue;
             }
@@ -1302,7 +1364,7 @@ impl SolveRuntime {
                 row_p
             } else {
                 row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                    &self.model.problem.events.root_relation_memory_targets,
+                    &self.model.problem().events().root_relation_memory_targets,
                     input.snapshot.root_relation_overrides,
                     row_p,
                 )?;
@@ -1383,8 +1445,8 @@ impl SolveRuntime {
         }
         let pre_mode = self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .pre_modes
             .get(row_idx)
             .copied()
@@ -1394,7 +1456,7 @@ impl SolveRuntime {
                 ))
             })?;
         let row_pre_mode = crate::EventPreMode::from(pre_mode);
-        let clock_owned = self.model.problem.discrete.clock_owners[row_idx].is_some();
+        let clock_owned = self.model.problem().discrete().clock_owners[row_idx].is_some();
         if clock_owned && snapshot.event_iteration != 0 {
             return Ok(None);
         }
@@ -1407,7 +1469,7 @@ impl SolveRuntime {
             row_p
         } else {
             row_p_with_root_overrides = event_eval_params_with_relation_overrides(
-                &self.model.problem.events.root_relation_memory_targets,
+                &self.model.problem().events().root_relation_memory_targets,
                 snapshot.root_relation_overrides,
                 row_p,
             )?;
@@ -1439,7 +1501,7 @@ impl SolveRuntime {
         tracing::trace!(
             target: "rumoca_solver::discrete_rows",
             row_idx,
-            target = ?self.model.problem.discrete.update_targets[row_idx],
+            target = ?self.model.problem().discrete().update_targets[row_idx],
             value,
             event_iteration = snapshot.event_iteration,
             ?row_pre_mode,
@@ -1459,16 +1521,16 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         if !self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .observation_refresh
             .iter()
             .copied()
             .any(std::convert::identity)
             && !self
                 .model
-                .problem
-                .discrete
+                .problem()
+                .discrete()
                 .guarded_assignments
                 .iter()
                 .any(|owner| owner.observation_refresh())
@@ -1517,11 +1579,11 @@ impl SolveRuntime {
     }
 
     fn uncoupled_scalar_observation_refresh_is_complete(&self) -> bool {
-        !self.model.problem.discrete.observation_refresh_reads_y
+        !self.model.problem().discrete().observation_refresh_reads_y
             && !self
                 .model
-                .problem
-                .discrete
+                .problem()
+                .discrete()
                 .guarded_assignments
                 .iter()
                 .any(|owner| owner.observation_refresh())
@@ -1610,7 +1672,7 @@ impl SolveRuntime {
                 eval_p_cache,
             )?;
             if let Some(value) = value {
-                values.push((self.model.problem.discrete.update_targets[row], value));
+                values.push((self.model.problem().discrete().update_targets[row], value));
             }
         }
         Ok(())
@@ -1627,7 +1689,7 @@ impl SolveRuntime {
     }
 
     fn validate_observation_refresh_rows(&self) -> Result<(), RuntimeSolveError> {
-        let observation_rows = self.model.problem.discrete.observation_refresh.len();
+        let observation_rows = self.model.problem().discrete().observation_refresh.len();
         let rhs_rows = self.discrete_rhs.block().len();
         if observation_rows == rhs_rows {
             return Ok(());
@@ -1639,8 +1701,8 @@ impl SolveRuntime {
 
     fn observation_refresh_row(&self, row_idx: usize) -> Result<bool, RuntimeSolveError> {
         self.model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .observation_refresh
             .get(row_idx)
             .copied()
@@ -1649,5 +1711,34 @@ impl SolveRuntime {
                     "discrete observation-refresh row index {row_idx} is out of bounds"
                 ))
             })
+    }
+}
+
+fn clock_partition_coverage(
+    coverage: &[bool],
+    owner: &'static str,
+    index: usize,
+) -> Result<bool, RuntimeSolveError> {
+    coverage.get(index).copied().ok_or_else(|| {
+        RuntimeSolveError::solve_ir(format!(
+            "clock-partition {owner} index {index} has no event-transaction coverage"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clock_partition_coverage;
+
+    #[test]
+    fn missing_clock_partition_coverage_rejects_instead_of_skipping_the_owner() {
+        let error = clock_partition_coverage(&[], "scalar discrete row", 0)
+            .expect_err("missing coverage must not silently skip a clock-partition owner");
+        assert!(
+            error.to_string().contains(
+                "clock-partition scalar discrete row index 0 has no event-transaction coverage"
+            ),
+            "unexpected missing-coverage failure: {error}"
+        );
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 /// MLS §8.3.5: one complete `when`/`elsewhen` equation owner.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WhenChain {
     /// First, mandatory `when` branch.
@@ -54,7 +54,7 @@ impl WhenChain {
 }
 
 /// One ordered branch inside a [`WhenChain`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WhenBranch {
     /// The condition expression.
     pub condition: Expression,
@@ -88,7 +88,7 @@ impl WhenBranch {
 /// - Assert statements: `assert(condition, message[, level])`
 /// - Terminate statements: `terminate(message)`
 /// - Conditional branches: `if cond then ... elseif ... else ... end if`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WhenEquation {
     /// Simple assignment: `target = value`
     Assign {

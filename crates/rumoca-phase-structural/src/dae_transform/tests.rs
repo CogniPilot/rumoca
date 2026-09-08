@@ -9,7 +9,7 @@ mod runtime_quotients;
 
 pub(super) use reconstruction_failures::independent_constraint_model;
 
-use rumoca_core::{SourceMap, Span, TypeId, VarName};
+use rumoca_core::{InstanceId, SourceMap, Span, TypeId, VarName};
 
 use super::{reconstruction::construction_failure, *};
 use functions::{FixtureFunctionConfig, fixture_function_declarations, insert_fixture_functions};
@@ -138,7 +138,7 @@ fn fixture_domain<'dae>(
                 domains.structured(
                     rumoca_core::StructuredIndexDomain {
                         binders: vec![rumoca_core::StructuredIndexBinder {
-                            id: 0,
+                            id: rumoca_core::StructuredIndexBinderId::new(0),
                             display_name: "i".to_owned(),
                             lower: 1,
                             upper: 2,
@@ -187,6 +187,7 @@ fn fixture_variables<'dae>(
         let z = if features.family {
             Some(variables.algebraic(
                 VarName::new("z"),
+                InstanceId::new(5),
                 vector,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -197,6 +198,7 @@ fn fixture_variables<'dae>(
         let d = if features.discrete {
             Some(variables.discrete_real(
                 VarName::new("d"),
+                InstanceId::new(6),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -207,6 +209,7 @@ fn fixture_variables<'dae>(
         let b = if features.discrete {
             Some(variables.discrete_value(
                 VarName::new("b"),
+                InstanceId::new(7),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -217,24 +220,28 @@ fn fixture_variables<'dae>(
         Ok(FixtureVariables {
             p: variables.parameter(
                 VarName::new("p"),
+                InstanceId::new(1),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
             )?,
             x: variables.state(
                 VarName::new("x"),
+                InstanceId::new(2),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
             )?,
             y: variables.state(
                 VarName::new("y"),
+                InstanceId::new(3),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
             )?,
             a: variables.algebraic(
                 VarName::new("a"),
+                InstanceId::new(4),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -508,12 +515,13 @@ fn insert_fixture_record_companion<'dae>(
         variables
             .parameter(
                 VarName::new("recordCompanion"),
+                InstanceId::new(8),
                 real,
                 scalar_declaration,
                 dae::VariableAttributes {
                     binding: Some(binding),
                     start: Some(start),
-                    fixed: Some(true),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
                     description: Some("record companion".to_owned()),
                     ..dae::VariableAttributes::default()
                 },
@@ -884,6 +892,7 @@ fn insert_fixture_shaped_parameter<'dae>(
     let m = model.variables(|variables| {
         variables.parameter(
             VarName::new("m"),
+            InstanceId::new(9),
             integer,
             m_declaration,
             dae::VariableAttributes {
@@ -907,6 +916,7 @@ fn insert_fixture_shaped_parameter<'dae>(
         variables
             .parameter(
                 VarName::new("q"),
+                InstanceId::new(10),
                 real_vector,
                 q_declaration,
                 dae::VariableAttributes {
@@ -948,6 +958,7 @@ fn insert_fixture_range_parameter<'dae>(
         variables
             .parameter(
                 VarName::new("r"),
+                InstanceId::new(11),
                 integer_array,
                 declaration,
                 dae::VariableAttributes {
@@ -1594,7 +1605,7 @@ fn assert_primitive_record_companion_attributes(view: dae::DaeView<'_>) {
         .find(|(_, variable)| variable.name().as_str() == "recordCompanion")
         .expect("primitive record companion survives");
     assert_eq!(companion.role(), dae::VariableRole::Parameter);
-    assert_eq!(companion.fixed(), Some(true));
+    assert_eq!(companion.fixed(), rumoca_core::Fixity::Fixed);
     assert_eq!(companion.description(), Some("record companion"));
     assert_eq!(
         view.source_text(companion.declaration()),
@@ -1702,6 +1713,7 @@ fn continuous_record_unknown_fails_during_checked_construction() {
             variables
                 .algebraic(
                     VarName::new("unresolved"),
+                    InstanceId::new(1),
                     record,
                     variable_at,
                     dae::VariableAttributes::default(),

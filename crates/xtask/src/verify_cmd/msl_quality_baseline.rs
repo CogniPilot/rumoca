@@ -52,20 +52,19 @@ struct MslQualityBaselineHeader {
     #[serde(skip)]
     document_sha256: String,
     run_scope: String,
-    #[serde(default)]
     git_commit: String,
     #[serde(deserialize_with = "deserialize_omc_version")]
     omc_version: String,
     sim_target_models: usize,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     omc_context_migration: Option<OmcContextMigration>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     metric_schema_migration: Option<MetricSchemaMigration>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     partial_classification_migration: Option<PartialClassificationMigration>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     compiler_contract_migration: Option<CompilerContractMigrationHeader>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     promoted_baseline_bridge: Option<PromotedBaselineBridge>,
     simulatable_attempted: usize,
     parse_models: usize,
@@ -76,7 +75,6 @@ struct MslQualityBaselineHeader {
     balanced_models: usize,
     unbalanced_models: usize,
     partial_models: usize,
-    #[serde(default)]
     partial_model_names: BTreeSet<String>,
     balance_denominator: usize,
     initial_balanced_models: usize,
@@ -190,7 +188,6 @@ struct DistributionMedian {
 #[derive(Debug, Clone, Deserialize)]
 struct TraceAccuracyStats {
     models_compared: usize,
-    #[serde(default)]
     policy_excluded_models: usize,
     agreement_high: usize,
     agreement_minor: usize,
@@ -229,6 +226,19 @@ where
         .filter(|version| !version.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| serde::de::Error::custom("omc_version must be a non-empty string"))
+}
+
+/// Baseline evidence may intentionally carry no migration, but that absence
+/// must be explicit on the current wire. An omitted key is malformed evidence,
+/// not an older baseline this reader should silently complete.
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

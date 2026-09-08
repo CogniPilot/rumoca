@@ -1,16 +1,21 @@
+mod callable_regions;
+mod clock_transfer_validation;
 mod derived_wire;
 mod expression_children;
 mod external_functions;
+mod fixed_wire;
 mod function_conditionals;
 mod function_owners;
 mod function_scopes;
 mod function_tensor_builtins;
 mod function_wire;
 mod model_event_transactions;
+mod optional_expression_views;
 mod provenance;
 mod range_wire;
 mod runtime_owner_replay;
 mod runtime_owners;
+mod source_occurrence;
 mod string_conversion;
 mod temporal_wire;
 mod type_arena;
@@ -280,6 +285,7 @@ fn every_expression_form_dae() -> Dae {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -289,7 +295,7 @@ fn every_expression_form_dae() -> Dae {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 3,
@@ -409,6 +415,79 @@ fn explicitly_typed_empty_arrays_round_trip_through_checked_construction() {
 }
 
 #[test]
+fn explicitly_typed_empty_record_arrays_preserve_nominal_layout_on_round_trip() {
+    let source = TestSource::new("Pair empty[0] = fill(Pair(0.0), 0);");
+    let declaration = source.source("Pair empty[0]", 0);
+    let literal = source.source("fill(Pair(0.0), 0)", 0);
+    let dae = Dae::construct(source.map, |dae| {
+        let real =
+            dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), declaration))?;
+        let empty_pairs = dae.types(|types| {
+            types.record_array(
+                VarName::new("Pair"),
+                [(VarName::new("value"), real)],
+                [0],
+                declaration,
+            )
+        })?;
+        dae.expressions(|expressions| {
+            expressions.at(literal).empty_array(empty_pairs)?;
+            Ok(())
+        })
+    })
+    .expect("a checked zero outer domain admits an empty record array");
+
+    fn assert_layout(view: DaeView<'_>) {
+        let expression = view.expression(view.expression_id(0).unwrap()).unwrap();
+        assert!(expression.value_type().is_record());
+        assert_eq!(
+            expression.value_type().record_name().map(VarName::as_str),
+            Some("Pair")
+        );
+        assert_eq!(expression.value_type().record_field_count(), 1);
+        assert_eq!(expression.value_type().dimensions(), &[0]);
+        assert!(matches!(
+            expression.operation(),
+            ExpressionOperation::Array(elements) if elements.is_empty()
+        ));
+    }
+    dae.inspect(assert_layout);
+
+    let encoded = serde_json::to_string(&dae).unwrap();
+    let decoded: Dae = serde_json::from_str(&encoded).unwrap();
+    decoded.inspect(assert_layout);
+}
+
+#[test]
+fn primitive_record_types_cannot_enter_the_type_arena() {
+    let source = TestSource::new("Record malformed[0];");
+    let declaration = source.source("Record malformed[0]", 0);
+    let expected_span = declaration.span();
+    let dae = Dae::construct(source.map, |dae| {
+        let derived = dae
+            .types(|types| types.derived(ValueType::array(ScalarType::Record, [0]), declaration));
+        assert!(matches!(
+            derived,
+            Err(DaeConstructionError::ShapeMismatch { span }) if span == expected_span
+        ));
+        let flat = dae.types(|types| {
+            types.intern(
+                TypeId::new(17),
+                ValueType::array(ScalarType::Record, [0]),
+                declaration,
+            )
+        });
+        assert!(matches!(
+            flat,
+            Err(DaeConstructionError::ShapeMismatch { span }) if span == expected_span
+        ));
+        Ok(())
+    })
+    .expect("rejecting malformed record types leaves the aggregate constructible");
+    assert_eq!(dae.inspect(|view| view.value_type_count()), 0);
+}
+
+#[test]
 fn no_event_preserves_a_boolean_operand_and_exact_provenance() {
     let source = TestSource::new("Boolean quiet = noEvent(true);");
     let literal_at = source.source("true", 0);
@@ -508,6 +587,7 @@ fn numeric_promotion_is_derived_during_construction() {
         let state = dae.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -593,14 +673,14 @@ fn structured_families_derive_rows_and_preserve_multidimensional_domains() {
     let domain = StructuredIndexDomain {
         binders: vec![
             StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 2,
                 step: 1,
             },
             StructuredIndexBinder {
-                id: 1,
+                id: rumoca_core::StructuredIndexBinderId::new(1),
                 display_name: "j".to_string(),
                 lower: 1,
                 upper: 3,
@@ -680,7 +760,7 @@ fn row_major_family_preserves_singleton_axes_with_equal_scalar_cardinality() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 3,
@@ -728,6 +808,7 @@ fn exact_row_major_scalar_projection_recovers_only_its_whole_tensor() {
         let matrix = dae.variables(|variables| {
             variables.input(
                 VarName::new("matrix"),
+                rumoca_core::InstanceId::new(1),
                 matrix_type,
                 InputVariability::Continuous,
                 at,
@@ -786,14 +867,14 @@ fn binder_prefix_projection_compacts_nested_array_families() {
                 StructuredIndexDomain {
                     binders: vec![
                         StructuredIndexBinder {
-                            id: 0,
+                            id: rumoca_core::StructuredIndexBinderId::new(0),
                             display_name: "i".to_string(),
                             lower: 1,
                             upper: 2,
                             step: 1,
                         },
                         StructuredIndexBinder {
-                            id: 1,
+                            id: rumoca_core::StructuredIndexBinderId::new(1),
                             display_name: "j".to_string(),
                             lower: 1,
                             upper: 3,
@@ -934,8 +1015,14 @@ fn domain_binders_cannot_cross_domains_or_escape_structured_owners() {
         };
         let (first, second) = dae.domains(|domains| {
             Ok((
-                domains.structured(domain(0, "i"), first_owner)?,
-                domains.structured(domain(1, "j"), second_owner)?,
+                domains.structured(
+                    domain(rumoca_core::StructuredIndexBinderId::new(0), "i"),
+                    first_owner,
+                )?,
+                domains.structured(
+                    domain(rumoca_core::StructuredIndexBinderId::new(1), "j"),
+                    second_owner,
+                )?,
             ))
         })?;
         let (i, j) = dae.domains(|domains| {
@@ -944,8 +1031,13 @@ fn domain_binders_cannot_cross_domains_or_escape_structured_owners() {
                 domains.binder(second, 0, j_use)?,
             ))
         })?;
-        let unrelated_scope =
-            dae.domains(|domains| domains.nested_in_scope([i, j], domain(2, "k"), first_owner));
+        let unrelated_scope = dae.domains(|domains| {
+            domains.nested_in_scope(
+                [i, j],
+                domain(rumoca_core::StructuredIndexBinderId::new(2), "k"),
+                first_owner,
+            )
+        });
         assert!(matches!(
             unrelated_scope,
             Err(DaeConstructionError::InvalidBinderScope {
@@ -1006,7 +1098,7 @@ fn nested_comprehensions_retain_lexical_scope_provenance_and_wire_identity() {
     let sum_owner = source.source("i + j", 0);
     let singleton_domain = |name: &str, upper| StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: name.to_string(),
             lower: 1,
             upper,
@@ -1080,6 +1172,7 @@ fn variable_occurrences_share_declaration_identity_but_keep_use_spans() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -1209,18 +1302,21 @@ fn define_variable_role_catalog<'dae>(
         Ok(VariableRoleIds {
             parameter: variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 spans.parameter,
                 VariableAttributes::default(),
             )?,
             constant: variables.constant(
                 VarName::new("c"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 spans.constant,
                 VariableAttributes::default(),
             )?,
             input: variables.input(
                 VarName::new("u"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 InputVariability::Continuous,
                 spans.input,
@@ -1228,30 +1324,35 @@ fn define_variable_role_catalog<'dae>(
             )?,
             state: variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 spans.state,
                 VariableAttributes::default(),
             )?,
             algebraic: variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 spans.algebraic,
                 VariableAttributes::default(),
             )?,
             output: variables.output(
                 VarName::new("o"),
+                rumoca_core::InstanceId::new(6),
                 real,
                 spans.output,
                 VariableAttributes::default(),
             )?,
             discrete_real: variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(7),
                 real,
                 spans.discrete_real,
                 VariableAttributes::default(),
             )?,
             discrete_value: variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(8),
                 boolean,
                 spans.discrete_value,
                 VariableAttributes::default(),
@@ -1467,10 +1568,22 @@ fn every_variable_role_can_reserve_a_header_for_forward_attributes() {
         let real = dae.types(|types| {
             types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), x_at)
         })?;
-        let (x, x_definition) =
-            dae.variables(|variables| variables.reserve_state(VarName::new("x"), real, x_at))?;
-        let (y, y_definition) =
-            dae.variables(|variables| variables.reserve_algebraic(VarName::new("y"), real, y_at))?;
+        let (x, x_definition) = dae.variables(|variables| {
+            variables.reserve_state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
+                real,
+                x_at,
+            )
+        })?;
+        let (y, y_definition) = dae.variables(|variables| {
+            variables.reserve_algebraic(
+                VarName::new("y"),
+                rumoca_core::InstanceId::new(2),
+                real,
+                y_at,
+            )
+        })?;
         let start = dae.expressions(|expressions| {
             expressions
                 .at(y_use)

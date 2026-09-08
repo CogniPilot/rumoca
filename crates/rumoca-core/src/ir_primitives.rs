@@ -6,9 +6,10 @@ use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroU32;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use crate::{Subscript, split_path_with_indices};
+use crate::{StructuredIndexBinderId, Subscript, split_path_with_indices};
 
 mod component_refs_and_functions;
 pub use component_refs_and_functions::*;
@@ -18,6 +19,9 @@ pub use generated_names::*;
 
 mod reference_serde;
 pub use reference_serde::ReferenceContractError;
+
+mod scalar_name;
+pub use scalar_name::*;
 
 /// A unique identifier for a definition (class, component, etc.).
 ///
@@ -65,6 +69,50 @@ impl Display for InstanceId {
         write!(f, "InstanceId({})", self.0)
     }
 }
+
+/// Non-sentinel occurrence identity admitted at a semantic IR boundary.
+///
+/// `InstanceId` retains its pre-construction `UNSET` state in the current
+/// Instance/Flat migration surface. Later semantic roots store this narrower
+/// type so an absent occurrence cannot be represented after construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SourceOccurrenceId(NonZeroU32);
+
+impl SourceOccurrenceId {
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.0.get()
+    }
+
+    #[must_use]
+    pub const fn instance_id(self) -> InstanceId {
+        InstanceId(self.index())
+    }
+}
+
+impl TryFrom<InstanceId> for SourceOccurrenceId {
+    type Error = UnsetSourceOccurrence;
+
+    fn try_from(instance: InstanceId) -> Result<Self, Self::Error> {
+        NonZeroU32::new(instance.index())
+            .map(Self)
+            .ok_or(UnsetSourceOccurrence)
+    }
+}
+
+/// Refusal to admit the reserved `InstanceId::UNSET` sentinel as an IR
+/// occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsetSourceOccurrence;
+
+impl Display for UnsetSourceOccurrence {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("source occurrence identity must not be InstanceId::UNSET")
+    }
+}
+
+impl std::error::Error for UnsetSourceOccurrence {}
 
 impl DefId {
     /// Create a new DefId from an index.
@@ -228,9 +276,40 @@ pub struct BytePos(pub usize);
 /// node in the flat IR.
 pub const NAMED_FUNCTION_ARG_PREFIX: &str = "__rumoca_named_arg__.";
 
-/// Marker prefix used to retain constraining-clause defaults until a
-/// replaceable declaration is redeclared during instantiation.
-pub const CONSTRAINEDBY_MOD_PREFIX: &str = "__constrainedby__.";
+/// Classification of the generated semantic wrapper used to retain one named
+/// function argument after AST lowering.
+///
+/// Reserved spelling alone is not authority: source-owned references with the
+/// same text remain ordinary expressions. Once a reference is marked generated
+/// and enters the reserved namespace, however, malformed structure is invalid
+/// semantic IR rather than an ordinary positional argument.
+pub enum NamedFunctionArgMarker<'a, T> {
+    NotMarker,
+    Valid { name: &'a str, value: &'a T },
+    Malformed,
+}
+
+/// Classify the exact generated named-argument wrapper contract.
+pub fn classify_named_function_arg_marker<'a, T>(
+    reference: &'a Reference,
+    arguments: &'a [T],
+    is_constructor: bool,
+    call_kind: FunctionCallKind,
+) -> NamedFunctionArgMarker<'a, T> {
+    if !reference.is_generated() {
+        return NamedFunctionArgMarker::NotMarker;
+    }
+    let Some(name) = reference.as_str().strip_prefix(NAMED_FUNCTION_ARG_PREFIX) else {
+        return NamedFunctionArgMarker::NotMarker;
+    };
+    let [value] = arguments else {
+        return NamedFunctionArgMarker::Malformed;
+    };
+    if name.is_empty() || !is_constructor || call_kind != FunctionCallKind::Invocation {
+        return NamedFunctionArgMarker::Malformed;
+    }
+    NamedFunctionArgMarker::Valid { name, value }
+}
 
 /// A span in source code (source, start, end).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -557,6 +636,7 @@ pub struct Reference {
     component_ref: Option<ComponentReference>,
     resolved_function: Option<ResolvedFunctionReference>,
     instance_id: Option<InstanceId>,
+    structured_binder: Option<StructuredIndexBinderId>,
     generated: bool,
 }
 
@@ -567,6 +647,7 @@ impl Reference {
             component_ref: None,
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: false,
         }
     }
@@ -577,6 +658,7 @@ impl Reference {
             component_ref: None,
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: false,
         }
     }
@@ -587,6 +669,7 @@ impl Reference {
             component_ref: None,
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: true,
         }
     }
@@ -598,6 +681,7 @@ impl Reference {
             component_ref: Some(component_ref),
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: true,
         }
     }
@@ -608,6 +692,7 @@ impl Reference {
             component_ref: self.component_ref.clone(),
             resolved_function: self.resolved_function,
             instance_id: self.instance_id,
+            structured_binder: self.structured_binder,
             generated: self.generated,
         }
     }
@@ -622,6 +707,7 @@ impl Reference {
             component_ref: Some(component_ref),
             resolved_function: self.resolved_function,
             instance_id: self.instance_id,
+            structured_binder: None,
             generated: self.generated,
         }
     }
@@ -635,6 +721,7 @@ impl Reference {
             component_ref: Some(component_ref),
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: false,
         }
     }
@@ -646,6 +733,7 @@ impl Reference {
             component_ref: Some(component_ref),
             resolved_function: None,
             instance_id: None,
+            structured_binder: None,
             generated: false,
         }
     }
@@ -682,6 +770,7 @@ impl Reference {
     }
 
     pub fn with_resolved_function(mut self, resolved: ResolvedFunctionReference) -> Self {
+        self.structured_binder = None;
         self.resolved_function = Some(resolved);
         self
     }
@@ -696,7 +785,31 @@ impl Reference {
         self.instance_id
     }
 
+    pub fn structured_binder(&self) -> Option<StructuredIndexBinderId> {
+        self.structured_binder
+    }
+
+    /// Bind this source loop-token occurrence to one compact family domain.
+    ///
+    /// The Flat producer retains the component reference so replay can check
+    /// the exact source spelling and span as correlation evidence. Loop-token
+    /// identity is the domain-local ID; this API never manufactures a `DefId`.
+    pub fn with_structured_binder(
+        mut self,
+        binder: StructuredIndexBinderId,
+    ) -> Result<Self, ReferenceContractError> {
+        if self.component_ref.is_none()
+            || self.instance_id.is_some()
+            || self.resolved_function.is_some()
+        {
+            return Err(ReferenceContractError::InvalidStructuredBinderTarget);
+        }
+        self.structured_binder = Some(binder);
+        Ok(self)
+    }
+
     pub fn with_instance_id(mut self, instance_id: InstanceId) -> Self {
+        self.structured_binder = None;
         self.instance_id = Some(instance_id);
         self
     }
@@ -761,6 +874,7 @@ impl Reference {
             component_ref: Some(extended),
             resolved_function: None,
             instance_id: self.instance_id,
+            structured_binder: None,
             generated: self.generated,
         })
     }
@@ -769,11 +883,17 @@ impl Reference {
         mut self,
         resolved: Option<ResolvedFunctionReference>,
     ) -> Self {
+        if resolved.is_some() {
+            self.structured_binder = None;
+        }
         self.resolved_function = resolved;
         self
     }
 
     fn with_optional_instance_id(mut self, instance_id: Option<InstanceId>) -> Self {
+        if instance_id.is_some() {
+            self.structured_binder = None;
+        }
         self.instance_id = instance_id;
         self
     }
@@ -821,6 +941,7 @@ impl PartialEq for Reference {
             && self.component_ref == other.component_ref
             && self.resolved_function == other.resolved_function
             && self.instance_id == other.instance_id
+            && self.structured_binder == other.structured_binder
             && self.generated == other.generated
     }
 }
@@ -847,94 +968,6 @@ impl From<String> for Reference {
     fn from(name: String) -> Self {
         Self::new(name)
     }
-}
-
-/// Structured view of a flattened scalar name such as `x[1,2]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScalarNameRef<'a> {
-    pub base: &'a str,
-    pub indices: Vec<i64>,
-}
-
-/// Parse a flattened scalar name into its base name and integer subscripts.
-pub fn parse_scalar_name(name: &str) -> Option<ScalarNameRef<'_>> {
-    let (base, raw_indices) = split_trailing_subscript_suffix(name)?;
-    let indices = parse_scalar_indices(raw_indices)?;
-    (!indices.is_empty()).then_some(ScalarNameRef { base, indices })
-}
-
-/// Return the base name for a flattened scalar name.
-pub fn strip_scalar_name_subscripts(name: &str) -> Option<&str> {
-    parse_scalar_name(name).map(|scalar| scalar.base)
-}
-
-/// Return the base before a syntactic trailing subscript suffix.
-///
-/// This is intentionally broader than [`strip_scalar_name_subscripts`]: state
-/// detection must recognize `der(x[2:n])` even though `2:n` is not a scalar
-/// integer index list.
-pub fn strip_trailing_subscript_suffix(name: &str) -> Option<&str> {
-    if let Some(base) = strip_scalar_name_subscripts(name) {
-        return Some(base);
-    }
-    split_trailing_subscript_suffix(name).map(|(base, _subscript)| base)
-}
-
-/// Split the final syntactic subscript suffix from a Modelica-style reference.
-///
-/// This recognizes a balanced trailing bracket group without requiring integer
-/// scalar indices, so display/codegen boundaries can preserve text such as
-/// `a[i + 1]` while still ignoring dots or brackets inside earlier segments.
-pub fn split_trailing_subscript_suffix(name: &str) -> Option<(&str, &str)> {
-    if !name.ends_with(']') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (idx, ch) in name.char_indices().rev() {
-        match ch {
-            ']' => depth += 1,
-            '[' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    let body = &name[idx + 1..name.len() - 1];
-                    let base = &name[..idx];
-                    return valid_trailing_subscript_split(base, body).then_some((base, body));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn valid_trailing_subscript_split(base: &str, body: &str) -> bool {
-    !body.trim().is_empty() && !base.is_empty() && has_balanced_subscripts(base)
-}
-
-fn parse_scalar_indices(raw_indices: &str) -> Option<Vec<i64>> {
-    raw_indices
-        .split(',')
-        .map(str::trim)
-        .map(str::parse::<i64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()
-}
-
-fn has_balanced_subscripts(name: &str) -> bool {
-    let mut depth = 0usize;
-    for ch in name.chars() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                let Some(next_depth) = depth.checked_sub(1) else {
-                    return false;
-                };
-                depth = next_depth;
-            }
-            _ => {}
-        }
-    }
-    depth == 0
 }
 
 /// Modelica builtin functions (shared by flat and DAE IRs).
@@ -1200,14 +1233,81 @@ impl BuiltinFunction {
         )
     }
 
+    /// Inclusive positional-argument bounds for this builtin.
+    ///
+    /// `None` as the upper bound denotes a variadic tail. Keeping this table on
+    /// the shared builtin identity prevents type checking, constant evaluation,
+    /// and later checked-IR consumers from inventing independent signatures.
+    pub const fn argument_count_range(self) -> (usize, Option<usize>) {
+        use BuiltinFunction::{
+            Abs, Acos, Asin, Atan, Atan2, BackSample, Cat, Ceil, Change, Clock, Cos, Cosh, Cross,
+            Delay, Der, Diagonal, Div, Edge, Exp, Fill, Floor, Hold, Homotopy, Identity, Initial,
+            Integer, Interval, Linspace, Log, Log10, Matrix, Max, Min, Mod, Ndims, NoClock,
+            NoEvent, Ones, OuterProduct, Pre, Previous, Product, Reinit, Rem, Sample, Scalar,
+            SemiLinear, ShiftSample, Sign, Sin, Sinh, Size, Skew, Smooth, Sqrt, SubSample, Sum,
+            SuperSample, Symmetric, Tan, Tanh, Terminal, Transpose, Vector, Zeros,
+        };
+
+        match self {
+            Initial | Terminal => (0, Some(0)),
+            Der | Pre | Abs | Sign | Sqrt | Floor | Ceil | Sin | Cos | Tan | Asin | Acos | Atan
+            | Sinh | Cosh | Tanh | Exp | Log | Log10 | Edge | Change | NoEvent | Integer | Sum
+            | Product | Ndims | Scalar | Vector | Matrix | Identity | Diagonal | Transpose
+            | Symmetric | Skew | Hold | Previous | NoClock => (1, Some(1)),
+            Div | Mod | Rem | Atan2 | Smooth | Homotopy | Reinit | OuterProduct | Cross => {
+                (2, Some(2))
+            }
+            SemiLinear | Linspace => (3, Some(3)),
+            Min | Max | Size | Sample | SubSample | SuperSample => (1, Some(2)),
+            Clock => (0, Some(2)),
+            Interval => (0, Some(1)),
+            Delay | ShiftSample | BackSample => (2, Some(3)),
+            Zeros | Ones => (1, None),
+            Fill => (2, None),
+            Cat => (3, None),
+        }
+    }
+
+    /// Ordered formal-parameter names for the builtin operators that MLS gives
+    /// named formals, used to project named actuals into positional order.
+    ///
+    /// Only operators whose named-argument spelling is defined by the language
+    /// or exercised by the standard library are listed; every other operator
+    /// returns an empty slice so that a named actual to it is refused rather
+    /// than bound against an invented name.
+    ///
+    /// - `homotopy(actual, simplified)` per MLS 3.6 §3.7.2.5.
+    /// - `Clock(c, solverMethod)`, the solver-clock constructor of MLS 3.6
+    ///   §16.3. `solverMethod` is the only Clock formal the standard library
+    ///   passes by name, and it always trails the clock argument `c`; the other
+    ///   Clock overloads are only ever called positionally, so their formals do
+    ///   not need naming here.
+    pub const fn named_formals(self) -> &'static [&'static str] {
+        match self {
+            Self::Homotopy => &["actual", "simplified"],
+            Self::Clock => &["c", "solverMethod"],
+            _ => &[],
+        }
+    }
+
+    /// Whether `actual` positional arguments satisfy this builtin's signature.
+    pub const fn accepts_argument_count(self, actual: usize) -> bool {
+        let (minimum, maximum) = self.argument_count_range();
+        actual >= minimum
+            && match maximum {
+                Some(maximum) => actual <= maximum,
+                None => true,
+            }
+    }
+
     /// Try to parse a builtin spelling that needs no declaration check.
     ///
     /// Synchronous intrinsics are intentionally absent: they must be minted
     /// from their exact predefined `DefId` after Resolve.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
-            // Differential
-            "der" => Some(Self::Der),
+            // Differential. `der` is a reserved grammar production carried
+            // by the AST's dedicated derivative-call arm.
             "pre" => Some(Self::Pre),
             // Math
             "abs" => Some(Self::Abs),
@@ -1358,6 +1458,58 @@ pub enum StateSelect {
     Always,
 }
 
+/// The effective MLS 3.6 §4.8.1 `fixed` attribute, total by construction.
+///
+/// Modelica source spells `fixed` as an optional boolean modification; the
+/// declaration may omit it, and the default depends on the variable's role:
+/// `true` for parameters and constants, `false` for every other variable.
+/// Products at and after the checked DAE never carry that absence. The one
+/// place an omitted spelling becomes a semantic value is DAE variable
+/// definition, which owns the role; everything downstream copies the total
+/// value.
+///
+/// There is deliberately no `Default` impl: a `Fixity` cannot be filled in by
+/// struct-update or derived defaults, so a product that forgets to decide the
+/// attribute fails to construct instead of silently defaulting a second time.
+///
+/// The wire shape is the plain boolean the attribute means: `Fixed`
+/// serializes as `true` and `Free` as `false`; absent or null is rejected.
+///
+/// The variants deliberately avoid FMI vocabulary: FMI's
+/// `initial = exact / approximate` classification is a different concept that
+/// belongs to `SolveStateInitialization`, and the mapping between the two
+/// happens only at the Solve/FMI projection boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "bool", into = "bool")]
+pub enum Fixity {
+    /// Effective `fixed = true`: MLS 3.6 §8.6 adds `v = startExpression` to
+    /// the initialization equations, and a `fixed = false` parameter cannot
+    /// hide behind it.
+    Fixed,
+    /// Effective `fixed = false`: the `start` value is only an initialization
+    /// guess, and a parameter with this fixity is an initialization unknown.
+    Free,
+}
+
+impl From<bool> for Fixity {
+    /// Embed an explicit source spelling: `fixed = true` is [`Fixity::Fixed`],
+    /// `fixed = false` is [`Fixity::Free`]. Only an explicit boolean converts;
+    /// an absent spelling has no embedding and must go through the
+    /// role-defaulting decision at DAE variable definition.
+    fn from(declared: bool) -> Self {
+        if declared { Self::Fixed } else { Self::Free }
+    }
+}
+
+impl From<Fixity> for bool {
+    /// Project the total value back to the boolean the MLS attribute means,
+    /// for presentation surfaces (JSON payloads, language bindings) that
+    /// expose `fixed` as a plain boolean.
+    fn from(fixity: Fixity) -> Self {
+        matches!(fixity, Fixity::Fixed)
+    }
+}
+
 /// A Modelica literal value (shared by flat and DAE IRs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Literal {
@@ -1369,6 +1521,18 @@ pub enum Literal {
     Boolean(bool),
     /// String literal.
     String(String),
+}
+
+/// Semantic form of a user-function expression.
+///
+/// An invocation computes the function's outputs. An MLS §12.4.2.1 partial
+/// application (`function F(bound = value)`) computes a function value and
+/// must never be inferred from the presence of named arguments on an ordinary
+/// invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FunctionCallKind {
+    Invocation,
+    PartialApplication,
 }
 
 impl std::fmt::Display for Literal {
@@ -1416,7 +1580,6 @@ pub struct ExternalFunction {
     /// and source provenance without recovering semantics from rendered text.
     pub args: Vec<Expression>,
     /// Structured annotations attached to the external function interface.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<ExternalFunctionAnnotation>,
 }
 
@@ -1459,21 +1622,6 @@ pub struct DerivativeAnnotation {
     pub zero_derivative: Vec<String>,
     /// Input variables with no derivative (not differentiated at all).
     pub no_derivative: Vec<String>,
-}
-
-/// Loaded external table descriptor.
-///
-/// Carries the evaluated numeric contents of a Modelica `ExternalObject`
-/// table (e.g. `Modelica.Blocks.Tables.CombiTable1D`) across the
-/// eval-DAE → solver boundary. Shared by the eval and solve crates so
-/// neither side needs to depend on the other for this type alone.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct ExternalTableData {
-    pub id: u64,
-    pub data: Vec<Vec<f64>>,
-    pub columns: Vec<usize>,
-    pub smoothness: i64,
-    pub extrapolation: i64,
 }
 
 /// Semantic expression tree shared by Flat and DAE IR.
@@ -1524,8 +1672,9 @@ pub enum Expression {
     FunctionCall {
         name: Reference,
         args: Vec<Expression>,
-        #[serde(default)]
         is_constructor: bool,
+        /// Exact invocation/function-value distinction preserved from AST.
+        call_kind: FunctionCallKind,
         #[serde(
             default = "Span::source_free_serde_default",
             skip_serializing_if = "Span::is_dummy"
@@ -1868,7 +2017,10 @@ impl crate::ExpressionVisitor for VarRefCollector<'_> {
 }
 
 mod expression_semantics;
-pub use expression_semantics::{expression_semantic_fingerprint, expressions_semantically_equal};
+pub use expression_semantics::{
+    expression_semantic_fingerprint, expressions_semantically_equal,
+    subscripts_semantic_fingerprint, subscripts_semantically_equal,
+};
 
 #[cfg(test)]
 mod tests;

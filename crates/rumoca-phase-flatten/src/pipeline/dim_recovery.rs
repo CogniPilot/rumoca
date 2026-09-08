@@ -58,27 +58,31 @@ pub(crate) fn infer_array_dims_from_expression(
     is_matrix: bool,
     var_dims: &DimMap,
     function_output_dims: &DimMap,
-) -> Option<Vec<i64>> {
+) -> Result<Option<Vec<i64>>, rumoca_eval_flat::constant::EvalError> {
     if elements.is_empty() {
-        return Some(vec![0]);
+        return Ok(Some(vec![0]));
     }
     if is_matrix {
-        return match elements.first() {
+        return Ok(match elements.first() {
             Some(Expression::Array { elements: row, .. }) => {
                 Some(vec![elements.len() as i64, row.len() as i64])
             }
             _ => Some(vec![1, elements.len() as i64]),
-        };
+        });
     }
 
     let mut dims = vec![elements.len() as i64];
-    let inner_dims = elements
-        .iter()
-        .find_map(|element| infer_expr_dims(element, var_dims, function_output_dims));
+    let mut inner_dims = None;
+    for element in elements {
+        if let Some(inferred) = infer_expr_dims(element, var_dims, function_output_dims)? {
+            inner_dims = Some(inferred);
+            break;
+        }
+    }
     if let Some(inner) = inner_dims {
         dims.extend(inner);
     }
-    Some(dims)
+    Ok(Some(dims))
 }
 
 pub(crate) fn infer_array_comprehension_dims(
@@ -87,17 +91,22 @@ pub(crate) fn infer_array_comprehension_dims(
     filter: Option<&Expression>,
     var_dims: &DimMap,
     function_output_dims: &DimMap,
-) -> Option<Vec<i64>> {
+) -> Result<Option<Vec<i64>>, rumoca_eval_flat::constant::EvalError> {
     if filter.is_some() {
-        return None;
+        return Ok(None);
     }
 
     let mut dims = Vec::with_capacity(indices.len().saturating_add(1));
     for index in indices {
-        let range_dims = infer_expr_dims(&index.range, var_dims, function_output_dims)
-            .or_else(|| infer_array_dimensions(&index.range))?;
+        let range_dims = match infer_expr_dims(&index.range, var_dims, function_output_dims)? {
+            Some(dims) => dims,
+            None => match infer_array_dimensions_checked(&index.range)? {
+                Some(dims) => dims,
+                None => return Ok(None),
+            },
+        };
         if range_dims.is_empty() {
-            return None;
+            return Ok(None);
         }
         let range_size = range_dims
             .iter()
@@ -106,19 +115,21 @@ pub(crate) fn infer_array_comprehension_dims(
         dims.push(range_size);
     }
 
-    if let Some(mut body_dims) = infer_expr_dims(expr, var_dims, function_output_dims)
-        .or_else(|| infer_array_dimensions(expr))
-    {
+    let body_dims = match infer_expr_dims(expr, var_dims, function_output_dims)? {
+        Some(dims) => Some(dims),
+        None => infer_array_dimensions_checked(expr)?,
+    };
+    if let Some(mut body_dims) = body_dims {
         dims.append(&mut body_dims);
     }
-    Some(dims)
+    Ok(Some(dims))
 }
 
 pub(crate) fn infer_expr_dims(
     expr: &Expression,
     var_dims: &DimMap,
     function_output_dims: &DimMap,
-) -> Option<Vec<i64>> {
+) -> Result<Option<Vec<i64>>, rumoca_eval_flat::constant::EvalError> {
     match expr {
         Expression::Array {
             elements,
@@ -127,36 +138,39 @@ pub(crate) fn infer_expr_dims(
         } => infer_array_dims_from_expression(elements, *is_matrix, var_dims, function_output_dims),
         Expression::VarRef {
             name, subscripts, ..
-        } if subscripts.is_empty() => var_dims.get(name.as_str()).cloned(),
-        Expression::VarRef { .. } | Expression::BuiltinCall { .. } => None,
-        Expression::StringConversion { .. } => Some(Vec::new()),
-        Expression::FunctionCall { name, .. } => {
-            infer_function_call_dims(name.as_str(), function_output_dims)
-        }
+        } if subscripts.is_empty() => Ok(var_dims.get(name.as_str()).cloned()),
+        Expression::VarRef { .. } | Expression::BuiltinCall { .. } => Ok(None),
+        Expression::StringConversion { .. } => Ok(Some(Vec::new())),
+        Expression::FunctionCall { name, .. } => Ok(infer_function_call_dims(
+            name.as_str(),
+            function_output_dims,
+        )),
         Expression::Binary { lhs, rhs, .. } => {
-            let lhs_dims = infer_expr_dims(lhs, var_dims, function_output_dims);
-            let rhs_dims = infer_expr_dims(rhs, var_dims, function_output_dims);
-            match (lhs_dims, rhs_dims) {
+            let lhs_dims = infer_expr_dims(lhs, var_dims, function_output_dims)?;
+            let rhs_dims = infer_expr_dims(rhs, var_dims, function_output_dims)?;
+            Ok(match (lhs_dims, rhs_dims) {
                 (Some(l), Some(r)) if l == r => Some(l),
                 (Some(l), Some(r)) if l.is_empty() && !r.is_empty() => Some(r),
                 (Some(l), Some(r)) if r.is_empty() && !l.is_empty() => Some(l),
                 (Some(l), None) if !l.is_empty() => Some(l),
                 (None, Some(r)) if !r.is_empty() => Some(r),
                 _ => None,
-            }
+            })
         }
         Expression::Unary { rhs, .. } => infer_expr_dims(rhs, var_dims, function_output_dims),
-        Expression::Literal { value: _, .. } => Some(Vec::new()),
+        Expression::Literal { value: _, .. } => Ok(Some(Vec::new())),
         Expression::If {
             branches,
             else_branch,
             ..
-        } => branches
-            .iter()
-            .find_map(|(_cond, branch_expr)| {
-                infer_expr_dims(branch_expr, var_dims, function_output_dims)
-            })
-            .or_else(|| infer_expr_dims(else_branch, var_dims, function_output_dims)),
+        } => {
+            for (_, branch_expr) in branches {
+                if let Some(dims) = infer_expr_dims(branch_expr, var_dims, function_output_dims)? {
+                    return Ok(Some(dims));
+                }
+            }
+            infer_expr_dims(else_branch, var_dims, function_output_dims)
+        }
         Expression::ArrayComprehension {
             expr,
             indices,
@@ -170,13 +184,13 @@ pub(crate) fn infer_expr_dims(
             function_output_dims,
         ),
         Expression::FieldAccess { base, field, .. } => {
-            crate::postprocess::field_access_flat_path(base, field)
-                .and_then(|name| var_dims.get(&name).cloned())
+            Ok(crate::postprocess::field_access_flat_path(base, field)
+                .and_then(|name| var_dims.get(&name).cloned()))
         }
         Expression::Tuple { .. }
         | Expression::Range { .. }
         | Expression::Index { .. }
-        | Expression::Empty { .. } => None,
+        | Expression::Empty { .. } => Ok(None),
     }
 }
 
@@ -218,10 +232,12 @@ pub(crate) fn infer_and_normalize_dims(
     parent: &[i64],
     var_dims: &DimMap,
     function_output_dims: &DimMap,
-) -> Option<Vec<i64>> {
-    infer_expr_dims(expr, var_dims, function_output_dims)
-        .or_else(|| infer_array_dimensions(expr))
-        .map(|dims| normalize_inferred_dims_for_parent(&dims, parent))
+) -> Result<Option<Vec<i64>>, rumoca_eval_flat::constant::EvalError> {
+    let inferred = match infer_expr_dims(expr, var_dims, function_output_dims)? {
+        Some(dims) => Some(dims),
+        None => infer_array_dimensions_checked(expr)?,
+    };
+    Ok(inferred.map(|dims| normalize_inferred_dims_for_parent(&dims, parent)))
 }
 
 pub(crate) fn choose_more_specific_dims(first: Vec<i64>, second: Vec<i64>) -> Vec<i64> {
@@ -246,16 +262,17 @@ pub(crate) fn infer_best_dims_for_var(
     parent: &[i64],
     var_dims: &DimMap,
     function_output_dims: &DimMap,
-) -> Option<Vec<i64>> {
-    let inferred_from_binding = var.binding.as_ref().and_then(|binding| {
-        infer_and_normalize_dims(binding, parent, var_dims, function_output_dims)
-    });
-    let inferred_from_start = var
-        .start
-        .as_ref()
-        .and_then(|start| infer_and_normalize_dims(start, parent, var_dims, function_output_dims));
+) -> Result<Option<Vec<i64>>, rumoca_eval_flat::constant::EvalError> {
+    let inferred_from_binding = match &var.binding {
+        Some(binding) => infer_and_normalize_dims(binding, parent, var_dims, function_output_dims)?,
+        None => None,
+    };
+    let inferred_from_start = match &var.start {
+        Some(start) => infer_and_normalize_dims(start, parent, var_dims, function_output_dims)?,
+        None => None,
+    };
 
-    match (inferred_from_binding, inferred_from_start) {
+    Ok(match (inferred_from_binding, inferred_from_start) {
         (Some(binding), Some(start)) => Some(choose_more_specific_dims(binding, start)),
         (Some(binding), None) => Some(binding),
         (None, Some(start)) => Some(start),
@@ -266,14 +283,14 @@ pub(crate) fn infer_best_dims_for_var(
                 None
             }
         }
-    }
+    })
 }
 
 pub(crate) fn recover_nested_dims_from_bindings(
     flat: &mut Model,
     parent_dims: &ParentDims,
     function_output_dims: &DimMap,
-) {
+) -> Result<(), rumoca_eval_flat::constant::EvalError> {
     for _ in 0..2 {
         let var_dims_lookup: DimMap = flat
             .variables
@@ -287,7 +304,7 @@ pub(crate) fn recover_nested_dims_from_bindings(
                 continue;
             };
             let Some(inferred) =
-                infer_best_dims_for_var(var, parent, &var_dims_lookup, function_output_dims)
+                infer_best_dims_for_var(var, parent, &var_dims_lookup, function_output_dims)?
             else {
                 continue;
             };
@@ -300,6 +317,7 @@ pub(crate) fn recover_nested_dims_from_bindings(
             break;
         }
     }
+    Ok(())
 }
 
 pub(crate) fn prepend_missing_parent_dims(flat: &mut Model, parent_dims: &ParentDims) {
@@ -377,7 +395,7 @@ fn repeat_element_bindings_over_parent_dims(
     parent_dims: &ParentDims,
     function_output_dims: &DimMap,
     overlay: &InstanceOverlay,
-) {
+) -> Result<(), rumoca_eval_flat::constant::EvalError> {
     let var_dims: DimMap = flat
         .variables
         .iter()
@@ -399,9 +417,11 @@ fn repeat_element_bindings_over_parent_dims(
         {
             continue;
         }
-        let Some(binding_dims) = infer_expr_dims(&binding, &var_dims, function_output_dims)
-            .or_else(|| infer_array_dimensions(&binding))
-        else {
+        let binding_dims = match infer_expr_dims(&binding, &var_dims, function_output_dims)? {
+            Some(dims) => Some(dims),
+            None => infer_array_dimensions_checked(&binding)?,
+        };
+        let Some(binding_dims) = binding_dims else {
             continue;
         };
         if var.dims != join_parent_child_dims(parent, &binding_dims) {
@@ -440,20 +460,25 @@ fn repeat_element_bindings_over_parent_dims(
             span,
         });
     }
+    Ok(())
 }
 
-pub(crate) fn propagate_unexpanded_record_array_dims(flat: &mut Model, overlay: &InstanceOverlay) {
+pub(crate) fn propagate_unexpanded_record_array_dims(
+    flat: &mut Model,
+    overlay: &InstanceOverlay,
+) -> Result<(), rumoca_eval_flat::constant::EvalError> {
     let mut parent_dims = collect_parent_dims(flat, overlay);
     if parent_dims.is_empty() {
-        return;
+        return Ok(());
     }
     // Longest prefix wins when parents are nested.
     parent_dims.sort_by_key(|entry| std::cmp::Reverse(entry.0.len()));
 
     let function_output_dims = collect_function_output_dims(flat);
-    recover_nested_dims_from_bindings(flat, &parent_dims, &function_output_dims);
+    recover_nested_dims_from_bindings(flat, &parent_dims, &function_output_dims)?;
     prepend_missing_parent_dims(flat, &parent_dims);
     let child_dim_hints = build_child_dim_hints(flat, &parent_dims);
     complete_child_dims_from_hints(flat, &parent_dims, &child_dim_hints);
-    repeat_element_bindings_over_parent_dims(flat, &parent_dims, &function_output_dims, overlay);
+    repeat_element_bindings_over_parent_dims(flat, &parent_dims, &function_output_dims, overlay)?;
+    Ok(())
 }

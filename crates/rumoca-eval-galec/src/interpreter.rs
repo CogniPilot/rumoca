@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca_ir_galec::ast;
-use rumoca_ir_galec::package::CheckedAlgorithmBlock;
+use rumoca_ir_galec::package::{
+    AlgorithmCodeArithmeticProfile, AlgorithmCodeIntegerFormat, AlgorithmCodePackage,
+};
 
+use crate::Value;
+use crate::numeric::RealArithmetic;
 use crate::runtime::{
     compare_ordered, declarations, initialized, not_value, size_dimension,
     uninitialized_declaration, value_in_integer_domain, value_matches_declaration,
 };
-use crate::{IntegerDomain, Value};
 
 type SignalClosure = (String, BTreeSet<String>);
 type ConditionResult = (bool, Option<SignalClosure>);
@@ -71,7 +74,7 @@ pub struct Evaluator<'a> {
     pub(super) active_signals: BTreeSet<String>,
     pub(super) signal_closures: Vec<(String, BTreeSet<String>)>,
     pub(super) declaration_scopes: Vec<BTreeMap<String, ast::VariableDeclaration>>,
-    pub(super) integer_domain: IntegerDomain,
+    pub(super) arithmetic_profile: AlgorithmCodeArithmeticProfile,
     pub(super) lifecycle: Lifecycle,
 }
 
@@ -98,11 +101,9 @@ impl Lifecycle {
 }
 
 impl<'a> Evaluator<'a> {
-    pub fn new(
-        block: &'a CheckedAlgorithmBlock,
-        integer_domain: IntegerDomain,
-    ) -> Result<Self, EvaluationError> {
-        let block = block.block();
+    pub fn new(package: &'a AlgorithmCodePackage) -> Result<Self, EvaluationError> {
+        let profile = package.arithmetic_profile();
+        let block = package.block();
         let mut state = BTreeMap::new();
         for variable in &block.interface {
             state.insert(
@@ -134,7 +135,7 @@ impl<'a> Evaluator<'a> {
             active_signals: BTreeSet::new(),
             signal_closures: Vec::new(),
             declaration_scopes: Vec::new(),
-            integer_domain,
+            arithmetic_profile: profile,
             lifecycle: Lifecycle::Created,
         };
         let starts = block
@@ -161,6 +162,8 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn set_state(&mut self, name: &str, value: Value) -> Result<(), EvaluationError> {
+        let integer_format = self.integer_format();
+        let value = self.normalize_reals(value);
         let slot = self
             .state
             .get_mut(name)
@@ -174,7 +177,7 @@ impl<'a> Evaluator<'a> {
         if !value_matches_declaration(self.block, slot.declaration, &value)? {
             return Err(EvaluationError::Type(kind));
         }
-        if !value_in_integer_domain(&value, self.integer_domain) {
+        if !value_in_integer_domain(&value, integer_format) {
             return Err(EvaluationError::IntegerOverflow);
         }
         slot.value = value;
@@ -442,10 +445,11 @@ impl<'a> Evaluator<'a> {
                 locals.insert(iterator.lexeme().to_owned(), Value::Integer(current));
             }
             self.statements(&value.body, locals)?;
-            let Some(next) = current.checked_add(step) else {
+            let next = i128::from(current) + i128::from(step);
+            if (step > 0 && next > i128::from(stop)) || (step < 0 && next < i128::from(stop)) {
                 break;
-            };
-            current = next;
+            }
+            current = i64::try_from(next).map_err(|_| EvaluationError::IntegerOverflow)?;
         }
         Ok(())
     }
@@ -513,7 +517,7 @@ impl<'a> Evaluator<'a> {
         match expression {
             ast::Expression::Bool(value) => Ok(Value::Boolean(*value)),
             ast::Expression::Integer(value) => self.integer(*value),
-            ast::Expression::Real(value) => Ok(Value::Real(*value)),
+            ast::Expression::Real(value) => Ok(Value::Real(self.real_arithmetic().round(*value))),
             ast::Expression::Ref(reference) => self.reference(reference, locals),
             ast::Expression::Size { array, dimension } => {
                 let array = self.reference(array, locals)?;
@@ -521,7 +525,7 @@ impl<'a> Evaluator<'a> {
                     .expression(dimension, locals)?
                     .integer()
                     .ok_or(EvaluationError::Type("size dimension"))?;
-                size_dimension(&array, dimension)
+                self.checked_integer(Some(size_dimension(&array, dimension)?))
             }
             ast::Expression::Call(call) => {
                 let values = self.call(call, &mut locals.clone())?;
@@ -621,11 +625,23 @@ impl<'a> Evaluator<'a> {
             (Op::Mul, Value::Integer(a), Value::Integer(b)) => {
                 self.checked_integer(a.checked_mul(b))
             }
-            (Op::Add, Value::Real(a), Value::Real(b)) => Ok(Value::Real(a + b)),
-            (Op::Sub, Value::Real(a), Value::Real(b)) => Ok(Value::Real(a - b)),
-            (Op::Mul, Value::Real(a), Value::Real(b)) => Ok(Value::Real(a * b)),
-            (Op::Div, Value::Real(a), Value::Real(b)) => Ok(Value::Real(a / b)),
-            (Op::Pow, Value::Real(a), Value::Real(b)) => Ok(Value::Real(a.powf(b))),
+            (Op::Pow, lhs, rhs) => {
+                let lhs = self.power_operand(lhs)?;
+                let rhs = self.power_operand(rhs)?;
+                Ok(Value::Real(self.real_arithmetic().pow(lhs, rhs)))
+            }
+            (Op::Add, Value::Real(a), Value::Real(b)) => {
+                Ok(Value::Real(self.real_arithmetic().add(a, b)))
+            }
+            (Op::Sub, Value::Real(a), Value::Real(b)) => {
+                Ok(Value::Real(self.real_arithmetic().sub(a, b)))
+            }
+            (Op::Mul, Value::Real(a), Value::Real(b)) => {
+                Ok(Value::Real(self.real_arithmetic().mul(a, b)))
+            }
+            (Op::Div, Value::Real(a), Value::Real(b)) => {
+                Ok(Value::Real(self.real_arithmetic().div(a, b)))
+            }
             (Op::And, Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(a && b)),
             (Op::Or, Value::Boolean(a), Value::Boolean(b)) => Ok(Value::Boolean(a || b)),
             (op @ (Op::Lt | Op::Gt | Op::Le | Op::Ge | Op::Eq | Op::Ne), a, b) => {
@@ -639,9 +655,22 @@ impl<'a> Evaluator<'a> {
         self.checked_integer(Some(value))
     }
 
+    fn power_operand(&self, value: Value) -> Result<f64, EvaluationError> {
+        match value {
+            Value::Integer(value) => Ok(self.real_arithmetic().convert_integer(value)),
+            Value::Real(value) => Ok(value),
+            Value::Boolean(_) | Value::Array(_) | Value::Record(_) | Value::Uninitialized => {
+                Err(EvaluationError::Type("power operand"))
+            }
+        }
+    }
+
     pub(super) fn checked_integer(&self, value: Option<i64>) -> Result<Value, EvaluationError> {
         value
-            .filter(|value| self.integer_domain.contains(*value))
+            .filter(|value| {
+                *value >= self.integer_format().minimum()
+                    && *value <= self.integer_format().maximum()
+            })
             .map(Value::Integer)
             .ok_or(EvaluationError::IntegerOverflow)
     }
@@ -649,7 +678,7 @@ impl<'a> Evaluator<'a> {
     fn negate(&self, value: Value) -> Result<Value, EvaluationError> {
         match value {
             Value::Integer(value) => self.checked_integer(value.checked_neg()),
-            Value::Real(value) => Ok(Value::Real(-value)),
+            Value::Real(value) => Ok(Value::Real(self.real_arithmetic().round(-value))),
             Value::Array(values) => values
                 .into_iter()
                 .map(|value| self.negate(value))
@@ -659,6 +688,33 @@ impl<'a> Evaluator<'a> {
                 Err(EvaluationError::Type("unary minus"))
             }
         }
+    }
+
+    fn normalize_reals(&self, value: Value) -> Value {
+        match value {
+            Value::Real(value) => Value::Real(self.real_arithmetic().round(value)),
+            Value::Array(values) => Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| self.normalize_reals(value))
+                    .collect(),
+            ),
+            Value::Record(fields) => Value::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, value)| (name, self.normalize_reals(value)))
+                    .collect(),
+            ),
+            Value::Boolean(_) | Value::Integer(_) | Value::Uninitialized => value,
+        }
+    }
+
+    pub(super) const fn integer_format(&self) -> AlgorithmCodeIntegerFormat {
+        self.arithmetic_profile.source_integer()
+    }
+
+    pub(super) const fn real_arithmetic(&self) -> RealArithmetic {
+        RealArithmetic::from_format(self.arithmetic_profile.source_real())
     }
 
     fn compare(

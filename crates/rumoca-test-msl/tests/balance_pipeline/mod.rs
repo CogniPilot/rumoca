@@ -300,7 +300,7 @@ impl Drop for StageAbortWatchdog {
     fn drop(&mut self) {
         self.signal.finish();
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            let _watchdog_panic = worker.join();
         }
     }
 }

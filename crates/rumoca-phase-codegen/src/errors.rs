@@ -94,6 +94,21 @@ pub enum CodegenError {
         reason: String,
         span: Option<rumoca_core::Span>,
     },
+
+    /// The selected target explicitly excludes a source-model capability.
+    #[error(
+        "unsupported-feature:{feature}: Target '{target}' does not support feature '{feature}': {detail}"
+    )]
+    #[diagnostic(
+        code(rumoca::codegen::EC009),
+        help("select a target whose checked capability profile admits this source feature")
+    )]
+    UnsupportedTargetFeature {
+        target: String,
+        feature: &'static str,
+        detail: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -125,6 +140,21 @@ impl CodegenError {
     ) -> Self {
         Self::DaePreparationFailed {
             message: message.into(),
+            span,
+        }
+    }
+
+    /// Construct a typed target-capability refusal before any artifact exists.
+    pub fn unsupported_target_feature(
+        target: impl Into<String>,
+        feature: &'static str,
+        detail: impl Into<String>,
+        span: Option<rumoca_core::Span>,
+    ) -> Self {
+        Self::UnsupportedTargetFeature {
+            target: target.into(),
+            feature,
+            detail: detail.into(),
             span,
         }
     }
@@ -261,6 +291,11 @@ mod tests {
             CodegenError::InvalidStructuredFamilyOwnership { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never structured-family ownership errors"
+                );
+            }
+            CodegenError::UnsupportedTargetFeature { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never target-capability errors"
                 );
             }
         }

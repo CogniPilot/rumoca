@@ -2,10 +2,9 @@ use rumoca_ir_ast as ast;
 
 pub(super) fn resolved_imports_with_active_package_constants(
     tree: &ast::ClassTree,
-    base_imports: &[(String, String)],
     active_aliases: &[(String, rumoca_core::DefId)],
 ) -> Vec<(String, String)> {
-    let mut imports = base_imports.to_vec();
+    let mut imports = Vec::new();
     for (_, target_def_id) in active_aliases {
         append_type_override_constant_imports(tree, *target_def_id, &mut imports);
     }
@@ -15,9 +14,8 @@ pub(super) fn resolved_imports_with_active_package_constants(
 pub(super) fn resolved_imports_with_enclosing_package_constants(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
-    base_imports: &[(String, String)],
 ) -> Vec<(String, String)> {
-    let mut imports = base_imports.to_vec();
+    let mut imports = Vec::new();
     append_enclosing_package_constant_imports(tree, class, &mut imports);
     imports
 }

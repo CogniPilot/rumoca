@@ -129,7 +129,6 @@ const runtimeFiles = [
   "modelica_language.js",
   "rumoca_worker.js",
   "parse_worker.js",
-  "rumoca_gpu.js",
 ];
 const runtimeFileSource = (file) => path.join(webDir, "runtime", file);
 
@@ -191,7 +190,7 @@ const buildDiffsolAddon = async (pkgDir, args) => {
 
 // Build the GALEC / eFMI codegen addon and ship it inside the same package.
 // It is a SEPARATE wasm module carrying the GALEC → eFMI Algorithm Code (.alg)
-// + GALEC-derived embedded C projection, imported lazily by rumoca_galec.js
+// + GALEC Algorithm Code projection, imported lazily by rumoca_galec.js
 // only when a user selects a GALEC codegen target — so the main module stays
 // free of the eFMI codegen surface. Only meaningful for `full-web` (the
 // package the editor / docs widgets consume for codegen); `core` omits it.

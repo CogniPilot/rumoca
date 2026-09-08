@@ -17,12 +17,6 @@ impl InputRequirements {
     }
 }
 
-pub(super) fn input_requirements_for_plans(rows: &[RowPlan]) -> InputRequirements {
-    rows.iter()
-        .map(row_input_requirements)
-        .fold(InputRequirements::default(), InputRequirements::merge)
-}
-
 pub(super) fn row_input_requirements(row: &RowPlan) -> InputRequirements {
     match row {
         RowPlan::Simple(row) => row.input_requirements,
@@ -51,29 +45,21 @@ fn input_requirements_for_linear_op(op: LinearOp) -> Result<InputRequirements, C
             p_len: checked_required_len("p", index)?,
             ..Default::default()
         }),
-        LinearOp::LoadIndexedP { base, count, .. } => Ok(InputRequirements {
-            p_len: checked_required_indexed_len("p", base, count)?,
-            ..Default::default()
-        }),
         LinearOp::LoadSeed { index, .. } => Ok(InputRequirements {
             seed_len: checked_required_len("seed", index)?,
-            ..Default::default()
-        }),
-        LinearOp::LoadIndexedSeed { base, count, .. } => Ok(InputRequirements {
-            seed_len: checked_required_indexed_len("seed", base, count)?,
             ..Default::default()
         }),
         LinearOp::FunctionFold { program, .. }
         | LinearOp::GuardedFunctionFold { program, .. }
         | LinearOp::StoreOutputFunctionFold { program, .. } => {
-            input_requirements_for_linear_ops(&program.update)
+            input_requirements_for_linear_ops(program.update())
         }
         LinearOp::FunctionConditional { program, .. } => {
-            let mut requirements = input_requirements_for_linear_ops(&program.fallback)?;
-            for arm in &program.arms {
+            let mut requirements = input_requirements_for_linear_ops(program.fallback())?;
+            for arm in program.arms() {
                 requirements = requirements
-                    .merge(input_requirements_for_linear_ops(&arm.condition)?)
-                    .merge(input_requirements_for_linear_ops(&arm.result)?);
+                    .merge(input_requirements_for_linear_ops(arm.condition())?)
+                    .merge(input_requirements_for_linear_ops(arm.result())?);
             }
             Ok(requirements)
         }
@@ -84,18 +70,6 @@ fn input_requirements_for_linear_op(op: LinearOp) -> Result<InputRequirements, C
 fn checked_required_len(vector: &'static str, index: usize) -> Result<usize, CompileError> {
     index
         .checked_add(1)
-        .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
-}
-
-fn checked_required_indexed_len(
-    vector: &'static str,
-    base: usize,
-    count: usize,
-) -> Result<usize, CompileError> {
-    if count == 0 {
-        return checked_required_len(vector, base);
-    }
-    base.checked_add(count)
         .ok_or_else(|| CompileError::Backend(format!("{vector} input requirement overflow")))
 }
 

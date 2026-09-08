@@ -1,5 +1,8 @@
 use std::fs;
 
+use syn::ext::IdentExt;
+use syn::visit::{self, Visit};
+
 use super::architecture_hardening_support::workspace_root;
 
 #[test]
@@ -30,13 +33,25 @@ fn canonical_dae_is_non_cloneable_and_shared_at_session_boundaries() {
     let facade = read(&root, "crates/rumoca/src/compiler.rs");
     let facade_result = declaration_body(&facade, "pub struct CompilationResult");
     assert!(
-        facade_result.contains("pub dae: Arc<Dae>"),
-        "the public compiler facade must expose checked DAE sharing explicitly"
+        facade_result.contains("strict: rumoca_compile::compile::StrictCompilation"),
+        "the public compiler facade must retain the correlated strict compilation root"
     );
-    let constructor = declaration_body(&facade, "pub fn new(");
+    for separated_root in ["pub dae:", "pub flat:", "pub resolved:"] {
+        assert!(
+            !facade_result.contains(separated_root),
+            "the public compiler facade must not expose separable proof root `{separated_root}`"
+        );
+    }
+    let constructor = declaration_body(&facade, "pub fn from_strict(");
     assert!(
-        constructor.contains("dae: Arc<Dae>"),
-        "the compiler facade constructor must accept the existing shared root"
+        constructor.contains("compilation: rumoca_compile::compile::StrictCompilation")
+            && constructor.contains("strict: compilation"),
+        "the compiler facade constructor must consume the intact strict compilation"
+    );
+    let dae_accessor = declaration_body(&facade, "pub fn dae(");
+    assert!(
+        dae_accessor.contains("-> &Arc<Dae>") && dae_accessor.contains("&self.strict.result().dae"),
+        "the compiler facade must borrow the strict compilation's shared DAE root"
     );
 }
 
@@ -48,8 +63,14 @@ fn rendering_borrows_the_checked_dae_without_copy_adapters() {
         "crates/rumoca-phase-codegen/src/codegen/solve_renderer.rs",
     );
     assert!(
-        renderer.contains("dae_model: &dae::Dae"),
-        "Solve template projection must borrow the checked DAE"
+        renderer.contains("fn borrowed(model: &solve::SolveModel")
+            && renderer.contains("fn prepare(model: solve::SolveModel)")
+            && renderer.contains("SolveRenderHandle::standalone(std::sync::Arc::new(model))"),
+        "Solve template projection must borrow or consume one complete checked Solve root"
+    );
+    assert!(
+        !renderer.contains("dae_model") && !renderer.contains("dae::Dae"),
+        "Solve template rendering must not accept an independently supplied DAE graph"
     );
 
     for prohibited in [
@@ -133,29 +154,39 @@ fn solve_consumes_the_structural_analysis_issued_by_preparation() {
 fn tensor_address_arithmetic_has_one_foundation_owner() {
     let root = workspace_root();
     let owner = read(&root, "crates/rumoca-core/src/structured_domain.rs");
+    let mut files = Vec::new();
+    super::architecture_hardening_support::collect_rs_files(&root.join("crates"), &mut files);
+    for required in [
+        "crates/rumoca-core/src/structured_domain.rs",
+        "crates/rumoca-ir-flat/src/structured_equation_owners.rs",
+    ] {
+        assert!(
+            files.contains(&root.join(required)),
+            "scan missed {required}"
+        );
+    }
     for helper in [
         "fn row_major_coordinates(",
         "fn flatten_coordinates(",
         "fn checked_product(",
+        "fn checked_extent_product(",
     ] {
         assert_eq!(
-            owner.matches(helper).count(),
+            tensor_helper_definition_count(&owner, helper),
             1,
             "rumoca-core must contain exactly one `{helper}` owner"
         );
         let mut duplicates = Vec::new();
-        let mut files = Vec::new();
-        super::architecture_hardening_support::collect_rs_files(&root.join("crates"), &mut files);
-        for path in files {
+        for path in &files {
             if path.ends_with("crates/rumoca-core/src/structured_domain.rs")
                 || path
                     .ends_with("crates/rumoca/tests/architecture_hardening_test/dae_ownership.rs")
             {
                 continue;
             }
-            let source = fs::read_to_string(&path)
+            let source = fs::read_to_string(path)
                 .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-            if source.contains(helper) {
+            if tensor_helper_definition_count(&source, helper) > 0 {
                 duplicates.push(path.display().to_string());
             }
         }
@@ -164,6 +195,76 @@ fn tensor_address_arithmetic_has_one_foundation_owner() {
             "tensor arithmetic helper `{helper}` is duplicated in {duplicates:?}"
         );
     }
+}
+
+fn tensor_helper_definition_count(source: &str, helper: &str) -> usize {
+    if helper == "fn checked_extent_product(" {
+        shared_extent_product_definitions(source)
+    } else {
+        source.matches(helper).count()
+    }
+}
+
+fn shared_extent_product_definitions(source: &str) -> usize {
+    struct Definitions {
+        count: usize,
+    }
+
+    impl<'ast> Visit<'ast> for Definitions {
+        fn visit_signature(&mut self, signature: &'ast syn::Signature) {
+            let explicit_arguments = signature
+                .inputs
+                .iter()
+                .filter(|input| matches!(input, syn::FnArg::Typed(_)))
+                .count();
+            if signature.ident.unraw() == "checked_extent_product" && explicit_arguments <= 1 {
+                self.count += 1;
+            }
+            visit::visit_signature(self, signature);
+        }
+    }
+
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("parse source for extent-product owner census: {error}"));
+    let mut definitions = Definitions { count: 0 };
+    definitions.visit_file(&syntax);
+    definitions.count
+}
+
+#[test]
+fn extent_product_owner_census_ignores_layout_and_binder_spelling() {
+    for source in [
+        "fn checked_extent_product(extents: &[u32]) -> Option<usize> { None }",
+        "fn checked_extent_product(\n    extents: &[u32],\n) -> Option<usize> { None }",
+        "fn checked_extent_product(shape: &[u32]) -> Option<usize> { None }",
+        "mod nested { fn checked_extent_product(shape: &[u32]) -> Option<usize> { None } }",
+        "impl Owner { fn checked_extent_product(shape: &[u32]) -> Option<usize> { None } }",
+        "impl Owner { fn checked_extent_product(&self) -> Option<usize> { None } }",
+        "impl Owner { fn checked_extent_product(&self, shape: &[u32]) -> Option<usize> { None } }",
+        "fn checked_extent_product() -> Option<usize> { None }",
+        "fn r#checked_extent_product(shape: &[u32]) -> Option<usize> { None }",
+    ] {
+        assert_eq!(
+            tensor_helper_definition_count(source, "fn checked_extent_product("),
+            1,
+            "missed unary extent-product definition: {source}"
+        );
+    }
+}
+
+#[test]
+fn extent_product_owner_census_excludes_text_and_distinct_contracts() {
+    let source = r#"
+        // fn checked_extent_product(extents: &[u32]) -> Option<usize> { None }
+        const TEXT: &str = "fn checked_extent_product(extents: &[u32])";
+        fn checked_extent_product(
+            partition: Partition, family: usize, extents: &[usize],
+        ) -> Result<usize, Error> { Ok(family) }
+    "#;
+    assert_eq!(
+        tensor_helper_definition_count(source, "fn checked_extent_product("),
+        0
+    );
 }
 
 fn read(root: &std::path::Path, relative: &str) -> String {

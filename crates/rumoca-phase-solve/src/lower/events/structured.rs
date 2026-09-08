@@ -210,9 +210,6 @@ fn lower_unconditional_discrete_value_owner<'dae>(
             rows.relation_memory_owners
                 .claim_exact_expression(value, target);
             let pre_mode = expression_pre_mode(view, value, sampled);
-            if clock.is_none() && pre_mode == solve::DiscreteEventPreMode::FollowCurrent {
-                rows.push_root_refresh_candidate(program.clone(), span, target);
-            }
             rows.push(
                 program,
                 span,

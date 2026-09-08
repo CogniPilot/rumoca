@@ -14,5 +14,10 @@ rumoca-solver = { workspace = true }
 diffsol = { version = "0.13" }
 self_cell = { workspace = true }
 
+[dev-dependencies]
+# The backend regression drives this crate's real integrator through the
+# checked FMI ME plugin contract using rumoca-solver's feature-gated harness.
+rumoca-solver = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

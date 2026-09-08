@@ -214,75 +214,80 @@ mod tests {
         assert_eq!(sccs[0], vec![NODES - 1]);
         assert_eq!(sccs[NODES - 1], vec![0]);
     }
-    /// The pre-change recursive Tarjan, kept verbatim so the explicit-stack
-    /// rewrite can be pinned against it. `build_blt_blocks` treats the emitted
-    /// SCC sequence as the BLT evaluation order, so equivalence here is what
-    /// keeps every model's block sequence stable.
-    mod reference {
-        // VERBATIM copy of the pre-change recursive Tarjan. Its nesting is what
-        // the explicit-stack rewrite removed; refactoring it here would weaken
-        // the equivalence assertion below.
-        #![allow(
-            clippy::excessive_nesting,
-            reason = "verbatim copy of the pre-change recursive Tarjan, kept unmodified so the equivalence assertion is meaningful"
-        )]
+    /// Independent recursive reference semantics for the explicit-stack
+    /// implementation. The randomized comparison below checks both component
+    /// membership and exact BLT order across different control-flow shapes.
+    struct ReferenceState {
+        counter: usize,
+        stack: Vec<usize>,
+        on_stack: Vec<bool>,
+        index: Vec<Option<usize>>,
+        lowlink: Vec<usize>,
+        sccs: Vec<Vec<usize>>,
+    }
 
-        struct State {
-            counter: usize,
-            stack: Vec<usize>,
-            on_stack: Vec<bool>,
-            index: Vec<Option<usize>>,
-            lowlink: Vec<usize>,
-            sccs: Vec<Vec<usize>>,
+    impl ReferenceState {
+        fn strongconnect(&mut self, v: usize, adj: &[Vec<usize>]) {
+            self.index[v] = Some(self.counter);
+            self.lowlink[v] = self.counter;
+            self.counter += 1;
+            self.stack.push(v);
+            self.on_stack[v] = true;
+
+            for &w in &adj[v] {
+                self.visit_neighbor(v, w, adj);
+            }
+
+            if self.lowlink[v] != self.index[v].expect("visited node has an index") {
+                return;
+            }
+            self.pop_component(v);
         }
 
-        impl State {
-            fn strongconnect(&mut self, v: usize, adj: &[Vec<usize>]) {
-                self.index[v] = Some(self.counter);
-                self.lowlink[v] = self.counter;
-                self.counter += 1;
-                self.stack.push(v);
-                self.on_stack[v] = true;
-                for &w in &adj[v] {
-                    if self.index[w].is_none() {
-                        self.strongconnect(w, adj);
-                        self.lowlink[v] = self.lowlink[v].min(self.lowlink[w]);
-                    } else if self.on_stack[w] {
-                        let seen = self.index[w].expect("visited node has an index");
-                        self.lowlink[v] = self.lowlink[v].min(seen);
-                    }
-                }
-                if self.lowlink[v] == self.index[v].expect("visited node has an index") {
-                    let mut scc = Vec::new();
-                    loop {
-                        let w = self.stack.pop().expect("stack holds the SCC root");
-                        self.on_stack[w] = false;
-                        scc.push(w);
-                        if w == v {
-                            break;
-                        }
-                    }
-                    self.sccs.push(scc);
-                }
+        fn visit_neighbor(&mut self, v: usize, w: usize, adj: &[Vec<usize>]) {
+            if self.index[w].is_none() {
+                self.strongconnect(w, adj);
+                self.lowlink[v] = self.lowlink[v].min(self.lowlink[w]);
+                return;
+            }
+            if self.on_stack[w] {
+                let seen = self.index[w].expect("visited node has an index");
+                self.lowlink[v] = self.lowlink[v].min(seen);
             }
         }
 
-        pub(super) fn tarjan_scc(n: usize, adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
-            let mut state = State {
-                counter: 0,
-                stack: Vec::new(),
-                on_stack: vec![false; n],
-                index: vec![None; n],
-                lowlink: vec![0; n],
-                sccs: Vec::new(),
-            };
-            for v in 0..n {
-                if state.index[v].is_none() {
-                    state.strongconnect(v, adj);
-                }
+        fn pop_component(&mut self, root: usize) {
+            let mut scc = Vec::new();
+            let mut member = self.pop_component_member(&mut scc);
+            while member != root {
+                member = self.pop_component_member(&mut scc);
             }
-            state.sccs
+            self.sccs.push(scc);
         }
+
+        fn pop_component_member(&mut self, scc: &mut Vec<usize>) -> usize {
+            let member = self.stack.pop().expect("stack holds the SCC root");
+            self.on_stack[member] = false;
+            scc.push(member);
+            member
+        }
+    }
+
+    fn reference_tarjan_scc(n: usize, adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
+        let mut state = ReferenceState {
+            counter: 0,
+            stack: Vec::new(),
+            on_stack: vec![false; n],
+            index: vec![None; n],
+            lowlink: vec![0; n],
+            sccs: Vec::new(),
+        };
+        for v in 0..n {
+            if state.index[v].is_none() {
+                state.strongconnect(v, adj);
+            }
+        }
+        state.sccs
     }
 
     fn next_random(state: &mut u64) -> u64 {
@@ -306,7 +311,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 tarjan_scc(n, &adj),
-                reference::tarjan_scc(n, &adj),
+                reference_tarjan_scc(n, &adj),
                 "case {case}: adj {adj:?}"
             );
         }

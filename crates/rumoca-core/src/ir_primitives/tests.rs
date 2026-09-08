@@ -1,13 +1,14 @@
 use super::{
     BuiltinFunction, ComponentPath, ComponentRefPart, ComponentReference, ComponentReferenceError,
-    DefId, Expression, Function, FunctionInstanceId, FunctionParam,
-    FunctionParamShapeContractError, FunctionShapeContractError, InstanceId, Literal, OpBinary,
-    PRE_SLOT_NAMESPACE, Reference, ResolvedFunctionReference, SourceId, Span, Subscript, TypeId,
-    VarName, component_path_base_name, component_path_trailing_index,
-    expression_semantic_fingerprint, expressions_semantically_equal,
-    flat_expression_component_path, is_pre_slot, parse_scalar_name, pre_slot_base, pre_slot_name,
-    scoped_component_path_candidates, split_trailing_subscript_suffix,
-    strip_trailing_subscript_suffix,
+    DefId, Expression, ExternalFunction, Function, FunctionCallKind, FunctionInstanceId,
+    FunctionParam, FunctionParamShapeContractError, FunctionShapeContractError, InstanceId,
+    Literal, NamedFunctionArgMarker, OpBinary, PRE_SLOT_NAMESPACE, Reference,
+    ResolvedFunctionReference, SourceId, Span, Subscript, TypeId, VarName,
+    component_path_base_name, component_path_trailing_index, expression_semantic_fingerprint,
+    expressions_semantically_equal, flat_expression_component_path, is_pre_slot, parse_scalar_name,
+    pre_slot_base, pre_slot_name, scoped_component_path_candidates,
+    split_trailing_subscript_suffix, strip_trailing_subscript_suffix,
+    subscripts_semantic_fingerprint, subscripts_semantically_equal,
 };
 use crate::{EffectiveType, EffectiveTypeError};
 use std::collections::HashMap;
@@ -101,7 +102,7 @@ fn flat_expression_component_path_preserves_projected_indices() {
 #[test]
 fn builtin_function_all_entries_round_trip_by_name() {
     for builtin in BuiltinFunction::ALL {
-        if builtin.requires_predefined_identity() {
+        if builtin.requires_predefined_identity() || *builtin == BuiltinFunction::Der {
             assert_eq!(BuiltinFunction::from_name(builtin.name()), None);
             continue;
         }
@@ -112,6 +113,110 @@ fn builtin_function_all_entries_round_trip_by_name() {
             builtin.name()
         );
     }
+}
+
+#[test]
+fn builtin_argument_ranges_have_checked_boundaries() {
+    for builtin in BuiltinFunction::ALL {
+        let (minimum, maximum) = builtin.argument_count_range();
+        assert!(
+            builtin.accepts_argument_count(minimum),
+            "{} must accept its minimum arity",
+            builtin.name()
+        );
+        if minimum > 0 {
+            assert!(
+                !builtin.accepts_argument_count(minimum - 1),
+                "{} accepted an argument below its minimum",
+                builtin.name()
+            );
+        }
+        if let Some(maximum) = maximum {
+            assert!(
+                builtin.accepts_argument_count(maximum),
+                "{} must accept its maximum arity",
+                builtin.name()
+            );
+            assert!(
+                !builtin.accepts_argument_count(maximum + 1),
+                "{} accepted an argument above its maximum",
+                builtin.name()
+            );
+        } else {
+            assert!(builtin.accepts_argument_count(minimum + 8));
+        }
+    }
+}
+
+#[test]
+fn named_formals_are_declared_only_for_operators_with_named_actuals() {
+    // homotopy(actual, simplified) per MLS 3.6 §3.7.2.5; Clock(c, solverMethod)
+    // is the solver-clock constructor of MLS 3.6 §16.3, the only Clock overload
+    // whose formal (`solverMethod`) the standard library passes by name.
+    assert_eq!(
+        BuiltinFunction::Homotopy.named_formals(),
+        &["actual", "simplified"]
+    );
+    assert_eq!(
+        BuiltinFunction::Clock.named_formals(),
+        &["c", "solverMethod"]
+    );
+
+    // A declared formal name must never exceed the operator's positional arity,
+    // otherwise a named actual could bind a slot the evaluator never reads.
+    for builtin in BuiltinFunction::ALL {
+        let formals = builtin.named_formals();
+        if formals.is_empty() {
+            continue;
+        }
+        let (_, maximum) = builtin.argument_count_range();
+        let maximum = maximum.expect("an operator with named formals has a bounded arity");
+        assert!(
+            formals.len() <= maximum,
+            "{} declares more named formals than its maximum arity",
+            builtin.name()
+        );
+    }
+
+    // Every other operator declares no named formals so a named actual to it is
+    // refused rather than bound against an invented name.
+    for builtin in BuiltinFunction::ALL {
+        if matches!(builtin, BuiltinFunction::Homotopy | BuiltinFunction::Clock) {
+            continue;
+        }
+        assert!(
+            builtin.named_formals().is_empty(),
+            "{} unexpectedly declares named formals",
+            builtin.name()
+        );
+    }
+}
+
+#[test]
+fn passthrough_builtin_argument_contracts_match_mls() {
+    assert_eq!(
+        BuiltinFunction::NoEvent.argument_count_range(),
+        (1, Some(1))
+    );
+    assert_eq!(BuiltinFunction::Smooth.argument_count_range(), (2, Some(2)));
+    assert_eq!(
+        BuiltinFunction::Homotopy.argument_count_range(),
+        (2, Some(2))
+    );
+    assert_eq!(BuiltinFunction::Delay.argument_count_range(), (2, Some(3)));
+}
+
+#[test]
+fn array_and_synchronous_optional_argument_contracts_match_mls() {
+    assert_eq!(BuiltinFunction::Cat.argument_count_range(), (3, None));
+    assert_eq!(
+        BuiltinFunction::SubSample.argument_count_range(),
+        (1, Some(2))
+    );
+    assert_eq!(
+        BuiltinFunction::SuperSample.argument_count_range(),
+        (1, Some(2))
+    );
 }
 
 #[test]
@@ -393,7 +498,7 @@ fn function_param_shape_contract_rejects_negative_shape_index() {
 #[test]
 fn function_shape_contract_reports_bad_local_param() {
     let span = test_span();
-    let mut function = Function::new("Pkg.f", Span::DUMMY);
+    let mut function = Function::new("Pkg.f", DefId::new(9_001), Span::DUMMY);
     function.add_local(
         FunctionParam::new("tmp", "Real", real_value_type(vec![0]), span)
             .with_shape_expr(vec![Subscript::index(-1, Span::DUMMY)]),
@@ -644,6 +749,40 @@ fn expression_semantic_equality_ignores_spans() {
     );
 }
 
+#[test]
+fn subscript_semantic_equality_ignores_spans() {
+    let lhs = [Subscript::Index {
+        value: 1,
+        span: Span::from_offsets(
+            super::SourceId::from_source_name("subscript_declaration.mo"),
+            1,
+            2,
+        ),
+    }];
+    let rhs = [Subscript::Index {
+        value: 1,
+        span: Span::from_offsets(
+            super::SourceId::from_source_name("subscript_use.mo"),
+            10,
+            11,
+        ),
+    }];
+
+    assert!(subscripts_semantically_equal(&lhs, &rhs));
+    assert_eq!(
+        subscripts_semantic_fingerprint(&lhs),
+        subscripts_semantic_fingerprint(&rhs),
+        "semantic subscript fingerprints must ignore source-only spans"
+    );
+    assert!(!subscripts_semantically_equal(
+        &lhs,
+        &[Subscript::Index {
+            value: 2,
+            span: Span::DUMMY,
+        }]
+    ));
+}
+
 /// A structured reference to `resistor.v` carrying the given declaration id.
 fn declaration_reference(def_id: DefId, span: Span) -> Reference {
     let part = |ident: &str, part_def_id: DefId| ComponentRefPart {
@@ -760,6 +899,7 @@ fn fingerprint_separates_distinct_function_instances_that_render_alike() {
         name: callee(instance),
         args: vec![],
         is_constructor: false,
+        call_kind: FunctionCallKind::Invocation,
         span: Span::DUMMY,
     };
     let inherited = call(1);
@@ -781,6 +921,140 @@ fn fingerprint_separates_distinct_function_instances_that_render_alike() {
         expression_semantic_fingerprint(&call(1)),
         "the same resolved instance must fingerprint stably"
     );
+}
+
+#[test]
+fn function_call_kind_is_part_of_semantic_identity_and_fingerprint() {
+    let call = |call_kind| Expression::FunctionCall {
+        name: Reference::new("Pkg.f"),
+        args: Vec::new(),
+        is_constructor: false,
+        call_kind,
+        span: Span::DUMMY,
+    };
+    let invocation = call(FunctionCallKind::Invocation);
+    let partial = call(FunctionCallKind::PartialApplication);
+
+    assert!(!expressions_semantically_equal(&invocation, &partial));
+    assert_ne!(
+        expression_semantic_fingerprint(&invocation),
+        expression_semantic_fingerprint(&partial)
+    );
+}
+
+#[test]
+fn named_function_argument_marker_requires_generated_identity_and_exact_shape() {
+    let spelling = format!("{}x", super::NAMED_FUNCTION_ARG_PREFIX);
+    let value = 7;
+    assert!(matches!(
+        super::classify_named_function_arg_marker(
+            &Reference::new(&spelling),
+            &[value],
+            true,
+            FunctionCallKind::Invocation,
+        ),
+        NamedFunctionArgMarker::NotMarker
+    ));
+    assert!(matches!(
+        super::classify_named_function_arg_marker(
+            &Reference::generated("ordinary.generated.name"),
+            &[value],
+            true,
+            FunctionCallKind::Invocation,
+        ),
+        NamedFunctionArgMarker::NotMarker
+    ));
+
+    let generated = Reference::generated(&spelling);
+    match super::classify_named_function_arg_marker(
+        &generated,
+        &[value],
+        true,
+        FunctionCallKind::Invocation,
+    ) {
+        NamedFunctionArgMarker::Valid { name, value } => {
+            assert_eq!(name, "x");
+            assert_eq!(*value, 7);
+        }
+        _ => panic!("exact generated marker must classify as valid"),
+    }
+
+    let empty_name = Reference::generated(super::NAMED_FUNCTION_ARG_PREFIX);
+    for (reference, arguments, is_constructor, call_kind) in [
+        (
+            &generated,
+            Vec::<i32>::new(),
+            true,
+            FunctionCallKind::Invocation,
+        ),
+        (&generated, vec![1, 2], true, FunctionCallKind::Invocation),
+        (&generated, vec![1], false, FunctionCallKind::Invocation),
+        (
+            &generated,
+            vec![1],
+            true,
+            FunctionCallKind::PartialApplication,
+        ),
+        (&empty_name, vec![1], true, FunctionCallKind::Invocation),
+    ] {
+        assert!(matches!(
+            super::classify_named_function_arg_marker(
+                reference,
+                &arguments,
+                is_constructor,
+                call_kind,
+            ),
+            NamedFunctionArgMarker::Malformed
+        ));
+    }
+}
+
+#[test]
+fn function_call_deserialization_requires_explicit_semantic_fields() {
+    let call = Expression::FunctionCall {
+        name: Reference::new("Pkg.f"),
+        args: Vec::new(),
+        is_constructor: false,
+        call_kind: FunctionCallKind::Invocation,
+        span: Span::DUMMY,
+    };
+    let wire = serde_json::to_value(call).expect("function call serializes");
+    for (field, reason) in [
+        (
+            "call_kind",
+            "a semantic call wire cannot guess invocation versus function value",
+        ),
+        (
+            "is_constructor",
+            "a semantic call wire cannot guess constructor identity",
+        ),
+    ] {
+        let mut mutation = wire.clone();
+        mutation
+            .get_mut("FunctionCall")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("externally tagged function-call record")
+            .remove(field);
+        serde_json::from_value::<Expression>(mutation).expect_err(reason);
+    }
+}
+
+#[test]
+fn external_function_deserialization_requires_explicit_annotations() {
+    let external = ExternalFunction {
+        language: "C".into(),
+        function_name: None,
+        output_name: None,
+        args: Vec::new(),
+        annotations: Vec::new(),
+    };
+    let mut wire = serde_json::to_value(external).expect("external function serializes");
+    assert_eq!(wire["annotations"], serde_json::json!([]));
+    wire.as_object_mut()
+        .expect("external function record")
+        .remove("annotations");
+    serde_json::from_value::<ExternalFunction>(wire)
+        .expect_err("external annotations are required semantic wire state");
 }
 
 #[test]

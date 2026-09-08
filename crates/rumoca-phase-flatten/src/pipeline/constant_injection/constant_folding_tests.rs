@@ -245,7 +245,7 @@ fn named_record_constructor_extraction_preserves_target_identity() {
         target: component_ref("Utilities.ParameterRecords.MachineData", record_def_id),
         modifications: vec![ast::Expression::Modification {
             target: component_ref("PRef", fixture_def_id("PRef")),
-            value: Arc::new(real_expr("1000.0")),
+            value: Some(Arc::new(real_expr("1000.0"))),
             span: rumoca_core::Span::DUMMY,
         }],
         each_flags: vec![false],

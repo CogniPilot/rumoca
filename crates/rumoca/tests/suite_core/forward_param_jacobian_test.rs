@@ -6,6 +6,7 @@
 use rumoca::Compiler;
 use rumoca_sim::SimOptions;
 use rumoca_solver::{AlgebraicSettle, SolveRuntime};
+use std::sync::Arc;
 
 // `y` is a parameter-dependent algebraic, and der(x) depends on it, so
 // ∂der(x)/∂a and ∂der(x)/∂b exercise the algebraic-projection path; `c` and the
@@ -33,13 +34,15 @@ fn parameter_jacobian_matches_finite_difference() {
         .expect("ParamGrad should compile");
 
     let opts = SimOptions::default();
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &opts)
-        .expect("ParamGrad should lower to a solve model");
-    let runtime = SolveRuntime::new(&solve_model).expect("solve runtime should build");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &opts)
+            .expect("ParamGrad should lower to a solve model"),
+    );
+    let runtime = SolveRuntime::new(Arc::clone(&solve_model)).expect("solve runtime should build");
 
     let state_count = solve_model.state_scalar_count();
-    let state: Vec<f64> = solve_model.initial_y[..state_count].to_vec();
-    let params = solve_model.parameters.clone();
+    let state: Vec<f64> = solve_model.initial_y()[..state_count].to_vec();
+    let params = solve_model.parameters().to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 256,
@@ -118,13 +121,15 @@ fn forward_sensitivity_rhs_matches_directional_finite_difference() {
         .model("ParamGrad")
         .compile_str(SOURCE, "ParamGrad.mo")
         .expect("ParamGrad should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
-        .expect("ParamGrad should lower");
-    let runtime = SolveRuntime::new(&solve_model).expect("solve runtime should build");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
+            .expect("ParamGrad should lower"),
+    );
+    let runtime = SolveRuntime::new(Arc::clone(&solve_model)).expect("solve runtime should build");
 
     let n_state = solve_model.state_scalar_count();
-    let state: Vec<f64> = solve_model.initial_y[..n_state].to_vec();
-    let params = solve_model.parameters.clone();
+    let state: Vec<f64> = solve_model.initial_y()[..n_state].to_vec();
+    let params = solve_model.parameters().to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 256,

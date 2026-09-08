@@ -31,15 +31,25 @@
 //! Two consequences bind this module, and both are stated as acceptance
 //! *before* any rejection:
 //!
-//! 1. **Accepted — element/slice endpoints count their own leaves.** The number
+//! 1. **Accepted when representable — element/slice endpoints count their own leaves.** The number
 //!    of scalar equations generated for a connection set is the number of
 //!    scalar leaves of its members (MLS §9.2: one equality per matched
 //!    potential leaf, one sum per flow leaf; MLS §4.8 counts those scalars when
 //!    balancing the model). The leaf count of an endpoint is therefore the
 //!    product of the dimensions the endpoint *denotes* (MLS §10.5), never a
-//!    constant 1 chosen because the endpoint carries a subscript. A connection
-//!    `connect(a[i], b)` where `a[i]` and `b` both denote `Real[m]` is legal and
-//!    must produce `m` scalar equations. Rejection as dimension-incompatible
+//!    constant 1 chosen because the endpoint carries a subscript. Modelica
+//!    permits `connect(a[i], b)` where both endpoints denote `Real[m]`; when
+//!    the selection denotes the complete compact declaration (or Instance has
+//!    already scalarized it), lowering produces `m` scalar equations. A strict
+//!    subdomain of one compact Flat declaration lowers the same way: the
+//!    member's owner carries its leading selection, the transaction marks
+//!    exactly those elements in the declaration's checked
+//!    [`flat::ConnectedDomain`], and the MLS §9.2 zero-flow planner emits one
+//!    `= 0` row per untouched flow element. A strict subdomain of a compact
+//!    *stream* declaration is still refused with its source span, because the
+//!    MLS §15.2 mixing pairs a stream member with its connector's flow member
+//!    per declaration rather than per element.
+//!    Rejection as dimension-incompatible
 //!    (CONN-008, MLS §9.2 "same named elements with the same dimensions") is
 //!    admissible only when the denoted dimensions actually differ. This holds
 //!    for endpoints whose base is one declared array in the flat model — a
@@ -47,8 +57,8 @@
 //!    a *composite* connector array never reaches leaf counting at all; see the
 //!    scope section below.
 //!
-//! 2. **Accepted — subscripts that a declaration can carry.** An endpoint
-//!    subscript is accepted whenever the subscripted path names a declared
+//! 2. **Accepted syntax — subscripts that a declaration can carry.** Endpoint
+//!    validation accepts a subscript whenever the subscripted path names a declared
 //!    component occurrence, whenever no declaration for its base is in view
 //!    here, whenever its declaration carries *any* dimension, whenever the
 //!    declaration still carries dimension expressions, and whenever the rank
@@ -59,6 +69,8 @@
 //!    does not give it, so it is reported against both the connect endpoint and
 //!    the declaration site (`EF026`) instead of being dropped. Dropping it would
 //!    silently connect the whole component the subscript was meant to index.
+//!    This syntax acceptance is distinct from the later connected-subdomain
+//!    capability check described above.
 //!
 //! The scope of that `EF026` rejection — every shape MLS §9.1/§10.5 also
 //! governs that the check structurally cannot see or deliberately does not
@@ -92,17 +104,211 @@ use crate::errors::FlattenError;
 use crate::path_utils::{segments as path_segments_of, strip_array_index};
 
 mod endpoint_subscripts;
+mod equality_projection;
 mod equation_generation;
 mod member_pairing;
 mod path_index;
+mod selection_evidence;
+mod source_inventory;
 mod stream_operators;
+mod transaction;
+mod validation;
 use endpoint_subscripts::*;
+use equality_projection::*;
 use equation_generation::*;
 pub(crate) use equation_generation::{connection_involves_disabled, process_connections};
 use member_pairing::{
-    MemberPairing, classify_connection_member_pair, connection_member_declaration,
+    MemberPairing, classify_connection_member_pair, is_flow_variable, is_stream_variable,
 };
 use path_index::*;
+pub(crate) use selection_evidence::declared_array_element_evidence;
+use selection_evidence::*;
+use source_inventory::*;
+
+pub(crate) fn stream_operator_identities(
+    tree: &ast::ClassTree,
+    span: Span,
+) -> Result<stream_operators::StreamOperatorIdentities, FlattenError> {
+    stream_operators::StreamOperatorIdentities::from_tree(tree, span)
+}
+use transaction::*;
+use validation::*;
+
+/// Refuse before any consumer enumerates a compact connection family whose
+/// scalar compatibility view exceeds this phase's eager structural budget.
+/// SPEC_0032 keeps the family authoritative; until connection-set construction
+/// consumes that compact owner directly, materializing an unbounded view is an
+/// explicit unsupported boundary rather than an allocation attempt.
+pub(crate) fn ensure_connection_scalarization_budget(
+    overlay: &ast::InstanceOverlay,
+) -> Result<(), FlattenError> {
+    let limit = crate::equations::MAX_EAGER_RANGE_ELEMENTS;
+    let mut total = 0usize;
+    for class in overlay.classes.values() {
+        for connection in &class.connections {
+            add_active_connection_scalarization_count(
+                connection,
+                &overlay.disabled_components,
+                &mut total,
+                limit,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn add_active_connection_scalarization_count(
+    connection: &ast::InstanceConnection,
+    disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
+    total: &mut usize,
+    limit: usize,
+) -> Result<(), FlattenError> {
+    match connection {
+        ast::InstanceConnection::Scalar(connection) => {
+            if !equation_generation::connection_involves_disabled(connection, disabled_components) {
+                add_connection_scalarization_count(total, 1, limit, connection.span())?;
+            }
+            Ok(())
+        }
+        ast::InstanceConnection::Family(family) => add_active_family_scalarization_count(
+            connection,
+            family,
+            disabled_components,
+            total,
+            limit,
+        ),
+    }
+}
+
+fn add_active_family_scalarization_count(
+    connection: &ast::InstanceConnection,
+    family: &ast::InstanceConnectionFamily,
+    disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
+    total: &mut usize,
+    limit: usize,
+) -> Result<(), FlattenError> {
+    if connection_family_is_wholly_disabled(family, disabled_components) {
+        return Ok(());
+    }
+    let count = family
+        .domain()
+        .scalar_count()
+        .map_err(|reason| crate::structured_connection_error(reason.to_string()))?;
+    if count == 0 {
+        return Ok(());
+    }
+    if disabled_components.is_empty() {
+        return add_connection_scalarization_count(total, count, limit, family.span());
+    }
+
+    // A family may straddle individually disabled array occurrences. Count
+    // the same active scalar view every downstream consumer sees, stopping as
+    // soon as the active budget is exceeded. A parent-disabled family took the
+    // constant-time branch above.
+    for member in
+        rumoca_eval_ast::connection::scalar_connection_view(std::slice::from_ref(connection))
+    {
+        let member = member.map_err(crate::structured_connection_error)?;
+        if equation_generation::connection_involves_disabled(&member, disabled_components) {
+            continue;
+        }
+        add_connection_scalarization_count(total, 1, limit, family.span())?;
+    }
+    Ok(())
+}
+
+fn add_connection_scalarization_count(
+    total: &mut usize,
+    count: usize,
+    limit: usize,
+    span: Span,
+) -> Result<(), FlattenError> {
+    *total = total
+        .checked_add(count)
+        .ok_or(FlattenError::RangeMaterializationLimit {
+            element_count: u128::MAX,
+            limit,
+            span,
+        })?;
+    if *total > limit {
+        return Err(FlattenError::RangeMaterializationLimit {
+            element_count: *total as u128,
+            limit,
+            span,
+        });
+    }
+    Ok(())
+}
+
+fn connection_family_is_wholly_disabled(
+    family: &ast::InstanceConnectionFamily,
+    disabled_components: &indexmap::IndexSet<rumoca_core::ComponentPath>,
+) -> bool {
+    [family.a(), family.b()].into_iter().any(|endpoint| {
+        disabled_components
+            .iter()
+            .any(|disabled| connection_family_endpoint_starts_with(endpoint, disabled))
+    })
+}
+
+fn connection_family_endpoint_starts_with(
+    endpoint: &ast::InstanceConnectionEndpoint,
+    disabled: &rumoca_core::ComponentPath,
+) -> bool {
+    if disabled.is_root() || disabled.len() > endpoint.parts().len() {
+        return false;
+    }
+    endpoint
+        .parts()
+        .iter()
+        .zip(disabled.parts())
+        .all(|((name, forms), disabled_part)| {
+            if disabled_part == name {
+                return true;
+            }
+            let constants = forms
+                .iter()
+                .map(|form| {
+                    form.coeffs
+                        .iter()
+                        .all(|coefficient| *coefficient == 0)
+                        .then_some(form.constant)
+                })
+                .collect::<Option<Vec<_>>>();
+            constants.is_some_and(|constants| {
+                let rendered = constants
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                disabled_part == &format!("{name}[{rendered}]")
+            })
+        })
+}
+
+fn qualified_connection_endpoint_starts_with(
+    endpoint: &ast::QualifiedName,
+    disabled: &rumoca_core::ComponentPath,
+) -> bool {
+    if disabled.is_root() || disabled.len() > endpoint.parts.len() {
+        return false;
+    }
+    endpoint
+        .parts
+        .iter()
+        .zip(disabled.parts())
+        .all(|((name, subscripts), disabled_part)| {
+            if disabled_part == name {
+                return true;
+            }
+            let rendered = subscripts
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            disabled_part == &format!("{name}[{rendered}]")
+        })
+}
 
 /// Context for array output connection operations.
 /// Groups related parameters to reduce function argument count.
@@ -113,6 +319,7 @@ struct ArrayConnCtx<'a> {
     var_b: &'a rumoca_core::VarName,
     a_is_primitive: bool,
     b_is_primitive: bool,
+    span: Span,
 }
 
 struct ConnectionBuildCtx<'a> {
@@ -121,6 +328,21 @@ struct ConnectionBuildCtx<'a> {
     flow_pairs: &'a mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &'a mut UnionFind,
     stream_uf: &'a mut UnionFind,
+    span: Span,
+}
+
+struct ConnectionProcessCtx<'a> {
+    flat: &'a flat::Model,
+    var_index: &'a ConnectionVarIndex,
+    prefix_children: &'a FxHashMap<String, Vec<rumoca_core::VarName>>,
+}
+
+struct ArrayExpandedRouteCtx<'a> {
+    array_var: &'a rumoca_core::VarName,
+    expanded_path: &'a str,
+    expanded_vars: &'a [rumoca_core::VarName],
+    flat: &'a flat::Model,
+    span: Span,
 }
 
 /// Precomputed lookup structures for connection path matching.
@@ -283,128 +505,6 @@ impl ConnectionSubMatchIndex {
     }
 }
 
-/// Check if a variable is a flow variable.
-///
-/// Per MLS §9.2 and CONN-003: Flow variables have the `flow` prefix
-/// in their component declaration.
-///
-/// # Example
-///
-/// ```ignore
-/// connector Pin
-///     Real v;         // Potential variable (non-flow)
-///     flow Real i;    // Flow variable
-/// end Pin;
-/// ```
-pub(crate) fn is_flow_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
-    connection_member_declaration(flat, var_name).is_some_and(|v| v.flow)
-}
-
-/// Check if a variable is a stream variable.
-///
-/// Per MLS §15.2, stream connectors are handled by stream-specific equations
-/// (`inStream`/`actualStream`) and must not be turned into direct potential
-/// equality equations by `connect()`.
-fn is_stream_variable(flat: &flat::Model, var_name: &rumoca_core::VarName) -> bool {
-    connection_member_declaration(flat, var_name).is_some_and(|v| v.stream)
-}
-
-/// Check if a variable name is a subscripted reference to an existing array variable
-/// with in-bounds subscript.
-///
-/// E.g., `"comp.v[1]"` is valid if `"comp.v"` exists in `flat.variables` with
-/// dimension >= 1. Returns false for out-of-bounds subscripts like `"comp.v[2]"`
-/// when `"comp.v"` is array[1].
-///
-/// This occurs when the instantiation phase resolves array dimension parameters
-/// (e.g., `m=1`) and produces subscripted connection paths like `twoPulse.v[1]`.
-fn is_subscripted_variable(var: &rumoca_core::VarName, flat: &flat::Model) -> bool {
-    is_subscripted_variable_inner(var, flat).unwrap_or(false)
-}
-
-/// Resolve an element path to the declaration it selects from.
-///
-/// Returns the declaration's flat name, the declaration itself, and the literal
-/// coordinates the path selects, so callers that must *name* the element
-/// (equation generation) and callers that only need its rank share one proof.
-fn declared_array_element<'flat>(
-    var: &rumoca_core::VarName,
-    flat: &'flat flat::Model,
-) -> Option<(rumoca_core::VarName, &'flat flat::Variable, Vec<i64>)> {
-    let (base_name, groups) = split_trailing_index_groups(var.as_str())?;
-    let base = rumoca_core::VarName::new(&base_name);
-    let base_var = flat.variables.get(&base)?;
-    let indices: Option<Vec<i64>> = groups
-        .iter()
-        .map(|group| parse_literal_index_group_values(group))
-        .collect::<Option<Vec<_>>>()
-        .map(|groups| groups.into_iter().flatten().collect());
-    let indices = indices?;
-
-    if base_var.dims.is_empty() {
-        // Collapsed connector-array fields may lose explicit dimensions in flat::Variable.
-        // Accept positive scalar indices and map to the base variable.
-        if indices.iter().all(|index| *index >= 1) {
-            return Some((base, base_var, indices));
-        }
-        return None;
-    }
-
-    if indices.len() > base_var.dims.len() {
-        return None;
-    }
-
-    let in_bounds = indices
-        .iter()
-        .zip(base_var.dims.iter())
-        .all(|(index, dim)| *dim >= 1 && *index >= 1 && *index <= *dim);
-
-    if in_bounds {
-        Some((base, base_var, indices))
-    } else {
-        None
-    }
-}
-
-fn subscripted_base_var_with_rank(
-    var: &rumoca_core::VarName,
-    flat: &flat::Model,
-) -> Option<(rumoca_core::VarName, usize)> {
-    declared_array_element(var, flat).map(|(base, _, indices)| (base, indices.len()))
-}
-
-/// Dimensions of the value one connection-set member denotes.
-///
-/// MLS §10.5: subscripting consumes leading dimensions, so an element path
-/// `a[i]` of a declaration `a[n, m]` denotes dimensions `[m]` and `a[i, j]`
-/// denotes a scalar `[]`. Whole-declaration members keep the declared
-/// dimensions.
-///
-/// Returns `None` when the member resolves to no declaration, so callers keep
-/// the difference between "denotes a scalar" and "unknown" instead of
-/// collapsing both onto 1.
-fn connection_endpoint_dims(flat: &flat::Model, var: &rumoca_core::VarName) -> Option<Vec<i64>> {
-    if let Some(declared) = flat.variables.get(var) {
-        return Some(declared.dims.clone());
-    }
-    let (_, base_var, indices) = declared_array_element(var, flat)?;
-    if indices.len() >= base_var.dims.len() {
-        return Some(Vec::new());
-    }
-    Some(base_var.dims[indices.len()..].to_vec())
-}
-
-fn subscripted_base_var(
-    var: &rumoca_core::VarName,
-    flat: &flat::Model,
-) -> Option<rumoca_core::VarName> {
-    subscripted_base_var_with_rank(var, flat).map(|(base, _)| base)
-}
-
-fn is_subscripted_variable_inner(var: &rumoca_core::VarName, flat: &flat::Model) -> Option<bool> {
-    subscripted_base_var(var, flat).map(|_| true)
-}
-
 /// A set of variables that are connected together.
 #[derive(Debug)]
 struct ConnectionSet {
@@ -428,6 +528,7 @@ struct ConnectionSet {
 enum ConnectionKind {
     Flow,
     Potential,
+    StructuralAssertion,
 }
 
 /// A semantic MLS §15.2 stream connection set.
@@ -445,6 +546,8 @@ struct StreamConnectionSet {
     variables: Vec<rumoca_core::VarName>,
     /// Scope where the connect() equation was declared; empty means root scope.
     scope: String,
+    /// Representative source span for diagnostics and generated stream owners.
+    span: rumoca_core::Span,
 }
 
 /// Union-Find data structure for building connection sets.
@@ -564,346 +667,6 @@ impl UnionFind {
 
         sets
     }
-}
-
-/// Validate all connections before processing.
-///
-/// Checks for:
-/// - CONN-001/CONN-003: Flow/non-flow prefix consistency (homogeneity)
-/// - CONN-002: Type compatibility (Real vs Integer vs Boolean)
-/// - CONN-008: Array dimension compatibility
-///
-/// For connector-level connections (non-primitive paths), validation is
-/// performed on the expanded sub-variables during connection set building.
-fn validate_connections(
-    connections: &[&ast::InstanceConnection],
-    flat: &flat::Model,
-    type_roots: &IndexMap<TypeId, TypeId>,
-    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
-    var_index: &ConnectionVarIndex,
-) -> Result<(), FlattenError> {
-    for conn in connections {
-        let path_a = conn.a.to_flat_string();
-        let path_b = conn.b.to_flat_string();
-        let var_a = rumoca_core::VarName::new(&path_a);
-        let var_b = rumoca_core::VarName::new(&path_b);
-        let span = conn.span;
-
-        // Only validate primitive-to-primitive connections directly
-        // Connector-level connections are validated when expanded to sub-variables
-        let a_is_primitive = is_primitive_flat_var(flat, &var_a);
-        let b_is_primitive = is_primitive_flat_var(flat, &var_b);
-        let a_subscript_prim = !a_is_primitive && is_subscripted_variable(&var_a, flat);
-        let b_subscript_prim = !b_is_primitive && is_subscripted_variable(&var_b, flat);
-
-        if (a_is_primitive || a_subscript_prim) && (b_is_primitive || b_subscript_prim) {
-            // Validate flow prefix consistency (CONN-001/CONN-003)
-            validate_flow_consistency(flat, &var_a, &var_b, span)?;
-
-            // Validate type compatibility (CONN-002)
-            validate_type_compatibility(flat, type_roots, &var_a, &var_b, span)?;
-
-            // Validate array dimension compatibility (CONN-008)
-            validate_dimension_compatibility(flat, &var_a, &var_b, span)?;
-            validate_quantity_compatibility(flat, &var_a, &var_b, span)?;
-            continue;
-        }
-
-        // Connector-level connection: validate matched primitive members after expansion.
-        let subs_a = find_sub_variables_indexed(&path_a, prefix_children, var_index);
-        let subs_b = find_sub_variables_indexed(&path_b, prefix_children, var_index);
-        if !subs_a.is_empty() && !subs_b.is_empty() {
-            let ctx = ExpandedValidationCtx {
-                path_a: &path_a,
-                path_b: &path_b,
-                flat,
-                type_roots,
-                span,
-                var_index,
-            };
-            validate_expanded_connector_connection(&subs_a, &subs_b, &ctx)?;
-        }
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct ValidationVarInfo {
-    flow: bool,
-    type_id: TypeId,
-    dims: Vec<i64>,
-    quantity: Option<String>,
-}
-
-struct ExpandedValidationCtx<'a> {
-    path_a: &'a str,
-    path_b: &'a str,
-    flat: &'a flat::Model,
-    type_roots: &'a IndexMap<TypeId, TypeId>,
-    span: Span,
-    var_index: &'a ConnectionVarIndex,
-}
-
-fn get_validation_var_info(
-    flat: &flat::Model,
-    var: &rumoca_core::VarName,
-) -> Option<ValidationVarInfo> {
-    if let Some(v) = flat.variables.get(var) {
-        return Some(ValidationVarInfo {
-            flow: v.flow,
-            type_id: v.type_id,
-            dims: v.dims.clone(),
-            quantity: v.quantity.clone(),
-        });
-    }
-
-    // Subscripted references (e.g., "x[1]") select from an array declaration.
-    let (base_name, _, _) = declared_array_element(var, flat)?;
-    let base_var = flat.variables.get(&base_name)?;
-
-    Some(ValidationVarInfo {
-        flow: base_var.flow,
-        type_id: base_var.type_id,
-        // MLS §10.5: indexing a subset of dimensions preserves the remaining
-        // dimensions (e.g., `A[1]` of `A[2,3]` denotes `Real[3]`). One shared
-        // resolution keeps CONN-008 validation and the generated equations'
-        // scalar counts from drifting apart.
-        dims: connection_endpoint_dims(flat, var)?,
-        quantity: base_var.quantity.clone(),
-    })
-}
-
-/// Validate that connected variables have consistent flow prefixes.
-///
-/// Per CONN-001 (Homogeneity) and CONN-003 (Flow-to-flow):
-/// Both must be flow or both must be non-flow.
-fn validate_flow_consistency(
-    flat: &flat::Model,
-    var_a: &rumoca_core::VarName,
-    var_b: &rumoca_core::VarName,
-    span: Span,
-) -> Result<(), FlattenError> {
-    let Some(info_a) = get_validation_var_info(flat, var_a) else {
-        return Ok(());
-    };
-    let Some(info_b) = get_validation_var_info(flat, var_b) else {
-        return Ok(());
-    };
-    let is_flow_a = info_a.flow;
-    let is_flow_b = info_b.flow;
-
-    if is_flow_a != is_flow_b {
-        return Err(FlattenError::incompatible_connectors(
-            format!(
-                "{} ({})",
-                var_a.as_str(),
-                if is_flow_a { "flow" } else { "non-flow" }
-            ),
-            format!(
-                "{} ({})",
-                var_b.as_str(),
-                if is_flow_b { "flow" } else { "non-flow" }
-            ),
-            span,
-        ));
-    }
-    Ok(())
-}
-
-/// Validate that connected variables agree on the quantity attribute.
-///
-/// Per CONN-005 (MLS §9.2): variables with non-empty quantity attributes
-/// must match.
-fn validate_quantity_compatibility(
-    flat: &flat::Model,
-    var_a: &rumoca_core::VarName,
-    var_b: &rumoca_core::VarName,
-    span: Span,
-) -> Result<(), FlattenError> {
-    let quantity_a = get_validation_var_info(flat, var_a).and_then(|v| v.quantity);
-    let quantity_b = get_validation_var_info(flat, var_b).and_then(|v| v.quantity);
-    if let (Some(qa), Some(qb)) = (&quantity_a, &quantity_b)
-        && !qa.is_empty()
-        && !qb.is_empty()
-        && qa != qb
-    {
-        return Err(FlattenError::incompatible_connectors(
-            format!("{} (quantity: {qa})", var_a.as_str()),
-            format!("{} (quantity: {qb})", var_b.as_str()),
-            span,
-        ));
-    }
-    Ok(())
-}
-
-/// Validate that connected variables have compatible types.
-///
-/// Per CONN-002 (Type matching): Matched primitive components must have
-/// the same primitive types (Real, Integer, Boolean, String).
-fn validate_type_compatibility(
-    flat: &flat::Model,
-    type_roots: &IndexMap<TypeId, TypeId>,
-    var_a: &rumoca_core::VarName,
-    var_b: &rumoca_core::VarName,
-    span: Span,
-) -> Result<(), FlattenError> {
-    let type_a =
-        get_validation_var_info(flat, var_a).map(|v| canonical_type_id(v.type_id, type_roots));
-    let type_b =
-        get_validation_var_info(flat, var_b).map(|v| canonical_type_id(v.type_id, type_roots));
-
-    // Only check if both types are known and different
-    if let (Some(ta), Some(tb)) = (type_a, type_b)
-        && !ta.is_unknown()
-        && !tb.is_unknown()
-        && ta != tb
-    {
-        return Err(FlattenError::incompatible_connectors(
-            format!("{} (type_id: {:?})", var_a.as_str(), ta),
-            format!("{} (type_id: {:?})", var_b.as_str(), tb),
-            span,
-        ));
-    }
-    Ok(())
-}
-
-fn canonical_type_id(type_id: TypeId, type_roots: &IndexMap<TypeId, TypeId>) -> TypeId {
-    // identity: a type with no recorded root in the union-find map is its own root.
-    type_roots.get(&type_id).copied().unwrap_or(type_id)
-}
-
-/// Validate that connected variables have compatible array dimensions.
-///
-/// Per CONN-008 (MLS §9.2): Array dimensions must match for connection.
-/// Per SPEC_0007: dimension evaluation happens in typecheck before flatten.
-///
-/// Empty dimensions `[]` indicates a scalar variable (0-dimensional).
-/// Scalars must connect to scalars; arrays must connect to same-dimension arrays.
-fn validate_dimension_compatibility(
-    flat: &flat::Model,
-    var_a: &rumoca_core::VarName,
-    var_b: &rumoca_core::VarName,
-    span: Span,
-) -> Result<(), FlattenError> {
-    let Some(info_a) = get_validation_var_info(flat, var_a) else {
-        return Ok(());
-    };
-    let Some(info_b) = get_validation_var_info(flat, var_b) else {
-        return Ok(());
-    };
-    let dims_a = &info_a.dims;
-    let dims_b = &info_b.dims;
-
-    if dims_a != dims_b {
-        return Err(FlattenError::incompatible_connectors(
-            format!("{} (dims: {:?})", var_a.as_str(), dims_a),
-            format!("{} (dims: {:?})", var_b.as_str(), dims_b),
-            span,
-        ));
-    }
-    Ok(())
-}
-
-fn validate_expanded_connector_connection(
-    subs_a: &[rumoca_core::VarName],
-    subs_b: &[rumoca_core::VarName],
-    ctx: &ExpandedValidationCtx<'_>,
-) -> Result<(), FlattenError> {
-    let sub_match_index = ConnectionSubMatchIndex::new(ctx.path_b, subs_b, ctx.var_index);
-
-    for sub_a in subs_a {
-        let Some((suffix_a, indices_a)) = extract_suffix(sub_a.as_str(), ctx.path_a) else {
-            continue;
-        };
-        let normalized_indices_a = strip_explicit_path_indices(&indices_a, ctx.path_a);
-
-        let Some(var_b_match) =
-            find_matching_var_b_indexed(&suffix_a, &normalized_indices_a, &sub_match_index)
-        else {
-            continue;
-        };
-
-        validate_flow_consistency(ctx.flat, sub_a, &var_b_match, ctx.span)?;
-        validate_type_compatibility(ctx.flat, ctx.type_roots, sub_a, &var_b_match, ctx.span)?;
-        validate_dimension_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
-        validate_quantity_compatibility(ctx.flat, sub_a, &var_b_match, ctx.span)?;
-    }
-    Ok(())
-}
-
-fn count_expanded_connector_matches(
-    source_path: &str,
-    source_members: &[rumoca_core::VarName],
-    target_path: &str,
-    target_members: &[rumoca_core::VarName],
-    var_index: &ConnectionVarIndex,
-) -> usize {
-    let target_index = ConnectionSubMatchIndex::new(target_path, target_members, var_index);
-    source_members
-        .iter()
-        .filter(|member| {
-            let Some((suffix, indices)) = extract_suffix(member.as_str(), source_path) else {
-                return false;
-            };
-            let indices = strip_explicit_path_indices(&indices, source_path);
-            find_matching_var_b_indexed(&suffix, &indices, &target_index).is_some()
-        })
-        .count()
-}
-
-/// Reject the unsupported part of MLS §9.1.3 before connection-set building.
-///
-/// Identically declared expandable connectors need no augmentation and can use
-/// the normal connector expansion below. If either side is expandable and any
-/// existing member is absent on the peer, connecting only the intersection
-/// would silently change the model. Full member-union augmentation belongs
-/// before connection-set construction; until that elaboration exists, fail
-/// explicitly at this boundary.
-fn reject_expandable_connector_augmentation(
-    connections: &[&ast::InstanceConnection],
-    flat: &flat::Model,
-    endpoint_index: &ConnectionEndpointIndex,
-    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
-    var_index: &ConnectionVarIndex,
-) -> Result<(), FlattenError> {
-    for conn in connections {
-        let path_a = conn.a.to_flat_string();
-        let path_b = conn.b.to_flat_string();
-        let subs_a = find_sub_variables_indexed(&path_a, prefix_children, var_index);
-        let subs_b = find_sub_variables_indexed(&path_b, prefix_children, var_index);
-        if subs_a.is_empty() || subs_b.is_empty() {
-            if endpoint_index.needs_expandable_augmentation(&conn.a)
-                || endpoint_index.needs_expandable_augmentation(&conn.b)
-            {
-                return Err(FlattenError::unsupported_expandable_connector_augmentation(
-                    path_a, path_b, conn.span,
-                ));
-            }
-            continue;
-        }
-
-        let is_expandable = |members: &[rumoca_core::VarName]| {
-            members.iter().any(|name| {
-                flat.variables
-                    .get(name)
-                    .is_some_and(|var| var.from_expandable_connector)
-            })
-        };
-        if !is_expandable(&subs_a) && !is_expandable(&subs_b) {
-            continue;
-        }
-
-        let matched_a =
-            count_expanded_connector_matches(&path_a, &subs_a, &path_b, &subs_b, var_index);
-        let matched_b =
-            count_expanded_connector_matches(&path_b, &subs_b, &path_a, &subs_a, var_index);
-        if matched_a != subs_a.len() || matched_b != subs_b.len() {
-            return Err(FlattenError::unsupported_expandable_connector_augmentation(
-                path_a, path_b, conn.span,
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Find all primitive sub-variables under a connector path.
@@ -1065,13 +828,19 @@ fn connect_array_output_variables(
     // E.g., connect(positiveThreshold.y, timerPositive.u) where both are on array components
     // Expands to positiveThreshold[i].y = timerPositive[i].u
     if !ctx.a_is_primitive && !ctx.b_is_primitive {
-        let mut expanded_a = find_exact_match_with_array_expansion(ctx.path_a, var_index);
-        let mut expanded_b = find_exact_match_with_array_expansion(ctx.path_b, var_index);
-        if !expanded_a.is_empty() && expanded_a.len() == expanded_b.len() {
-            expanded_a.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-            expanded_b.sort_by(|a, b| compare_path_index_order(a.as_str(), b.as_str()));
-            for (va, vb) in expanded_a.iter().zip(expanded_b.iter()) {
-                connect_primitive_vars(va, vb, flat, flow_pairs, potential_uf, stream_uf)?;
+        let expanded_a = find_exact_match_with_array_expansion(ctx.path_a, var_index);
+        let expanded_b = find_exact_match_with_array_expansion(ctx.path_b, var_index);
+        if !expanded_a.is_empty() && !expanded_b.is_empty() {
+            let planned = plan_expanded_exact_connections(
+                ctx.path_a,
+                ctx.path_b,
+                &expanded_a,
+                &expanded_b,
+                flat,
+                ctx.span,
+            )?;
+            for pair in planned {
+                commit_planned_exact_connection(pair, flow_pairs, potential_uf, stream_uf);
             }
             return Ok(());
         }
@@ -1082,15 +851,21 @@ fn connect_array_output_variables(
     if ctx.a_is_primitive {
         let expanded_b = find_exact_match_with_array_expansion(ctx.path_b, var_index);
         if !expanded_b.is_empty() {
-            connect_array_to_expanded(
-                ctx.var_a,
-                &expanded_b,
-                flat,
+            let matched = connect_array_to_expanded(
+                &ArrayExpandedRouteCtx {
+                    array_var: ctx.var_a,
+                    expanded_path: ctx.path_b,
+                    expanded_vars: &expanded_b,
+                    flat,
+                    span: ctx.span,
+                },
                 flow_pairs,
                 potential_uf,
                 stream_uf,
-            );
-            return Ok(());
+            )?;
+            if matched != 0 {
+                return Ok(());
+            }
         }
     }
 
@@ -1099,125 +874,27 @@ fn connect_array_output_variables(
     if ctx.b_is_primitive {
         let expanded_a = find_exact_match_with_array_expansion(ctx.path_a, var_index);
         if !expanded_a.is_empty() {
-            connect_array_to_expanded(
-                ctx.var_b,
-                &expanded_a,
-                flat,
+            let matched = connect_array_to_expanded(
+                &ArrayExpandedRouteCtx {
+                    array_var: ctx.var_b,
+                    expanded_path: ctx.path_a,
+                    expanded_vars: &expanded_a,
+                    flat,
+                    span: ctx.span,
+                },
                 flow_pairs,
                 potential_uf,
                 stream_uf,
-            );
-            return Ok(());
-        }
-    }
-
-    // Case 3: One side is a primitive output, the other is an array element reference
-    // E.g., connect(inertialDelaySensitive[1].y, y[1]) where both are outputs
-    // Only handle if the array variable is an output to avoid double-counting equations
-    // (inputs don't need explicit connection equations as they're not unknowns)
-    if let Some(set) = connect_output_to_array_element(ctx, flat) {
-        let is_flow = set.iter().all(|v| is_flow_variable(flat, v));
-        let is_stream = set.iter().all(|v| is_stream_variable(flat, v));
-        if is_flow {
-            for pair in set.windows(2) {
-                flow_pairs.push((pair[0].clone(), pair[1].clone()));
-            }
-        } else if is_stream {
-            for var in &set {
-                stream_uf.union(&set[0], var);
-            }
-        } else {
-            for var in &set {
-                potential_uf.union(&set[0], var);
+            )?;
+            if matched != 0 {
+                return Ok(());
             }
         }
     }
-    Ok(())
-}
 
-/// Handle connection between a primitive output and an array element reference (MLS §9.2).
-///
-/// For connections like `connect(comp.y, arr[1])` where:
-/// - `comp.y` is a primitive scalar output variable
-/// - `arr[1]` is element 1 of array output variable `arr`
-///
-/// Per MLS §9.2, connection equations create equality constraints between connected
-/// variables. This function handles the case where one side is a primitive and the
-/// other is an array element reference (e.g., from a for-loop expanded connection).
-///
-/// Only handles connections where the array variable is an OUTPUT, since input
-/// array connections don't need explicit equations (inputs aren't unknowns per MLS §4.4.2.2).
-///
-/// Returns the connection set if this pattern matches, None otherwise.
-fn connect_output_to_array_element(
-    ctx: &ArrayConnCtx,
-    flat: &flat::Model,
-) -> Option<Vec<rumoca_core::VarName>> {
-    let a_array_info = parse_array_element_ref(ctx.path_a, flat);
-    let b_array_info = parse_array_element_ref(ctx.path_b, flat);
-
-    // Helper to check if base is an output array
-    let is_output_array = |base: &rumoca_core::VarName| -> bool {
-        flat.variables
-            .get(base)
-            .is_some_and(|v| matches!(v.causality, rumoca_core::Causality::Output(_)))
-    };
-
-    match (
-        ctx.a_is_primitive,
-        ctx.b_is_primitive,
-        a_array_info,
-        b_array_info,
-    ) {
-        // A is primitive, B is array[idx] where array is output
-        (true, false, _, Some((base_b, idx_b))) if is_output_array(&base_b) => {
-            let subscripted_b =
-                rumoca_core::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
-            Some(vec![ctx.var_a.clone(), subscripted_b])
-        }
-        // B is primitive, A is array[idx] where array is output
-        (false, true, Some((base_a, idx_a)), _) if is_output_array(&base_a) => {
-            let subscripted_a =
-                rumoca_core::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
-            Some(vec![subscripted_a, ctx.var_b.clone()])
-        }
-        // Both are array element references for output arrays
-        (false, false, Some((base_a, idx_a)), Some((base_b, idx_b)))
-            if is_output_array(&base_a) || is_output_array(&base_b) =>
-        {
-            let subscripted_a =
-                rumoca_core::VarName::new(format!("{}[{}]", base_a.as_str(), idx_a));
-            let subscripted_b =
-                rumoca_core::VarName::new(format!("{}[{}]", base_b.as_str(), idx_b));
-            Some(vec![subscripted_a, subscripted_b])
-        }
-        _ => None,
-    }
-}
-
-/// Parse an array element reference like `x[1]` to extract base name and index.
-///
-/// Returns Some((base_var_name, index)) if path ends with [n] and the base is
-/// an array variable in the flat model.
-fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(rumoca_core::VarName, i64)> {
-    let parts = path_segments_of(path);
-    let last = parts.last()?;
-    let idx_group = extract_array_index(last)?;
-    let idx = parse_single_index_group_value(&idx_group)?;
-
-    let mut base_parts: Vec<String> = parts[..parts.len() - 1]
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
-    base_parts.push(strip_array_index(last).to_string());
-    let base_var = rumoca_core::VarName::new(base_parts.join("."));
-
-    let var = flat.variables.get(&base_var)?;
-    if var.dims.is_empty() {
-        return None; // Not an array
-    }
-
-    Some((base_var, idx))
+    Err(FlattenError::incompatible_connectors(
+        ctx.path_a, ctx.path_b, ctx.span,
+    ))
 }
 
 /// Extract the base array path from a subscripted path.
@@ -1233,39 +910,367 @@ fn parse_array_element_ref(path: &str, flat: &flat::Model) -> Option<(rumoca_cor
 /// Since the array variable is a single variable with multiple scalars, we create
 /// synthetic subscripted variable names for the connection sets.
 fn connect_array_to_expanded(
-    array_var: &rumoca_core::VarName,
-    expanded_vars: &[rumoca_core::VarName],
+    ctx: &ArrayExpandedRouteCtx<'_>,
+    flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
+    potential_uf: &mut UnionFind,
+    stream_uf: &mut UnionFind,
+) -> Result<usize, FlattenError> {
+    let planned = plan_array_to_expanded(
+        ctx.array_var,
+        ctx.expanded_path,
+        ctx.expanded_vars,
+        ctx.flat,
+        ctx.span,
+    )?;
+    let matched = planned.len();
+    for pair in planned {
+        match pair.kind {
+            PlannedConnectionKind::StructuralAssertion => {
+                potential_uf.union(&pair.array_element, &pair.expanded);
+            }
+            PlannedConnectionKind::Flow => flow_pairs.push((pair.array_element, pair.expanded)),
+            PlannedConnectionKind::Stream => {
+                stream_uf.union(&pair.array_element, &pair.expanded);
+            }
+            PlannedConnectionKind::Potential => {
+                potential_uf.union(&pair.array_element, &pair.expanded);
+            }
+        }
+    }
+    Ok(matched)
+}
+
+#[derive(Clone, Copy)]
+enum PlannedConnectionKind {
+    StructuralAssertion,
+    Flow,
+    Stream,
+    Potential,
+}
+
+struct PlannedExactConnection {
+    a: rumoca_core::VarName,
+    b: rumoca_core::VarName,
+    kind: PlannedConnectionKind,
+}
+
+fn plan_expanded_exact_connections(
+    path_a: &str,
+    path_b: &str,
+    expanded_a: &[rumoca_core::VarName],
+    expanded_b: &[rumoca_core::VarName],
     flat: &flat::Model,
+    span: Span,
+) -> Result<Vec<PlannedExactConnection>, FlattenError> {
+    let by_coordinate_a = expanded_members_by_coordinate(path_a, expanded_a, span)?;
+    let by_coordinate_b = expanded_members_by_coordinate(path_b, expanded_b, span)?;
+    if by_coordinate_a.keys().ne(by_coordinate_b.keys()) {
+        return Err(FlattenError::invalid_connection_evidence(
+            format!(
+                "expanded connection endpoints `{path_a}` and `{path_b}` do not cover the same coordinates"
+            ),
+            span,
+        ));
+    }
+    by_coordinate_a
+        .into_iter()
+        .zip(by_coordinate_b)
+        .map(|((_, a), (_, b))| {
+            let kind = validate_connection_pair(flat, &a, &b, span)?;
+            Ok(PlannedExactConnection { a, b, kind })
+        })
+        .collect()
+}
+
+fn expanded_members_by_coordinate(
+    pattern: &str,
+    members: &[rumoca_core::VarName],
+    span: Span,
+) -> Result<std::collections::BTreeMap<Vec<i64>, rumoca_core::VarName>, FlattenError> {
+    let mut result = std::collections::BTreeMap::new();
+    for member in members {
+        let coordinate =
+            expanded_coordinates_for_pattern(member.as_str(), pattern).map_err(|reason| {
+                FlattenError::invalid_connection_evidence(
+                    format!("expanded member `{member}` is invalid for `{pattern}`: {reason}"),
+                    span,
+                )
+            })?;
+        if result.insert(coordinate.clone(), member.clone()).is_some() {
+            return Err(FlattenError::invalid_connection_evidence(
+                format!(
+                    "expanded endpoint `{pattern}` has more than one member at coordinate {coordinate:?}"
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn commit_planned_exact_connection(
+    pair: PlannedExactConnection,
     flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
 ) {
-    // Create synthetic subscripted variable names for the array
-    // The array var "v" with expanded vars ["voltageSensor[1].v", "voltageSensor[2].v", "voltageSensor[3].v"]
-    // creates connections: "v[1]" - "voltageSensor[1].v", etc.
-    for expanded_var in expanded_vars {
-        // Extract the index from the expanded variable name
-        // e.g., "voltageSensor[1].v" -> extract "[1]"
-        let Some(idx_str) = first_array_index_group(expanded_var.as_str()) else {
-            continue;
-        };
-
-        // Create synthetic subscripted name: "v" + "[1]" -> "v[1]"
-        let subscripted_name =
-            rumoca_core::VarName::new(format!("{}{}", array_var.as_str(), idx_str));
-
-        // Determine flow/non-flow based on the array variable
-        let is_flow = is_flow_variable(flat, array_var);
-        let is_stream = is_stream_variable(flat, array_var);
-
-        if is_flow {
-            flow_pairs.push((subscripted_name, expanded_var.clone()));
-        } else if is_stream {
-            stream_uf.union(&subscripted_name, expanded_var);
-        } else {
-            potential_uf.union(&subscripted_name, expanded_var);
+    match pair.kind {
+        PlannedConnectionKind::StructuralAssertion | PlannedConnectionKind::Potential => {
+            potential_uf.union(&pair.a, &pair.b);
         }
+        PlannedConnectionKind::Flow => flow_pairs.push((pair.a, pair.b)),
+        PlannedConnectionKind::Stream => stream_uf.union(&pair.a, &pair.b),
     }
+}
+
+struct PlannedArrayConnection {
+    coordinates: Vec<i64>,
+    array_element: rumoca_core::VarName,
+    expanded: rumoca_core::VarName,
+    kind: PlannedConnectionKind,
+}
+
+fn plan_array_to_expanded(
+    array_var: &rumoca_core::VarName,
+    expanded_path: &str,
+    expanded_vars: &[rumoca_core::VarName],
+    flat: &flat::Model,
+    span: Span,
+) -> Result<Vec<PlannedArrayConnection>, FlattenError> {
+    let declaration = flat
+        .variables
+        .get(array_var)
+        .ok_or_else(|| FlattenError::undefined_variable(array_var.as_str(), span))?;
+    let expected = scalar_count_of_dims(&declaration.dims).map_err(|reason| {
+        invalid_array_expansion(
+            array_var,
+            format!("its compact dimensions are invalid: {reason}"),
+            span,
+        )
+    })?;
+    let structural = matches!(
+        declaration.variability,
+        rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+    );
+    if structural && expected != 0 {
+        return Err(invalid_array_expansion(
+            array_var,
+            "a nonempty compact structural array requires a compact Flat assertion-family owner"
+                .to_string(),
+            span,
+        ));
+    }
+    if expected != expanded_vars.len() {
+        return Err(invalid_array_expansion(
+            array_var,
+            format!(
+                "compact cardinality {expected} does not match {} expanded members",
+                expanded_vars.len()
+            ),
+            span,
+        ));
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut planned = Vec::with_capacity(expanded_vars.len());
+    for expanded in expanded_vars {
+        let pair = plan_array_expanded_pair(
+            array_var,
+            &declaration.dims,
+            expanded_path,
+            expanded,
+            flat,
+            span,
+        )?;
+        if !seen.insert(pair.coordinates.clone()) {
+            return Err(invalid_array_expansion(
+                array_var,
+                format!(
+                    "more than one expanded member claims coordinate {:?}",
+                    pair.coordinates
+                ),
+                span,
+            ));
+        }
+        planned.push(pair);
+    }
+    planned.sort_by(|left, right| left.coordinates.cmp(&right.coordinates));
+    Ok(planned)
+}
+
+fn plan_array_expanded_pair(
+    array_var: &rumoca_core::VarName,
+    dimensions: &[i64],
+    expanded_path: &str,
+    expanded: &rumoca_core::VarName,
+    flat: &flat::Model,
+    span: Span,
+) -> Result<PlannedArrayConnection, FlattenError> {
+    if !flat.variables.contains_key(expanded) {
+        return Err(invalid_array_expansion(
+            array_var,
+            format!("expanded member `{expanded}` has no Flat declaration"),
+            span,
+        ));
+    }
+    let coordinates = expanded_coordinates_for_pattern(expanded.as_str(), expanded_path)
+        .map_err(|reason| invalid_array_expansion(array_var, reason.to_string(), span))?;
+    if coordinates.len() != dimensions.len() {
+        return Err(invalid_array_expansion(
+            array_var,
+            format!(
+                "expanded member `{expanded}` supplies {} coordinates for compact rank {}",
+                coordinates.len(),
+                dimensions.len()
+            ),
+            span,
+        ));
+    }
+    if coordinates
+        .iter()
+        .zip(dimensions)
+        .any(|(coordinate, extent)| *coordinate < 1 || *coordinate > *extent)
+    {
+        return Err(invalid_array_expansion(
+            array_var,
+            format!(
+                "expanded member `{expanded}` coordinate {coordinates:?} is outside dimensions {dimensions:?}"
+            ),
+            span,
+        ));
+    }
+    let rendered = coordinates
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let array_element = rumoca_core::VarName::new(format!("{}[{rendered}]", array_var.as_str()));
+    let kind = validate_connection_pair(flat, &array_element, expanded, span)?;
+    Ok(PlannedArrayConnection {
+        coordinates,
+        array_element,
+        expanded: expanded.clone(),
+        kind,
+    })
+}
+
+fn validate_connection_pair(
+    flat: &flat::Model,
+    array_element: &rumoca_core::VarName,
+    expanded: &rumoca_core::VarName,
+    span: Span,
+) -> Result<PlannedConnectionKind, FlattenError> {
+    validate_flow_consistency(flat, array_element, expanded, span)?;
+    validate_type_compatibility(flat, array_element, expanded, span)?;
+    validate_dimension_compatibility(flat, array_element, expanded, span)?;
+    validate_quantity_compatibility(flat, array_element, expanded, span)?;
+    if classify_connection_member_pair(flat, array_element, expanded, span)?
+        == MemberPairing::StructuralAssertion
+    {
+        return Ok(PlannedConnectionKind::StructuralAssertion);
+    }
+    if is_flow_variable(flat, array_element, span)? {
+        Ok(PlannedConnectionKind::Flow)
+    } else if is_stream_variable(flat, array_element, span)? {
+        Ok(PlannedConnectionKind::Stream)
+    } else {
+        Ok(PlannedConnectionKind::Potential)
+    }
+}
+
+fn invalid_array_expansion(
+    array_var: &rumoca_core::VarName,
+    reason: String,
+    span: Span,
+) -> FlattenError {
+    FlattenError::invalid_connection_evidence(
+        format!("array-to-expanded connection for `{array_var}` is invalid: {reason}"),
+        span,
+    )
+}
+
+/// Resolve the exact primitive pair that expanded validation and construction
+/// both consume.
+///
+/// Collapsed connector arrays may retain their element axis on the Flat
+/// declaration instead of the rendered connector path. Projecting that axis in
+/// one helper prevents validation from judging a whole array while construction
+/// silently connects one element.
+fn resolved_expanded_member_pair(
+    sub_a: &rumoca_core::VarName,
+    path_a: &str,
+    path_b: &str,
+    var_b_match: &rumoca_core::VarName,
+    indices_a: &str,
+    flat: &flat::Model,
+    span: Span,
+) -> Result<(rumoca_core::VarName, rumoca_core::VarName), FlattenError> {
+    let conn_a = scalarize_collapsed_connector_element(sub_a, path_a, flat);
+    let mut conn_b = scalarize_collapsed_connector_element(var_b_match, path_b, flat);
+
+    let path_b_has_index = path_has_explicit_index(path_b);
+    if indices_a.is_empty() || path_b_has_index {
+        return Ok((conn_a, conn_b));
+    }
+
+    // Matching expanded occurrences may distribute their coordinates across
+    // several path segments (`b[1].sensor[2].x`). Compare the normalized
+    // occurrence coordinate sequence, not one raw bracket group: the latter
+    // mistakes nested expanded peers for compact members that still need a
+    // projection (or vice versa).
+    let target_occurrence_indices = extract_suffix(var_b_match.as_str(), path_b)
+        .map(|(_, indices)| strip_explicit_path_indices(&indices, path_b))
+        .unwrap_or_default();
+    let source_occurrence_indices = strip_explicit_path_indices(indices_a, path_a);
+    if !source_occurrence_indices.is_empty()
+        && target_occurrence_indices == source_occurrence_indices
+    {
+        return Ok((conn_a, conn_b));
+    }
+
+    let b_dims = require_validation_var_info(flat, &conn_b, span)?.dims;
+    if b_dims.is_empty() {
+        // The unmatched source coordinate belongs to its already-expanded
+        // component occurrence. A scalar target has no retained axis onto
+        // which that occurrence coordinate could or should be projected.
+        return Ok((conn_a, conn_b));
+    }
+    let coordinates = literal_coordinates(indices_a).ok_or_else(|| {
+        FlattenError::invalid_connection_evidence(
+            format!("expanded member `{sub_a}` has non-literal projection indices `{indices_a}`"),
+            span,
+        )
+    })?;
+    if coordinates.len() < b_dims.len() {
+        return Err(FlattenError::invalid_connection_evidence(
+            format!(
+                "expanded member `{sub_a}` supplies {} projection coordinates for `{conn_b}` with retained rank {}",
+                coordinates.len(),
+                b_dims.len()
+            ),
+            span,
+        ));
+    }
+    let projected = &coordinates[coordinates.len() - b_dims.len()..];
+    if projected
+        .iter()
+        .zip(&b_dims)
+        .any(|(index, extent)| *extent < 1 || *index < 1 || *index > *extent)
+    {
+        return Err(FlattenError::invalid_connection_evidence(
+            format!(
+                "expanded member `{sub_a}` projection {projected:?} is outside dimensions {b_dims:?} of `{conn_b}`"
+            ),
+            span,
+        ));
+    }
+    let idx_suffix = projected
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    conn_b = rumoca_core::VarName::new(format!("{}[{idx_suffix}]", conn_b.as_str()));
+    Ok((conn_a, conn_b))
 }
 
 /// Connect a single sub-variable from connector A to matching sub-variable in connector B.
@@ -1294,73 +1299,31 @@ fn connect_sub_variable(
     else {
         return Ok(false);
     };
-    let conn_a = scalarize_collapsed_connector_element(sub_a, path_a, ctx.flat);
-    let mut conn_b = scalarize_collapsed_connector_element(&var_b_match, path_b, ctx.flat);
+    let (conn_a, conn_b) = resolved_expanded_member_pair(
+        sub_a,
+        path_a,
+        path_b,
+        &var_b_match,
+        &indices_a,
+        ctx.flat,
+        ctx.span,
+    )?;
 
-    // When B is an indexless collapsed connector-array member (e.g. `plugs_n.pin.i`)
-    // matched against an indexed A sub-variable (e.g. `plug_p.pin[2].i`), preserve
-    // element pairing by applying A's trailing element indices to B.
-    //
-    // This keeps per-element connection sets separate for array connect() expansions.
-    let path_a_has_index = path_has_explicit_index(path_a);
-    let path_b_has_index = path_has_explicit_index(path_b);
-    let a_missing_last_seg_index = missing_index_on_last_prefix_segment(sub_a.as_str(), path_a);
-    if !indices_a.is_empty() && !path_b_has_index {
-        let b_dims = ctx
-            .flat
-            .variables
-            .get(&conn_b)
-            .map(|v| v.dims.clone())
-            .unwrap_or_default();
-        let dims_len = b_dims.len();
-        let scalar_size = scalar_size_from_dims(&b_dims);
-
-        // Some flattened connector-array members arrive with missing dims.
-        // If A carries an index only on the last connector segment relative to
-        // its prefix, project one trailing element index from A.
-        //
-        // Guardrails:
-        // - Only project for actual multi-element arrays (scalar_size > 1).
-        // - Validate projected indices are in-range for B's dimensions.
-        // This prevents invalid projections like `starpoints.pin[2]` onto `pin[1]`.
-        let projected_dims_len = if dims_len > 0 {
-            if scalar_size > 1 { dims_len } else { 0 }
-        } else if !path_a_has_index && a_missing_last_seg_index {
-            1
-        } else {
-            0
-        };
-        if projected_dims_len > 0
-            && let Some(idx_suffix) = select_indices_for_dims(&indices_a, projected_dims_len)
-        {
-            let projected_dims = if dims_len >= projected_dims_len {
-                &b_dims[dims_len - projected_dims_len..]
-            } else {
-                &b_dims[..]
-            };
-            let index_in_bounds = projected_dims.is_empty()
-                || projected_indices_within_dims(&idx_suffix, projected_dims);
-            let idx_already_present = path_segments_of(conn_b.as_str())
-                .iter()
-                .filter_map(|part| extract_array_index(part))
-                .any(|idx| idx == idx_suffix);
-            if index_in_bounds && !idx_already_present {
-                conn_b = rumoca_core::VarName::new(format!("{}{}", conn_b.as_str(), idx_suffix));
-            }
-        }
-    }
-
-    // MLS §9.3 pairing rules. A structural pair generates nothing (and, like
-    // the pre-match skip it replaces, reports "unmatched" so the reverse
-    // expansion direction is still attempted); a pair MLS forbids is rejected.
-    if classify_connection_member_pair(ctx.flat, &conn_a, &conn_b)? == MemberPairing::NoEquation {
-        return Ok(false);
+    // MLS §9.3 pairing rules. A structural pair joins the assertion owner,
+    // never an ordinary connection-equation set; a forbidden pair is rejected.
+    if classify_connection_member_pair(ctx.flat, &conn_a, &conn_b, ctx.span)?
+        == MemberPairing::StructuralAssertion
+    {
+        ctx.potential_uf.union(&conn_a, &conn_b);
+        return Ok(true);
     }
 
     // Connect matching sub-variables based on flow/non-flow type
-    if is_flow_variable(ctx.flat, &conn_a) {
+    if is_flow_variable(ctx.flat, &conn_a, ctx.span)? {
         ctx.flow_pairs.push((conn_a, conn_b));
-    } else if is_stream_variable(ctx.flat, &conn_a) && is_stream_variable(ctx.flat, &conn_b) {
+    } else if is_stream_variable(ctx.flat, &conn_a, ctx.span)?
+        && is_stream_variable(ctx.flat, &conn_b, ctx.span)?
+    {
         // MLS §15.2 stream connectors are handled separately from flow/potential sets.
         ctx.stream_uf.union(&conn_a, &conn_b);
     } else {
@@ -1373,67 +1336,98 @@ fn connect_sub_variable(
 
 /// Process a single connection and update the connection structures.
 fn process_connection(
-    conn: &ast::InstanceConnection,
-    flat: &flat::Model,
-    var_index: &ConnectionVarIndex,
+    conn: &ast::InstanceScalarConnection,
+    ctx: &ConnectionProcessCtx<'_>,
     flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
-    prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
 ) -> Result<(), FlattenError> {
-    let path_a = conn.a.to_flat_string();
-    let path_b = conn.b.to_flat_string();
+    let path_a = conn.a().to_flat_string();
+    let path_b = conn.b().to_flat_string();
     let var_a = rumoca_core::VarName::new(&path_a);
     let var_b = rumoca_core::VarName::new(&path_b);
 
-    let a_is_primitive = is_primitive_flat_var(flat, &var_a);
-    let b_is_primitive = is_primitive_flat_var(flat, &var_b);
+    let a_is_primitive = is_primitive_flat_var(ctx.flat, &var_a);
+    let b_is_primitive = is_primitive_flat_var(ctx.flat, &var_b);
 
     if a_is_primitive && b_is_primitive {
-        return connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
+        return connect_primitive_vars(
+            &var_a,
+            &var_b,
+            ctx.flat,
+            flow_pairs,
+            potential_uf,
+            stream_uf,
+            conn.span(),
+        );
     }
 
     // Handle subscripted references to array variables: e.g., "comp.v[1]" where
     // flat.variables has "comp.v" as array[1]. The subscript comes from instantiation
     // resolving array dimension parameters. Treat as primitive since it refers to a
     // known variable's element.
-    let a_subscript_prim = !a_is_primitive && is_subscripted_variable(&var_a, flat);
-    let b_subscript_prim = !b_is_primitive && is_subscripted_variable(&var_b, flat);
+    let a_subscript_prim = if a_is_primitive {
+        false
+    } else {
+        has_proven_primitive_array_selection(&var_a, ctx.flat, conn.span())?
+    };
+    let b_subscript_prim = if b_is_primitive {
+        false
+    } else {
+        has_proven_primitive_array_selection(&var_b, ctx.flat, conn.span())?
+    };
     if (a_is_primitive || a_subscript_prim) && (b_is_primitive || b_subscript_prim) {
-        return connect_primitive_vars(&var_a, &var_b, flat, flow_pairs, potential_uf, stream_uf);
-    }
-
-    // At least one is a connector - try expansion
-    let subs_a = find_sub_variables_indexed(&path_a, prefix_children, var_index);
-    let subs_b = find_sub_variables_indexed(&path_b, prefix_children, var_index);
-
-    if !subs_a.is_empty() && !subs_b.is_empty() {
-        let mut ctx = ConnectionBuildCtx {
-            flat,
-            var_index,
+        return connect_primitive_vars(
+            &var_a,
+            &var_b,
+            ctx.flat,
             flow_pairs,
             potential_uf,
             stream_uf,
-        };
-        return expand_connector_connection(&subs_a, &path_a, &path_b, &subs_b, &mut ctx);
+            conn.span(),
+        );
     }
 
-    let ctx = ArrayConnCtx {
+    // At least one is a connector - try expansion
+    let subs_a = find_sub_variables_indexed(&path_a, ctx.prefix_children, ctx.var_index);
+    let subs_b = find_sub_variables_indexed(&path_b, ctx.prefix_children, ctx.var_index);
+
+    if !subs_a.is_empty() && !subs_b.is_empty() {
+        let mut build_ctx = ConnectionBuildCtx {
+            flat: ctx.flat,
+            var_index: ctx.var_index,
+            flow_pairs,
+            potential_uf,
+            stream_uf,
+            span: conn.span(),
+        };
+        return expand_connector_connection(&subs_a, &path_a, &path_b, &subs_b, &mut build_ctx);
+    }
+
+    let array_ctx = ArrayConnCtx {
         path_a: &path_a,
         path_b: &path_b,
         var_a: &var_a,
         var_b: &var_b,
         a_is_primitive,
         b_is_primitive,
+        span: conn.span(),
     };
-    connect_array_output_variables(&ctx, flat, var_index, flow_pairs, potential_uf, stream_uf)
+    connect_array_output_variables(
+        &array_ctx,
+        ctx.flat,
+        ctx.var_index,
+        flow_pairs,
+        potential_uf,
+        stream_uf,
+    )
 }
 
 /// Connect two primitive variables directly based on flow type.
 ///
 /// MLS §9.3 pairing rules are decided by [`classify_connection_member_pair`]
-/// first: a structural pair generates nothing, and a pair MLS forbids is
-/// rejected here rather than dropped.
+/// first: a structural pair is routed to the assertion owner, and a pair MLS
+/// forbids is rejected here rather than dropped.
 fn connect_primitive_vars(
     var_a: &rumoca_core::VarName,
     var_b: &rumoca_core::VarName,
@@ -1441,17 +1435,21 @@ fn connect_primitive_vars(
     flow_pairs: &mut Vec<(rumoca_core::VarName, rumoca_core::VarName)>,
     potential_uf: &mut UnionFind,
     stream_uf: &mut UnionFind,
+    span: Span,
 ) -> Result<(), FlattenError> {
-    if classify_connection_member_pair(flat, var_a, var_b)? == MemberPairing::NoEquation {
+    if classify_connection_member_pair(flat, var_a, var_b, span)?
+        == MemberPairing::StructuralAssertion
+    {
+        potential_uf.union(var_a, var_b);
         return Ok(());
     }
 
-    let is_flow_a = is_flow_variable(flat, var_a);
-    let is_flow_b = is_flow_variable(flat, var_b);
+    let is_flow_a = is_flow_variable(flat, var_a, span)?;
+    let is_flow_b = is_flow_variable(flat, var_b, span)?;
 
     if is_flow_a && is_flow_b {
         flow_pairs.push((var_a.clone(), var_b.clone()));
-    } else if is_stream_variable(flat, var_a) && is_stream_variable(flat, var_b) {
+    } else if is_stream_variable(flat, var_a, span)? && is_stream_variable(flat, var_b, span)? {
         stream_uf.union(var_a, var_b);
     } else if !is_flow_a && !is_flow_b {
         // Both sides agree on the stream prefix here: `classify_connection_member_pair`
@@ -1471,26 +1469,27 @@ fn expand_connector_connection(
     subs_b: &[rumoca_core::VarName],
     ctx: &mut ConnectionBuildCtx<'_>,
 ) -> Result<(), FlattenError> {
-    let sub_match_index = ConnectionSubMatchIndex::new(path_b, subs_b, ctx.var_index);
-    let mut matched = 0usize;
-    for sub_a in subs_a {
-        if connect_sub_variable(sub_a, path_a, path_b, &sub_match_index, ctx)? {
-            matched += 1;
-        }
-    }
-    if matched != 0 {
-        return Ok(());
-    }
-
-    // Connector arrays can be represented asymmetrically: one side may retain
-    // an indexless array member (`heat.port.T`, dims=[N]) while the other is
-    // expanded into connector elements (`pipe.ports[1].T`, ...). Matching from
-    // the expanded side supplies the element index needed to project the
-    // collapsed member, so retry in the opposite direction when the first
-    // representation produced no pairs.
-    let reverse_match_index = ConnectionSubMatchIndex::new(path_a, subs_a, ctx.var_index);
-    for sub_b in subs_b {
-        connect_sub_variable(sub_b, path_b, path_a, &reverse_match_index, ctx)?;
+    let direction = complete_expanded_member_direction(
+        path_a,
+        subs_a,
+        path_b,
+        subs_b,
+        ctx.var_index,
+        ctx.span,
+    )?;
+    let (source_path, source_members, target_path, target_members) = match direction {
+        ExpandedMemberDirection::Forward => (path_a, subs_a, path_b, subs_b),
+        // Connector arrays can be represented asymmetrically: the expanded
+        // side supplies indices for an indexless compact array member.
+        ExpandedMemberDirection::Reverse => (path_b, subs_b, path_a, subs_a),
+    };
+    let match_index = ConnectionSubMatchIndex::new(target_path, target_members, ctx.var_index);
+    for member in source_members {
+        let matched = connect_sub_variable(member, source_path, target_path, &match_index, ctx)?;
+        debug_assert!(
+            matched,
+            "coverage proof requires every source member to match"
+        );
     }
     Ok(())
 }
@@ -1518,14 +1517,20 @@ fn expand_connector_connection(
 /// an outside connector with `max(+m_flow, 0)`, and that role is only defined
 /// relative to the level that declares the `connect` (MLS §9.1.2).
 fn build_connection_sets(
-    connections: &[&ast::InstanceConnection],
+    connections: &[ConnectionTopologyInput<'_>],
     flat: &flat::Model,
     prefix_children: &FxHashMap<String, Vec<rumoca_core::VarName>>,
     var_index: &ConnectionVarIndex,
+    consumption: &mut ConnectionSourceConsumption,
 ) -> Result<(Vec<ConnectionSet>, Vec<StreamConnectionSet>), FlattenError> {
     let mut potential_uf = UnionFind::new();
     let mut result = Vec::new();
     let mut stream_sets: Vec<StreamConnectionSet> = Vec::new();
+    let process_ctx = ConnectionProcessCtx {
+        flat,
+        var_index,
+        prefix_children,
+    };
 
     // SPEC_0008: every generated connection equation carries real provenance.
     // Track direct connect() spans first; scalarized array members that do not
@@ -1537,27 +1542,28 @@ fn build_connection_sets(
                            span: rumoca_core::Span| {
         map.entry(var).or_insert(span);
     };
-    for conn in connections {
+    for input in connections {
+        let conn = input.connection;
         record_var_span(
             &mut var_first_span,
-            rumoca_core::VarName::new(conn.a.to_flat_string()),
-            conn.span,
+            rumoca_core::VarName::new(conn.a().to_flat_string()),
+            conn.span(),
         );
         record_var_span(
             &mut var_first_span,
-            rumoca_core::VarName::new(conn.b.to_flat_string()),
-            conn.span,
+            rumoca_core::VarName::new(conn.b().to_flat_string()),
+            conn.span(),
         );
     }
 
     // Group connections by scope (hierarchy level where connect was declared).
-    let mut connections_by_scope: IndexMap<&str, Vec<&ast::InstanceConnection>> =
+    let mut connections_by_scope: IndexMap<&str, Vec<&ConnectionTopologyInput<'_>>> =
         IndexMap::default();
-    for conn in connections {
+    for input in connections {
         connections_by_scope
-            .entry(&conn.scope)
+            .entry(input.connection.scope())
             .or_default()
-            .push(conn);
+            .push(input);
     }
 
     // Process each scope separately for flow and stream pairs, globally for
@@ -1565,15 +1571,15 @@ fn build_connection_sets(
     for (scope, scope_conns) in &connections_by_scope {
         let mut flow_pairs: Vec<(rumoca_core::VarName, rumoca_core::VarName)> = Vec::new();
         let mut stream_uf = UnionFind::new();
-        for conn in scope_conns {
+        for input in scope_conns {
+            let conn = input.connection;
+            consumption.admit(input.source, conn.span())?;
             process_connection(
                 conn,
-                flat,
-                var_index,
+                &process_ctx,
                 &mut flow_pairs,
                 &mut potential_uf,
                 &mut stream_uf,
-                prefix_children,
             )?;
         }
 
@@ -1596,22 +1602,25 @@ fn build_connection_sets(
         for (_root, vars) in stream_uf.get_sets() {
             // A semantic stream set must retain real connect provenance even
             // though equations are emitted only for its outside endpoints.
-            representative_connection_span(&vars, &var_first_span, flat)?;
+            let span = representative_connection_span(&vars, &var_first_span, flat)?;
             stream_sets.push(StreamConnectionSet {
                 variables: vars,
                 scope: (*scope).to_string(),
+                span,
             });
         }
     }
 
-    // Extract potential connection sets (global — equality equations count
-    // is the same whether merged or split: N-1 for N variables either way)
+    // Extract non-flow connection sets. Structural members share the same
+    // union-find only to preserve transitive equality; their set kind routes
+    // them to assertions rather than ordinary residual equations.
     for (_root, vars) in potential_uf.get_sets() {
         if vars.len() >= 2 {
             let span = representative_connection_span(&vars, &var_first_span, flat)?;
+            let kind = non_flow_connection_set_kind(flat, &vars, span)?;
             result.push(ConnectionSet {
                 variables: vars,
-                kind: ConnectionKind::Potential,
+                kind,
                 scope: String::new(),
                 span,
             });
@@ -1621,19 +1630,75 @@ fn build_connection_sets(
     Ok((result, stream_sets))
 }
 
+fn non_flow_connection_set_kind(
+    flat: &flat::Model,
+    variables: &[rumoca_core::VarName],
+    span: Span,
+) -> Result<ConnectionKind, FlattenError> {
+    let mut structural = None;
+    for variable in variables {
+        let evidence = require_connection_declaration(flat, variable, span)?;
+        let declaration = evidence.declaration();
+        let current = matches!(
+            &declaration.variability,
+            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+        );
+        if structural.is_some_and(|expected| expected != current) {
+            return Err(FlattenError::invalid_connection_evidence(
+                "one non-flow connection set mixes structural and equation unknown members",
+                span,
+            ));
+        }
+        structural = Some(current);
+    }
+    Ok(if structural == Some(true) {
+        ConnectionKind::StructuralAssertion
+    } else {
+        ConnectionKind::Potential
+    })
+}
+
 fn representative_connection_span(
     vars: &[rumoca_core::VarName],
     var_first_span: &FxHashMap<rumoca_core::VarName, rumoca_core::Span>,
     flat: &flat::Model,
 ) -> Result<rumoca_core::Span, FlattenError> {
-    vars.iter()
-        .filter_map(|var| {
-            var_first_span
+    let diagnostic_span = var_first_span
+        .values()
+        .copied()
+        .chain(vars.iter().filter_map(|var| {
+            flat.variables
                 .get(var)
-                .copied()
-                .filter(|span| !span.is_dummy())
-                .or_else(|| flat_variable_source_span(flat, var))
-        })
+                .map(|declaration| declaration.source_span)
+        }))
+        .find(|span| !span.is_dummy())
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "connection set `{}` has no source-backed declaration",
+                vars.iter()
+                    .map(rumoca_core::VarName::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+    let mut spans = Vec::with_capacity(vars.len());
+    for var in vars {
+        if let Some(span) = var_first_span
+            .get(var)
+            .copied()
+            .filter(|span| !span.is_dummy())
+        {
+            spans.push(span);
+            continue;
+        }
+        let evidence = require_connection_declaration(flat, var, diagnostic_span)?;
+        let declaration = evidence.declaration();
+        if !declaration.source_span.is_dummy() {
+            spans.push(declaration.source_span);
+        }
+    }
+    spans
+        .into_iter()
         .min_by_key(|span| (span.source.0, span.start.0, span.end.0))
         .ok_or_else(|| {
             FlattenError::missing_source_context(format!(
@@ -1644,21 +1709,6 @@ fn representative_connection_span(
                     .join(", ")
             ))
         })
-}
-
-fn flat_variable_source_span(
-    flat: &flat::Model,
-    var: &rumoca_core::VarName,
-) -> Option<rumoca_core::Span> {
-    flat.variables
-        .get(var)
-        .map(|variable| variable.source_span)
-        .or_else(|| {
-            subscripted_base_var(var, flat)
-                .and_then(|base| flat.variables.get(&base))
-                .map(|variable| variable.source_span)
-        })
-        .filter(|span| !span.is_dummy())
 }
 
 fn require_connection_provenance(
@@ -1674,59 +1724,28 @@ fn require_flat_variable_provenance(
     var: &rumoca_core::VarName,
     context: &'static str,
 ) -> Result<ProvenanceSpan, FlattenError> {
-    let span = flat_variable_source_span(flat, var).ok_or_else(|| {
-        FlattenError::missing_source_context(format!(
-            "{context} for `{}` has no source span",
-            var.as_str()
-        ))
-    })?;
+    let diagnostic_span = flat
+        .variables
+        .values()
+        .map(|declaration| declaration.source_span)
+        .find(|span| !span.is_dummy())
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "{context} for `{}` has no source-backed Flat declaration catalog",
+                var.as_str()
+            ))
+        })?;
+    let evidence = require_connection_declaration(flat, var, diagnostic_span)?;
+    let declaration = evidence.declaration();
+    let span = (!declaration.source_span.is_dummy())
+        .then_some(declaration.source_span)
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(format!(
+                "{context} for `{}` has no source span",
+                var.as_str()
+            ))
+        })?;
     require_connection_provenance(span, context)
-}
-
-/// Create a component reference expression for a variable name.
-fn var_to_expr(var_name: &rumoca_core::VarName, span: ProvenanceSpan) -> rumoca_core::Expression {
-    rumoca_core::Expression::VarRef {
-        name: var_name.clone().into(),
-        subscripts: Vec::new(),
-        span: span.span(),
-    }
-}
-
-/// Materialize one connection-set member as a Flat expression.
-///
-/// Connection sets are keyed by rendered path, so a member that is one element
-/// of a declared array connector arrives as `base[i]`. Emitting that key as a
-/// reference *name* would name a coordinate no Flat declaration owns — every
-/// consumer that resolves references against the declared variable set rejects
-/// it (`ED008` at the Flat/DAE boundary). Resolving the element back to its
-/// declaration keeps the reference on the declared coordinate and moves the
-/// selection into structured subscripts, and lets the member carry the exact
-/// occurrence identity the declaration already proved.
-fn connection_member_expr(
-    flat: &flat::Model,
-    var_name: &rumoca_core::VarName,
-    span: ProvenanceSpan,
-) -> rumoca_core::Expression {
-    if flat.variables.contains_key(var_name) {
-        return var_to_expr(var_name, span);
-    }
-    let Some((base, declaration, indices)) = declared_array_element(var_name, flat) else {
-        return var_to_expr(var_name, span);
-    };
-    let name = match declaration.component_ref.clone() {
-        Some(component_ref) => {
-            rumoca_core::Reference::with_component_reference(base.as_str(), component_ref)
-        }
-        None => rumoca_core::Reference::from_var_name(base),
-    };
-    rumoca_core::Expression::VarRef {
-        name: name.with_instance_id(declaration.instance_id),
-        subscripts: indices
-            .into_iter()
-            .map(|value| rumoca_core::Subscript::generated_index_with_provenance(value, span))
-            .collect(),
-        span: span.span(),
-    }
 }
 
 /// Create a residual expression: lhs - rhs (for equation lhs = rhs).
@@ -1772,9 +1791,81 @@ fn create_sum(
 }
 
 #[cfg(test)]
+const CONNECTION_TEST_SCALAR_TYPE: rumoca_core::TypeId = rumoca_core::TypeId(0x5f_0001);
+
+/// Construct the current Flat test aggregate with one concrete scalar type.
+#[cfg(test)]
+fn connection_test_model() -> flat::Model {
+    let mut flat = flat::Model::new();
+    flat.effective_types.insert(
+        CONNECTION_TEST_SCALAR_TYPE,
+        rumoca_core::EffectiveType::new(
+            CONNECTION_TEST_SCALAR_TYPE,
+            CONNECTION_TEST_SCALAR_TYPE,
+            [],
+        )
+        .expect("the fixture scalar type is concrete"),
+    );
+    flat.type_roots
+        .insert(CONNECTION_TEST_SCALAR_TYPE, CONNECTION_TEST_SCALAR_TYPE);
+    flat
+}
+
+/// Construct one primitive Flat occurrence carrying the fixture's concrete
+/// scalar effective-type identity.
+#[cfg(test)]
+fn connection_test_variable(span: rumoca_core::Span) -> flat::Variable {
+    flat::Variable {
+        type_id: CONNECTION_TEST_SCALAR_TYPE,
+        is_primitive: true,
+        ..flat::Variable::empty_with_span(span)
+    }
+}
+
+#[cfg(test)]
+trait ConnectionTestFlatExt {
+    fn add_test_variable(&mut self, name: rumoca_core::VarName, variable: flat::Variable);
+}
+
+#[cfg(test)]
+impl ConnectionTestFlatExt for flat::Model {
+    fn add_test_variable(&mut self, name: rumoca_core::VarName, mut variable: flat::Variable) {
+        assert!(
+            variable.instance_id.is_unset(),
+            "the fixture constructor is the sole occurrence issuer"
+        );
+        variable.name = name.clone();
+        variable.instance_id = self.materialize_instance(flat::InstanceRelation {
+            owner: None,
+            declaration: variable
+                .component_ref
+                .as_ref()
+                .map(rumoca_core::ComponentReference::target_def_id),
+            indices: Box::new([]),
+            kind: flat::InstanceKind::Materialized,
+        });
+        self.add_variable(name, variable);
+    }
+}
+
+/// Run the production one-shot Flat shape transition for a connection fixture.
+///
+/// The fixture itself must construct every occurrence and type identity before
+/// calling this helper; this transition does not repair missing facts.
+#[cfg(test)]
+fn finalize_connection_test_flat(flat: &mut flat::Model) {
+    flat.finalize_effective_type_shapes()
+        .expect("connection test fixture must issue finalized effective shape identities");
+}
+
+#[cfg(test)]
+mod connected_domain_tests;
+#[cfg(test)]
 mod endpoint_subscript_tests;
 #[cfg(test)]
 mod family_view_tests;
+#[cfg(test)]
+mod materialization_budget_tests;
 #[cfg(test)]
 mod scalar_count_tests;
 #[cfg(test)]

@@ -107,12 +107,12 @@ impl GradientResult {
     }
 
     /// The gradient as a `{parameter: d(objective)/d(parameter)}` dict.
-    fn to_dict(&self, py: Python<'_>) -> PyObject {
+    fn to_dict(&self, py: Python<'_>) -> ApiResult<PyObject> {
         let dict = PyDict::new_bound(py);
         for (name, value) in self.param_names.iter().zip(&self.values) {
-            let _ = dict.set_item(name, *value);
+            dict.set_item(name, *value)?;
         }
-        dict.into_py(py)
+        Ok(dict.into_py(py))
     }
 
     /// The gradient as a 1-D numpy array in `names` order. Falls back to a plain

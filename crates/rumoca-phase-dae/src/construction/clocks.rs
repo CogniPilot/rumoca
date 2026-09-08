@@ -5,10 +5,10 @@ use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 
 use super::Coordinate;
-use super::analysis::{ClockPlan, ClockedValuePlan};
+use super::analysis::{ClockOwnerId, ClockPlan, ClockTransferPlans, ClockedValuePlan};
 
 pub(super) struct LoweredClocks<'dae> {
-    pub(super) by_plan: HashMap<ClockPlan, dae::PeriodicClockId<'dae>>,
+    pub(super) by_owner: HashMap<ClockOwnerId, dae::PeriodicClockId<'dae>>,
     /// MLS §3.7.5 event clocks are identified entirely by their exact
     /// periodic schedule. Every occurrence and exact Boolean alias reuses this
     /// one owner rather than allocating parallel activation lanes.
@@ -25,8 +25,8 @@ impl<'dae> LoweredClocks<'dae> {
         plan: &ClockPlan,
         span: rumoca_core::Span,
     ) -> Result<dae::PeriodicClockId<'dae>, dae::DaeConstructionError> {
-        self.by_plan
-            .get(plan)
+        self.by_owner
+            .get(&plan.owner)
             .copied()
             .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span })
     }
@@ -48,32 +48,37 @@ pub(super) fn lower_clocks<'dae>(
     flat: &flat::Model,
     plans: &HashMap<InstanceId, ClockPlan>,
     clocked_values: &HashMap<InstanceId, ClockedValuePlan>,
+    transfers: &ClockTransferPlans,
     sample_schedules: impl Iterator<Item = (PeriodicClockSchedule, Span)>,
 ) -> Result<LoweredClocks<'dae>, dae::DaeConstructionError> {
     let mut plan_ids = HashMap::new();
+    let mut issued_plans = HashMap::new();
     let mut coordinate_ids = HashMap::new();
-    for (name, variable) in &flat.variables {
-        let Some(plan) = plans.get(&variable.instance_id).copied() else {
-            continue;
-        };
-        let clock = if let Some(clock) = plan_ids.get(&plan).copied() {
-            clock
-        } else {
-            let provenance = dae::DaeProvenance::source(plan.constructor_span)?;
-            let clock = construction.clocks(|clocks| clocks.periodic(plan.lattice, provenance))?;
-            plan_ids.insert(plan, clock);
-            clock
-        };
+    let mut planned_coordinates = flat
+        .variables
+        .iter()
+        .filter_map(|(name, variable)| {
+            plans
+                .get(&variable.instance_id)
+                .copied()
+                .map(|plan| (name, plan))
+        })
+        .collect::<Vec<_>>();
+    planned_coordinates.sort_by_key(|(_, plan)| plan.order_key());
+    for (name, plan) in planned_coordinates {
+        let clock = lower_clock_plan(construction, &mut plan_ids, &mut issued_plans, plan)?;
         coordinate_ids.insert(name.clone(), clock);
     }
     for (_, value) in clocked_values_in_instance_order(clocked_values) {
-        if plan_ids.contains_key(&value.clock) {
-            continue;
-        }
-        let provenance = dae::DaeProvenance::source(value.clock.constructor_span)?;
-        let clock =
-            construction.clocks(|clocks| clocks.periodic(value.clock.lattice, provenance))?;
-        plan_ids.insert(value.clock, clock);
+        lower_clock_plan(construction, &mut plan_ids, &mut issued_plans, value.clock)?;
+    }
+    let mut transfer_plans = transfers
+        .values()
+        .flat_map(|transfer| [transfer.source, transfer.target])
+        .collect::<Vec<_>>();
+    transfer_plans.sort_by_key(|plan| plan.order_key());
+    for plan in transfer_plans {
+        lower_clock_plan(construction, &mut plan_ids, &mut issued_plans, plan)?;
     }
     let mut sample_ids = HashMap::new();
     for (schedule, span) in sample_schedules {
@@ -85,10 +90,38 @@ pub(super) fn lower_clocks<'dae>(
         sample_ids.insert(schedule, clock);
     }
     Ok(LoweredClocks {
-        by_plan: plan_ids,
+        by_owner: plan_ids,
         by_sample_schedule: sample_ids,
         by_coordinate: coordinate_ids,
     })
+}
+
+fn lower_clock_plan<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    ids: &mut HashMap<ClockOwnerId, dae::PeriodicClockId<'dae>>,
+    issued: &mut HashMap<ClockOwnerId, ClockPlan>,
+    plan: ClockPlan,
+) -> Result<dae::PeriodicClockId<'dae>, dae::DaeConstructionError> {
+    if let Some(established) = issued.get(&plan.owner).copied() {
+        if !established.matches_exactly(plan) {
+            return Err(
+                dae::DaeConstructionError::ConflictingExpressionClockDomains {
+                    established: established.constructor_span,
+                    attempted: plan.constructor_span,
+                },
+            );
+        }
+        return ids.get(&plan.owner).copied().ok_or(
+            dae::DaeConstructionError::MissingClockDomainOwner {
+                span: plan.constructor_span,
+            },
+        );
+    }
+    let provenance = dae::DaeProvenance::source(plan.constructor_span)?;
+    let clock = construction.clocks(|clocks| clocks.periodic(plan.lattice, provenance))?;
+    issued.insert(plan.owner, plan);
+    ids.insert(plan.owner, clock);
+    Ok(clock)
 }
 
 fn clocked_values_in_instance_order(
@@ -152,12 +185,15 @@ mod tests {
     use super::*;
     use rumoca_core::{ClockLattice, ClockRational};
 
+    use crate::construction::analysis::ClockOwnerId;
+
     fn plan() -> ClockedValuePlan {
         ClockedValuePlan {
-            clock: ClockPlan {
-                lattice: ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
-                constructor_span: Span::DUMMY,
-            },
+            clock: ClockPlan::periodic(
+                ClockOwnerId::Coordinate(InstanceId::new(1)),
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                Span::DUMMY,
+            ),
             ownership_span: Span::DUMMY,
             sampled: false,
         }
@@ -176,5 +212,39 @@ mod tests {
             .collect();
 
         assert_eq!(ids, [2, 5, 9]);
+    }
+
+    #[test]
+    fn same_owner_with_different_lattice_rejects_before_clock_reuse() {
+        let mut sources = rumoca_core::SourceMap::new();
+        let source = sources.add("clock_plan_conflict.mo", "Clock(1) Clock(2)");
+        let first_span = Span::from_offsets(source, 0, 8);
+        let second_span = Span::from_offsets(source, 9, 17);
+        let owner = ClockOwnerId::Coordinate(InstanceId::new(7));
+        let first = ClockPlan::periodic(
+            owner,
+            ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+            first_span,
+        );
+        let second = ClockPlan::periodic(
+            owner,
+            ClockLattice::new(ClockRational::new(2, 1).unwrap(), ClockRational::ZERO).unwrap(),
+            second_span,
+        );
+        let error = dae::Dae::construct(sources, |construction| {
+            let mut ids = HashMap::new();
+            let mut issued = HashMap::new();
+            lower_clock_plan(construction, &mut ids, &mut issued, first)?;
+            lower_clock_plan(construction, &mut ids, &mut issued, second)?;
+            Ok(())
+        })
+        .expect_err("one semantic owner cannot carry two plans");
+        assert!(matches!(
+            error,
+            dae::DaeConstructionError::ConflictingExpressionClockDomains {
+                established,
+                attempted,
+            } if established == first_span && attempted == second_span
+        ));
     }
 }

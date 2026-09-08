@@ -4,10 +4,10 @@ mod tensor;
 use rumoca_core::Span;
 use rumoca_core::StructuredIndexDomain;
 use rumoca_ir_solve::{
-    SolveBinaryOperator, SolveOperation, SolveProgramRegion, SolvePureCallOwner,
-    SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveReductionOperator,
-    SolveRegisterId, SolveScalarType, SolveSlotId, SolveTensorViewAxis, SolveValue, SolveValueKind,
-    SolveValueType, TypedProgram,
+    SolveBinaryOperator, SolveMatrixMultiplyArithmetic, SolveMatrixMultiplyPlan, SolveOperation,
+    SolveProgramRegion, SolvePureCallOwner, SolvePureCallOwnerId, SolvePureCallTable,
+    SolveRealFormat, SolveReductionOperator, SolveRegisterId, SolveScalarType, SolveSlotId,
+    SolveTensorViewAxis, SolveValue, SolveValueKind, SolveValueType, TypedProgram,
 };
 
 use number::{
@@ -108,13 +108,6 @@ pub enum TypedProgramEvalError {
         operation: &'static str,
         provenance: Span,
     },
-    IntegerArithmetic {
-        operation: &'static str,
-        provenance: Span,
-    },
-    InvalidIntegerConversion {
-        provenance: Span,
-    },
 }
 
 impl TypedProgramEvalError {
@@ -123,9 +116,7 @@ impl TypedProgramEvalError {
         match self {
             Self::UnknownOwner { .. } => None,
             Self::InvalidArgument { provenance, .. }
-            | Self::InvalidCheckedProgram { provenance, .. }
-            | Self::IntegerArithmetic { provenance, .. }
-            | Self::InvalidIntegerConversion { provenance } => Some(*provenance),
+            | Self::InvalidCheckedProgram { provenance, .. } => Some(*provenance),
         }
     }
 }
@@ -144,15 +135,6 @@ impl std::fmt::Display for TypedProgramEvalError {
             }
             Self::InvalidCheckedProgram { operation, .. } => {
                 write!(formatter, "checked typed program failed during {operation}")
-            }
-            Self::IntegerArithmetic { operation, .. } => {
-                write!(
-                    formatter,
-                    "Integer {operation} left the checked target domain"
-                )
-            }
-            Self::InvalidIntegerConversion { .. } => {
-                formatter.write_str("Real-to-Integer conversion left the checked target domain")
             }
         }
     }
@@ -577,7 +559,8 @@ impl<'model, 'scope> EvalFrame<'model, 'scope> {
                 destination,
                 lhs,
                 rhs,
-            } => self.eval_matrix_multiply(*destination, *lhs, *rhs, provenance),
+                plan,
+            } => self.eval_matrix_multiply(*destination, *lhs, *rhs, *plan, provenance),
             SolveOperation::Cross {
                 destination,
                 lhs,

@@ -21,7 +21,6 @@ use super::*;
 struct WhenScope<'a> {
     roles: &'a HashMap<VarName, PlannedRole>,
     expression_roles: &'a HashMap<VarName, PlannedRole>,
-    states: &'a HashSet<VarName>,
     constants: &'a EvalContext,
     /// The exact literal-name and enumeration-declaration evidence, so a name
     /// that merely spells like a cataloged literal without its enumeration's
@@ -33,7 +32,6 @@ pub(super) fn validate_when_chains(
     chains: &[flat::WhenChain],
     roles: &HashMap<VarName, PlannedRole>,
     expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     model_values: &ShapeEnvironment,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
@@ -41,7 +39,6 @@ pub(super) fn validate_when_chains(
     let scope = WhenScope {
         roles,
         expression_roles,
-        states,
         constants,
         model_values,
     };
@@ -55,7 +52,6 @@ pub(super) fn validate_when_chains(
             validate_when_activation_condition(
                 &branch.condition,
                 scope.expression_roles,
-                scope.states,
                 scope.constants,
                 sample_lattices,
                 scope.model_values,
@@ -142,7 +138,6 @@ fn validate_read(
     validate_when_expression(
         expression,
         scope.expression_roles,
-        scope.states,
         clocked,
         scope.model_values,
     )
@@ -160,7 +155,6 @@ fn validate_branch_condition(
     validate_when_condition_expression(
         condition,
         scope.expression_roles,
-        scope.states,
         scope.constants,
         sample_lattices,
         clocked,

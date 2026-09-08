@@ -133,7 +133,7 @@ pub fn run(args: Args) -> Result<()> {
             metric.bounded_normalized_l1_score, metric.mean_channel_bounded_normalized_l1
         );
         if let Ok(full_metric) = compare_model_traces(&args.model, &rumoca_trace, &omc_trace) {
-            for channel in full_metric.worst_variables.iter().take(5) {
+            for channel in full_metric.worst_variables().iter().take(5) {
                 println!(
                     "  worst: {} (bounded L1 {:.3e}, normalized L1 {:.3e})",
                     channel.name, channel.bounded_normalized_l1_error, channel.normalized_l1_error
@@ -504,10 +504,10 @@ fn build_plot_payload(
 
 fn model_metric_summary(metric: &ModelDeviationMetric) -> ModelMetricSummary {
     ModelMetricSummary {
-        bounded_normalized_l1_score: metric.bounded_normalized_l1_score,
-        mean_channel_bounded_normalized_l1: metric.mean_channel_bounded_normalized_l1,
-        compared_variables: metric.compared_variables,
-        samples_compared: metric.samples_compared,
+        bounded_normalized_l1_score: metric.bounded_normalized_l1_score(),
+        mean_channel_bounded_normalized_l1: metric.mean_channel_bounded_normalized_l1(),
+        compared_variables: metric.compared_variables(),
+        samples_compared: metric.samples_compared(),
     }
 }
 

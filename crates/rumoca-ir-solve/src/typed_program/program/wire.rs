@@ -5,14 +5,16 @@ use super::*;
 use crate::typed_program::call::SolvePureCallInterface;
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(in crate::typed_program) struct TypedProgramWire {
-    pub(super) arithmetic: SolveArithmeticProfile,
+    pub(in crate::typed_program) arithmetic: SolveArithmeticProfile,
     pub(super) slots: Vec<SolveSlotWire>,
     pub(super) register_types: Vec<SolveValueType>,
     pub(super) operations: Vec<SolveSpannedOperationWire>,
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SolveSlotWire {
     id: SolveSlotId,
     value_type: SolveValueType,
@@ -22,13 +24,14 @@ pub(super) struct SolveSlotWire {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SolveSpannedOperationWire {
     operation: SolveOperationWire,
     provenance: Span,
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
+#[serde(deny_unknown_fields, tag = "operation", rename_all = "snake_case")]
 enum SolveOperationWire {
     Constant {
         destination: SolveRegisterId,
@@ -193,6 +196,7 @@ enum SolveOperationWire {
 }
 
 #[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SolveProgramRegionWire {
     inputs: Box<[SolveValueType]>,
     outputs: Box<[SolveValueType]>,

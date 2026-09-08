@@ -1,18 +1,58 @@
 //! Runtime projection and event regression tests.
 
 use super::*;
-use rumoca_eval_solve::refresh_plan::{
-    build_algebraic_refresh_plan, build_derivative_refresh_plan,
-};
 
-fn valid_algebraic_refresh_plan(
-    model: &solve::SolveModel,
-    block: &PreparedScalarProgramBlock,
-) -> solve::RefreshPlan {
-    match build_algebraic_refresh_plan(&model.problem, block) {
-        Ok(plan) => plan,
-        Err(error) => panic!("valid algebraic refresh plan should build: {error}"),
+#[test]
+fn prepared_refresh_projection_rejects_missing_foreign_and_duplicate_citations() {
+    let source = solve::RefreshScalarProgramSource::checked(0, 0).unwrap();
+    let foreign = solve::RefreshScalarProgramSource::checked(0, 1).unwrap();
+    assert_eq!(
+        PreparedRefreshProgramRow::checked(source, 3, Some(source))
+            .unwrap()
+            .index(),
+        3
+    );
+    for projected in [None, Some(foreign)] {
+        let error = PreparedRefreshProgramRow::checked(source, 3, projected).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("foreign final scalar projection")
+        );
     }
+    let missing = PreparedRefreshProgramCatalog::construct(&[]).unwrap();
+    let error = missing.bind(source).unwrap_err();
+    assert!(error.to_string().contains("no final scalar projection"));
+    let error =
+        PreparedRefreshProgramCatalog::construct(&[Some(source), Some(source)]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("repeats a continuous refresh source identity")
+    );
+}
+
+#[test]
+fn interpreter_execution_owner_inventory_is_exhaustive_and_unique() {
+    let plan = InterpreterExecutionPlan::selected();
+    let inventory = plan.owner_inventory();
+    assert_eq!(inventory, ALL_INTERPRETER_EXECUTION_OWNERS);
+    let unique = inventory.into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(unique.len(), ALL_INTERPRETER_EXECUTION_OWNERS.len());
+    assert_eq!(
+        ALL_INTERPRETER_EXECUTION_OWNERS.map(InterpreterExecutionOwner::catalog_ordinal),
+        std::array::from_fn(|index| index),
+    );
+}
+use crate::test_support::empty_binary64_first_product_model;
+
+fn valid_algebraic_refresh_plan(model: &solve::SolveModel) -> solve::IssuedRefreshPlan {
+    model
+        .problem()
+        .continuous()
+        .refresh_owners()
+        .algebraic()
+        .clone()
 }
 
 fn test_span(name: &'static str) -> rumoca_core::Span {
@@ -29,7 +69,7 @@ fn spanned_block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::
     .expect("fixture program is computable")
 }
 
-fn mirror_scalar_implicit_jvp(model: &mut solve::SolveModel) {
+fn mirror_scalar_implicit_jvp(model: &mut crate::test_support::SolveModelFixture) {
     model.artifacts.continuous.implicit_jacobian_v = solve::ComputeBlock::from_scalar_program_block(
         model
             .artifacts
@@ -40,102 +80,96 @@ fn mirror_scalar_implicit_jvp(model: &mut solve::SolveModel) {
 }
 
 fn set_test_implicit_jvp(
-    model: &mut solve::SolveModel,
+    model: solve::SolveModel,
     rows: Vec<Vec<solve::LinearOp>>,
     name: &'static str,
-) {
-    model.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(rows, name);
-    mirror_scalar_implicit_jvp(model);
-}
-
-fn set_complete_test_projection_plan(model: &mut solve::SolveModel) {
-    let state_count = model.state_scalar_count();
-    let solver_count = model.solver_scalar_count();
-    let rows = (state_count..solver_count).collect::<Vec<_>>();
-    model.problem.continuous.algebraic_projection_plan = if rows.is_empty() {
-        solve::AlgebraicProjectionPlan::default()
-    } else {
-        solve::AlgebraicProjectionPlan {
-            blocks: vec![solve::AlgebraicProjectionBlock {
-                y_indices: rows.clone(),
-                rows,
-                tearing: None,
-            }],
-        }
-    };
-}
-
-fn set_causal_test_projection_plan(model: &mut solve::SolveModel) {
-    let state_count = model.state_scalar_count();
-    let solver_count = model.solver_scalar_count();
-    model.problem.continuous.algebraic_projection_plan = solve::AlgebraicProjectionPlan {
-        blocks: (state_count..solver_count)
-            .map(|index| solve::AlgebraicProjectionBlock {
-                rows: vec![index],
-                y_indices: vec![index],
-                tearing: None,
-            })
-            .collect(),
-    };
+) -> solve::SolveModel {
+    crate::test_support::reseal_with(model, |fixture| {
+        let output_indices = fixture
+            .problem
+            .continuous()
+            .implicit_rhs()
+            .produced_output_indices("test implicit JVP source")
+            .expect("fixture implicit source has a checked output inventory");
+        let spans = vec![test_span(name); rows.len()];
+        fixture.artifacts.continuous.implicit_jacobian_v_scalar =
+            solve::ScalarProgramBlock::with_output_indices(rows, spans, output_indices)
+                .expect("test implicit JVP exactly covers its source rows");
+        mirror_scalar_implicit_jvp(fixture);
+    })
 }
 
 fn warm_start_test_model() -> solve::SolveModel {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "z".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(0),
-                        shifted_variable_residual_row(1, 0.0),
-                    ],
-                    "solver_y_warm_start.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![derivative_placeholder_row(0)],
-                    "solver_y_warm_start_derivative.mo",
-                )),
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "z".to_string()],
             ..Default::default()
         },
-        initial_y: vec![1.0, 2.0],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
         ..Default::default()
     };
+    let implicit_span = test_span("solver_y_warm_start.mo")
+        .require_provenance("warm-start implicit fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![shifted_variable_residual_row(1, 0.0)],
+                vec![implicit_span.into()],
+                vec![1],
+            )
+            .expect("warm-start implicit program is computable"),
+        ),
+        implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![derivative_placeholder_row(0)],
+            "solver_y_warm_start_derivative.mo",
+        )),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("warm-start fixture satisfies the checked root contract"),
+        initial_y: vec![1.0, 2.0],
+        solver_nominals: vec![1.0; 2],
+        ..empty_binary64_first_product_model()
+    };
     set_test_implicit_jvp(
-        &mut model,
-        vec![
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-        ],
+        model,
+        vec![vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
         "solver_y_warm_start_jvp.mo",
-    );
-    set_complete_test_projection_plan(&mut model);
-    model
+    )
 }
 
 #[test]
 fn solver_y_warm_start_preserves_algebraic_guess() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
     let mut solver_y = vec![10.0, 42.0];
 
     runtime
@@ -148,20 +182,28 @@ fn solver_y_warm_start_preserves_algebraic_guess() {
 #[test]
 fn row_eval_context_carries_the_model_pure_call_table() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
 
-    let context = runtime.row_eval_context();
+    let context = runtime
+        .execution_plan
+        .interpreter
+        .discrete_scalar_rows
+        .row_eval_context(&runtime);
     let table = context
         .pure_calls
         .expect("every runtime row must inherit its model-owned pure-call table");
 
-    assert!(std::ptr::eq(table, &runtime.model.pure_calls));
+    assert!(std::ptr::eq(table, runtime.model().pure_calls()));
 }
 
 #[test]
 fn solver_y_warm_start_rejects_layout_mismatch() {
     let model = warm_start_test_model();
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
     let mut solver_y = vec![9.0];
 
     let error = runtime
@@ -173,12 +215,12 @@ fn solver_y_warm_start_rejects_layout_mismatch() {
 }
 
 #[test]
-fn runtime_new_reports_invalid_native_stride_metadata() {
+fn refresh_proof_rejects_invalid_native_stride_metadata() {
     let span =
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name("bad.mo"), 3, 8);
     let domain = rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: 1,
@@ -203,21 +245,17 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
             span,
         }],
     };
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: block,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ..Default::default()
+    let solve_layout = solve::SolveLayout::default();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let mut continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: block,
+        ..crate::test_support::ContinuousSystemFixture::empty()
     };
-
-    let error = match SolveRuntime::new_fixture(&model) {
-        Ok(_) => panic!("invalid native stride metadata should fail runtime preparation"),
-        Err(error) => error,
-    };
+    let error = continuous
+        .try_refresh_plans(&solve_layout, &discrete, &events, &clocks)
+        .expect_err("invalid native stride metadata must not receive an owner proof");
     assert!(
         error
             .to_string()
@@ -230,179 +268,202 @@ fn runtime_new_reports_invalid_native_stride_metadata() {
 mod event_iteration;
 #[test]
 fn derivative_refresh_keeps_coupled_dependency_block_but_drops_unrelated_output() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec![
-                        "x".to_string(),
-                        "a".to_string(),
-                        "b".to_string(),
-                        "unrelated".to_string(),
-                    ],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 2,
-                output_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(0),
-                        add_assignment_residual_row(1, 2, 1.0),
-                        scale_assignment_residual_row(2, 0, 2.0),
-                        scale_assignment_residual_row(3, 0, 3.0),
-                    ],
-                    "derivative_dependency_slice.mo",
-                )),
-                implicit_row_targets: (0..4)
-                    .map(|index| Some(solve::scalar_slot_y(index)))
-                    .collect(),
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![1, 2],
-                            y_indices: vec![1, 2],
-                            tearing: None,
-                        },
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![3],
-                            y_indices: vec![3],
-                            tearing: None,
-                        },
-                    ],
-                },
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec![
+                "x".to_string(),
+                "a".to_string(),
+                "b".to_string(),
+                "unrelated".to_string(),
+            ],
             ..Default::default()
         },
-        initial_y: vec![0.0; 4],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 2,
+        output_scalar_count: 1,
         ..Default::default()
     };
-    let implicit =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
-            .expect("implicit block should prepare");
-    let full = valid_algebraic_refresh_plan(&model, &implicit);
-    let derivative = spanned_block(
-        vec![derivative_placeholder_row(1)],
-        "derivative_dependency_slice_rhs.mo",
-    );
-
-    let plan = build_derivative_refresh_plan(&model.problem, &derivative, &implicit, &full)
-        .expect("dependency refresh should retain complete coupled blocks");
+    let implicit_span = test_span("derivative_dependency_slice.mo")
+        .require_provenance("derivative dependency fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![
+                    add_assignment_residual_row(1, 2, 1.0),
+                    scale_assignment_residual_row(2, 0, 2.0),
+                    scale_assignment_residual_row(3, 0, 3.0),
+                ],
+                vec![rumoca_core::Span::from(implicit_span); 3],
+                vec![1, 2, 3],
+            )
+            .expect("dependency-slice implicit block is computable"),
+        ),
+        implicit_row_targets: vec![
+            None,
+            Some(solve::scalar_slot_y(1)),
+            Some(solve::scalar_slot_y(2)),
+            Some(solve::scalar_slot_y(3)),
+        ],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![1, 2],
+                    y_indices: vec![1, 2],
+                    tearing: None,
+                },
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![3],
+                    y_indices: vec![3],
+                    tearing: None,
+                },
+            ],
+        },
+        derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![derivative_placeholder_row(1)],
+            "derivative_dependency_slice_rhs.mo",
+        )),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let plan = continuous.refresh_owners().derivative().clone();
 
     assert_eq!(
-        plan.rows
+        plan.rows()
             .iter()
             .map(|row| row.target_index())
             .collect::<Vec<_>>(),
         vec![2, 1]
     );
-    assert!(!plan.causal_solution_certified);
-    assert_eq!(plan.simultaneous_plan.blocks.len(), 1);
-    assert_eq!(plan.simultaneous_block_indices, vec![0]);
-    assert_eq!(plan.simultaneous_plan.blocks[0].rows, vec![1, 2]);
-    assert_eq!(plan.simultaneous_plan.blocks[0].y_indices, vec![1, 2]);
+    assert!(!plan.causal_solution_certified());
+    assert_eq!(plan.simultaneous_plan().blocks.len(), 1);
+    assert_eq!(plan.simultaneous_block_indices(), [0]);
+    assert_eq!(plan.simultaneous_plan().blocks[0].rows, vec![1, 2]);
+    assert_eq!(plan.simultaneous_plan().blocks[0].y_indices, vec![1, 2]);
 }
 
 #[test]
-fn derivative_refresh_rejects_missing_owner_without_exact_isolation() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(0),
-                        nonlinear_target_residual_row(1, 0),
-                    ],
-                    "missing_exact_dependency_owner.mo",
-                )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0)), None],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
+fn construction_rejects_missing_owner_without_exact_isolation() {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "a".to_string()],
             ..Default::default()
         },
-        initial_y: vec![1.0, 1.0],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
         ..Default::default()
     };
-    let implicit =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
-            .expect("implicit block should prepare");
-    let full = valid_algebraic_refresh_plan(&model, &implicit);
-    let derivative = spanned_block(
-        vec![derivative_placeholder_row(1)],
-        "missing_exact_dependency_owner_rhs.mo",
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![nonlinear_target_residual_row(1, 0)],
+            "missing_exact_dependency_owner.mo",
+        )),
+        implicit_row_targets: vec![None],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![derivative_placeholder_row(1)],
+            "missing_exact_dependency_owner_rhs.mo",
+        )),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let error = crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(Default::default(), 2, 0),
+        solve_layout,
+        continuous,
+        solve::InitializationSolveSystem::empty(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect_err("an implicit projection row without an exact target owner must not seal");
+
+    assert!(
+        error.to_string().contains("explicit row/target pairs"),
+        "constructor should report missing exact ownership: {error}"
     );
-
-    let plan = build_derivative_refresh_plan(&model.problem, &derivative, &implicit, &full)
-        .expect("an unproved owner must retain residual projection");
-
-    assert!(plan.rows.is_empty());
-    assert!(!plan.causal_solution_certified);
-    assert_eq!(plan.value_projection_plan.blocks.len(), 1);
-    assert_eq!(plan.value_projection_plan.blocks[0].rows, vec![1]);
-    assert_eq!(plan.value_projection_plan.blocks[0].y_indices, vec![1]);
 }
 
 #[test]
 fn refresh_plan_accepts_scaled_affine_residual_target() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                parameter_count: 2,
-                compiled_parameter_len: 2,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(0),
-                        scaled_assignment_residual_row(),
-                    ],
-                    "scaled_affine_residual.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "a".to_string()],
             ..Default::default()
         },
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
+        parameter_count: 2,
+        static_parameter_names: vec!["scale".to_string(), "offset".to_string()],
+        compiled_parameter_len: 2,
         ..Default::default()
     };
+    let implicit_span = test_span("scaled_affine_residual.mo")
+        .require_provenance("scaled affine fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![scaled_assignment_residual_row()],
+                vec![implicit_span.into()],
+                vec![1],
+            )
+            .expect("scaled affine program is computable"),
+        ),
+        implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("scaled_affine_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 2),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("scaled affine fixture satisfies the checked root contract"),
+        initial_y: vec![0.0; 2],
+        solver_nominals: vec![1.0; 2],
+        parameters: vec![0.0; 2],
+        ..empty_binary64_first_product_model()
+    };
     let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+        PreparedScalarProgramBlock::from_compute_block(model.problem().continuous().implicit_rhs())
             .expect("valid implicit RHS should prepare");
 
-    let plan = valid_algebraic_refresh_plan(&model, &block);
+    let plan = valid_algebraic_refresh_plan(&model);
     let value = block
         .eval_target_assignment_row_with_context(
-            1,
+            0,
             1,
             &[0.0, 0.0],
             &[6.0, 2.0],
@@ -411,96 +472,144 @@ fn refresh_plan_accepts_scaled_affine_residual_target() {
         )
         .expect("scaled residual should evaluate");
 
-    assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].source().program(), 1);
-    assert_eq!(plan.rows[0].target_index(), 1);
+    assert_eq!(plan.rows().len(), 1);
+    assert_eq!(plan.rows()[0].source().program(), 0);
+    assert_eq!(plan.rows()[0].target_index(), 1);
     assert_eq!(value, Some(3.0));
 }
 
 #[test]
 fn causal_certificate_keeps_equation_rows_distinct_from_solver_y_indices() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["state".to_string(), "algebraic".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![shifted_variable_residual_row(1, 3.0)],
-                    "distinct_equation_and_y_namespaces.mo",
-                )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(1))],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![0],
-                        y_indices: vec![1],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["state".to_string(), "algebraic".to_string()],
             ..Default::default()
         },
-        initial_y: vec![0.0; 2],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
         ..Default::default()
     };
-    let implicit =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
-            .expect("implicit block should prepare");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![shifted_variable_residual_row(1, 3.0)],
+            "distinct_equation_and_y_namespaces.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("equation_target_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("equation-target fixture satisfies the checked root contract"),
+        initial_y: vec![0.0; 2],
+        solver_nominals: vec![1.0; 2],
+        ..empty_binary64_first_product_model()
+    };
+    let plan = valid_algebraic_refresh_plan(&model);
 
-    let plan = valid_algebraic_refresh_plan(&model, &implicit);
-
-    assert!(plan.causal_solution_certified);
-    assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].equation_index(), 0);
-    assert_eq!(plan.rows[0].target_index(), 1);
+    assert!(plan.causal_solution_certified());
+    assert_eq!(plan.rows().len(), 1);
+    assert_eq!(plan.rows()[0].equation_index(), 0);
+    assert_eq!(plan.rows()[0].target_index(), 1);
 }
 
 #[test]
 fn batched_assignment_refresh_preserves_row_order_dependencies() {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string(), "b".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                output_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(0),
-                        add_assignment_residual_row(1, 0, 2.0),
-                        scale_assignment_residual_row(2, 1, 3.0),
-                    ],
-                    "batched_assignment_refresh.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                    Some(solve::scalar_slot_y(2)),
-                ],
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "a".to_string(), "b".to_string()],
             ..Default::default()
         },
-        initial_y: vec![1.0, 0.0, 0.0],
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
+        output_scalar_count: 1,
         ..Default::default()
     };
-    set_causal_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    assert!(runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let span = test_span("batched_assignment_refresh.mo")
+        .require_provenance("batched assignment fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![
+                    add_assignment_residual_row(1, 0, 2.0),
+                    scale_assignment_residual_row(2, 1, 3.0),
+                ],
+                vec![rumoca_core::Span::from(span); 2],
+                vec![1, 2],
+            )
+            .expect("batched assignment block is computable"),
+        ),
+        implicit_row_targets: vec![
+            None,
+            Some(solve::scalar_slot_y(1)),
+            Some(solve::scalar_slot_y(2)),
+        ],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![1],
+                    y_indices: vec![1],
+                    tearing: None,
+                },
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![2],
+                    y_indices: vec![2],
+                    tearing: None,
+                },
+            ],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            1,
+            test_span("batched_assignment_constant_state.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 3, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("batched assignment fixture satisfies the checked root contract"),
+        initial_y: vec![1.0, 0.0, 0.0],
+        solver_nominals: vec![1.0; 3],
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model)).expect("runtime should prepare");
+    assert!(runtime.algebraic_refresh.causal_solution_certified());
+    let mut solver_y = model.initial_y().to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
@@ -511,33 +620,52 @@ fn batched_assignment_refresh_preserves_row_order_dependencies() {
 
 #[test]
 fn certified_assignment_refresh_rejects_nonfinite_value_and_restores_input() {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![nonfinite_assignment_residual_row(0)],
-                    "nonfinite_certified_assignment.mo",
-                )),
-                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string()],
             ..Default::default()
         },
-        initial_y: vec![7.0],
+        algebraic_scalar_count: 1,
         ..Default::default()
     };
-    set_causal_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    assert!(runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![nonfinite_assignment_residual_row(0)],
+            "nonfinite_certified_assignment.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 1, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("nonfinite assignment fixture satisfies the checked root contract"),
+        initial_y: vec![7.0],
+        solver_nominals: vec![1.0],
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model)).expect("runtime should prepare");
+    assert!(runtime.algebraic_refresh.causal_solution_certified());
+    let mut solver_y = model.initial_y().to_vec();
 
     let error = runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-12, 4)
@@ -551,142 +679,174 @@ fn certified_assignment_refresh_rejects_nonfinite_value_and_restores_input() {
 }
 
 #[test]
-fn causal_certificate_rejects_swapped_blt_equation_target_pairs() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "y".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 2,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        shifted_variable_residual_row(0, 1.0),
-                        shifted_variable_residual_row(1, 2.0),
-                    ],
-                    "swapped_blt_pairs.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![0],
-                            y_indices: vec![1],
-                            tearing: None,
-                        },
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![1],
-                            y_indices: vec![0],
-                            tearing: None,
-                        },
-                    ],
-                },
-                ..Default::default()
-            },
+fn construction_rejects_swapped_blt_equation_target_pairs() {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "y".to_string()],
             ..Default::default()
         },
-        initial_y: vec![0.0; 2],
+        algebraic_scalar_count: 2,
         ..Default::default()
     };
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![
+                shifted_variable_residual_row(0, 1.0),
+                shifted_variable_residual_row(1, 2.0),
+            ],
+            "swapped_blt_pairs.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![1],
+                    tearing: None,
+                },
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![1],
+                    y_indices: vec![0],
+                    tearing: None,
+                },
+            ],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let error = continuous
+        .try_seal(&solve_layout, &discrete, &events, &clocks)
+        .expect_err("swapped BLT ownership must not seal");
 
-    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    assert!(!runtime.algebraic_refresh.causal_solution_certified);
+    assert!(
+        error
+            .to_string()
+            .contains("not owned by its canonical algebraic projection"),
+        "constructor should report swapped target ownership: {error}"
+    );
+}
+
+fn uncertified_seed_projection_rows() -> Vec<Vec<solve::LinearOp>> {
+    vec![
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 1,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 0,
+            },
+            solve::LinearOp::LoadP { dst: 2, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Sub,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::StoreOutput { src: 3 },
+        ],
+        vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 2.0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Mul,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::LoadY { dst: 3, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 2,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+    ]
+}
+
+fn uncertified_seed_projection_model() -> solve::SolveModel {
+    let span = test_span("uncertified_seed_projection.mo");
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["a".to_string(), "b".to_string()],
+            ..Default::default()
+        },
+        algebraic_scalar_count: 2,
+        parameter_count: 1,
+        static_parameter_names: vec!["seed".to_string()],
+        compiled_parameter_len: 1,
+        ..Default::default()
+    };
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                uncertified_seed_projection_rows(),
+                vec![span, span],
+                vec![0, 1],
+            )
+            .expect("fixture scalar programs satisfy register flow"),
+        ),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    tearing: None,
+                },
+                solve::AlgebraicProjectionBlock {
+                    rows: vec![1],
+                    y_indices: vec![1],
+                    tearing: None,
+                },
+            ],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 1),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("uncertified-seed fixture satisfies the checked root contract"),
+        initial_y: vec![1.0, 0.0],
+        solver_nominals: vec![1.0; 2],
+        parameters: vec![9.0],
+        ..empty_binary64_first_product_model()
+    }
 }
 
 #[test]
 fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
-    let span = test_span("uncertified_seed_projection.mo");
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["a".to_string(), "b".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 2,
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
-                    solve::ScalarProgramBlock::with_output_indices(
-                        vec![
-                            vec![
-                                solve::LinearOp::LoadP { dst: 0, index: 0 },
-                                solve::LinearOp::LoadY { dst: 1, index: 0 },
-                                solve::LinearOp::Binary {
-                                    dst: 2,
-                                    op: solve::BinaryOp::Sub,
-                                    lhs: 0,
-                                    rhs: 1,
-                                },
-                                solve::LinearOp::StoreOutput { src: 2 },
-                            ],
-                            vec![
-                                solve::LinearOp::LoadY { dst: 0, index: 0 },
-                                solve::LinearOp::Const { dst: 1, value: 2.0 },
-                                solve::LinearOp::Binary {
-                                    dst: 2,
-                                    op: solve::BinaryOp::Mul,
-                                    lhs: 0,
-                                    rhs: 1,
-                                },
-                                solve::LinearOp::LoadY { dst: 3, index: 1 },
-                                solve::LinearOp::Binary {
-                                    dst: 4,
-                                    op: solve::BinaryOp::Sub,
-                                    lhs: 2,
-                                    rhs: 3,
-                                },
-                                solve::LinearOp::StoreOutput { src: 4 },
-                            ],
-                        ],
-                        vec![span, span],
-                        vec![0, 1],
-                    )
-                    .expect("fixture scalar programs satisfy register flow"),
-                ),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![0],
-                            y_indices: vec![0],
-                            tearing: None,
-                        },
-                        solve::AlgebraicProjectionBlock {
-                            rows: vec![1],
-                            y_indices: vec![1],
-                            tearing: None,
-                        },
-                    ],
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        initial_y: vec![0.0, 0.0],
-        parameters: vec![3.0],
-        ..Default::default()
-    };
-    let runtime = SolveRuntime::new_fixture(&model).expect("runtime should prepare");
-    assert!(!runtime.algebraic_refresh.causal_solution_certified);
+    let model = uncertified_seed_projection_model();
+    let model = std::sync::Arc::new(model);
+    let runtime = SolveRuntime::new(std::sync::Arc::clone(&model)).expect("runtime should prepare");
+    assert!(!runtime.algebraic_refresh.causal_solution_certified());
     assert_eq!(
-        runtime.algebraic_refresh.value_projection_plan.blocks.len(),
+        runtime
+            .algebraic_refresh
+            .value_projection_plan()
+            .blocks
+            .len(),
         2
     );
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y().to_vec();
 
     runtime
-        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &model.parameters, 1.0e-12, 4)
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, model.parameters(), 1.0e-12, 8)
         .expect("uncertified seeds should be followed by the complete projection");
 
     assert!((solver_y[0] - 3.0).abs() <= 1.0e-12);
@@ -694,48 +854,109 @@ fn uncertified_seed_keeps_its_projection_block_after_dependency_projection() {
 }
 
 #[test]
+fn solve_model_rejects_implicit_full_jvp_seed_past_y_and_parameter_domain() {
+    let model = uncertified_seed_projection_model();
+    let mut fixture = crate::test_support::SolveModelFixture::from_model(model);
+    fixture.artifacts.continuous.implicit_jacobian_v_scalar = spanned_block(
+        vec![
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 3 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "implicit_full_jvp_seed_bounds.mo",
+    );
+
+    let error = fixture
+        .try_seal()
+        .expect_err("a seed beyond the exact [solver Y | parameter] domain must be refused");
+    let solve::SolveModelConstructionError::Shape(shape) = *error else {
+        panic!("expected an artifact shape error");
+    };
+    assert_eq!(
+        *shape,
+        solve::SolveProblemShapeContractError::VariableIndexOutOfBounds {
+            context: "artifacts.continuous.implicit_jacobian_v_scalar",
+            storage: "seed",
+            index: 3,
+            extent: 3,
+            span: Some(test_span("implicit_full_jvp_seed_bounds.mo")),
+        }
+    );
+}
+
+#[test]
 fn refresh_plan_accepts_direct_affine_residual_target() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["T1".to_string(), "T2".to_string(), "q".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 2,
-                algebraic_scalar_count: 1,
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        derivative_placeholder_row(2),
-                        derivative_placeholder_row(3),
-                        direct_assignment_residual_row(),
-                    ],
-                    "direct_affine_residual.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                    Some(solve::scalar_slot_y(2)),
-                ],
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["T1".to_string(), "T2".to_string(), "q".to_string()],
             ..Default::default()
         },
+        state_scalar_count: 2,
+        algebraic_scalar_count: 1,
+        parameter_count: 1,
+        static_parameter_names: vec!["conductance".to_string()],
+        compiled_parameter_len: 1,
         ..Default::default()
     };
+    let span = test_span("direct_affine_residual.mo")
+        .require_provenance("direct affine fixture")
+        .expect("fixture span is source-backed");
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(
+            solve::ScalarProgramBlock::with_output_indices(
+                vec![direct_assignment_residual_row()],
+                vec![span.into()],
+                vec![2],
+            )
+            .expect("direct affine program is computable"),
+        ),
+        implicit_row_targets: vec![None, None, Some(solve::scalar_slot_y(2))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![2],
+                y_indices: vec![2],
+                tearing: None,
+            }],
+        },
+        derivative_rhs: crate::test_support::zero_derivative_rhs(
+            2,
+            test_span("direct_affine_constant_states.mo"),
+        ),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 3, 1),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("direct-affine fixture satisfies the checked root contract"),
+        initial_y: vec![0.0; 3],
+        solver_nominals: vec![1.0; 3],
+        parameters: vec![0.0],
+        ..empty_binary64_first_product_model()
+    };
     let block =
-        PreparedScalarProgramBlock::from_compute_block(&model.problem.continuous.implicit_rhs)
+        PreparedScalarProgramBlock::from_compute_block(model.problem().continuous().implicit_rhs())
             .expect("valid implicit RHS should prepare");
 
-    let plan = valid_algebraic_refresh_plan(&model, &block);
+    let plan = valid_algebraic_refresh_plan(&model);
     let value = block
         .eval_target_assignment_row_with_context(
-            2,
+            0,
             2,
             &[373.15, 273.15, 0.0],
             &[10.0],
@@ -744,65 +965,82 @@ fn refresh_plan_accepts_direct_affine_residual_target() {
         )
         .expect("direct affine residual should evaluate");
 
-    assert_eq!(plan.rows.len(), 1);
-    assert_eq!(plan.rows[0].source().program(), 2);
-    assert_eq!(plan.rows[0].target_index(), 2);
+    assert_eq!(plan.rows().len(), 1);
+    assert_eq!(plan.rows()[0].source().program(), 0);
+    assert_eq!(plan.rows()[0].target_index(), 2);
     assert_eq!(value, Some(-1000.0));
 }
 
 #[test]
 fn refresh_residual_fallback_solves_positive_unit_coefficient() {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 1,
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![vec![
-                        solve::LinearOp::LoadY { dst: 0, index: 0 },
-                        solve::LinearOp::LoadP { dst: 1, index: 0 },
-                        solve::LinearOp::Binary {
-                            dst: 2,
-                            op: solve::BinaryOp::Add,
-                            lhs: 0,
-                            rhs: 1,
-                        },
-                        solve::LinearOp::StoreOutput { src: 2 },
-                    ]],
-                    "positive_residual.mo",
-                )),
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![0],
-                        y_indices: vec![0],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string()],
             ..Default::default()
         },
-        initial_y: vec![10.0],
+        algebraic_scalar_count: 1,
+        parameter_count: 1,
+        static_parameter_names: vec!["forcing".to_string()],
+        compiled_parameter_len: 1,
         ..Default::default()
     };
-    set_test_implicit_jvp(
-        &mut model,
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadP { dst: 1, index: 0 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Add,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            "positive_residual.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0],
+                y_indices: vec![0],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 1, 1),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("positive-residual fixture satisfies the checked root contract"),
+        initial_y: vec![10.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0],
+        ..empty_binary64_first_product_model()
+    };
+    let model = set_test_implicit_jvp(
+        model,
         vec![vec![
             solve::LinearOp::LoadSeed { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]],
         "positive_residual_jvp.mo",
     );
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    let mut solver_y = model.initial_y.clone();
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
+    let mut solver_y = model.initial_y().to_vec();
 
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[4.0], 1.0e-12, 1)
@@ -894,44 +1132,57 @@ fn mode_dependent_repivot_jvp_rows() -> Vec<Vec<solve::LinearOp>> {
 }
 
 fn mode_dependent_repivot_model() -> solve::SolveModel {
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "y".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 2,
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    mode_dependent_repivot_residual_rows(),
-                    "mode_dependent_repivot.mo",
-                )),
-                implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![0, 1],
-                        y_indices: vec![0, 1],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "y".to_string()],
             ..Default::default()
         },
-        initial_y: vec![0.0, 0.0],
+        algebraic_scalar_count: 2,
+        parameter_count: 1,
+        static_parameter_names: vec!["mode".to_string()],
+        compiled_parameter_len: 1,
         ..Default::default()
     };
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            mode_dependent_repivot_residual_rows(),
+            "mode_dependent_repivot.mo",
+        )),
+        implicit_row_targets: vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1],
+                y_indices: vec![0, 1],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 1),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("mode-dependent fixture satisfies the checked root contract"),
+        initial_y: vec![0.0, 0.0],
+        solver_nominals: vec![1.0; 2],
+        parameters: vec![0.0],
+        ..empty_binary64_first_product_model()
+    };
     set_test_implicit_jvp(
-        &mut model,
+        model,
         mode_dependent_repivot_jvp_rows(),
         "mode_dependent_repivot_jvp.mo",
-    );
-    model
+    )
 }
 
 #[test]
@@ -939,11 +1190,16 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     // At k=0, row 0 is structurally incident on x but numerically independent
     // of it. The complete Jacobian remains nonsingular.
     let model = mode_dependent_repivot_model();
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    assert!(runtime.algebraic_refresh.rows.is_empty());
-    assert_eq!(runtime.algebraic_refresh.simultaneous_plan.blocks.len(), 1);
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
+    assert!(runtime.algebraic_refresh.rows().is_empty());
+    assert_eq!(
+        runtime.algebraic_refresh.simultaneous_plan().blocks.len(),
+        1
+    );
 
-    let mut solver_y = model.initial_y.clone();
+    let mut solver_y = model.initial_y().to_vec();
     runtime
         .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[0.0], 1.0e-10, 4)
         .expect("coupled Newton solve should dynamically repivot the residuals");
@@ -952,128 +1208,139 @@ fn refresh_newton_repivots_mode_dependent_coupled_residuals() {
     assert!((solver_y[1] - 1.0).abs() <= 1.0e-9);
 }
 
-fn refresh_with_value_stages(
-    runtime: &SolveRuntime,
-    solver_y: &mut [f64],
-) -> Result<(), RuntimeSolveError> {
-    let incoming = solver_y.to_vec();
-    runtime.refresh_slots_with_stages(
-        &runtime.algebraic_refresh,
-        &mut RefreshSlotArgs {
-            t: 0.0,
-            solver_y,
-            params: &[],
-            tol: 1.0e-10,
-            max_iters: 8,
-            certify_coordinates: false,
+fn uncertified_causal_seed_jvp_rows() -> Vec<Vec<solve::LinearOp>> {
+    vec![
+        vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+            solve::LinearOp::LoadSeed { dst: 1, index: 2 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::LoadSeed { dst: 3, index: 0 },
+            solve::LinearOp::LoadY { dst: 4, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 5,
+                op: solve::BinaryOp::Mul,
+                lhs: 4,
+                rhs: 4,
+            },
+            solve::LinearOp::Binary {
+                dst: 6,
+                op: solve::BinaryOp::Div,
+                lhs: 3,
+                rhs: 5,
+            },
+            solve::LinearOp::Binary {
+                dst: 7,
+                op: solve::BinaryOp::Add,
+                lhs: 2,
+                rhs: 6,
+            },
+            solve::LinearOp::StoreOutput { src: 7 },
+        ],
+        vec![
+            solve::LinearOp::LoadSeed { dst: 0, index: 2 },
+            solve::LinearOp::Const { dst: 1, value: 2.0 },
+            solve::LinearOp::LoadSeed { dst: 2, index: 1 },
+            solve::LinearOp::Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            solve::LinearOp::Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            solve::LinearOp::StoreOutput { src: 4 },
+        ],
+    ]
+}
+
+fn uncertified_causal_seed_model() -> solve::SolveModel {
+    // The causal order can produce a finite epsilon, but it is uncertified and
+    // therefore cannot be executed as a value-dependent warm-up before the
+    // authoritative residual projection.
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["eps".to_string(), "x".to_string(), "y".to_string()],
+            ..Default::default()
         },
-        &incoming,
+        algebraic_scalar_count: 3,
+        ..Default::default()
+    };
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
+            vec![
+                assignment_residual_for_constant(0, 1.0),
+                assignment_residual_with_reciprocal(1, 2, 0),
+                scale_and_offset_assignment_residual_row(2, 1, 2.0, 1.0),
+            ],
+            "causal_newton_seed.mo",
+        )),
+        implicit_row_targets: vec![
+            Some(solve::scalar_slot_y(0)),
+            Some(solve::scalar_slot_y(1)),
+            Some(solve::scalar_slot_y(2)),
+        ],
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![0, 1, 2],
+                y_indices: vec![0, 1, 2],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 3, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("causal-seed fixture satisfies the checked root contract"),
+        initial_y: vec![0.0, 0.0, 0.0],
+        solver_nominals: vec![1.0; 3],
+        ..empty_binary64_first_product_model()
+    };
+    set_test_implicit_jvp(
+        model,
+        uncertified_causal_seed_jvp_rows(),
+        "causal_newton_seed_jvp.mo",
     )
 }
 
 #[test]
-fn refresh_newton_keeps_finite_causal_values_from_first_sweep() {
-    // The coupled x/y sweep diverges and must fall back to Newton. The x row
-    // also divides by the independently assigned epsilon, so restarting from
-    // the original all-zero vector would make the simultaneous residual
-    // non-finite even though the first ordered sweep established epsilon = 1.
-    let mut model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["eps".to_string(), "x".to_string(), "y".to_string()],
-                    ..Default::default()
-                },
-                algebraic_scalar_count: 3,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(spanned_block(
-                    vec![
-                        assignment_residual_for_constant(0, 1.0),
-                        assignment_residual_with_reciprocal(1, 2, 0),
-                        scale_and_offset_assignment_residual_row(2, 1, 2.0, 1.0),
-                    ],
-                    "causal_newton_seed.mo",
-                )),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                    Some(solve::scalar_slot_y(2)),
-                ],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        initial_y: vec![0.0, 0.0, 0.0],
-        ..Default::default()
-    };
-    set_test_implicit_jvp(
-        &mut model,
-        vec![
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
-                solve::LinearOp::LoadSeed { dst: 1, index: 2 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Sub,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::LoadSeed { dst: 3, index: 0 },
-                solve::LinearOp::LoadY { dst: 4, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 5,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 4,
-                    rhs: 4,
-                },
-                solve::LinearOp::Binary {
-                    dst: 6,
-                    op: solve::BinaryOp::Div,
-                    lhs: 3,
-                    rhs: 5,
-                },
-                solve::LinearOp::Binary {
-                    dst: 7,
-                    op: solve::BinaryOp::Add,
-                    lhs: 2,
-                    rhs: 6,
-                },
-                solve::LinearOp::StoreOutput { src: 7 },
-            ],
-            vec![
-                solve::LinearOp::LoadSeed { dst: 0, index: 2 },
-                solve::LinearOp::Const { dst: 1, value: 2.0 },
-                solve::LinearOp::LoadSeed { dst: 2, index: 1 },
-                solve::LinearOp::Binary {
-                    dst: 3,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 1,
-                    rhs: 2,
-                },
-                solve::LinearOp::Binary {
-                    dst: 4,
-                    op: solve::BinaryOp::Sub,
-                    lhs: 0,
-                    rhs: 3,
-                },
-                solve::LinearOp::StoreOutput { src: 4 },
-            ],
-        ],
-        "causal_newton_seed_jvp.mo",
-    );
-    set_complete_test_projection_plan(&mut model);
-    let runtime = SolveRuntime::new_fixture(&model).expect("valid runtime should prepare");
-    assert!(!runtime.algebraic_refresh.causal_solution_certified);
-    let mut solver_y = model.initial_y.clone();
-    refresh_with_value_stages(&runtime, &mut solver_y)
-        .expect("a numerical stage should retain its finite causal epsilon seed");
-
+fn uncertified_causal_values_are_not_runtime_seed_executors() {
+    // The causal order can produce a finite epsilon, but it is uncertified and
+    // therefore cannot be executed as a value-dependent warm-up before the
+    // authoritative residual projection.
+    let model = uncertified_causal_seed_model();
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("valid runtime should prepare");
+    assert!(!runtime.algebraic_refresh.causal_solution_certified());
+    let mut solver_y = model.initial_y().to_vec();
+    runtime
+        .refresh_algebraic_and_output_slots(0.0, &mut solver_y, &[], 1.0e-10, 8)
+        .expect("the authoritative residual projection should solve from the incoming coordinate");
     assert!((solver_y[0] - 1.0).abs() <= 1.0e-9);
     assert!((solver_y[1] + 2.0).abs() <= 1.0e-9);
     assert!((solver_y[2] + 3.0).abs() <= 1.0e-9);
@@ -1433,14 +1700,19 @@ fn direct_param_visible_value_row(index: usize) -> Vec<solve::LinearOp> {
 
 fn indexed_param_root_row() -> Vec<solve::LinearOp> {
     vec![
-        solve::LinearOp::Const { dst: 0, value: 1.0 },
-        solve::LinearOp::LoadIndexedP {
-            dst: 1,
-            base: 0,
-            count: 2,
-            index: 0,
+        // A one-based runtime coordinate selects the second scalar from the
+        // packed parameter values (p[2] in Modelica notation).
+        solve::LinearOp::Const { dst: 0, value: 2.0 },
+        solve::LinearOp::LoadP { dst: 1, index: 0 },
+        solve::LinearOp::LoadP { dst: 2, index: 1 },
+        solve::LinearOp::LoadIndexedRegister {
+            dst: 3,
+            base: 1,
+            stride: 1,
+            dimensions: Box::new([2]),
+            indices: Box::new([solve::TensorIndex::Runtime(0)]),
         },
-        solve::LinearOp::StoreOutput { src: 1 },
+        solve::LinearOp::StoreOutput { src: 3 },
     ]
 }
 

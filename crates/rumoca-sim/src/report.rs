@@ -160,7 +160,7 @@ mod tests {
                 min: None,
                 max: None,
                 nominal: None,
-                fixed: None,
+                fixed: rumoca_core::Fixity::Free,
                 description: None,
             }],
         };

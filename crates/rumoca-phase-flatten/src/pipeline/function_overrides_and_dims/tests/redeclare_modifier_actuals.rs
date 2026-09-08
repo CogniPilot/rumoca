@@ -70,9 +70,10 @@ fn flow_characteristic_fixture() -> FlowCharacteristicFixture {
 
     let mut override_functions = OverrideFunctionMap::default();
     override_functions.insert(
-        "flowCharacteristic".to_string(),
+        quadratic_def,
         OverrideTarget {
             alias: "flowCharacteristic".to_string(),
+            alias_slot: quadratic_def,
             name: "quadraticFlow".to_string(),
             def_id: quadratic_def,
             class_type: ClassType::Function,
@@ -104,9 +105,13 @@ fn redeclare_function_assignment_rewrites_call_with_modifier_actuals() {
     let fixture = flow_characteristic_fixture();
     let tree = fixture.tree;
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let ctx =
-        FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &fixture.override_functions)
-            .with_active_scope(ComponentPath::from_flat_path("pump"));
+    let ctx = FunctionOverrideRewriteContext::new_test(
+        &tree,
+        &class_index,
+        &[],
+        &fixture.override_functions,
+    )
+    .with_active_scope(ComponentPath::from_flat_path("pump"));
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "Modelica.Fluid.Machines.BaseClasses.PartialPump.flowCharacteristic",
@@ -124,6 +129,7 @@ fn redeclare_function_assignment_rewrites_call_with_modifier_actuals() {
             ("V_flow_single", fixture.volume_flow),
         ])],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -149,8 +155,9 @@ fn inherited_replaceable_function_call_keeps_declaration_modifier_actuals() {
     let (tree, ids) = replaceable_efficiency_fixture();
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &override_functions)
-        .with_active_scope(ComponentPath::from_flat_path("pump"));
+    let ctx =
+        FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &override_functions)
+            .with_active_scope(ComponentPath::from_flat_path("pump"));
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "Modelica.Fluid.Machines.BaseClasses.PartialPump.efficiencyCharacteristic",
@@ -168,6 +175,7 @@ fn inherited_replaceable_function_call_keeps_declaration_modifier_actuals() {
             ("V_flow_single", DefId::new(11)),
         ])],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -414,19 +422,21 @@ fn component_scope_inherits_type_extends_redeclare_function() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overlay = InstanceOverlay::new();
     let pump_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: pump_id,
-        qualified_name: QualifiedName::from_ident("pump"),
-        type_def_id: Some(controlled_def),
-        ..rumoca_ir_ast::InstanceData::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: pump_id,
+            qualified_name: QualifiedName::from_ident("pump"),
+            type_def_id: Some(controlled_def),
+            ..rumoca_ir_ast::InstanceData::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
     let override_map =
         build_component_override_map(&overlay, &tree, &class_index, "ControlledPump")
             .expect("component override map");
     let (_, override_functions) = override_context_for_scope("pump", &override_map);
     let target = override_functions
-        .get("flowCharacteristic")
+        .get(&flow_characteristic_def)
         .expect("expected ControlledPump redeclare in pump scope");
     assert_eq!(target.name, "quadraticFlow");
     assert_eq!(target.modifier_args.len(), 1);
@@ -525,18 +535,20 @@ fn extends_redeclare_alias_resolves_dotted_value_to_its_target_class() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overlay = InstanceOverlay::new();
     let source_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: source_id,
-        qualified_name: QualifiedName::from_ident("source"),
-        type_def_id: Some(step_voltage_def),
-        ..rumoca_ir_ast::InstanceData::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: source_id,
+            qualified_name: QualifiedName::from_ident("source"),
+            type_def_id: Some(step_voltage_def),
+            ..rumoca_ir_ast::InstanceData::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
     let override_map = build_component_override_map(&overlay, &tree, &class_index, "StepVoltage")
         .expect("component override map");
     let (_, override_functions) = override_context_for_scope("source", &override_map);
     let target = override_functions
-        .get("signalSource")
+        .get(&signal_source_def)
         .expect("expected StepVoltage redeclare in source scope");
     assert_eq!(target.name, "Modelica.Blocks.Sources.Step");
     assert_eq!(target.def_id, step_def);

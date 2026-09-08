@@ -10,17 +10,11 @@ emits them. Errors are defined close to the code that produces them, not in a
 central location.
 
 ## Motivation
-A monolithic error enum has problems:
-- Grows unboundedly as features are added
-- Every phase depends on every error type
-- Hard to find which phase produces which error
-- Error codes become inconsistent
+A monolithic error enum grows without bound, couples every phase to every
+error type, obscures ownership, and makes codes inconsistent.
 
-Phase-local errors provide:
-- Errors next to the code that emits them
-- Clear ownership and responsibility
-- Independent evolution per phase
-- Consistent error code ranges
+Phase-local errors keep ownership near emitters, let phases evolve
+independently, and preserve consistent code ranges.
 
 ## Specification
 
@@ -39,6 +33,16 @@ nearest honest owner span, such as the rewritten expression, owning equation,
 assignment, statement, declaration, or subscript span. Source-backed diagnostics
 must carry the original span through AST -> Flat -> DAE -> Solve.
 
+### Artifact Identity
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| A canonical model identity is a nonempty ordered sequence of nonempty UTF-8 qualified-name components issued by Resolve; consumers never split a display string | `StrictCompilation` input | Boundaries are semantic identity |
+| Direct stem v1 is `rm1` followed by `_<decimal byte length>_<lowercase hex bytes>` for every component; it is used only when at most 120 ASCII bytes | canonical artifact-stem codec | Length frames make it injective |
+| Longer identities use `rm1h_<first 48 direct-payload bytes>_<64 lowercase SHA-256 hex>`; the digest preimage is domain `rumoca-artifact-stem-v1` plus each `u64` big-endian component length and bytes; direct stems have fourth byte `_` and hash stems fourth byte `h`, so the namespaces are disjoint | canonical artifact-stem codec | Bounded portable name |
+| The long form relies explicitly on SHA-256 collision resistance and MUST NOT be described as injective | specs, diagnostics, tests | Proof claims stay honest |
+| The artifact UUID preimage separately frames the exact canonical model identity and issued stem with algorithm version, target scope, and caller identity seed | artifact-session construction | Models cannot share artifact identity |
+
 ### Fail-Fast Error Semantics
 
 | Rule | Owner/Where | Brief Justification |
@@ -52,10 +56,9 @@ must carry the original span through AST -> Flat -> DAE -> Solve.
 | A file-backed compile invocation MUST invalidate its recognized prior output before semantic compilation; failure leaves no consumable artifact at the named product paths, and foreign paths MUST NOT be deleted | CLI + package writer | A stale successful artifact is not output from the failed source |
 
 Compiler phases MUST fail immediately when required semantic data is missing,
-malformed, or unresolved. The phase MUST return a phase-local error carrying
-the best available span and diagnostic context. CLIs, workers, and tests MUST
-surface that phase error as a failed compilation/model result and MUST NOT
-continue the pipeline with invented data.
+malformed, or unresolved, returning a phase-local error with the best span and
+context. CLIs, workers, and tests MUST surface it as failure and MUST NOT
+continue with invented data.
 
 Recovery by substituting `0`, `1`, `false`, an empty shape, an empty
 collection, `Span::DUMMY`, a first enum variant, an arbitrary component, or any
@@ -63,12 +66,10 @@ other default is forbidden unless the Modelica Language Specification or an
 accepted Rumoca spec defines that value as the actual semantics of the source
 construct. Defaults used only to keep the compiler running are bugs.
 
-Defaulting is permitted only for source semantics that genuinely default, for
-schema fields whose absence has the same semantic meaning as the default, or
-for non-semantic operational configuration. Those cases MUST be documented at
-the use site or by the owning spec. They MUST NOT mask errors, unresolved
-references, malformed IR, shape/type mismatches, or missing compiler analysis
-results.
+Defaulting is permitted only for genuine source defaults, schema fields whose
+absence has that meaning, or non-semantic operational configuration. Document
+those cases at the use site or owning spec. They MUST NOT mask malformed IR,
+unresolved references, shape/type mismatches, or missing analysis.
 
 ### Option vs Result in Semantic Code
 
@@ -127,55 +128,16 @@ Three mechanisms are used; choosing the wrong one defeats the fail-fast contract
 
 ### Error Code Ranges
 
-Error codes use mnemonic prefixes for readability:
-
-| Range | Phase | Mnemonic | Description |
-|-------|-------|----------|-------------|
-| EP0xx | parse | **P**arse | Syntax errors |
-| ER0xx | resolve | **R**esolve | Name resolution errors |
-| ET0xx | typecheck | **T**ype | Type errors |
-| WT0xx | typecheck | **T**ype | Non-fatal type diagnostics (`WT003` variability, `WT006`/`WT007` constant-fold integer coercion and overflow) |
-| EI0xx | instantiate | **I**nstantiate | Modification errors |
-| WI0xx | instantiate | **I**nstantiate | Non-fatal instantiation diagnostics |
-| EF0xx | flatten | **F**latten | Connection errors |
-| ED0xx | todae | **D**AE | Equation errors |
-| EC0xx | codegen | **C**odegen | Code generation errors |
-| EM0xx | class merge | **M**erge | Class-tree merge errors |
-| ES0xx | structural | **S**tructural | Matching/BLT/singularity (`ES001`-`ES002` warnings, `ES01x` errors) |
-| EL0xx | solve lowering | so**L**ve | DAE → Solve-IR lowering (`EL001`-`EL011` rows, `EL02x` assembly, `EL03x` overrides) |
-| EX0xx | sim runtime | e**X**ecution | Solver, runtime-preparation, parameter-override |
-| EG0xx | GALEC IR | **G**ALEC | GALEC IR parse/validation errors |
-| EGT0xx | GALEC target projection | **G**ALEC **T**arget | DAE-to-GALEC projection/export errors |
-| EFM0xx | eFMI packaging | e**FM**I | eFMI manifest/packaging errors |
-| WP/WR/WT/etc | (same) | | Warnings per phase |
-
-The leading letter is the severity: a warning MUST NOT be minted in an `E`
-range, nor an error in a `W` range. The stable identity of a diagnostic is its
-bare mnemonic (`ED001`); `miette` phases render it as
-`rumoca::<phase>::<MNEMONIC>` and others emit the bare form, so consumers MUST
-match by mnemonic **suffix**. Contract tests implement this comparison locally
-in `crates/rumoca-contracts/src/test_support.rs`. A shipped code is stable:
-retire it rather than renumber or reuse.
-
-The former GALEC-target meanings of `ET001`–`ET023` are retired because they
-collided with typecheck. GALEC target projection now emits `EGT001`–`EGT023`;
-the typecheck meanings of `ET0xx` are unchanged.
-
-`EI013` is retired. Older builds used it for the non-fatal synthesized-inner
-notice; the phase-owned diagnostic is `WI013`, whose prefix records its warning
-severity.
-
-**Known drift**, tracked separately: `rumoca-phase-structural` emits
-`ES001`/`ES002` at warning severity. For these, severity MUST be read from the
-diagnostic's `severity` field, never inferred.
+Every diagnostic uses the phase-owned mnemonic range, severity, stable suffix,
+and retired-code disposition in
+[SPEC_0053](SPEC_0053_DIAGNOSTIC_CODE_CATALOG.md). Every catalog row is
+normative by reference from this rule. Shipped codes are retired, never
+renumbered or reused; warnings never use `E` ranges and errors never use `W`.
 
 ### Acceptance Contract Before Rejection
 
-A rejection is only as good as the acceptance it bounds. A **typed rejection
-path** is a new error variant, a newly minted code, or an `Err`/`emit()` on
-input a phase previously accepted. Every new one MUST land in the same change as
-a written **acceptance contract**: which inputs stay legal, and which owner
-handles them.
+A **typed rejection path** is a new variant/code or an `Err`/`emit()` on
+previously accepted input. It MUST ship with a written **acceptance contract**.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
@@ -185,24 +147,11 @@ handles them.
 | Widening an existing rejection to new input is a new rejection path | Author | Scope creep needs the same contract |
 | Never discharge it by relaxing an existing fixture or assertion | Test suite | Weakening hides the over-reach it should expose |
 
-**Why:** `EF025` over-reached onto callables that legally select no
-implementation — MLS §3.7 predefined operators, record constructors, `type`
-conversions — because nothing stated which callables stay legal; the `EI012`
-partial-class rejection was absorbed by weakening a fixture instead of naming
-the accepted deferred-declaration shape. Rejections whose accepted shape was
-designed first landed clean.
-
-**Checklist-item template** — one per new rejection path:
-
-```markdown
-- [ ] <CODE> rejects <illegal shape>;
-      accepts <legal shapes that stay legal>,
-      owned by <crate::module or phase>;
-      evidence <test path::name | spec section>
-```
+The current rejection/acceptance lookup rows are
+[SPEC_0053 §2](SPEC_0053_DIAGNOSTIC_CODE_CATALOG.md#2-acceptance-contract-catalog),
+normative by reference from the four rules above.
 
 ### PhaseError Trait
-
 `PhaseError` in `crates/rumoca-core/src/lib.rs` is the common interface:
 
 ```rust
@@ -286,7 +235,8 @@ and `to_miette_with_source_map` render a diagnostic for terminal display.
 - Most variants carry at most a rendered-template `SourceSpan`; the four
   Solve/DAE projection variants (`EC005` `SolveScalarizationFailed`, `EC006`
   `DaePreparationFailed`, `EC007` `NonMaterializedStructuredFamily`, `EC008`
-  `InvalidStructuredFamilyOwnership`) each carry an optional
+  `InvalidStructuredFamilyOwnership`) and the target-capability variant
+  (`EC009` `UnsupportedTargetFeature`) each carry an optional
   `rumoca_core::Span` that no renderer currently consumes, without adopting the
   `PhaseError` label contract
 - They need to implement `std::error::Error` for Result-based error handling
@@ -325,6 +275,8 @@ mnemonic-prefixed codes (ER/ET/EI/EF/ED/EC). Codes are grep-discoverable;
 phases evolve independently; `PhaseError` enables polymorphic handling.
 
 ## References
+- [SPEC_0053](SPEC_0053_DIAGNOSTIC_CODE_CATALOG.md) — phase ranges, retired
+  codes, and acceptance-contract lookup rows
 - [SPEC_0025](SPEC_0025_PR_REVIEW_PROCESS.md) §3 — where a PR records an
   acceptance contract that is not discharged by a test
 - Acceptance-contract exemplars:

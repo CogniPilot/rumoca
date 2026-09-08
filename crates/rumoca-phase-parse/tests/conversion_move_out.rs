@@ -305,7 +305,7 @@ end Linked;
     };
     let rumoca_ir_ast::Expression::Modification {
         target,
-        value: library_value,
+        value: Some(library_value),
         ..
     } = library
     else {
@@ -328,7 +328,7 @@ end Linked;
 
     let rumoca_ir_ast::Expression::Modification {
         target,
-        value: include_value,
+        value: Some(include_value),
         ..
     } = include
     else {

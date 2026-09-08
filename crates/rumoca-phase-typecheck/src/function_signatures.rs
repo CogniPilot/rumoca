@@ -304,7 +304,12 @@ fn redeclared_member<'a>(
     if !modification.redeclare {
         return None;
     }
-    let Expression::Modification { target, value, .. } = &modification.expr else {
+    let Expression::Modification {
+        target,
+        value: Some(value),
+        ..
+    } = &modification.expr
+    else {
         return None;
     };
     let name = target.parts.first()?.ident.text.as_ref();
@@ -317,9 +322,9 @@ fn expression_class_def_id(
     expression: &Expression,
 ) -> Option<DefId> {
     match expression {
-        Expression::Modification { value, .. } => {
-            expression_class_def_id(tree, origin_def_id, value)
-        }
+        Expression::Modification {
+            value: Some(value), ..
+        } => expression_class_def_id(tree, origin_def_id, value),
         Expression::ComponentReference(reference) => {
             resolve_class_reference(tree, origin_def_id, reference)
         }

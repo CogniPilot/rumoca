@@ -20,7 +20,7 @@ eFMI-aware tools before platform production code is selected.
 ## Unsupported
 
 This target does not claim eFMI Production Code. Continuous-time dynamics,
-unsupported GALEC forms, external functions/tables, random operations, and
+unsupported GALEC forms, external functions, random operations, and
 runtime event iteration are rejected before packaging.
 
 ## Verification

@@ -80,7 +80,7 @@ fn formatting_uses_rumoca_fmt_toml_profile() {
             "the config profile must actually differ from the default"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn formatting_client_tab_size_is_honored_when_config_is_silent() {
             "client tab_size=4 should indent by four spaces: {formatted:?}"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn formatting_config_profile_overrides_client_options() {
             "config indent-size must beat the client tab_size: {formatted:?}"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -165,7 +165,7 @@ fn tool_config_cache_reloads_after_config_file_change() {
             "saving a new profile must take effect on the next format"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn malformed_formatter_config_fails_request_and_is_not_cached() {
         assert!(!formatted.is_empty());
         assert_eq!(server.tool_config_cache.read().await.len(), 1);
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn diagnostics_respect_rumoca_lint_toml_disabled_rules() {
             "the disabled rule must not fire: {after:?}"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -286,5 +286,5 @@ fn formatting_replacement_range_ends_at_utf16_document_end() {
             crate::text_position::byte_offset_to_position(source, source.len())
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }

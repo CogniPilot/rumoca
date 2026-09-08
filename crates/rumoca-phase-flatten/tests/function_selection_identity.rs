@@ -71,9 +71,7 @@ const UNIQUE_FILE: &str = "<function_selection_identity_unique>";
 /// flattening runs on the same tree the compiler builds rather than on a
 /// hand-assembled one.
 struct Fixture {
-    tree: ast::ClassTree,
-    overlay: ast::InstanceOverlay,
-    model_name: String,
+    typed: rumoca_phase_typecheck::TypedInstancedTree,
 }
 
 impl Fixture {
@@ -83,20 +81,32 @@ impl Fixture {
         tree.source_map.add(file_name, source);
         let resolved =
             rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-        let ast::InstancedTree { tree, mut overlay } =
-            rumoca_phase_instantiate::instantiate(resolved, model_name)
-                .expect("model instantiates");
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model_name)
-            .expect("model typechecks");
-        Self {
-            tree,
-            overlay,
-            model_name: model_name.to_string(),
-        }
+        let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+            resolved.inner(),
+            model_name,
+        ) {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => {
+                panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+            }
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+        let typed =
+            rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model_name)
+                .expect("model typechecks");
+        Self { typed }
     }
 
-    fn flatten(&self) -> Result<flat::Model, FlattenError> {
-        rumoca_phase_flatten::flatten_ref(&self.tree, &self.overlay, &self.model_name)
+    fn flatten(self) -> Result<flat::Model, Box<FlattenError>> {
+        rumoca_phase_flatten::flatten_typed(
+            self.typed,
+            rumoca_phase_flatten::FlattenOptions::default(),
+        )
+        .map_err(Box::new)
     }
 }
 
@@ -130,7 +140,7 @@ fn ambiguous_alias_fails_function_selection_identity_at_the_call_site() {
         function,
         reason,
         span,
-    } = &error
+    } = error.as_ref()
     else {
         panic!("expected a missing-selection-identity failure, got {error:?}");
     };

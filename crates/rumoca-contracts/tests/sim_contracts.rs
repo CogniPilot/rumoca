@@ -17,7 +17,11 @@ fn variable_count(dae: &Dae, role: VariableRole) -> usize {
     })
 }
 
-fn variable_attributes(dae: &Dae, role: VariableRole, name: &str) -> Option<(bool, Option<bool>)> {
+fn variable_attributes(
+    dae: &Dae,
+    role: VariableRole,
+    name: &str,
+) -> Option<(bool, rumoca_core::Fixity)> {
     dae.inspect(|view| {
         view.variables()
             .find(|(_, variable)| variable.role() == role && variable.name().as_str() == name)
@@ -100,8 +104,8 @@ fn sim_002_initialization_fixed() {
     assert_eq!(variable_count(&result.dae, VariableRole::State), 1);
     assert_eq!(
         variable_attributes(&result.dae, VariableRole::State, "x"),
-        Some((true, None)),
-        "state x should retain its start value without inventing fixed=true"
+        Some((true, rumoca_core::Fixity::Free)),
+        "state x should retain its start value at the section 4.8.1 non-parameter default fixed=false"
     );
 }
 
@@ -126,6 +130,13 @@ fn sim_003_parameter_fixed_default() {
     assert!(
         variable_count(&result.dae, VariableRole::Parameter) > 0,
         "Should have parameters in DAE"
+    );
+    assert_eq!(
+        variable_attributes(&result.dae, VariableRole::Parameter, "p"),
+        Some((false, rumoca_core::Fixity::Fixed)),
+        "a parameter that omits `fixed` takes the section 4.8.1 default fixed=true, and the \
+         default must not fabricate a `start` guess for it: a defaulted parameter is bound or \
+         it is an error, never an initialization unknown"
     );
 }
 
@@ -198,8 +209,8 @@ fn sim_004_non_parameter_variable_defaults_fixed_false() {
 
     assert_eq!(
         variable_attributes(&result.dae, VariableRole::State, "x"),
-        Some((true, None)),
-        "non-parameter variables should not default to fixed=true"
+        Some((true, rumoca_core::Fixity::Free)),
+        "non-parameter variables must not default to fixed=true"
     );
     assert!(
         result
@@ -1219,9 +1230,9 @@ fn sim_009_pre_of_continuous_state_in_when_condition_is_rejected() {
 // claim without the ResidualSccOwner, and a coupled simultaneous discrete
 // residual SCC is still a typed rejection with that owner only preregistered
 // (SDO-021/SDO-023). Per the crate Partial convention these tests are
-// therefore absent from `data/contract_cases.toml` and SIM-010 is absent from
-// IMPLEMENTED_CONTRACT_IDS; promote both together once the ResidualSccOwner
-// lands. Note what promotion will NOT require: an inactive guarded producer's
+// therefore absent from `data/contract_cases.toml`, and SIM-010 remains Partial
+// in the registry; promote both together once the ResidualSccOwner lands. Note
+// what promotion will NOT require: an inactive guarded producer's
 // target holds (SOLVE-C07/C10), and a same-tick reader of a held target
 // observes the held entry value — under SDO-001 that observation is
 // unchanged, because `next` of an inactive producer *is* the held entry value.
@@ -1335,7 +1346,7 @@ fn sim_010_mixed_b1b_b1c_same_tick_cycle_is_rejected_at_construction() {
         t_end: 0.35,
         ..rumoca_sim::SimOptions::default()
     };
-    let error = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
+    let error = rumoca_sim::simulate_dae(&result.dae, &opts)
         .expect_err("a same-tick discrete cycle must be rejected");
     let message = error.to_string();
     // The same-clock shape is caught by the earlier clocked-feedback owner
@@ -1382,7 +1393,7 @@ fn sim_010_cross_clock_coincident_same_tick_cycle_is_rejected_at_construction() 
         t_end: 0.35,
         ..rumoca_sim::SimOptions::default()
     };
-    let error = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
+    let error = rumoca_sim::simulate_dae(&result.dae, &opts)
         .expect_err("a cross-clock coincident same-tick cycle must be rejected");
     let message = error.to_string();
     assert!(

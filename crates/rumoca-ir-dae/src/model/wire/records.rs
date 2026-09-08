@@ -42,6 +42,7 @@ impl ValueTypeWire {
 #[serde(deny_unknown_fields)]
 pub(super) struct VariableEntryWire {
     pub(super) name: rumoca_core::VarName,
+    pub(super) source_occurrence: rumoca_core::SourceOccurrenceId,
     pub(super) role: VariableRole,
     pub(super) variability: ExpressionVariability,
     pub(super) value_type: u32,
@@ -56,7 +57,7 @@ pub(super) struct VariableAttributesInput {
     pub(super) component_ref: Option<rumoca_core::ComponentReference>,
     pub(super) binding: Option<u32>,
     pub(super) start: Option<u32>,
-    pub(super) fixed: Option<bool>,
+    pub(super) fixed: rumoca_core::Fixity,
     pub(super) min: Option<u32>,
     pub(super) max: Option<u32>,
     pub(super) nominal: Option<u32>,
@@ -76,11 +77,20 @@ pub(super) struct FunctionEntryWire<Name = rumoca_core::VarName> {
     pub(super) parameters: Vec<FunctionNamedValueWire<Name>>,
     pub(super) outputs: Vec<FunctionNamedValueWire<Name>>,
     pub(super) locals: Vec<FunctionNamedValueWire<Name>>,
-    pub(super) statements: Vec<FunctionStatementInput>,
-    /// MLS §12.9 external interface; mutually exclusive with `statements`.
-    pub(super) external: Option<ExternalBodyInput<Name>>,
+    pub(super) body: FunctionBodyInput<Name>,
     #[serde(deserialize_with = "deserialize_provenance")]
     pub(super) declaration: DaeProvenance,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum FunctionBodyInput<Name = rumoca_core::VarName> {
+    Modelica {
+        statements: Vec<FunctionStatementInput>,
+    },
+    External {
+        body: ExternalBodyInput<Name>,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,6 +102,8 @@ pub(super) struct ExternalBodyInput<Name = rumoca_core::VarName> {
     pub(super) arguments: Vec<ExternalArgumentEntry>,
     pub(super) result: Option<u32>,
     pub(super) linkage: ExternalLinkage,
+    #[serde(deserialize_with = "deserialize_provenance")]
+    pub(super) provenance: DaeProvenance,
 }
 
 #[derive(Serialize, Deserialize)]

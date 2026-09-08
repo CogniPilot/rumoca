@@ -23,6 +23,7 @@ fn ordinary_pre_discrete_value_is_fixed_within_one_whole_event_pass() {
         let count = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("count"),
+                rumoca_core::InstanceId::new(1),
                 integer,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -90,6 +91,7 @@ fn previous_loads_history_owned_by_its_exact_clock_schedule() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -169,12 +171,14 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let (source, delay_time) = model.expressions(|expressions| {
@@ -234,7 +238,7 @@ fn delay_lowers_to_runtime_history_programs_and_a_typed_value_slot() {
         delays.delay_max_rhs.programs()[0][0],
         LinearOp::Const { value: 0.5, .. }
     ));
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };

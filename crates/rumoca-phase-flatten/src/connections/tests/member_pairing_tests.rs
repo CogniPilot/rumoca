@@ -2,8 +2,8 @@
 //!
 //! The acceptance contract these pin is stated in the
 //! [`member_pairing`](super::super::member_pairing) module docs: agreeing
-//! prefixes connect, structural pairs generate nothing, absent evidence is
-//! never a rejection, and the two provably impossible pairings are reported
+//! prefixes connect, structural pairs route to assertion ownership, absent
+//! evidence is rejected, and the two provably impossible pairings are reported
 //! against both member declarations instead of dropped.
 
 use super::super::*;
@@ -17,34 +17,34 @@ fn member_span(offset: usize) -> Span {
 }
 
 fn member(span: Span) -> flat::Variable {
-    flat::Variable::empty_with_span(span)
+    connection_test_variable(span)
 }
 
 fn stream_member(span: Span) -> flat::Variable {
     flat::Variable {
         stream: true,
-        ..flat::Variable::empty_with_span(span)
+        ..connection_test_variable(span)
     }
 }
 
 fn parameter_member(span: Span) -> flat::Variable {
     flat::Variable {
         variability: rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
-        ..flat::Variable::empty_with_span(span)
+        ..connection_test_variable(span)
     }
 }
 
 fn constant_member(span: Span) -> flat::Variable {
     flat::Variable {
         variability: rumoca_core::Variability::Constant(rumoca_core::Token::default()),
-        ..flat::Variable::empty_with_span(span)
+        ..connection_test_variable(span)
     }
 }
 
 fn model_with(members: Vec<(&str, flat::Variable)>) -> flat::Model {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     for (name, variable) in members {
-        flat.add_variable(rumoca_core::VarName::new(name), variable);
+        flat.add_test_variable(rumoca_core::VarName::new(name), variable);
     }
     flat
 }
@@ -54,6 +54,7 @@ fn classify(flat: &flat::Model, a: &str, b: &str) -> Result<MemberPairing, Flatt
         flat,
         &rumoca_core::VarName::new(a),
         &rumoca_core::VarName::new(b),
+        member_span(1),
     )
 }
 
@@ -91,7 +92,7 @@ fn non_stream_paired_with_non_stream_connects() {
 /// MLS §9.3: "Constants or parameters in connected components yield the
 /// appropriate assert-statements [...]; connections are not generated."
 #[test]
-fn parameter_paired_with_parameter_generates_no_equation() {
+fn parameter_paired_with_parameter_requires_an_assertion() {
     let flat = model_with(vec![
         ("a.m", parameter_member(member_span(10))),
         ("b.m", parameter_member(member_span(30))),
@@ -99,12 +100,12 @@ fn parameter_paired_with_parameter_generates_no_equation() {
 
     assert_eq!(
         classify(&flat, "a.m", "b.m").expect("parameter-to-parameter is admitted"),
-        MemberPairing::NoEquation
+        MemberPairing::StructuralAssertion
     );
 }
 
 #[test]
-fn constant_paired_with_constant_generates_no_equation() {
+fn constant_paired_with_constant_requires_an_assertion() {
     let flat = model_with(vec![
         ("a.k", constant_member(member_span(10))),
         ("b.k", constant_member(member_span(30))),
@@ -112,81 +113,68 @@ fn constant_paired_with_constant_generates_no_equation() {
 
     assert_eq!(
         classify(&flat, "a.k", "b.k").expect("constant-to-constant is admitted"),
-        MemberPairing::NoEquation
+        MemberPairing::StructuralAssertion
     );
 }
 
-/// Both sides are translation-time values, so MLS §9.3's assert is well formed
-/// and no unknown is left behind. The contract accepts this rather than reading
-/// MLS §9.3 as forbidding the mixed pair.
+/// MLS §9.3 says parameter members may connect only to parameter members and
+/// constant members only to constant members.
 #[test]
-fn parameter_paired_with_constant_generates_no_equation() {
+fn parameter_paired_with_constant_is_rejected() {
     let flat = model_with(vec![
         ("a.m", parameter_member(member_span(10))),
         ("b.m", constant_member(member_span(30))),
     ]);
 
-    assert_eq!(
-        classify(&flat, "a.m", "b.m").expect("both sides are translation-time values"),
-        MemberPairing::NoEquation
-    );
+    let error = classify(&flat, "a.m", "b.m")
+        .expect_err("a parameter/constant pair violates the exact variability rule");
+    assert!(matches!(
+        error,
+        FlattenError::ConnectionVariabilityMismatch {
+            a_variability: "parameter",
+            b_variability: "constant",
+            ..
+        }
+    ));
 }
 
-/// Absent evidence is never a rejection: a member with no declaration in view
-/// keeps the pair connected.
+/// By flatten, both primitive declarations must resolve. Legal indexed members
+/// resolve through their declared compact base; an actually absent counterpart
+/// is invalid phase evidence, never permission to connect.
 #[test]
-fn member_without_a_declaration_is_not_judged() {
+fn member_without_a_declaration_is_rejected() {
     let flat = model_with(vec![("a.h_outflow", stream_member(member_span(10)))]);
 
-    assert_eq!(
-        classify(&flat, "a.h_outflow", "b.h_outflow")
-            .expect("a member this phase cannot see is not evidence of a violation"),
-        MemberPairing::Connect
-    );
-    assert_eq!(
-        classify(&flat, "b.h_outflow", "a.h_outflow")
-            .expect("the same holds in the opposite order"),
-        MemberPairing::Connect
-    );
+    for (a, b) in [
+        ("a.h_outflow", "b.h_outflow"),
+        ("b.h_outflow", "a.h_outflow"),
+    ] {
+        let error = classify(&flat, a, b)
+            .expect_err("an absent member declaration cannot prove a legal pairing");
+        assert!(matches!(
+            error,
+            FlattenError::InvalidConnectionEvidence { span, .. } if span == member_span(1)
+        ));
+    }
 }
 
-/// The deliberate asymmetric case in the acceptance contract: a `parameter` or
-/// `constant` whose counterpart resolves to no declaration is **connected**,
-/// not skipped and not rejected.
-///
-/// For the MLS §9.3 variability rule alone this is less conservative than the
-/// skip it replaced, which needed only one side's declaration to decide: the
-/// structural member joins the potential set here. That is the stated choice —
-/// absent counterpart evidence means connect, because a one-sided rejection
-/// would be a rejection on absent evidence, which the contract forbids, and the
-/// collapsed-array representations that make a counterpart unresolvable are
-/// legal models.
-///
-/// No reachable input reaches this branch today (an element path either
-/// resolves through its declared base or is rejected in typecheck), so this
-/// test pins the decision rather than a corpus behaviour. If a reachable path
-/// is ever found, the fix is to make the structural side's evidence alone
-/// sufficient to abstain — this test then flips to `NoEquation` — not to widen
-/// `EF028` into a one-sided rejection.
+/// Structural variability on the visible side cannot turn an absent
+/// counterpart into evidence. This used to be the most dangerous asymmetric
+/// fail-open case because it joined a parameter/constant to a potential set.
 #[test]
-fn structural_member_with_an_unresolvable_counterpart_is_connected() {
-    let flat = model_with(vec![("a.m", parameter_member(member_span(10)))]);
-
-    assert_eq!(
-        classify(&flat, "a.m", "b.m")
-            .expect("an unresolvable counterpart is not evidence of a violation"),
-        MemberPairing::Connect
-    );
-    assert_eq!(
-        classify(&flat, "b.m", "a.m").expect("the same holds in the opposite order"),
-        MemberPairing::Connect
-    );
-
-    let flat = model_with(vec![("a.k", constant_member(member_span(10)))]);
-    assert_eq!(
-        classify(&flat, "a.k", "b.k").expect("constants take the same branch"),
-        MemberPairing::Connect
-    );
+fn structural_member_with_an_unresolvable_counterpart_is_rejected() {
+    for visible in [
+        parameter_member(member_span(10)),
+        constant_member(member_span(10)),
+    ] {
+        let flat = model_with(vec![("a.m", visible)]);
+        for (a, b) in [("a.m", "b.m"), ("b.m", "a.m")] {
+            assert!(matches!(
+                classify(&flat, a, b),
+                Err(FlattenError::InvalidConnectionEvidence { .. })
+            ));
+        }
+    }
 }
 
 /// An element path is resolved through its declared base, exactly like the
@@ -275,21 +263,23 @@ fn parameter_paired_with_variable_is_rejected_with_both_member_spans() {
 
     let error =
         classify(&flat, "a.m", "b.m").expect_err("MLS §9.3 admits only parameter-to-parameter");
-    let FlattenError::StructuralMemberPairedWithVariable {
-        structural_member,
-        structural_variability,
-        variable_member,
-        structural_span,
-        variable_span,
+    let FlattenError::ConnectionVariabilityMismatch {
+        a_member,
+        a_variability,
+        b_member,
+        b_variability,
+        a_span,
+        b_span,
     } = &error
     else {
         panic!("expected a variability pairing error, got {error:?}");
     };
-    assert_eq!(structural_member, "a.m");
-    assert_eq!(*structural_variability, "parameter");
-    assert_eq!(variable_member, "b.m");
-    assert_eq!(*structural_span, member_span(10));
-    assert_eq!(*variable_span, member_span(30));
+    assert_eq!(a_member.as_ref(), "a.m");
+    assert_eq!(*a_variability, "parameter");
+    assert_eq!(b_member.as_ref(), "b.m");
+    assert_eq!(*b_variability, "non-structural");
+    assert_eq!(*a_span, member_span(10));
+    assert_eq!(*b_span, member_span(30));
 }
 
 #[test]
@@ -301,21 +291,23 @@ fn variable_paired_with_constant_is_rejected_with_both_member_spans() {
 
     let error =
         classify(&flat, "a.k", "b.k").expect_err("MLS §9.3 admits only constant-to-constant");
-    let FlattenError::StructuralMemberPairedWithVariable {
-        structural_member,
-        structural_variability,
-        variable_member,
-        structural_span,
-        variable_span,
+    let FlattenError::ConnectionVariabilityMismatch {
+        a_member,
+        a_variability,
+        b_member,
+        b_variability,
+        a_span,
+        b_span,
     } = &error
     else {
         panic!("expected a variability pairing error, got {error:?}");
     };
-    assert_eq!(structural_member, "b.k");
-    assert_eq!(*structural_variability, "constant");
-    assert_eq!(variable_member, "a.k");
-    assert_eq!(*structural_span, member_span(30));
-    assert_eq!(*variable_span, member_span(10));
+    assert_eq!(a_member.as_ref(), "a.k");
+    assert_eq!(*a_variability, "non-structural");
+    assert_eq!(b_member.as_ref(), "b.k");
+    assert_eq!(*b_variability, "constant");
+    assert_eq!(*a_span, member_span(10));
+    assert_eq!(*b_span, member_span(30));
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +333,7 @@ fn primitive_connect_rejects_a_one_sided_stream_instead_of_dropping_it() {
         &mut flow_pairs,
         &mut potential_uf,
         &mut stream_uf,
+        member_span(1),
     )
     .expect_err("a stream/non-stream pair has no equation to generate");
 
@@ -372,19 +365,20 @@ fn primitive_connect_rejects_a_one_sided_parameter_instead_of_dropping_it() {
         &mut flow_pairs,
         &mut potential_uf,
         &mut stream_uf,
+        member_span(1),
     )
     .expect_err("MLS §9.3 admits only parameter-to-parameter");
 
     assert!(matches!(
         error,
-        FlattenError::StructuralMemberPairedWithVariable { .. }
+        FlattenError::ConnectionVariabilityMismatch { .. }
     ));
     assert!(potential_uf.get_sets().is_empty());
 }
 
-/// A structural pair still generates nothing, and still generates it silently.
+/// A structural pair joins the assertion set instead of disappearing.
 #[test]
-fn primitive_connect_generates_nothing_for_a_structural_pair() {
+fn primitive_connect_routes_a_structural_pair_to_assertion_ownership() {
     let flat = model_with(vec![
         ("a.m", parameter_member(member_span(10))),
         ("b.m", parameter_member(member_span(30))),
@@ -400,11 +394,12 @@ fn primitive_connect_generates_nothing_for_a_structural_pair() {
         &mut flow_pairs,
         &mut potential_uf,
         &mut stream_uf,
+        member_span(1),
     )
-    .expect("MLS §9.3 generates no connection for a structural pair");
+    .expect("MLS §9.3 admits the structural pair through assertion ownership");
 
     assert!(flow_pairs.is_empty());
-    assert!(potential_uf.get_sets().is_empty());
+    assert_eq!(potential_uf.get_sets().len(), 1);
     assert!(stream_uf.get_sets().is_empty());
 }
 
@@ -424,6 +419,7 @@ fn expanded_connect_rejects_a_one_sided_stream_instead_of_equating_it() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: member_span(1),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -461,6 +457,7 @@ fn expanded_connect_still_routes_stream_to_stream_into_the_stream_set() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: member_span(1),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -497,6 +494,7 @@ fn expanded_connect_rejects_a_parameter_on_the_matched_side() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: member_span(1),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -514,15 +512,14 @@ fn expanded_connect_rejects_a_parameter_on_the_matched_side() {
 
     assert!(matches!(
         error,
-        FlattenError::StructuralMemberPairedWithVariable { .. }
+        FlattenError::ConnectionVariabilityMismatch { .. }
     ));
     assert!(potential_uf.get_sets().is_empty());
 }
 
-/// A structural pair reports "unmatched" so the reverse expansion direction is
-/// still attempted, exactly as the pre-match skip it replaced did.
+/// A structural pair is a semantic name match and joins assertion ownership.
 #[test]
-fn expanded_connect_reports_a_structural_pair_as_unmatched() {
+fn expanded_connect_routes_a_structural_pair_to_assertion_ownership() {
     let flat = model_with(vec![
         ("plug_a.m", parameter_member(member_span(10))),
         ("plug_b.m", parameter_member(member_span(30))),
@@ -535,6 +532,7 @@ fn expanded_connect_reports_a_structural_pair_as_unmatched() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: member_span(1),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -548,8 +546,199 @@ fn expanded_connect_reports_a_structural_pair_as_unmatched() {
         &sub_match_index,
         &mut ctx,
     )
-    .expect("MLS §9.3 generates no connection for a structural pair");
+    .expect("MLS §9.3 admits the structural pair through assertion ownership");
 
-    assert!(!matched);
-    assert!(potential_uf.get_sets().is_empty());
+    assert!(matched);
+    assert_eq!(potential_uf.get_sets().len(), 1);
+}
+
+fn structural_primitive(
+    name: &str,
+    variability: rumoca_core::Variability,
+    dims: Vec<i64>,
+) -> (rumoca_core::VarName, flat::Variable) {
+    let name = rumoca_core::VarName::new(name);
+    let variable = flat::Variable {
+        name: name.clone(),
+        type_id: CONNECTION_TEST_SCALAR_TYPE,
+        variability,
+        dims,
+        is_primitive: true,
+        ..connection_test_variable(member_span(10))
+    };
+    (name, variable)
+}
+
+fn scalar_connection(a: &str, b: &str, offset: usize) -> ast::InstanceConnection {
+    ast::InstanceConnection::scalar(
+        ast::QualifiedName::from_dotted(a),
+        ast::QualifiedName::from_dotted(b),
+        None,
+        member_span(offset),
+        String::new(),
+    )
+    .expect("test connection has valid endpoints and provenance")
+}
+
+fn connection_overlay(connections: Vec<ast::InstanceConnection>) -> ast::InstanceOverlay {
+    let mut overlay = ast::InstanceOverlay::new();
+    let class_instance_id = overlay.alloc_id();
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
+    overlay
+}
+
+fn process_checked_connections(
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    forest: &mut crate::vcg::OverconstrainedEquationForest,
+) -> Result<(), FlattenError> {
+    let overconstrained = overlay
+        .finalized_overconstrained()
+        .expect("member-pairing fixture must construct finalized occurrence proofs");
+    process_connections_for_test(flat, &overconstrained, forest)
+}
+
+#[test]
+fn scalar_structural_connection_constructs_the_required_assertion() {
+    let mut flat = connection_test_model();
+    for (name, variable) in [
+        structural_primitive(
+            "a.m",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            Vec::new(),
+        ),
+        structural_primitive(
+            "b.m",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            Vec::new(),
+        ),
+    ] {
+        flat.add_test_variable(name, variable);
+    }
+    let overlay = connection_overlay(vec![scalar_connection("a.m", "b.m", 1)]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    finalize_connection_test_flat(&mut flat);
+    process_checked_connections(&mut flat, &overlay, &mut forest)
+        .expect("a scalar parameter pair has an exact Flat assertion owner");
+
+    assert!(flat.equations.is_empty());
+    assert_eq!(flat.assert_equations.len(), 1);
+    let assertion = &flat.assert_equations[0];
+    assert_eq!(assertion.span, member_span(1));
+    assert!(matches!(
+        &assertion.condition,
+        rumoca_core::Expression::Binary {
+            op: rumoca_core::OpBinary::Eq,
+            lhs,
+            rhs,
+            ..
+        } if matches!(lhs.as_ref(), rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "a.m")
+            && matches!(rhs.as_ref(), rumoca_core::Expression::VarRef { name, .. } if name.as_str() == "b.m")
+    ));
+    assert!(matches!(
+        &assertion.message,
+        rumoca_core::Expression::Literal {
+            value: rumoca_core::Literal::String(message),
+            ..
+        } if message == "Connected constants/parameters must be equal"
+    ));
+    assert!(
+        flat.variables
+            .values()
+            .all(|variable| variable.connected.is_unconnected())
+    );
+}
+
+#[test]
+fn nonempty_structural_array_refusal_rolls_back_an_earlier_assertion() {
+    let mut flat = connection_test_model();
+    for (name, variable) in [
+        structural_primitive(
+            "ok_a",
+            rumoca_core::Variability::Constant(rumoca_core::Token::default()),
+            Vec::new(),
+        ),
+        structural_primitive(
+            "ok_b",
+            rumoca_core::Variability::Constant(rumoca_core::Token::default()),
+            Vec::new(),
+        ),
+        structural_primitive(
+            "array_a",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            vec![2],
+        ),
+        structural_primitive(
+            "array_b",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            vec![2],
+        ),
+    ] {
+        flat.add_test_variable(name, variable);
+    }
+    let overlay = connection_overlay(vec![
+        scalar_connection("ok_a", "ok_b", 1),
+        scalar_connection("array_a", "array_b", 2),
+    ]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
+    let forest_before = forest.state_snapshot();
+
+    finalize_connection_test_flat(&mut flat);
+    let error = process_checked_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("a nonempty structural array needs a compact assertion-family owner");
+
+    assert!(matches!(
+        error,
+        FlattenError::InvalidConnectionEvidence { .. }
+    ));
+    assert!(error.to_string().contains("compact assertion-family owner"));
+    assert!(flat.equations.is_empty());
+    assert!(flat.assert_equations.is_empty());
+    assert!(
+        flat.variables
+            .values()
+            .all(|variable| variable.connected.is_unconnected())
+    );
+    assert_eq!(forest.state_snapshot(), forest_before);
+}
+
+#[test]
+fn empty_structural_arrays_are_vacuously_equal_without_connected_state() {
+    let mut flat = connection_test_model();
+    for (name, variable) in [
+        structural_primitive(
+            "empty_a",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            vec![0],
+        ),
+        structural_primitive(
+            "empty_b",
+            rumoca_core::Variability::Parameter(rumoca_core::Token::default()),
+            vec![0],
+        ),
+    ] {
+        flat.add_test_variable(name, variable);
+    }
+    let overlay = connection_overlay(vec![scalar_connection("empty_a", "empty_b", 1)]);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    finalize_connection_test_flat(&mut flat);
+    process_checked_connections(&mut flat, &overlay, &mut forest)
+        .expect("an empty structural value needs no scalar assertions");
+
+    assert!(flat.assert_equations.is_empty());
+    assert!(flat.equations.is_empty());
+    assert!(
+        flat.variables
+            .values()
+            .all(|variable| variable.connected.is_unconnected())
+    );
 }

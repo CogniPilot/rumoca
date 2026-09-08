@@ -136,8 +136,8 @@ fn reverse_gradients(
     trainables: &TrainableSet,
     cotangents: &[f64],
 ) -> Result<Vec<f64>, OptError> {
-    let p_scalars = model.runtime().model.problem.layout.p_scalars();
-    let mut vjp = vec![0.0; model.runtime().solver_count + p_scalars];
+    let p_scalars = model.runtime().model().problem().layout().p_scalars();
+    let mut vjp = vec![0.0; model.runtime().solver_count() + p_scalars];
     model.runtime().reverse_state_derivative_vjp(
         model.linearization(t),
         model.state(),
@@ -147,7 +147,7 @@ fn reverse_gradients(
     trainables
         .entries()
         .iter()
-        .map(|trainable| checked_gradient(vjp[model.runtime().solver_count + trainable.slot]))
+        .map(|trainable| checked_gradient(vjp[model.runtime().solver_count() + trainable.slot]))
         .collect()
 }
 

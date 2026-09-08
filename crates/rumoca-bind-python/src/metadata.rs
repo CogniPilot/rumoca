@@ -95,7 +95,7 @@ impl VariableInfo {
             min: opt_literal(view, variable.minimum()),
             max: opt_literal(view, variable.maximum()),
             nominal: opt_literal(view, variable.nominal()),
-            fixed: variable.fixed().unwrap_or(false),
+            fixed: variable.fixed().into(),
             description: variable.description().map(str::to_string),
             dims: variable
                 .value_type()
@@ -161,7 +161,7 @@ impl ParameterInfo {
             min: opt_literal(view, variable.minimum()),
             max: opt_literal(view, variable.maximum()),
             nominal: opt_literal(view, variable.nominal()),
-            fixed: variable.fixed().unwrap_or(false),
+            fixed: variable.fixed().into(),
             description: variable.description().map(str::to_string),
             dims: variable
                 .value_type()

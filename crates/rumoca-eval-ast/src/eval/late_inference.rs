@@ -100,10 +100,34 @@ fn eval_component_constants(
 
 /// Collect all constant parameter values from a class for evaluation.
 ///
-/// This performs a multi-pass evaluation to handle dependencies between parameters.
+/// This performs a multi-pass evaluation to handle dependencies between
+/// parameters. The returned environment belongs to the delimited
+/// pre-identity structural category: it evaluates declaration bindings that
+/// may lack Resolve-issued call identities.
 pub fn collect_constants(class: &ClassDef, prefix: &str) -> TypeCheckEvalContext {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    collect_constants_into(class, prefix, &mut ctx);
+    ctx
+}
 
+impl TypeCheckEvalContext {
+    /// Replace phase-local values with constants from `class` while retaining
+    /// the semantic builtin registry and diagnostics accumulated by the owner.
+    pub fn replace_values_with_collected_constants(&mut self, class: &ClassDef, prefix: &str) {
+        let predefined_functions = std::mem::take(&mut self.predefined_functions);
+        let warning_keys = std::mem::take(self.warning_keys.get_mut());
+        let warnings = std::mem::take(self.warnings.get_mut());
+        // The refreshed environment keeps the owner's call-identity category;
+        // a value reset cannot widen call-selection authority.
+        *self = Self::with_policy(self.call_identity_policy);
+        self.predefined_functions = predefined_functions;
+        *self.warning_keys.get_mut() = warning_keys;
+        *self.warnings.get_mut() = warnings;
+        collect_constants_into(class, prefix, self);
+    }
+}
+
+fn collect_constants_into(class: &ClassDef, prefix: &str, ctx: &mut TypeCheckEvalContext) {
     const MAX_PASSES: usize = 10;
     for _pass in 0..MAX_PASSES {
         let mut progress = false;
@@ -114,15 +138,13 @@ pub fn collect_constants(class: &ClassDef, prefix: &str) -> TypeCheckEvalContext
             } else {
                 format!("{}.{}", prefix, name)
             };
-            progress |= eval_component_constants(&full_name, comp, &mut ctx);
+            progress |= eval_component_constants(&full_name, comp, ctx);
         }
 
         if !progress {
             break;
         }
     }
-
-    ctx
 }
 
 /// Collect variable references from an expression.
@@ -317,14 +339,14 @@ mod tests {
 
     #[test]
     fn test_eval_integer_literal() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let expr = make_int_literal(42);
         assert_eq!(eval_integer(&expr, &ctx), Some(42));
     }
 
     #[test]
     fn test_eval_integer_variable() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("n", 10);
         let expr = make_comp_ref("n");
         assert_eq!(eval_integer(&expr, &ctx), Some(10));
@@ -369,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_lookup_with_scope_resolves_indexed_name_with_scope() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
 
         assert_eq!(
@@ -380,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_lookup_with_scope_does_not_index_fake_suffix_from_subscript_dot() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("sys.arr[data.medium]", 7_i64);
 
         assert_eq!(lookup_with_scope("medium]", "", &ctx.integers), None);
@@ -397,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_lookup_with_scope_no_cross_map_suffix_fallback() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("a.nX", 7_i64);
         ctx.add_real("b.nX", 3.0);
 
@@ -406,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_component_ref_dotted_does_not_leaf_fallback() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("sys.arr", vec![7]);
 
         let expr = make_dotted_comp_ref("Medium.arr");
@@ -418,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_field_access_uses_full_path_lookup() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("cellData1.OCV_SOC", vec![2, 2]);
         ctx.add_dimensions("cellData2.OCV_SOC", vec![17, 2]);
         let expr = Expression::FieldAccess {
@@ -435,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_field_access_does_not_leaf_fallback_for_dotted_path() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("scope.OCV_SOC_internal", vec![17, 2]);
 
         let expr = Expression::FieldAccess {
@@ -452,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_field_access_dotted_base_uses_full_path_lookup() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("cellData1.OCV_SOC_internal", vec![2, 2]);
         ctx.add_dimensions("cellData2.OCV_SOC_internal", vec![17, 2]);
         let expr = Expression::FieldAccess {
@@ -469,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_field_access_with_indexed_base_uses_exact_lookup() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
 
         let expr = Expression::FieldAccess {
@@ -500,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_field_access_with_indexed_base_respects_scope() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("stack.stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
 
         let expr = Expression::FieldAccess {
@@ -531,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_eval_binary_add() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let expr = Expression::Binary {
             op: OpBinary::Add,
             lhs: Arc::new(make_int_literal(3)),
@@ -543,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_eval_size() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("arr", vec![10, 20]);
 
         let expr = Expression::FunctionCall {
@@ -566,7 +588,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_single_row_matrix_literal() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let expr = Expression::Array {
             elements: vec![make_real_literal(0.0), make_real_literal(1.0)],
             is_matrix: true,
@@ -577,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_multi_row_matrix_literal() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let expr = Expression::Array {
             elements: vec![
                 Expression::Array {
@@ -601,7 +623,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_matrix_literal_with_scalar_real_entries() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let expr = Expression::Array {
             elements: vec![
                 Expression::Array {
@@ -628,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_vector_of_vertical_matrix_concat_uses_operand_shapes() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("na", 3);
         ctx.add_integer("nb", 2);
         ctx.add_dimensions("b", vec![2]);
@@ -677,7 +699,7 @@ mod tests {
             "MLS §10.4.2 matrix constructors concatenate array operands before vector() flattens them"
         );
 
-        let mut scoped_ctx = TypeCheckEvalContext::new();
+        let mut scoped_ctx = TypeCheckEvalContext::for_pre_identity_structural();
         scoped_ctx.add_integer("Hw.na", 3);
         scoped_ctx.add_integer("Hw.nb", 2);
         scoped_ctx.add_dimensions("Hw.b", vec![2]);
@@ -690,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_component_ref_scalar_subscript_is_scalar() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("eta", vec![3]);
         let expr = make_comp_ref_with_sub("eta", 1);
         assert_eq!(
@@ -702,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_component_ref_with_indexed_prefix_uses_exact_lookup() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
 
         let expr = Expression::ComponentReference(ComponentReference {
@@ -739,7 +761,7 @@ mod tests {
 
     #[test]
     fn test_eval_size_with_indexed_component_ref_uses_exact_lookup() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("stackData.cellData[1,1].OCV_SOC", vec![29, 2]);
 
         let indexed_ref = Expression::ComponentReference(ComponentReference {
@@ -789,7 +811,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_array_literal_with_indexed_elements_stays_1d() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_dimensions("eta", vec![3]);
         let expr = Expression::Array {
             elements: vec![
@@ -809,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_infer_dims_real_range_binding() {
-        let ctx = TypeCheckEvalContext::new();
+        let ctx = TypeCheckEvalContext::for_pre_identity_structural();
         let start = make_real_literal(0.0);
         let step = make_real_literal(0.02);
         let end = make_real_literal(1.0);

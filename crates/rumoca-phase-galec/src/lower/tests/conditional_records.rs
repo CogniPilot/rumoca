@@ -102,8 +102,13 @@ fn assert_dynamic_array_record_calls_are_lazy(view: dae::DaeView<'_>) {
     let variables = HashMap::new();
     let previous = HashMap::new();
     let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-    let mut lowerer =
-        ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(
+        view,
+        &definitions,
+        &variables,
+        &previous,
+        positive_zero_arithmetic(),
+    );
     lowerer.loop_index_bounds.push(LoopIndexBound {
         name: index_name,
         minimum: 1,
@@ -148,8 +153,13 @@ fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
         let variables = HashMap::new();
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         let selected = lowerer.lower(field).unwrap();
         let prefix = lowerer.take_prefix_statements();
 
@@ -179,8 +189,13 @@ fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
             })
             .unwrap();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         lowerer.lower(shared_call_field).unwrap();
         let prefix = lowerer.take_prefix_statements();
         let gast::Statement::If(selection) = &prefix[0].node else {
@@ -196,5 +211,148 @@ fn conditional_record_call_is_materialized_only_in_its_selected_branch() {
         ));
 
         assert_dynamic_array_record_calls_are_lazy(view);
+    });
+}
+
+struct ConditionalRecordActualRefusalFixture {
+    model: dae::Dae,
+    call_span: Span,
+}
+
+fn conditional_record_actual_refusal_fixture() -> ConditionalRecordActualRefusalFixture {
+    let mut sources = SourceMap::new();
+    let text = "make(if true then maker(2.0) else Pair(0.0, 0.0))";
+    let source = sources.add("conditional-record-actual.mo", text);
+    let whole_span = Span::from_offsets(source, 0, text.len());
+    let call_start = text.find("maker(2.0)").unwrap();
+    let call_span = Span::from_offsets(source, call_start, call_start + "maker(2.0)".len());
+    let whole = dae::DaeProvenance::source(whole_span).unwrap();
+    let call_at = dae::DaeProvenance::source(call_span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let (real, pair, nested) = dae.types(|types| {
+            let real = types.derived(dae::ValueType::scalar(dae::ScalarType::Real), whole)?;
+            let pair = types.record(
+                VarName::new("Pair"),
+                [(VarName::new("left"), real), (VarName::new("right"), real)],
+                whole,
+            )?;
+            let nested = types.record(
+                VarName::new("Nested"),
+                [(VarName::new("pair"), pair)],
+                whole,
+            )?;
+            Ok((real, pair, nested))
+        })?;
+        let (maker, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("maker"), [real], [pair], whole),
+            |dae, reservation| {
+                let (input, output) = dae.functions(|functions| {
+                    Ok((
+                        functions.parameter(&reservation, VarName::new("u"), 0, whole)?,
+                        functions.output(&reservation, VarName::new("result"), 0, whole)?,
+                    ))
+                })?;
+                let input =
+                    dae.expressions(|expressions| expressions.at(whole).function_parameter(input))?;
+                let value = dae.expressions(|expressions| {
+                    expressions.at(whole).record(pair, [input, input])
+                })?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, whole))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, value, whole)?;
+                    functions.define(body, whole)
+                })
+            },
+        )?;
+        let (consumer, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("make"), [pair], [real], whole),
+            |dae, reservation| {
+                let (input, output) = dae.functions(|functions| {
+                    let input =
+                        functions.parameter(&reservation, VarName::new("value"), 0, whole)?;
+                    let output =
+                        functions.output(&reservation, VarName::new("result"), 0, whole)?;
+                    functions.local(&reservation, VarName::new("forceEntered"), nested, whole)?;
+                    Ok((input, output))
+                })?;
+                let input =
+                    dae.expressions(|expressions| expressions.at(whole).function_parameter(input))?;
+                let field = dae.expressions(|expressions| expressions.at(whole).field(input, 0))?;
+                let mut body = dae.functions(|functions| functions.begin(reservation, whole))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, field, whole)?;
+                    functions.define(body, whole)
+                })
+            },
+        )?;
+        let (condition, argument, zero) = dae.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(whole)
+                    .literal(dae::DaeLiteral::Boolean(true))?,
+                expressions.at(whole).literal(dae::DaeLiteral::Real(2.0))?,
+                expressions.at(whole).literal(dae::DaeLiteral::Real(0.0))?,
+            ))
+        })?;
+        let maker_call =
+            dae.expressions(|expressions| expressions.at(call_at).call(maker, 0, [argument]))?;
+        let fallback =
+            dae.expressions(|expressions| expressions.at(whole).record(pair, [zero, zero]))?;
+        let conditional = dae.expressions(|expressions| {
+            expressions
+                .at(whole)
+                .conditional([(condition, maker_call)], fallback)
+        })?;
+        dae.expressions(|expressions| {
+            expressions.at(whole).call(consumer, 0, [conditional])?;
+            Ok(())
+        })
+    })
+    .unwrap();
+
+    ConditionalRecordActualRefusalFixture { model, call_span }
+}
+
+#[test]
+fn conditional_record_actual_refusal_reports_the_nested_call_span() {
+    let ConditionalRecordActualRefusalFixture { model, call_span } =
+        conditional_record_actual_refusal_fixture();
+    model.inspect(|view| {
+        let consumer = view.function_id(1).unwrap();
+        assert!(
+            !user_functions::is_directly_lowerable(view, consumer),
+            "the nested record local must exercise entered-body argument preparation"
+        );
+        let root = (0..view.expression_count())
+            .filter_map(|index| view.expression_id(index))
+            .rfind(|expression| {
+                matches!(
+                    view.expression(*expression).unwrap().operation(),
+                    dae::ExpressionOperation::Call { function, .. } if function == consumer
+                )
+            })
+            .unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let variables = HashMap::new();
+        let previous = HashMap::new();
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
+        assert!(matches!(
+            lowerer.lower(root),
+            Err(GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            }) if feature == "record-argument-call-projection" && span == call_span
+        ));
+        assert!(
+            lowerer.take_prefix_statements().is_empty(),
+            "a refused record transaction must not expose partial statements"
+        );
     });
 }

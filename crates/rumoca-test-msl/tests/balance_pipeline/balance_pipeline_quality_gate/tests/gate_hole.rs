@@ -12,6 +12,7 @@ fn trace_stats(models_compared: usize, high: usize, minor: usize) -> MslTraceAcc
     MslTraceAccuracyStatsBaseline {
         models_compared,
         agreement_high: high,
+        strict_high_models: high,
         agreement_high_percent: None,
         agreement_minor: minor,
         agreement_minor_percent: None,

@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::typechecker) enum ExpressionShape {
+    Known(Vec<usize>),
+    Unknown(&'static str),
+    Invalid(String),
+}
+
 impl TypeChecker {
     pub(in crate::typechecker) fn check_equation_shape_compatibility(
         &mut self,
@@ -7,30 +14,339 @@ impl TypeChecker {
         rhs: &Expression,
         type_table: &TypeTable,
     ) {
-        let lhs_shape = self.infer_expression_shape(lhs, type_table);
-        let rhs_shape = self.infer_expression_shape(rhs, type_table);
-        let (Some(lhs_shape), Some(rhs_shape)) = (lhs_shape, rhs_shape) else {
-            return;
-        };
-        if lhs_shape == rhs_shape {
+        let message = Self::shape_compatibility_error(
+            self.inferred_expression_shape(lhs, type_table),
+            self.inferred_expression_shape(rhs, type_table),
+        );
+        if let Some(message) = message {
+            self.emit_shape_error(
+                lhs.get_location().or_else(|| rhs.get_location()),
+                "equation shape compatibility",
+                "equation assignment here",
+                message,
+            );
+        }
+    }
+
+    pub(in crate::typechecker) fn check_algorithm_assignment_shape_compatibility(
+        &mut self,
+        target: &rumoca_ir_ast::ComponentReference,
+        value: &Expression,
+        type_table: &TypeTable,
+    ) {
+        let target_shape = self.infer_component_ref_shape(target, type_table).map_or(
+            ExpressionShape::Unknown("assignment target shape"),
+            ExpressionShape::Known,
+        );
+        let message = Self::shape_compatibility_error(
+            target_shape,
+            self.inferred_expression_shape(value, type_table),
+        );
+        if let Some(message) = message {
+            self.emit_shape_error(
+                target.get_location().or_else(|| value.get_location()),
+                "algorithm assignment shape compatibility",
+                "algorithm assignment here",
+                message,
+            );
+        }
+    }
+
+    pub(in crate::typechecker) fn check_function_argument_shape_compatibility(
+        &mut self,
+        expected: Option<Vec<usize>>,
+        value: &Expression,
+        type_table: &TypeTable,
+    ) {
+        let expected = expected.map_or(
+            ExpressionShape::Unknown("function input shape"),
+            ExpressionShape::Known,
+        );
+        let found = self.inferred_expression_shape(value, type_table);
+        if matches!(
+            (&expected, &found),
+            (ExpressionShape::Known(expected), ExpressionShape::Known(found))
+                if found.len() > expected.len() && found.ends_with(expected)
+        ) {
+            // MLS §12.4.6: leading actual dimensions beyond the formal's
+            // declared shape request automatic function vectorization. Flatten
+            // owns the common vectorization-domain proof (FUNC-027 / EF016).
             return;
         }
-        let Some(loc) = lhs.get_location().or_else(|| rhs.get_location()) else {
+        let Some(message) = Self::shape_compatibility_error(expected, found) else {
             return;
         };
-        let Some(span) = self.diagnostic_location_span(loc, "equation shape compatibility") else {
+        self.emit_shape_error(
+            value.get_location(),
+            "function argument shape compatibility",
+            "incompatible function argument",
+            message,
+        );
+    }
+
+    pub(in crate::typechecker) fn check_expression_shape_validity(
+        &mut self,
+        expression: &Expression,
+        type_table: &TypeTable,
+    ) {
+        let ExpressionShape::Invalid(reason) = self.expression_shape(expression, type_table) else {
+            return;
+        };
+        self.emit_shape_error(
+            expression.get_location(),
+            "expression shape validity",
+            "invalid expression shape",
+            reason,
+        );
+    }
+
+    fn emit_shape_error(
+        &mut self,
+        location: Option<&rumoca_core::Location>,
+        context: &str,
+        label: &str,
+        message: String,
+    ) {
+        let Some(location) = location else {
+            return;
+        };
+        let Some(span) = self.diagnostic_location_span(location, context) else {
             return;
         };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
-            "ET002",
-            format!(
-                "array dimension mismatch: expected `{}`, found `{}`",
-                Self::format_shape(&lhs_shape),
-                Self::format_shape(&rhs_shape)
-            ),
-            "equation assignment here",
-            span,
+            "ET002", message, label, span,
         ));
+    }
+
+    fn shape_compatibility_error(
+        expected: ExpressionShape,
+        found: ExpressionShape,
+    ) -> Option<String> {
+        match (expected, found) {
+            (ExpressionShape::Invalid(reason), _) => {
+                Some(format!("invalid left-hand shape: {reason}"))
+            }
+            (_, ExpressionShape::Invalid(reason)) => {
+                Some(format!("invalid right-hand shape: {reason}"))
+            }
+            (ExpressionShape::Known(expected), ExpressionShape::Known(found))
+                if expected != found =>
+            {
+                Some(format!(
+                    "array dimension mismatch: expected `{}`, found `{}`",
+                    Self::format_shape(&expected),
+                    Self::format_shape(&found)
+                ))
+            }
+            (ExpressionShape::Unknown(reason), _) | (_, ExpressionShape::Unknown(reason)) => {
+                debug_assert!(!reason.is_empty());
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn expression_shape(&self, expr: &Expression, type_table: &TypeTable) -> ExpressionShape {
+        if let Err(reason) = self.validate_local_expression_shape(expr, type_table) {
+            return ExpressionShape::Invalid(reason);
+        }
+        self.inferred_expression_shape(expr, type_table)
+    }
+
+    fn inferred_expression_shape(
+        &self,
+        expr: &Expression,
+        type_table: &TypeTable,
+    ) -> ExpressionShape {
+        self.infer_expression_shape(expr, type_table).map_or(
+            ExpressionShape::Unknown("expression shape inference"),
+            ExpressionShape::Known,
+        )
+    }
+
+    /// Reject shapes that are provably inconsistent while preserving genuine
+    /// uncertainty. Traversal checks every expression after its children, so
+    /// each invalid node emits once and wrappers cannot hide it by inferring an
+    /// unknown aggregate shape.
+    fn validate_local_expression_shape(
+        &self,
+        expr: &Expression,
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        match expr {
+            Expression::Binary { op, lhs, rhs, .. } => {
+                self.validate_binary_shape(op, lhs, rhs, type_table)
+            }
+            Expression::If {
+                branches,
+                else_branch,
+                ..
+            } => self.validate_if_expression_shape(branches, else_branch, type_table),
+            Expression::Array {
+                elements,
+                is_matrix,
+                ..
+            } => self.validate_array_literal_shape(elements, *is_matrix, type_table),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_if_expression_shape(
+        &self,
+        branches: &[(Expression, Expression)],
+        else_branch: &Expression,
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        let mut known = self.infer_expression_shape(else_branch, type_table);
+        for (_, branch) in branches {
+            known = Self::validate_equal_known_shapes(
+                known,
+                self.infer_expression_shape(branch, type_table),
+                "if-expression branches",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_binary_shape(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: &Expression,
+        rhs: &Expression,
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        let lhs = self.infer_expression_shape(lhs, type_table);
+        let rhs = self.infer_expression_shape(rhs, type_table);
+        let (Some(lhs), Some(rhs)) = (lhs, rhs) else {
+            return Ok(());
+        };
+        match op {
+            rumoca_core::OpBinary::Mul => {
+                Self::matrix_product_shape(Some(lhs.clone()), Some(rhs.clone())).map_or_else(
+                    || {
+                        Err(format!(
+                            "matrix product dimensions `{}` and `{}` are incompatible",
+                            Self::format_shape(&lhs),
+                            Self::format_shape(&rhs)
+                        ))
+                    },
+                    |_| Ok(()),
+                )
+            }
+            rumoca_core::OpBinary::Div if !rhs.is_empty() => Err(format!(
+                "division denominator must be scalar, found `{}`",
+                Self::format_shape(&rhs)
+            )),
+            rumoca_core::OpBinary::Add
+            | rumoca_core::OpBinary::Sub
+            | rumoca_core::OpBinary::Eq
+            | rumoca_core::OpBinary::Neq
+                if lhs != rhs =>
+            {
+                Err(format!(
+                    "binary operand dimensions `{}` and `{}` are incompatible",
+                    Self::format_shape(&lhs),
+                    Self::format_shape(&rhs)
+                ))
+            }
+            _ if lhs == rhs || lhs.is_empty() || rhs.is_empty() => Ok(()),
+            _ => Err(format!(
+                "binary operand dimensions `{}` and `{}` are incompatible",
+                Self::format_shape(&lhs),
+                Self::format_shape(&rhs)
+            )),
+        }
+    }
+
+    fn validate_array_literal_shape(
+        &self,
+        elements: &[Expression],
+        is_matrix: bool,
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        if is_matrix {
+            return self.validate_matrix_literal_rows(elements, type_table);
+        }
+        let context = if elements
+            .iter()
+            .all(|element| matches!(element, Expression::Array { .. }))
+        {
+            "ragged array literal rows"
+        } else {
+            "array literal elements"
+        };
+        let mut known = None;
+        for element in elements {
+            known = Self::validate_equal_known_shapes(
+                known,
+                self.infer_expression_shape(element, type_table),
+                context,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn validate_matrix_literal_rows(
+        &self,
+        rows: &[Expression],
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        if !matches!(rows.first(), Some(Expression::Array { .. })) {
+            return self.validate_matrix_scalar_cells(rows, type_table);
+        }
+        let mut width = None;
+        for row in rows {
+            let Expression::Array {
+                elements: cells, ..
+            } = row
+            else {
+                return Err("matrix literal mixes row arrays and scalar cells".to_string());
+            };
+            width = Some(Self::validate_matrix_row_width(width, cells.len())?);
+            self.validate_matrix_scalar_cells(cells, type_table)?;
+        }
+        Ok(())
+    }
+
+    fn validate_matrix_row_width(expected: Option<usize>, actual: usize) -> Result<usize, String> {
+        if let Some(expected) = expected
+            && actual != expected
+        {
+            return Err(format!(
+                "ragged matrix literal has row widths `{expected}` and `{actual}`"
+            ));
+        }
+        Ok(actual)
+    }
+
+    fn validate_matrix_scalar_cells(
+        &self,
+        cells: &[Expression],
+        type_table: &TypeTable,
+    ) -> Result<(), String> {
+        if cells.iter().any(|cell| {
+            self.infer_expression_shape(cell, type_table)
+                .is_some_and(|shape| !shape.is_empty())
+        }) {
+            return Err("matrix literal contains a non-scalar cell".to_string());
+        }
+        Ok(())
+    }
+
+    fn validate_equal_known_shapes(
+        current: Option<Vec<usize>>,
+        candidate: Option<Vec<usize>>,
+        context: &str,
+    ) -> Result<Option<Vec<usize>>, String> {
+        match (current, candidate) {
+            (Some(current), Some(candidate)) if current != candidate => Err(format!(
+                "{context} have incompatible dimensions `{}` and `{}`",
+                Self::format_shape(&current),
+                Self::format_shape(&candidate)
+            )),
+            (Some(current), _) => Ok(Some(current)),
+            (None, candidate) => Ok(candidate),
+        }
     }
 
     pub(in crate::typechecker) fn infer_expression_shape(
@@ -69,6 +385,10 @@ impl TypeChecker {
             Expression::FunctionCall { comp, args, .. } => {
                 self.infer_function_call_shape(expr, comp, args, type_table)
             }
+            Expression::DerivativeCall { args, .. } if args.len() == 1 => {
+                self.infer_expression_shape(&args[0], type_table)
+            }
+            Expression::DerivativeCall { .. } => None,
             Expression::Array {
                 elements,
                 is_matrix,
@@ -137,18 +457,20 @@ impl TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) -> Option<Vec<usize>> {
-        let name = comp
-            .parts
-            .last()
-            .map(|part| part.ident.text.as_ref())
-            .unwrap_or_default();
-        match name {
-            "sum" | "product" | "scalar" if args.len() == 1 => Some(Vec::new()),
-            "der" | "pre" | "noEvent" | "actualStream" if args.len() == 1 => {
+        let builtin = self.resolved_builtin_function(comp);
+        match builtin {
+            Some(
+                rumoca_core::BuiltinFunction::Sum
+                | rumoca_core::BuiltinFunction::Product
+                | rumoca_core::BuiltinFunction::Scalar,
+            ) if args.len() == 1 => Some(Vec::new()),
+            Some(rumoca_core::BuiltinFunction::Pre | rumoca_core::BuiltinFunction::NoEvent)
+                if args.len() == 1 =>
+            {
                 self.infer_expression_shape(&args[0], type_table)
             }
-            "cross" if args.len() == 2 => Some(vec![3]),
-            "fill" if args.len() >= 2 => {
+            Some(rumoca_core::BuiltinFunction::Cross) if args.len() == 2 => Some(vec![3]),
+            Some(rumoca_core::BuiltinFunction::Fill) if args.len() >= 2 => {
                 let mut shape = rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
                     expression,
                     &self.eval_ctx,
@@ -159,17 +481,78 @@ impl TypeChecker {
                 shape.extend(self.infer_expression_shape(&args[0], type_table)?);
                 Some(shape)
             }
-            "zeros" | "ones" | "identity" | "diagonal" => {
-                rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
-                    expression,
-                    &self.eval_ctx,
-                    self.current_instance_scope
-                        .as_ref()
-                        .map_or("", ComponentPath::as_str),
-                )
+            Some(
+                rumoca_core::BuiltinFunction::Zeros
+                | rumoca_core::BuiltinFunction::Ones
+                | rumoca_core::BuiltinFunction::Identity
+                | rumoca_core::BuiltinFunction::Diagonal,
+            ) => rumoca_eval_ast::eval::infer_dimensions_from_binding_with_scope(
+                expression,
+                &self.eval_ctx,
+                self.current_instance_scope
+                    .as_ref()
+                    .map_or("", ComponentPath::as_str),
+            ),
+            _ if comp.root_def_id().is_none()
+                && comp
+                    .parts
+                    .last()
+                    .is_some_and(|part| part.ident.text.as_ref() == "actualStream")
+                && args.len() == 1 =>
+            {
+                self.infer_expression_shape(&args[0], type_table)
             }
-            _ => None,
+            _ => self.infer_user_function_output_shape(comp, args, type_table),
         }
+    }
+
+    fn infer_user_function_output_shape(
+        &self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        args: &[Expression],
+        type_table: &TypeTable,
+    ) -> Option<Vec<usize>> {
+        if args.iter().any(|arg| {
+            let value = match arg {
+                Expression::NamedArgument { value, .. } => value.as_ref(),
+                value => value,
+            };
+            self.infer_expression_shape(value, type_table)
+                .is_some_and(|shape| !shape.is_empty())
+        }) {
+            // A known array actual may be either a direct array argument or a
+            // vectorization domain. Until the FUNC-027 proof is available,
+            // presenting the declaration's unprefixed output shape as the
+            // call's result would be a fabricated exact answer.
+            return None;
+        }
+        if let Some(output) = comp
+            .root_def_id()
+            .and_then(|def_id| self.function_signatures.get(&def_id))
+            .and_then(|signature| signature.outputs.first())
+            .map(|(_, output)| output)
+        {
+            return Self::declared_component_shape(output);
+        }
+        let dotted_name = Self::component_ref_name(comp);
+        let function = self.user_function_definition(comp, &dotted_name)?;
+        function
+            .components
+            .values()
+            .find(|component| matches!(component.causality, rumoca_core::Causality::Output(_)))
+            .and_then(Self::declared_component_shape)
+    }
+
+    pub(in crate::typechecker) fn declared_component_shape(
+        component: &Component,
+    ) -> Option<Vec<usize>> {
+        if !component.shape_expr.is_empty() && component.shape_expr.len() != component.shape.len() {
+            return None;
+        }
+        if component.shape.is_empty() {
+            return component.shape_expr.is_empty().then(Vec::new);
+        }
+        Some(component.shape.clone())
     }
 
     /// Shape of a literal integer range like `1:3` (length is only known
@@ -238,6 +621,7 @@ impl TypeChecker {
                 // present that as the shape of the whole reference.
                 SemanticLookup::Found(None)
                 | SemanticLookup::Ambiguous
+                | SemanticLookup::InvalidAstSubscript
                 | SemanticLookup::Missing => return None,
             }
             let Some(part_subscripts) = part.subs.as_ref() else {

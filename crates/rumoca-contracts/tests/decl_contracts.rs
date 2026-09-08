@@ -29,6 +29,88 @@ fn decl_001_rejects_duplicate_names() {
 }
 
 #[test]
+fn decl_001_rejects_duplicate_nested_class_names() {
+    expect_parse_err_with_code(
+        r#"
+        model Test
+            model Child
+                Real first;
+            end Child;
+            model Child
+                Real second;
+            end Child;
+        end Test;
+    "#,
+        "EP001",
+    );
+}
+
+#[test]
+fn decl_001_rejects_duplicate_nested_class_names_across_visibility_sections() {
+    expect_parse_err_with_code(
+        r#"
+        model Test
+            model Child
+                Real first;
+            end Child;
+        protected
+            model Child
+                Real second;
+            end Child;
+        end Test;
+    "#,
+        "EP001",
+    );
+}
+
+#[test]
+fn decl_001_rejects_class_component_name_conflicts_across_visibility_sections() {
+    for source in [
+        r#"
+        model Test
+            model Child
+            end Child;
+        protected
+            Real Child;
+        end Test;
+        "#,
+        r#"
+        model Test
+            Real Child;
+        protected
+            model Child
+            end Child;
+        end Test;
+        "#,
+    ] {
+        expect_parse_err_with_code(source, "EP001");
+    }
+}
+
+#[test]
+fn decl_001_rejects_replaceable_nested_class_name_conflicts() {
+    for source in [
+        r#"
+        model Test
+            model Child
+            end Child;
+            replaceable model Child
+            end Child;
+        end Test;
+        "#,
+        r#"
+        model Test
+            Real Child;
+            replaceable model Child
+            end Child;
+        end Test;
+        "#,
+    ] {
+        expect_parse_err_with_code(source, "EP001");
+    }
+}
+
+#[test]
 fn decl_001_distinct_names_ok() {
     expect_success(
         r#"
@@ -41,6 +123,27 @@ fn decl_001_distinct_names_ok() {
         end Test;
     "#,
         "Test",
+    );
+}
+
+#[test]
+fn decl_001_allows_distinct_names_and_nested_names_in_distinct_scopes() {
+    expect_parse_ok(
+        r#"
+        model Test
+            model Left
+                model Child
+                end Child;
+            end Left;
+        protected
+            model Right
+                model Child
+                end Child;
+                Real value;
+            end Right;
+            Real other;
+        end Test;
+    "#,
     );
 }
 

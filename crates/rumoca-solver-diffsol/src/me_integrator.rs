@@ -8,9 +8,9 @@
 use std::{cell::Cell, rc::Rc};
 
 use diffsol::{
-    BacktrackingLineSearch, BdfState, Closure, ConstantClosure, DefaultDenseMatrix, DiffsolError,
+    BacktrackingLineSearch, BdfState, Closure, ConstantClosure, DefaultDenseMatrix,
     NewtonNonlinearSolver, OdeBuilder, OdeSolverMethod, OdeSolverProblem, OdeSolverState,
-    OdeSolverStopReason, UnitCallable, VectorHost, error::OdeSolverError,
+    OdeSolverStopReason, UnitCallable, VectorHost,
 };
 use rumoca_solver::fmi_me::{
     MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeIntegrationError,
@@ -186,46 +186,6 @@ impl DiffsolBdfIntegrator {
             Ok(())
         })
     }
-
-    fn reset_in_place(
-        &mut self,
-        point: &MeContinuousPoint,
-        derivatives: Rc<MeDerivativeHandle>,
-    ) -> Result<(), MeIntegrationError> {
-        self.require_width(point, derivatives.as_ref(), MeNumericalFailure::Reset)?;
-        let values = derivatives
-            .derivatives(point.time(), point.states())
-            .map_err(MeIntegrationError::from)?;
-        self.require_solver_mut()?
-            .with_dependent_mut(|problem, method| {
-                let mut fresh = BdfState::<Vector>::new_without_initialise(problem)
-                    .map_err(|error| numerical(MeNumericalFailure::Reset, error))?;
-                {
-                    let state = fresh.as_mut();
-                    state.y.as_mut_slice().copy_from_slice(point.states());
-                    state.dy.as_mut_slice().copy_from_slice(&values);
-                    *state.t = point.time();
-                }
-                fresh.set_step_size(problem.h0, &problem.atol, problem.rtol, &problem.eqn, 1);
-                fresh
-                    .set_problem(problem)
-                    .map_err(|error| numerical(MeNumericalFailure::Reset, error))?;
-                method.set_state(fresh);
-                match method.set_stop_time(point.time()) {
-                    Ok(())
-                    | Err(DiffsolError::OdeSolverError(OdeSolverError::StopTimeAtCurrentTime)) => {
-                        Ok(())
-                    }
-                    Err(error) => Err(numerical(MeNumericalFailure::Reset, error)),
-                }
-            })?;
-        if derivatives.has_failed() {
-            return Err(MeIntegrationError::DerivativeRefused);
-        }
-        self.derivatives = Some(derivatives);
-        self.accepted_interval = None;
-        Ok(())
-    }
 }
 
 impl MeIntegratorBackend for DiffsolBdfIntegrator {
@@ -342,7 +302,14 @@ impl MeIntegratorBackend for DiffsolBdfIntegrator {
                 "the host has not initialized the derivative capability",
             )
         })?;
-        self.reset_in_place(point, derivatives)
+        // A truncation discards the whole multistep history, so the restart is
+        // the same order-1 construction `initialize` performs, anchored at the
+        // application point. Restarting from the retained problem instead
+        // would let `BdfState::new_without_initialise` evaluate the rhs at the
+        // problem's original `t0`/`y0`, an FMI query at a coordinate behind
+        // the component's retained monotone time bound, which the component
+        // rightly refuses.
+        self.rebuild(point, derivatives, MeNumericalFailure::Reset)
     }
 }
 
@@ -448,4 +415,104 @@ fn scaled_absolute_tolerances(setup: &MeNumericalSetup) -> Result<Vec<f64>, MeIn
 
 fn numerical(category: MeNumericalFailure, error: impl std::fmt::Display) -> MeIntegrationError {
     MeIntegrationError::numerical(METHOD, category, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiffsolBdfIntegrator;
+    use rumoca_solver::fmi_me::MeIntegratorBackend;
+    use rumoca_solver::fmi_me::MeNumericalSetup;
+    use rumoca_solver::fmi_me::backend_test_support::MeBackendProbe;
+
+    fn setup() -> MeNumericalSetup {
+        MeBackendProbe::linear(vec![1.0])
+            .numerical_setup(1.0e-8, 1.0e-8, Some(1.0e-3))
+            .expect("the numerical setup is checked")
+    }
+
+    /// SPEC_0044 §6 earliest-owner truncate/reset: a located-root truncation
+    /// rebuilds a **fresh** Newton solver and BDF method anchored at the
+    /// application point, discarding the retained multistep history, rather than
+    /// resetting the retained problem in place.
+    ///
+    /// The derivative source enforces the component's own monotone `fmi3SetTime`
+    /// lower bound. After two accepted steps the bound stands at the start of the
+    /// current step, strictly ahead of the problem's original `t0`. The accepted
+    /// rebuild anchors at the interior application point (ahead of the bound) and
+    /// succeeds. A restored in-place restart — `BdfState::new_without_initialise`
+    /// on the retained problem — evaluates the rhs at that original `t0`, behind
+    /// the monotone bound, and is refused: this test then fails at
+    /// `truncate_reset`, which is the regression the diffsol crate had no test
+    /// for at all.
+    #[test]
+    fn truncate_reset_rebuilds_a_fresh_problem_anchored_at_the_interior_point() {
+        let probe = MeBackendProbe::linear(vec![1.0]);
+        let mut backend = DiffsolBdfIntegrator::new(setup());
+
+        // Initialize the retained problem at t0 = 0.
+        let start = probe.point(0.0, vec![0.0]).expect("checked start point");
+        {
+            let _window = probe.activate();
+            backend
+                .initialize(&start, probe.issue_handle())
+                .expect("initialize builds the BDF problem at t0 = 0");
+        }
+
+        // First accepted step.
+        let request = probe
+            .request(probe.point(0.0, vec![0.0]).expect("checked point"), 0.5)
+            .expect("checked first advance request");
+        let first = {
+            let _window = probe.activate();
+            backend.advance(&request).expect("the first accepted step")
+        };
+        assert!(first.accepted_time() > 0.0);
+        // The host committed the step: the retained lower bound advances to the
+        // new current point, which becomes the start of the next step.
+        probe.set_monotone_bound(first.accepted_time());
+
+        // Second accepted step from the first endpoint.
+        let second_current = probe
+            .point(first.accepted_time(), first.accepted_states().to_vec())
+            .expect("checked second current point");
+        let request = probe
+            .request(second_current, first.accepted_time() + 0.5)
+            .expect("checked second advance request");
+        let second = {
+            let _window = probe.activate();
+            backend.advance(&request).expect("the second accepted step")
+        };
+        assert!(second.accepted_time() > first.accepted_time());
+
+        // A located root truncates the current step at an interior coordinate.
+        // The monotone bound is the start of the current step (the first
+        // endpoint), strictly ahead of the problem's original t0 = 0.
+        let interior = 0.5 * (first.accepted_time() + second.accepted_time());
+        let application = probe
+            .point(interior, vec![interior])
+            .expect("checked interior application point");
+        {
+            let _window = probe.activate();
+            backend
+                .truncate_reset(&application)
+                .expect("truncate_reset rebuilds a fresh problem at the interior point");
+        }
+        assert!(
+            probe.take_error().is_none(),
+            "no derivative query fell behind the retained monotone bound"
+        );
+
+        // The freshly rebuilt problem integrates forward from the interior
+        // application point, proving the reset produced a usable method.
+        let request = probe
+            .request(application, interior + 0.25)
+            .expect("checked post-reset advance request");
+        let resumed = {
+            let _window = probe.activate();
+            backend
+                .advance(&request)
+                .expect("an accepted step after the rebuild")
+        };
+        assert!(resumed.accepted_time() > interior);
+    }
 }

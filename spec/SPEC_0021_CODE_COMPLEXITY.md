@@ -32,7 +32,7 @@ Clippy recommends using `excessive_nesting` and `too_many_lines` instead.
 | Target | 1-2 | Ideal |
 | Acceptable | 3 | Fine |
 | Limit | 4 | Clippy warns above this |
-| Exception | >4 | Must document with `#[allow]` |
+| Violation | >4 | Refactor; hand-written suppression is forbidden |
 
 **Research:** 3-4 levels is the cognitive limit for tracking nested context. Beyond this, developers lose track of which branch they're in.
 
@@ -43,7 +43,7 @@ Clippy recommends using `excessive_nesting` and `too_many_lines` instead.
 | Target | 10-30 | Ideal |
 | Acceptable | 30-60 | Fine |
 | Limit | 100 | Clippy warns above this |
-| Exception | >100 | Must document with `#[allow]` |
+| Violation | >100 | Refactor; hand-written suppression is forbidden |
 
 **Research:** Bug density increases significantly above 60-100 lines (Code Complete, McConnell). Functions over 100 lines correlate with higher defect rates.
 
@@ -54,7 +54,7 @@ Clippy recommends using `excessive_nesting` and `too_many_lines` instead.
 | Target | 0-3 | Ideal |
 | Acceptable | 4-5 | Fine |
 | Limit | 7 | Clippy warns above this |
-| Exception | >7 | Must document with `#[allow]` |
+| Violation | >7 | Refactor; hand-written suppression is forbidden |
 
 **Research:** Miller's Law - humans can hold 7±2 items in working memory. More than 7 parameters overwhelms cognition.
 
@@ -102,19 +102,26 @@ traversal-policy checks, then clippy over the whole workspace with all targets
 and all features under `-D warnings`
 (`xtask::test_cmd::run_workspace_clippy`).
 
-## Exceptions
+## Suppression Policy
 
-High complexity is acceptable when:
-1. **Exhaustive match** - Handling many enum variants in one place
-2. **Entry points** - Top-level compiler phase functions
-3. **Generated code** - Parser traits, grammar code
+| Tier | Rule | Owner/Where | Brief Justification |
+|---|---|---|---|
+| Hand-written code | `#[allow(clippy::...)]` is PROHIBITED with zero exceptions and a zero target baseline | all first-party Rust | Allows preserve design debt |
+| Generated code | Generated parser output with explicit generator provenance is the sole `allow(clippy::...)` exception | parser generation | Generated structure is not hand-designed |
+| Exhaustive closed-IR dispatch | `#[expect(lint, reason = "...")]` is permitted only where splitting an exhaustive dispatch destroys fail-closed exhaustiveness or creates unreachable totality debt | closed IR match owner | One bounded proof-shape exception |
 
-Document exceptions with:
-```rust
-// SPEC_0021: Exception - exhaustive match over TypedExprKind variants
-#[allow(clippy::too_many_lines)]
-fn check_expr(&mut self, expr: &ResolvedExpr) -> TypedExpr {
-```
+The sanctioned `expect` reason MUST name the closed vocabulary and the
+fail-closed exhaustiveness or totality property that splitting would destroy.
+It is not permission for phase entry points, wide records, large constructors,
+ordinary matches, or deletion-slated walkers. Its exact architecture baseline
+is pinned and may only decrease; enum-subfamily redesign remains the durable
+resolution.
+
+Existing hand-written allows burn down through bounded owner lanes making real
+design changes. Replacing `allow` with another spelling, moving it, weakening a
+lint group, raising a threshold, or increasing an `expect` baseline is a
+forbidden evasion. Class-B wide-record construction and deletion-slated walkers
+are resolved by their owned redesign/deletion work, never suppression.
 
 ## Refactoring Strategies
 
@@ -143,9 +150,10 @@ workspace test `crates/rumoca/tests/suite_gates/code_size_budget_test.rs`, which
 that file's text contains all three of `SPEC_0021`, `file-size`, and
 `split plan`. Use the script below for the earlier warning bands.
 
-**Exceptions:** Generated code (any `generated/` path) and test sources are
-skipped outright; every other file needs the three-phrase marker above, written
-as a comment that states the split plan.
+**Exceptions:** Actual generated parser output with explicit generator
+provenance and test sources are skipped outright; a path containing
+`generated/` is not provenance. Every other file needs the three-phrase marker
+above, written as a comment that states the split plan.
 
 ### Module Decomposition (Content-Based Paths Only)
 
@@ -176,6 +184,33 @@ ceilings; the generated-code `include!` exception above is separate.
 Maintenance rule:
 - Existing source-path bypasses are architecture violations and MUST be removed,
   not grandfathered as cleanup debt.
+
+### Semantic Macro Policy
+
+New semantic compiler and runtime families MUST prefer marker-parameterized
+generics, associated types, or checked data catalogs. A declarative or
+procedural macro is permitted only when the owner documents why those ordinary
+forms cannot express the required construction. Mechanical derives and
+build-time products generated from a checked data catalog are not semantic
+family macros.
+
+A retained semantic family macro has four inseparable proof obligations:
+
+1. one definition-site check proves the generated wrapper's structural shape;
+2. a bidirectional, exact-count invocation catalog proves that every and only
+   the reviewed typed substitutions instantiate it;
+3. coverage evidence retains the executed per-expansion function identities,
+   rather than treating the merged source-line rollup as semantic identity;
+4. a signature or construction check proves that every substituted product
+   family consumes and returns the required typed authorities.
+
+An architecture check aimed only at expansion sites is insufficient because
+source analysis sees the invocation tokens, not the expanded body. An
+unreviewed invocation, missing catalog member, substituted product outside the
+checked family, or missing execution identity rejects the associated proof
+claim. Existing semantic macros SHOULD convert opportunistically when their
+owning representation is already being restructured; this rule does not
+authorize unrelated mass rewrites.
 
 ### Files Per Directory (Guideline)
 

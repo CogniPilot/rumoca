@@ -311,7 +311,7 @@ ctx.onFrame = function() {};
                 },
                 _ => Response::from_string("Not found").with_status_code(404),
             };
-            let _ = request.respond(response);
+            let _client_closed = request.respond(response);
         }
         Ok(())
     }

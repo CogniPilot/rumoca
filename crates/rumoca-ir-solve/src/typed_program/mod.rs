@@ -2,6 +2,7 @@
 
 mod call;
 mod program;
+mod reduction;
 mod types;
 
 pub use call::{
@@ -15,6 +16,14 @@ pub use program::{
     SolveReductionOperator, SolveRegisterId, SolveSlot, SolveSlotAccess, SolveSlotId,
     SolveSpannedOperation, SolveStorageClass, SolveTensorViewAxis, SolveUnaryOperator,
     TypedProgram, TypedProgramBuilder, promoted_concatenate_dimensions,
+};
+pub use reduction::{
+    SolveMatrixMultiplyArithmetic, SolveMatrixMultiplyContraction,
+    SolveMatrixMultiplyFinalRounding, SolveMatrixMultiplyInfinity,
+    SolveMatrixMultiplyIntermediatePrecision, SolveMatrixMultiplyNan, SolveMatrixMultiplyOrder,
+    SolveMatrixMultiplyPlan, SolveMatrixMultiplyRounding, SolveMatrixMultiplySignedZero,
+    SolveMatrixMultiplyStatus, SolveMatrixMultiplySubnormal, SolveMatrixOperandLayout,
+    SolveMatrixResultLayout,
 };
 pub use types::{
     SolveArithmeticProfile, SolveIntegerDomain, SolveRealFormat, SolveScalarType,

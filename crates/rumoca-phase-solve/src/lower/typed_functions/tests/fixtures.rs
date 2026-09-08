@@ -31,10 +31,10 @@ pub(super) fn sibling_folds() -> dae::Dae {
     );
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 16)).unwrap();
     dae::Dae::construct(sources, |model| {
-        let integer = model
-            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
         let (function, ()) = model.function(
-            dae::FunctionSignature::new(VarName::new("siblings"), [], [integer, integer], at),
+            dae::FunctionSignature::new(VarName::new("siblings"), [], [real, real], at),
             |model, reservation| {
                 let alpha = model.functions(|functions| {
                     functions.output(&reservation, VarName::new("alpha"), 0, at)
@@ -44,8 +44,8 @@ pub(super) fn sibling_folds() -> dae::Dae {
                 })?;
                 let (zero, one) = model.expressions(|expressions| {
                     Ok((
-                        expressions.at(at).literal(dae::DaeLiteral::Integer(0))?,
-                        expressions.at(at).literal(dae::DaeLiteral::Integer(1))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?,
                     ))
                 })?;
                 let mut body = model.functions(|functions| functions.begin(reservation, at))?;
@@ -113,7 +113,7 @@ pub(super) fn integer_to_real_sibling_folds() -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add(
         "typed_coerced_siblings.mo",
-        "for i in 1:2 loop for j in 1:3 loop count := count + 1; end for; \
+        "for i in 1:2 loop for j in 1:3 loop count := 1; end for; \
          alpha := count; for k in 1:2 loop beta := beta + alpha; end for; end for",
     );
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 16)).unwrap();
@@ -160,8 +160,7 @@ pub(super) fn integer_to_real_sibling_folds() -> dae::Dae {
                 let outer = model.functions(|functions| {
                     functions.begin_loop(body, outer_domain, [beta, alpha, count], at)
                 })?;
-                let mut outer =
-                    accumulate_integer_count(model, outer, first_domain, count, one, at)?;
+                let mut outer = publish_integer_one(model, outer, first_domain, count, one, at)?;
                 let completed_count =
                     model.functions(|functions| functions.read(outer.body(), count, at))?;
                 // Integer right-hand side under the Real target.
@@ -179,7 +178,7 @@ pub(super) fn integer_to_real_sibling_folds() -> dae::Dae {
     .unwrap()
 }
 
-fn accumulate_integer_count<'dae>(
+fn publish_integer_one<'dae>(
     model: &mut dae::DaeConstruction<'dae>,
     outer: dae::FunctionLoop<'dae>,
     domain: dae::DomainId<'dae>,
@@ -189,13 +188,7 @@ fn accumulate_integer_count<'dae>(
 ) -> Result<dae::FunctionLoop<'dae>, dae::DaeConstructionError> {
     let mut first =
         model.functions(|functions| functions.begin_nested_loop(outer, domain, [count], at))?;
-    let carried = model.functions(|functions| functions.read(first.body(), count, at))?;
-    let incremented = model.expressions(|expressions| {
-        expressions
-            .at(at)
-            .binary(dae::BinaryOperator::Add, carried, one)
-    })?;
-    model.functions(|functions| functions.assign_loop(&mut first, count, incremented, at))?;
+    model.functions(|functions| functions.assign_loop(&mut first, count, one, at))?;
     model.functions(|functions| functions.finish_nested_loop(first, at))
 }
 
@@ -249,7 +242,7 @@ pub(super) fn lower_root_call(model: &dae::Dae) -> solve::SolvePureCallTable {
 pub(super) fn structured_range(name: &str, upper: i64) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: name.to_owned(),
             lower: 1,
             upper,

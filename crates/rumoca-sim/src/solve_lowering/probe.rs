@@ -2,6 +2,8 @@
 //! `--inspect jacobian`: lower the DAE, evaluate it at a named `(state, t)`, and
 //! report named solver values / a named dense state Jacobian.
 
+use std::sync::Arc;
+
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_solver::SimOptions;
@@ -44,16 +46,16 @@ pub fn eval_dae_at(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<EvalAtProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
+    let solve_model = Arc::new(lower_dae_for_simulation(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect eval --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_at(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         EVAL_AT_REFRESH_TOL,
         EVAL_AT_REFRESH_MAX_ITERS,
     );
@@ -75,12 +77,13 @@ fn resolve_probe_state(
     label: &str,
 ) -> Result<(Vec<f64>, Vec<String>), SimulationDiagnosticError> {
     let state_count = solve_model.state_scalar_count();
-    let state_names = solve_model.problem.solve_layout.solver_maps.names[..state_count].to_vec();
+    let state_names =
+        solve_model.problem().solve_layout().solver_maps.names[..state_count].to_vec();
 
     let mut state_used = vec![0.0; state_count];
     for (dst, src) in state_used
         .iter_mut()
-        .zip(solve_model.initial_y.iter().copied())
+        .zip(solve_model.initial_y().iter().copied())
     {
         *dst = src;
     }
@@ -122,16 +125,16 @@ pub fn jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<JacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
+    let solve_model = Arc::new(lower_dae_for_simulation(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_state_jacobian(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
@@ -168,16 +171,16 @@ pub fn parameter_jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<ParameterJacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
+    let solve_model = Arc::new(lower_dae_for_simulation(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.eval_parameter_jacobian(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
@@ -218,16 +221,16 @@ pub fn steady_state_objective_gradient_for_dae(
     // un-applicable overrides (structural/folded/depended-upon) are rejected
     // loudly rather than silently ignored. Empty overrides are a no-op, so the CLI
     // path is unchanged.
-    let solve_model = lower_for_simulation_with_overrides(dae_model, opts)?;
+    let solve_model = Arc::new(lower_for_simulation_with_overrides(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "objective gradient --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_objective_gradient(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         objective,
         rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
@@ -254,16 +257,16 @@ pub fn steady_state_adjoint_objective_gradient_for_dae(
     t: f64,
 ) -> Result<ObjectiveGradientProbe, SimulationDiagnosticError> {
     // Overrides-aware lowering: see `steady_state_objective_gradient_for_dae`.
-    let solve_model = lower_for_simulation_with_overrides(dae_model, opts)?;
+    let solve_model = Arc::new(lower_for_simulation_with_overrides(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "adjoint gradient --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_adjoint_objective_gradient(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         objective,
         rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
@@ -299,19 +302,19 @@ pub fn steady_state_parameter_sensitivity_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<SteadyStateSensitivityProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
+    let solve_model = Arc::new(lower_dae_for_simulation(dae_model, opts)?);
     let (state_used, state_names) = resolve_probe_state(
         &solve_model,
         state_overrides,
         "steady-state sensitivity --at",
     )?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let report = runtime.steady_state_parameter_sensitivity(
         t,
         &state_used,
-        &solve_model.parameters,
+        solve_model.parameters(),
         rumoca_solver::AlgebraicSettle {
             tol: EVAL_AT_REFRESH_TOL,
             max_iters: EVAL_AT_REFRESH_MAX_ITERS,
@@ -349,19 +352,19 @@ pub fn state_and_parameter_jacobian_for_dae(
     state_overrides: &[(String, f64)],
     t: f64,
 ) -> Result<StateAndParameterJacobianProbe, SimulationDiagnosticError> {
-    let solve_model = lower_dae_for_simulation(dae_model, opts)?;
+    let solve_model = Arc::new(lower_dae_for_simulation(dae_model, opts)?);
     let (state_used, state_names) =
         resolve_probe_state(&solve_model, state_overrides, "--inspect jacobian --at")?;
 
-    let runtime =
-        rumoca_solver::SolveRuntime::new(&solve_model).map_err(SimulationDiagnosticError::from)?;
+    let runtime = rumoca_solver::SolveRuntime::new(Arc::clone(&solve_model))
+        .map_err(SimulationDiagnosticError::from)?;
     let settle = rumoca_solver::AlgebraicSettle {
         tol: EVAL_AT_REFRESH_TOL,
         max_iters: EVAL_AT_REFRESH_MAX_ITERS,
     };
-    let state = runtime.eval_state_jacobian(t, &state_used, &solve_model.parameters, settle);
+    let state = runtime.eval_state_jacobian(t, &state_used, solve_model.parameters(), settle);
     let parameter =
-        runtime.eval_parameter_jacobian(t, &state_used, &solve_model.parameters, settle);
+        runtime.eval_parameter_jacobian(t, &state_used, solve_model.parameters(), settle);
     Ok(StateAndParameterJacobianProbe {
         state,
         parameter,

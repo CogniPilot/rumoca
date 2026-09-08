@@ -198,8 +198,8 @@ pub fn run(args: ScheduledSimArgs) -> std::result::Result<(), ScheduledSimError>
     if let Some(rtol) = args.rtol {
         sim_options.rtol = rtol;
     }
-    let mut session = SimulationSession::new_with_diagnostics(result.dae.as_ref(), sim_options)
-        .map_err(|error| {
+    let mut session =
+        SimulationSession::new(result.dae.as_ref(), sim_options).map_err(|error| {
             ScheduledSimError::simulation_diagnostic(
                 "Failed to create simulation session",
                 error,

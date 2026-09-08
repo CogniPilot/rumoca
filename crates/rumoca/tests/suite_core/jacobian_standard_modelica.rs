@@ -10,6 +10,7 @@ use std::fs;
 use std::process::Command;
 
 use super::jacobian_finite_difference::battery_sources;
+use super::required_tool_markers::omc_differential_is_required;
 
 const SURFACE_FIXTURE: &str = "\
 function scale
@@ -99,7 +100,7 @@ fn the_expansion_carries_no_extension_construct() {
 fn the_expanded_battery_instantiates_under_omc() {
     if !omc_available() {
         assert!(
-            !std::path::Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "the OpenModelica elaboration row is required in this lane, but no working `omc` is \
              on PATH"
         );
@@ -169,7 +170,7 @@ fn marked_value(transcript: &str, marker: &str) -> Option<f64> {
 fn the_expanded_battery_agrees_with_finite_differences_under_omc() {
     if !omc_available() {
         assert!(
-            !std::path::Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "the OpenModelica differential row is required in this lane, but no working `omc` \
              is on PATH"
         );

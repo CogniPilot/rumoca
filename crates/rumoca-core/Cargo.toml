@@ -8,6 +8,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 indexmap = { workspace = true }
 miette = { workspace = true }
 serde = { workspace = true }

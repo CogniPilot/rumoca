@@ -9,16 +9,18 @@ container.
 
 The `galec` target consumes the `dae` IR and accepts **fixed-sample discrete
 models only** (models with no continuous states and no `der()`). It writes an
-eFMI Algorithm Code eFMU: `AlgorithmCode/Model.alg` + `manifest.xml`, plus
+eFMI Algorithm Code eFMU: `AlgorithmCode/model.alg` + `manifest.xml`, plus
 `__content.xml` and `schemas/`.
 
-GALEC never emits C. The former C-emitting GALEC targets are gone:
-`embedded-c-galec` is retired (its successor is the Solve-rendered embedded C
-target), and `galec-production` (the eFMI Production Code container) is
-suspended until its `ProductionCode/` C leaf renders from the refined Solve
-product. Requesting either name reports that status and the successor. For a
-general C export today, use the `fmi3` target (FMI 3.0 ME+CS): Model Exchange
-serves host-owned integration and Co-Simulation serves the built-in solver.
+GALEC never emits C. The deleted `embedded-c-galec` and `galec-production`
+spellings have no registry entries, aliases, or tailored compatibility
+behavior. The eventual deployable eFMI product is
+the `efmu` target: one `SolveAlgorithmProduct` retains its checked
+`AlgorithmCodePackage` and correlated `SolveAlgorithmBlock`, and each output
+file borrows the appropriate view. Its Production Code C leaf renders only
+from the Solve block. Until that target lands, use `galec` for Algorithm Code. For a general
+C export today, use the `fmi3` target (FMI 3.0 ME+CS): Model Exchange serves
+host-owned integration and Co-Simulation serves the built-in solver.
 
 ## Exporting from the CLI
 
@@ -34,7 +36,7 @@ out/
   Model/                eFMU container, directory form
     __content.xml
     schemas/
-    AlgorithmCode/      Model.alg + manifest.xml
+    AlgorithmCode/      model.alg + manifest.xml
   Model.efmu            eFMU container, zip form (same content)
 ```
 

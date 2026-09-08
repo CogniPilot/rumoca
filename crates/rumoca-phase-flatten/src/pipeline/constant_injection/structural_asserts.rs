@@ -25,7 +25,7 @@ pub(crate) fn fold_structural_initial_asserts(
     ctx: &Context,
     error_literal: Option<rumoca_core::DefId>,
 ) -> Result<(), FlattenError> {
-    use rumoca_eval_flat::constant::{EvalContext, Value, eval_expr};
+    use rumoca_eval_flat::constant::{EvalContext, Value};
 
     let frozen = |name: &str| {
         let Some(variable) = flat.variables.get(&rumoca_core::VarName::new(name)) else {
@@ -45,7 +45,7 @@ pub(crate) fn fold_structural_initial_asserts(
         }
     };
 
-    let mut eval_ctx = EvalContext::new();
+    let mut eval_ctx = EvalContext::structural_preidentity();
     for (name, value) in &ctx.parameter_values {
         if frozen(name) {
             eval_ctx.add_parameter(name.clone(), Value::Integer(*value));
@@ -61,33 +61,38 @@ pub(crate) fn fold_structural_initial_asserts(
             eval_ctx.add_parameter(name.clone(), Value::Bool(*value));
         }
     }
-    for func in ctx.functions.values() {
-        eval_ctx.add_function(func.clone());
-    }
-    for func in flat.functions.values() {
-        eval_ctx.add_function(func.clone());
-    }
+    // The Flat catalog is the authority here: every pre-collected callable was
+    // seeded into it under the identity it still carries, and collection may
+    // since have re-converted an entry under that same identity, so issuing
+    // the context copy as well would present one instance twice.
+    crate::equations::try_issue_eval_function_facts(&mut eval_ctx, flat.functions.values())
+        .map_err(|error| FlattenError::internal(error.to_string()))?;
 
-    let mut failure: Option<(String, rumoca_core::Span)> = None;
     for algorithm in &mut flat.initial_algorithms {
-        algorithm.statements.retain(|statement| {
+        let mut retained = Vec::with_capacity(algorithm.statements.len());
+        for statement in std::mem::take(&mut algorithm.statements) {
             let rumoca_core::Statement::Assert {
                 condition,
                 message,
                 level,
                 span,
-            } = statement
+            } = &statement
             else {
-                return true;
+                retained.push(statement);
+                continue;
             };
-            if failure.is_some() {
-                return true;
-            }
-            let Ok(Value::Bool(holds)) = eval_expr(condition, &eval_ctx) else {
-                return true;
+            let Some(holds) = crate::constant_eval::evaluate_optional_boolean(
+                condition,
+                &eval_ctx,
+                "folding a structural assertion condition",
+                *span,
+            )?
+            else {
+                retained.push(statement);
+                continue;
             };
             if holds {
-                return false;
+                continue;
             }
             // MLS §8.3.7: an omitted level defaults to error. An explicit
             // level is error exactly when its structured reference targets
@@ -102,18 +107,23 @@ pub(crate) fn fold_structural_initial_asserts(
                 Some(_) => false,
             };
             if !error_level {
-                return true;
+                retained.push(statement);
+                continue;
             }
-            let Ok(Value::String(text)) = eval_expr(message, &eval_ctx) else {
+            let Some(text) = crate::constant_eval::evaluate_optional_string(
+                message,
+                &eval_ctx,
+                "folding a structural assertion message",
+                *span,
+            )?
+            else {
                 // The runtime owner keeps the exact message the model wrote.
-                return true;
+                retained.push(statement);
+                continue;
             };
-            failure = Some((text, *span));
-            true
-        });
-    }
-    if let Some((message, span)) = failure {
-        return Err(FlattenError::structural_assertion_failed(message, span));
+            return Err(FlattenError::structural_assertion_failed(text, *span));
+        }
+        algorithm.statements = retained;
     }
     Ok(())
 }

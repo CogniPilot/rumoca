@@ -21,6 +21,16 @@ struct JacobianSeed<'a> {
     unit: &'a mut Vec<f64>,
 }
 
+struct BlockVjpRequest<'a, P> {
+    block: &'a PreparedScalarProgramBlock,
+    selected_arm: &'a P,
+    t: f64,
+    solver_y: &'a [f64],
+    params: &'a [f64],
+    cotangents: &'a [f64],
+    out: &'a mut [f64],
+}
+
 impl SolveRuntime {
     /// Exact state Jacobian-vector product `d(der)/d(state)·v` for the state-only
     /// BDF path, accounting for the algebraic projection.
@@ -50,7 +60,7 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         // State seed: copy only the state slice; the algebraic and parameter
         // seeds stay zero (the algebraic seeds are filled by the projection).
-        self.eval_derivative_jacobian_v_with_seed(lin, state, seed, self.state_count, out)
+        self.eval_derivative_jacobian_v_with_seed(lin, state, seed, self.state_count(), out)
     }
 
     pub fn eval_state_jacobian_v_ad_with_guess_into(
@@ -73,7 +83,7 @@ impl SolveRuntime {
             solver_y_guess,
             JacobianSeed {
                 values: seed,
-                copy_len: self.state_count,
+                copy_len: self.state_count(),
                 buffer: seed_buf,
                 unit: unit_seed,
             },
@@ -107,7 +117,7 @@ impl SolveRuntime {
             solver_y,
             JacobianSeed {
                 values: seed,
-                copy_len: self.state_count,
+                copy_len: self.state_count(),
                 buffer: seed_buf,
                 unit: unit_seed,
             },
@@ -150,11 +160,11 @@ impl SolveRuntime {
         param_slot: usize,
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let p_scalars = self.model.problem.layout.p_scalars();
-        let mut seed = vec![0.0; self.solver_count + p_scalars];
-        let n = self.state_count.min(sens_column.len()).min(seed.len());
+        let p_scalars = self.model().problem().layout().p_scalars();
+        let mut seed = vec![0.0; self.solver_count() + p_scalars];
+        let n = self.state_count().min(sens_column.len()).min(seed.len());
         seed[..n].copy_from_slice(&sens_column[..n]);
-        let p_index = self.solver_count + param_slot;
+        let p_index = self.solver_count() + param_slot;
         if p_index < seed.len() {
             seed[p_index] = 1.0;
         }
@@ -187,18 +197,18 @@ impl SolveRuntime {
         // algebraics — e.g. a pure output objective — are at their correct value.
         self.populate_solver_y_from_state(solver_y, state)?;
         self.refresh_algebraic_and_output_slots(t, solver_y, params, settle.tol, settle.max_iters)?;
-        let p_scalars = self.model.problem.layout.p_scalars();
-        let seed_len = (self.solver_count + p_scalars)
+        let p_scalars = self.model().problem().layout().p_scalars();
+        let seed_len = (self.solver_count() + p_scalars)
             .max(self.implicit_jacobian_v.requirements().seed_len)
-            .max(self.solver_count);
+            .max(self.solver_count());
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
         let n = self
-            .state_count
+            .state_count()
             .min(state_sensitivity.len())
             .min(seed_buf.len());
         seed_buf[..n].copy_from_slice(&state_sensitivity[..n]);
-        let p_index = self.solver_count + param_slot;
+        let p_index = self.solver_count() + param_slot;
         if p_index < seed_buf.len() {
             seed_buf[p_index] = 1.0;
         }
@@ -207,7 +217,7 @@ impl SolveRuntime {
         // Seed against the full algebraic plan so every solver-y algebraic (states
         // pass through unchanged) receives its `∂(alg)/∂state·v + ∂(alg)/∂p` seed.
         self.seed_refresh_with_plan(&self.algebraic_refresh, lin, solver_y, seed_buf, unit_seed)?;
-        let copy = self.solver_count.min(out.len()).min(seed_buf.len());
+        let copy = self.solver_count().min(out.len()).min(seed_buf.len());
         out[..copy].copy_from_slice(&seed_buf[..copy]);
         Ok(())
     }
@@ -215,9 +225,9 @@ impl SolveRuntime {
     /// Index of a solver-y variable (state or algebraic) by qualified name, or
     /// `None` if it is not a solver variable (e.g. a parameter or unknown name).
     pub fn solver_variable_index(&self, name: &str) -> Option<usize> {
-        self.model
-            .problem
-            .solve_layout
+        self.model()
+            .problem()
+            .solve_layout()
             .solver_maps
             .names
             .iter()
@@ -248,17 +258,17 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
-        if self.solver_count != self.state_count {
+        if self.solver_count() != self.state_count() {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "reverse-mode VJP does not yet support models with solver algebraics \
                  ({} algebraic(s) beyond {} state(s)): the algebraic-projection adjoint is Track B. \
                  Reverse a pure-ODE model, or use the forward sensitivity for now",
-                self.solver_count - self.state_count,
-                self.state_count
+                self.solver_count() - self.state_count(),
+                self.state_count()
             )));
         }
-        let p_scalars = self.model.problem.layout.p_scalars();
-        let expected = self.solver_count + p_scalars;
+        let p_scalars = self.model().problem().layout().p_scalars();
+        let expected = self.solver_count() + p_scalars;
         if out.len() != expected {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "reverse VJP output has {} entries, expected solver_count + p_scalars = {expected}",
@@ -272,7 +282,7 @@ impl SolveRuntime {
         self.populate_solver_y_from_state(solver_y, state)?;
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
         out.fill(0.0);
-        let (cot_y, cot_p) = out.split_at_mut(self.solver_count);
+        let (cot_y, cot_p) = out.split_at_mut(self.solver_count());
         let mut reverse_scratch = self.reverse_scratch.borrow_mut();
         self.derivative_scalar
             .reverse_vjp(
@@ -280,7 +290,11 @@ impl SolveRuntime {
                     y: solver_y,
                     p: params,
                     t,
-                    context: self.row_eval_context(),
+                    context: self
+                        .execution_plan
+                        .interpreter
+                        .derivative_sensitivity
+                        .row_eval_context(self),
                 },
                 output_cotangents,
                 &mut rumoca_eval_solve::reverse::ReverseCotangents {
@@ -315,8 +329,8 @@ impl SolveRuntime {
         output_cotangents: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let p_scalars = self.model.problem.layout.p_scalars();
-        let expected = self.solver_count + p_scalars;
+        let p_scalars = self.model().problem().layout().p_scalars();
+        let expected = self.solver_count() + p_scalars;
         if out.len() != expected {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "implicit residual VJP output has {} entries, expected solver_count + p_scalars = \
@@ -325,7 +339,7 @@ impl SolveRuntime {
             )));
         }
         out.fill(0.0);
-        let (cot_y, cot_p) = out.split_at_mut(self.solver_count);
+        let (cot_y, cot_p) = out.split_at_mut(self.solver_count());
         // A self-contained scratch keeps this composable with the derivative VJP
         // (the algebraic adjoint drives both); reuse can come once it is hot.
         let mut scratch = rumoca_eval_solve::reverse::ReverseScratch::default();
@@ -335,7 +349,11 @@ impl SolveRuntime {
                     y: solver_y,
                     p: params,
                     t,
-                    context: self.row_eval_context(),
+                    context: self
+                        .execution_plan
+                        .interpreter
+                        .implicit_sensitivity
+                        .row_eval_context(self),
                 },
                 output_cotangents,
                 &mut rumoca_eval_solve::reverse::ReverseCotangents {
@@ -356,10 +374,10 @@ impl SolveRuntime {
     /// `implicit_row_targets`, whose target for a genuine implicit constraint
     /// (e.g. `z*z = b*x`) is `None`, so it cannot identify these rows.
     fn algebraic_constraint_rows(&self) -> Vec<usize> {
-        self.model
-            .problem
-            .continuous
-            .algebraic_projection_plan
+        self.model()
+            .problem()
+            .continuous()
+            .algebraic_projection_plan()
             .blocks
             .iter()
             .flat_map(|block| block.rows.iter().copied())
@@ -389,8 +407,8 @@ impl SolveRuntime {
         lambda: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let p_scalars = self.model.problem.layout.p_scalars();
-        let expected = self.solver_count + p_scalars;
+        let p_scalars = self.model().problem().layout().p_scalars();
+        let expected = self.solver_count() + p_scalars;
         if out.len() != expected {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "steady-residual transpose output has {} entries, expected solver_count + \
@@ -398,24 +416,25 @@ impl SolveRuntime {
                 out.len()
             )));
         }
-        if lambda.len() != self.solver_count {
+        if lambda.len() != self.solver_count() {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "steady-residual transpose cotangent has {} entries, expected solver_count = {}",
                 lambda.len(),
-                self.solver_count
+                self.solver_count()
             )));
         }
         out.fill(0.0);
 
         // State (der) rows: ∂der/∂[y|p]ᵀ · λ[0..state_count].
-        self.accumulate_block_vjp(
-            &self.derivative_scalar,
+        self.accumulate_block_vjp(BlockVjpRequest {
+            block: &self.derivative_scalar,
+            selected_arm: &self.execution_plan.interpreter.derivative_sensitivity,
             t,
             solver_y,
             params,
-            &lambda[..self.state_count],
+            cotangents: &lambda[..self.state_count()],
             out,
-        )?;
+        })?;
 
         // Algebraic (g) rows: scatter the algebraic multipliers onto the implicit
         // residual's constraint rows and accumulate ∂g/∂[y|p]ᵀ · μ onto `out`.
@@ -427,7 +446,7 @@ impl SolveRuntime {
         // rather than trust it: a future solver-y reordering would otherwise silently
         // read the wrong multipliers and return a wrong adjoint.
         let alg = self.algebraic_constraint_rows();
-        let algebraic_count = self.solver_count - self.state_count;
+        let algebraic_count = self.solver_count() - self.state_count();
         if alg.len() != algebraic_count {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "steady-residual transpose: {} algebraic constraint rows but {} non-state \
@@ -435,13 +454,21 @@ impl SolveRuntime {
                  mapping λ[state_count + k] assumes one constraint per non-state slot",
                 alg.len(),
                 algebraic_count,
-                self.solver_count,
-                self.state_count
+                self.solver_count(),
+                self.state_count()
             )));
         }
         if !alg.is_empty() {
             let mu = self.scatter_algebraic_multipliers(&alg, lambda);
-            self.accumulate_block_vjp(&self.implicit_scalar_rhs, t, solver_y, params, &mu, out)?;
+            self.accumulate_block_vjp(BlockVjpRequest {
+                block: &self.implicit_scalar_rhs,
+                selected_arm: &self.execution_plan.interpreter.implicit_sensitivity,
+                t,
+                solver_y,
+                params,
+                cotangents: &mu,
+                out,
+            })?;
         }
         Ok(())
     }
@@ -449,24 +476,28 @@ impl SolveRuntime {
     /// Reverse a scalar program block and **accumulate** `(∂block/∂[solver_y|p])ᵀ ·
     /// cotangents` into `out` (`out[..solver_count]` = solver-y part, rest = `p`
     /// part). `out` is not cleared, so successive calls sum their contributions.
-    fn accumulate_block_vjp(
+    fn accumulate_block_vjp<P: InterpreterPermit>(
         &self,
-        block: &PreparedScalarProgramBlock,
-        t: f64,
-        solver_y: &[f64],
-        params: &[f64],
-        cotangents: &[f64],
-        out: &mut [f64],
+        request: BlockVjpRequest<'_, P>,
     ) -> Result<(), RuntimeSolveError> {
+        let BlockVjpRequest {
+            block,
+            selected_arm,
+            t,
+            solver_y,
+            params,
+            cotangents,
+            out,
+        } = request;
         let mut scratch = rumoca_eval_solve::reverse::ReverseScratch::default();
-        let (cot_y, cot_p) = out.split_at_mut(self.solver_count);
+        let (cot_y, cot_p) = out.split_at_mut(self.solver_count());
         block
             .reverse_vjp(
                 &rumoca_eval_solve::reverse::ReverseInputs {
                     y: solver_y,
                     p: params,
                     t,
-                    context: self.row_eval_context(),
+                    context: selected_arm.row_eval_context(self),
                 },
                 cotangents,
                 &mut rumoca_eval_solve::reverse::ReverseCotangents {
@@ -485,7 +516,8 @@ impl SolveRuntime {
     fn scatter_algebraic_multipliers(&self, alg_rows: &[usize], lambda: &[f64]) -> Vec<f64> {
         let mut mu = vec![0.0_f64; self.implicit_scalar_rhs.len()];
         for (k, &row) in alg_rows.iter().enumerate() {
-            if let (Some(slot), Some(&value)) = (mu.get_mut(row), lambda.get(self.state_count + k))
+            if let (Some(slot), Some(&value)) =
+                (mu.get_mut(row), lambda.get(self.state_count() + k))
             {
                 *slot = value;
             }
@@ -532,7 +564,7 @@ impl SolveRuntime {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         let AlgebraicLinearization { t, params, settle } = lin;
-        validate_derivative_output_len(out, self.state_count)?;
+        validate_derivative_output_len(out, self.state_count())?;
         // (1) Linearization point: project the algebraics from the caller's seed.
         self.refresh_derivative_dependencies(t, solver_y, params, settle.tol, settle.max_iters)?;
         self.eval_derivative_jacobian_v_from_settled_solver_y(lin, solver_y, seed, out)
@@ -552,7 +584,7 @@ impl SolveRuntime {
             unit: unit_seed,
         } = seed;
         let AlgebraicLinearization { t, params, .. } = lin;
-        validate_derivative_output_len(out, self.state_count)?;
+        validate_derivative_output_len(out, self.state_count())?;
         // The JVP rows seed both solver-y and parameters (`SeedMode::SolverYAndP`),
         // so the seed vector spans `[solver-y | parameter]` space. We copy the
         // leading `seed_copy_len` entries from the caller (state-only for the
@@ -563,7 +595,7 @@ impl SolveRuntime {
             .requirements()
             .seed_len
             .max(self.implicit_jacobian_v.requirements().seed_len)
-            .max(self.solver_count);
+            .max(self.solver_count());
         seed_buf.clear();
         seed_buf.resize(seed_len, 0.0);
         let n = seed_copy_len.min(seed.len()).min(seed_buf.len());
@@ -573,10 +605,11 @@ impl SolveRuntime {
         // (2) Forward-propagate the seed through the algebraic projection.
         self.seed_refresh_derivative_dependencies(lin, solver_y, seed_buf, unit_seed)?;
         // (3) Total Jacobian-vector product via the derivative JVP.
-        let context = RowEvalContext {
-            seed: Some(seed_buf.as_slice()),
-            ..self.row_eval_context()
-        };
+        let context = self
+            .execution_plan
+            .interpreter
+            .derivative_sensitivity
+            .seeded_row_eval_context(self, seed_buf.as_slice());
         self.derivative_jacobian_v
             .eval_with_context(solver_y, params, t, context, out)
             .map_err(Into::into)
@@ -605,7 +638,7 @@ impl SolveRuntime {
     /// their seed filled).
     pub(super) fn seed_refresh_with_plan(
         &self,
-        plan: &solve::RefreshPlan,
+        plan: &solve::IssuedRefreshPlan,
         lin: AlgebraicLinearization<'_>,
         solver_y: &[f64],
         seed: &mut [f64],
@@ -613,19 +646,19 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         let projection_model = RefreshProjectionModel {
             runtime: self,
-            plan: &plan.simultaneous_plan,
-            block_indices: &plan.simultaneous_block_indices,
+            plan: plan.simultaneous_plan(),
+            block_indices: plan.simultaneous_block_indices(),
             plan_validated: false,
             jacobian_v: ProjectionJacobian::SolverYAndParameters(&self.implicit_jacobian_v),
         };
         project_algebraic_seed_with_plan(
             &projection_model,
-            &plan.simultaneous_plan,
+            plan.simultaneous_plan(),
             solver_y,
             crate::runtime::projection::AlgebraicProjectionArgs {
                 parameters: lin.params,
                 time: lin.t,
-                state_count: self.state_count,
+                state_count: self.state_count(),
                 tolerance: lin.settle.tol,
             },
             seed,

@@ -8,15 +8,15 @@ DRAFT
 Verification effort is spent on three things: making invalid IR
 unrepresentable, checking transformations against witnesses, and proving the
 checkers and the semantics. A machine-checked theorem about the whole compiler
-is a non-goal.
+is a staged goal, composed from small relations.
 
 ## Governing Theorem
 
 For every model M, if the compiler accepts M and emits artifact A, then
 simulating A agrees with the meaning of M under the reference semantics (§5).
 Every mechanism in this spec exists to make some fragment of that statement
-checkable; machine-checking the whole of it is a non-goal (§4), and §7 records
-which fragments hold today.
+checkable; machine-checking the whole of it is the staged goal (§4), and §7
+records which fragments hold today.
 
 "Agrees" reads in three layers, and a correctness claim MUST name the layer it
 makes.
@@ -55,7 +55,7 @@ its own kind, and none is asked to do another's work.
 | The checker, not the producer, enters the trusted base | checker modules | Only small code is provable at this cost |
 | A witness is a type with a private constructor, not a boolean | witness owners | Possession is the evidence |
 | A transformation with no witness runs outside verified mode | transformation phases | Unproven work stays labelled |
-| Provers verify checkers and semantics, never whole passes | this spec | Per-pass theorems do not repay their cost |
+| Provers verify checkers, semantics, pure fact-projection primitives feeding checkers, and their checked compositions; search and whole passes stay outside the proof surface | this spec | Prove reusable relations without proving search |
 
 ### 2. Checker Discipline
 
@@ -124,14 +124,15 @@ claim about the compiler.
 | 1 | Kani on each checker as it lands | Bounded proof is cheap enough to be routine, and it runs on the Rust that ships |
 | 2 | Lean semantics of GALEC | Smallest language in the system, certification-facing, and its traps are enumerated in [SPEC_0042](SPEC_0042_GALEC_LANGUAGE_CATALOG.md) |
 | 3 | Lean semantics of the `rumoca-reference` slice | The definitional interpreter is already written to be transliterable (§5) |
-| Non-goal | A machine-checked theorem for the whole compiler | Stated below |
+| Staged goal | A machine-checked theorem for the whole compiler | See below |
 
-The whole-compiler proof is a non-goal, not a deferred goal. Its top-level
-statement would have to refine the behaviors the Modelica Language
-Specification assigns to a source model, and that specification is prose with
-tracked silences ([SPEC_0022](SPEC_0022_MLS_COMPILER_COMPLIANCE.md)), so there
-is no formal object to refine toward. Under this architecture the proof surface
-is the checkers plus the semantics, and it stays small on purpose.
+The whole-compiler proof is staged, not monolithic. Its top-level statement
+cannot refine the Modelica Language Specification: that specification is prose
+with tracked silences ([SPEC_0022](SPEC_0022_MLS_COMPILER_COMPLIANCE.md)), so
+absent a formal object, a relation is stated against an authored semantics,
+named trusted rather than derived. Progress composes small source-bound
+relations along declared edges. It mandates no pass rewrite or optimizer-search
+proof.
 
 ### 5. Definitional Semantics
 
@@ -182,10 +183,12 @@ This section is the inventory, and a row moves only with the evidence it names.
 | Loop-compaction store deletion | L1: differential corpus, no witness gating |
 | Liveness alternatives join | L1 over its whole bounded domain, exit sets included; a bounded L3 harness on it did not finish symbolic execution |
 | DAE wire round trip | Property-tested, not proven |
-| Translation validation | SPEC_0039 defines a witness; no phase yet ships a producer and checker pair under it |
+| DAE-to-Solve variable-catalog refinement | L2 for the live `LoweredSolveModel` under SOLVE-C60 ([SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4), [SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-component-construction-catalog)). The affine checked-root carrier binds the exact prepared DAE, Solve root and checked occurrence map; start/runtime values, equations/programs, wire roots and terminal `into_model` erasure remain outside. Materialization copies compact dimensions four times per joined variable, plus two diagnostic copies on mismatch: measured engineering debt, not a waived invariant. No Kani or Lean proof of this relation exists |
+| Scalar constant-derivative DAE-to-Solve refinement | L2 under SOLVE-C61 ([SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4), [SPEC_0043 §8](SPEC_0043_CONSTRUCTION_CATALOG.md#8-fmi-component-construction-catalog)): the exact one-state literal profile consumes the affine C60 carrier into a correlated checked root. A positive production witness requires its receipt; in-profile mismatch refuses, while out-of-profile is a typed disposition on the unchanged generic lowering. The whole relation has no L3/L4 proof; the Lean fragments below are not L4: no assistant is formally selected |
+| Other translation validation | SPEC_0039 defines the general witness precedent; no other phase yet ships a producer and checker pair under it |
 | Definitional semantics | Slice 1 implemented and differentially validated, not transcribed |
-| Lean | Not started: no assistant selected, nothing transcribed |
-| Whole-compiler theorem | Non-goal (§4) |
+| Lean fragments | Experimental pinned Charon/Aeneas-to-Lean replay proves actual instruction/program/block/root-value projections, supplied-fact comparison and owner-count equality/first-mismatch, with original-program identity and authored bit-transfer semantics. [Pilot](../infra/verification/lean-pilot/README.md) binds domains and premises. F64 storage/bitcast and six storage-only library types are trusted; no floating arithmetic, allocation or concurrency is modelled. Forgotten refinements broaden the domain, strengthening universal results and limiting what a witness shows; Lean witnesses do not establish Rust constructibility. Separate public-constructor Rust fixtures cover that. Structured metadata gates external definitions and captured first-party sources; subjects bind by symbol path, production reachability by tests, not structural gating. UD10 is discharged for the admitted C61 scalar-constant-derivative class against authored execute semantics, not golden admission or L4 selection. DAE/profile faithfulness, owner/metadata producers, root/receipt composition, runtime/artifact semantics and whole C61 remain unproved. Replay/mutation controls pass; compiler/pilot checkpoint pending, generated Lean uncommitted; pinned CI unrun remotely |
+| Whole-compiler theorem | Staged (§4); unreached |
 
 Anything not named above is unverified. DRAFT status means work has started
 under this spec, not that any claim in it holds.

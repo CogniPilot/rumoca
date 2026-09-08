@@ -8,11 +8,9 @@
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::excessive_nesting)]
 #[allow(dead_code)]
-#[allow(unused)]
 pub(crate) mod galec_grammar_trait;
 
 #[allow(clippy::all, private_interfaces, unnameable_types, unreachable_pub)]
 #[allow(clippy::too_many_lines)]
 #[allow(dead_code)]
-#[allow(unused)]
 pub(crate) mod galec_parser;

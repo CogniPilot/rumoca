@@ -397,10 +397,10 @@ equivalent Cargo command for opt-in example-template runtime checks:
 
 ## Code Generation Targets
 
-Use explicit template files you own and version with your project.
-The raw template example in
-`examples/codegen/custom_checked_variables.jinja` is a starting point, not a
-stable production artifact.
+Use built-in targets or versioned target directories containing a checked
+`target.toml` manifest and their presentation-only templates. Standalone
+template files are not code-generation targets because they cannot declare the
+IR context, checked semantic view, and artifact kind that authorize output.
 
 ## VS Code Extension
 

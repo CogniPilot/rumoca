@@ -119,6 +119,7 @@ fn quotient_construction_rejects_dynamic_and_undefined_operands() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -177,6 +178,7 @@ fn runtime_mod_constructs_one_checked_synthetic_root() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -246,6 +248,7 @@ fn roots_accept_only_closed_primitive_relations() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -326,6 +329,7 @@ fn event_actions_are_guarded_typed_and_keep_coincident_time_ids() {
         let state = dae.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -550,6 +554,7 @@ fn runtime_mod_accepts_a_parameter_divisor_and_owns_one_root() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -558,6 +563,7 @@ fn runtime_mod_accepts_a_parameter_divisor_and_owns_one_root() {
         let p = dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 p_declaration,
                 VariableAttributes::default(),
@@ -644,6 +650,7 @@ fn runtime_quotient_rejects_time_varying_divisors() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -652,6 +659,7 @@ fn runtime_quotient_rejects_time_varying_divisors() {
         let y = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("yy"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 y_declaration,
                 VariableAttributes::default(),
@@ -660,6 +668,7 @@ fn runtime_quotient_rejects_time_varying_divisors() {
         let s = dae.variables(|variables| {
             variables.state(
                 VarName::new("ss"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 s_declaration,
                 VariableAttributes::default(),
@@ -668,6 +677,7 @@ fn runtime_quotient_rejects_time_varying_divisors() {
         let d = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("dd"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 d_declaration,
                 VariableAttributes::default(),
@@ -781,6 +791,7 @@ fn function_body_quotient_rejects_model_expressions() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),

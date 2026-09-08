@@ -895,45 +895,6 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
         Ok(self.ops)
     }
 
-    /// Compile `slot - start` for one exact scalar initialization equation.
-    ///
-    /// `None` denotes Real's MLS default start of zero, so the loaded
-    /// coordinate is already the residual.
-    pub(super) fn slot_start_residual_program(
-        mut self,
-        slot: solve::ScalarSlot,
-        start: Option<(dae::ExprId<'dae>, usize)>,
-        span: Span,
-    ) -> Result<Vec<solve::LinearOp>, LowerError> {
-        let coordinate = self.register(span)?;
-        match slot {
-            solve::ScalarSlot::Y { index, .. } => self.ops.push(solve::LinearOp::LoadY {
-                dst: coordinate,
-                index,
-            }),
-            solve::ScalarSlot::P { index, .. } => self.ops.push(solve::LinearOp::LoadP {
-                dst: coordinate,
-                index,
-            }),
-            solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => {
-                return Err(LowerError::contract(
-                    "a stated initial value names a coordinate with no runtime storage",
-                    span,
-                ));
-            }
-        }
-        let residual = match start {
-            Some((expression, scalar)) => {
-                let value = self.expression(expression, scalar)?;
-                self.binary(dae::BinaryOperator::Subtract, coordinate, value, span)?
-            }
-            None => coordinate,
-        };
-        self.ops
-            .push(solve::LinearOp::StoreOutput { src: residual });
-        Ok(self.ops)
-    }
-
     pub(super) fn scaled_derivative_program(
         mut self,
         input: ScaledDerivativeProgram<'dae>,

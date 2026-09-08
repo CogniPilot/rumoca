@@ -63,9 +63,6 @@ export const patchWasmPackageJson = async (pkgDir, variant, runtimeFiles = []) =
 
   pkg.main = "rumoca_bind_wasm.js";
   pkg.module = "rumoca_bind_wasm.js";
-  // Subpath exports so the WASM glue and the WebGPU driver are both reachable:
-  //   import init, { prepare_gpu_simulation } from "rumoca";
-  //   import { runGpuSimulation, probeGpu } from "rumoca/gpu";
   pkg.exports = {
     ".": { import: "./rumoca_bind_wasm.js", types: "./rumoca_bind_wasm.d.ts" },
   };
@@ -73,10 +70,6 @@ export const patchWasmPackageJson = async (pkgDir, variant, runtimeFiles = []) =
   addFile("rumoca_bind_wasm_bg.wasm");
   addFile("rumoca_bind_wasm.d.ts");
 
-  if (await exists(path.join(pkgDir, "rumoca_gpu.js"))) {
-    pkg.exports["./gpu"] = { import: "./rumoca_gpu.js" };
-    addFile("rumoca_gpu.js");
-  }
   if (await exists(path.join(pkgDir, "rumoca_interactive.js"))) {
     pkg.exports["./interactive"] = { import: "./rumoca_interactive.js" };
     addFile("rumoca_interactive.js");

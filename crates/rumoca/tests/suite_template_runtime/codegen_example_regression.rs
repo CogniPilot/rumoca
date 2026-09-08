@@ -19,18 +19,14 @@ fn checked_report_target_root() -> PathBuf {
     examples_template_root().join("checked_dae_report")
 }
 
-fn render_checked_report(dae: &rumoca_compile::compile::Dae, model_name: &str) -> String {
-    let target = rumoca_compile::codegen::targets::TargetBundle::load(
-        checked_report_target_root()
+fn render_checked_report(compilation: &rumoca::CompilationResult) -> String {
+    let target = checked_report_target_root();
+    let rendered = rumoca::render_target_files(
+        compilation,
+        target
             .to_str()
             .expect("checked report target path should be utf8"),
-    )
-    .expect("load checked report target");
-    let manifest = target
-        .parse_manifest()
-        .expect("parse checked report target");
-    let rendered = rumoca_compile::codegen::targets::render_dae_target_files(
-        &target, &manifest, dae, model_name,
+        crate::artifact_session::pinned_artifact_input(),
     )
     .expect("render checked report target");
     assert_eq!(rendered.len(), 1, "report target has one output owner");
@@ -38,7 +34,8 @@ fn render_checked_report(dae: &rumoca_compile::compile::Dae, model_name: &str) -
         .into_iter()
         .next()
         .expect("one report output exists")
-        .content
+        .content()
+        .to_owned()
 }
 
 fn setup_mock_source_roots(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
@@ -82,20 +79,7 @@ end ServiceTypes;
 }
 
 #[test]
-fn all_direct_example_templates_render_in_ci() {
-    let source = r#"
-model ExampleTemplateSmoke
-  Real x(start = 1);
-  parameter Real k = 2;
-equation
-  der(x) = -k * x;
-end ExampleTemplateSmoke;
-"#;
-
-    let result = Compiler::new()
-        .model("ExampleTemplateSmoke")
-        .compile_str(source, "ExampleTemplateSmoke.mo")
-        .expect("compile example-template smoke model");
+fn codegen_examples_do_not_expose_standalone_templates() {
     let mut template_names = Vec::new();
     for entry in fs::read_dir(examples_template_root()).expect("read examples template root") {
         let path = entry.expect("read examples template entry").path();
@@ -107,21 +91,13 @@ end ExampleTemplateSmoke;
             .expect("example template should have a file name")
             .to_string_lossy()
             .to_string();
-        let rendered = result
-            .render_template(path.to_string_lossy().as_ref())
-            .unwrap_or_else(|err| panic!("render example template {name}: {err}"));
-        assert!(
-            !rendered.trim().is_empty(),
-            "example template {name} rendered empty output"
-        );
-        assert!(
-            !rendered.contains("{{") && !rendered.contains("{%"),
-            "example template {name} leaked a Jinja placeholder"
-        );
         template_names.push(name);
     }
     template_names.sort();
-    assert_eq!(template_names, vec!["custom_checked_variables.jinja"]);
+    assert!(
+        template_names.is_empty(),
+        "standalone example templates bypass checked target manifests: {template_names:?}"
+    );
 }
 
 #[test]
@@ -138,7 +114,7 @@ end SympyDecay;
         .model("SympyDecay")
         .compile_str(source, "SympyDecay.mo")
         .expect("compile checked report regression model");
-    let report = render_checked_report(&result.dae, "SympyDecay");
+    let report = render_checked_report(&result);
 
     // The first literal is pinned to `dae_backend::TEMPLATE_SCHEMA_VERSION`:
     // the report template renders `dae.schema.version`, so every change to the
@@ -174,7 +150,7 @@ end ReportEvent;
         .model("ReportEvent")
         .compile_str(source, "ReportEvent.mo")
         .expect("compile checked event model");
-    let report = render_checked_report(&result.dae, "ReportEvent");
+    let report = render_checked_report(&result);
 
     assert!(
         report.contains("b1c_owners 1"),
@@ -228,7 +204,7 @@ end Wrapper;
         .source_root(service_root.to_string_lossy().as_ref())
         .compile_str(source, "Wrapper.mo")
         .expect("compile wrapper model");
-    let report = render_checked_report(&result.dae, "Wrapper");
+    let report = render_checked_report(&result);
 
     assert!(report.contains("model Wrapper"));
     assert!(report.contains("parameter r real"));
@@ -273,7 +249,7 @@ end MslResistorExample;
         .model("MslResistorExample")
         .compile_str(source, "MslResistorExample.mo")
         .expect("compile MSL resistor wrapper");
-    let report = render_checked_report(&result.dae, "MslResistorExample");
+    let report = render_checked_report(&result);
 
     assert!(
         report.contains("parameter R real unit=Ohm"),

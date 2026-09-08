@@ -1,5 +1,4 @@
 version = 1
-ir = "solve"
 name = "mlir"
 description = "MLIR textual solve-IR residual export with native affine tensor loops"
 execution_mode = "compiled"
@@ -28,9 +27,7 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+artifact_kind = "mlir-source"
+semantic_context = "solve"
 path = "{{ model_name }}.mlir"
 template = "mlir.mlir.jinja"
-
-[[assets]]
-source = "runtime"
-dest = "runtime/"

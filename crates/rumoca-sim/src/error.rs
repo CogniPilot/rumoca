@@ -1,6 +1,6 @@
 use rumoca_solver::{
     RuntimeSolveError,
-    fmi_me::{MeError, MeStage, session::MeSessionError},
+    fmi_me::{MeError, MeIntegrationError, MeStage, session::MeSessionError},
 };
 
 /// The simulation sub-stage that raised a failure.
@@ -63,6 +63,13 @@ impl From<MeStage> for SimFailureStage {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
+    #[error("native {execution_stage} failed for {owner}: {reason}")]
+    NativeExecution {
+        execution_stage: rumoca_solver::NativeExecutionStage,
+        owner: rumoca_solver::NativeExecutionOwner,
+        reason: String,
+    },
+
     #[error("{backend} backend does not support solver mode {requested:?}")]
     UnsupportedSolverMode {
         backend: &'static str,
@@ -95,7 +102,7 @@ pub enum SimError {
 
     /// A typed failure from the sole common FMI Model Exchange master.
     #[error(transparent)]
-    ModelExchangeSession(#[from] MeSessionError),
+    ModelExchangeSession(MeSessionError),
 
     /// The request's execution policy forbids compiled native execution, but
     /// the caller still supplied a compiled execution backend handle.
@@ -141,6 +148,14 @@ impl SimError {
         }
     }
 
+    #[must_use]
+    pub fn into_kind(self) -> SimError {
+        match self {
+            Self::Staged { inner, .. } => inner.into_kind(),
+            other => other,
+        }
+    }
+
     /// The stage the raising path recorded, if any.
     #[must_use]
     pub fn stage(&self) -> Option<SimFailureStage> {
@@ -175,6 +190,15 @@ impl SimError {
 impl From<RuntimeSolveError> for SimError {
     fn from(value: RuntimeSolveError) -> Self {
         match value {
+            RuntimeSolveError::NativeExecution {
+                stage: execution_stage,
+                owner,
+                reason,
+            } => Self::NativeExecution {
+                execution_stage,
+                owner,
+                reason,
+            },
             RuntimeSolveError::SolveIr { message, span } => {
                 let message = match span {
                     Some(span) => format!("{message} @ {span:?}"),
@@ -206,12 +230,24 @@ impl From<MeError> for SimError {
     fn from(value: MeError) -> Self {
         let stage = value.stage().map(SimFailureStage::from);
         let error = match value.into_kind() {
+            MeError::NativeExecution {
+                execution_stage,
+                owner,
+                reason,
+            } => Self::NativeExecution {
+                execution_stage,
+                owner,
+                reason,
+            },
             MeError::NoContinuousStates => Self::EmptySystem,
             MeError::UnsupportedModel { reason } | MeError::Evaluation { message: reason } => {
                 Self::SolveIr(reason)
             }
             MeError::NonFiniteDerivative { state_name } => Self::SolveIr(format!(
                 "non-finite derivative evaluation for state '{state_name}'"
+            )),
+            MeError::NonFiniteEventActionTime { action, time } => Self::SolveIr(format!(
+                "non-finite timestamp {time} for Modelica {action} action"
             )),
             MeError::DirectionalDerivativeUnavailable { reason } => {
                 Self::DirectionalDerivativeUnavailable { reason }
@@ -232,6 +268,97 @@ impl From<MeError> for SimError {
     }
 }
 
+impl From<MeSessionError> for SimError {
+    fn from(value: MeSessionError) -> Self {
+        match value {
+            MeSessionError::Component(error) => {
+                Self::from_session_component(error, MeSessionError::Component)
+            }
+            MeSessionError::Integration(MeIntegrationError::Component(error)) => {
+                Self::from_session_component(error, |error| {
+                    MeSessionError::Integration(MeIntegrationError::Component(error))
+                })
+            }
+            MeSessionError::Integration(error) => {
+                Self::ModelExchangeSession(MeSessionError::Integration(error))
+            }
+            MeSessionError::Timeout { seconds } => {
+                Self::ModelExchangeSession(MeSessionError::Timeout { seconds })
+            }
+            MeSessionError::Allocation { context, entries } => {
+                Self::ModelExchangeSession(MeSessionError::Allocation { context, entries })
+            }
+            MeSessionError::Options { reason } => {
+                Self::ModelExchangeSession(MeSessionError::Options { reason })
+            }
+            MeSessionError::Contract { reason } => {
+                Self::ModelExchangeSession(MeSessionError::Contract { reason })
+            }
+            MeSessionError::RootApplicationUnavailable { time, reason } => {
+                Self::ModelExchangeSession(MeSessionError::RootApplicationUnavailable {
+                    time,
+                    reason,
+                })
+            }
+            MeSessionError::RootScanUnrepresentable {
+                start,
+                end,
+                resolution,
+            } => Self::ModelExchangeSession(MeSessionError::RootScanUnrepresentable {
+                start,
+                end,
+                resolution,
+            }),
+            MeSessionError::EventIterationDiverged { time, limit } => {
+                Self::ModelExchangeSession(MeSessionError::EventIterationDiverged { time, limit })
+            }
+            MeSessionError::PluginArity {
+                state_count,
+                mismatch,
+            } => Self::ModelExchangeSession(MeSessionError::PluginArity {
+                state_count,
+                mismatch,
+            }),
+            // `AcceptedPointLost` is the producer-owned terminal result when
+            // restoring the accepted coordinate failed. Its nested component
+            // operation (including a native one) is attempted detail, not the
+            // session failure that escaped the FMI master.
+            MeSessionError::AcceptedPointLost {
+                time,
+                restoration,
+                attempted,
+            } => Self::ModelExchangeSession(MeSessionError::AcceptedPointLost {
+                time,
+                restoration,
+                attempted,
+            }),
+            MeSessionError::PristineRestoreFailed {
+                restoration,
+                attempted,
+            } => Self::ModelExchangeSession(MeSessionError::PristineRestoreFailed {
+                restoration,
+                attempted,
+            }),
+            MeSessionError::SessionNotReusable { loss } => {
+                Self::ModelExchangeSession(MeSessionError::SessionNotReusable { loss })
+            }
+        }
+    }
+}
+
+impl SimError {
+    fn from_session_component(
+        error: MeError,
+        wrap: impl FnOnce(MeError) -> MeSessionError,
+    ) -> Self {
+        if matches!(error.kind(), MeError::NativeExecution { .. }) {
+            Self::from(error)
+        } else {
+            Self::ModelExchangeSession(wrap(error))
+        }
+    }
+}
+
 impl From<rumoca_solver::fmi_me::MeExecutionPolicyContradiction> for SimError {
     fn from(value: rumoca_solver::fmi_me::MeExecutionPolicyContradiction) -> Self {
         Self::ExecutionPolicyContradiction {
@@ -243,6 +370,14 @@ impl From<rumoca_solver::fmi_me::MeExecutionPolicyContradiction> for SimError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_component_error() -> MeError {
+        MeError::NativeExecution {
+            execution_stage: rumoca_solver::NativeExecutionStage::Call,
+            owner: rumoca_solver::NativeExecutionOwner::InitialResidual,
+            reason: "injected native failure".to_owned(),
+        }
+    }
 
     #[test]
     fn staged_annotation_preserves_the_rendered_message() {
@@ -262,6 +397,24 @@ mod tests {
             .at_stage(SimFailureStage::Integration)
             .at_stage(SimFailureStage::TargetIsolation);
         assert!(matches!(staged.kind(), SimError::Timeout { .. }));
+    }
+
+    #[test]
+    fn session_component_native_failures_preserve_the_native_variant() {
+        for session_error in [
+            MeSessionError::Component(native_component_error()),
+            MeSessionError::Integration(MeIntegrationError::Component(native_component_error())),
+        ] {
+            let error = SimError::from(session_error);
+            assert!(matches!(
+                error.kind(),
+                SimError::NativeExecution {
+                    execution_stage: rumoca_solver::NativeExecutionStage::Call,
+                    owner: rumoca_solver::NativeExecutionOwner::InitialResidual,
+                    reason,
+                } if reason == "injected native failure"
+            ));
+        }
     }
 
     #[test]

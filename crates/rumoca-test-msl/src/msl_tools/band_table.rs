@@ -52,15 +52,19 @@
 //! violation above. A rejected table is not comparable: consumers must report
 //! "not comparable" rather than diff against it.
 //!
-//! [`load_bound_band_table`] adds the binding check on top: a persisted table
+//! [`load_bound_band_table`] adds the current-proof binding check on top: a persisted table
 //! whose `source` hashes do not match the artifacts sitting in the directory is
 //! refused, because it describes some other run's comparator output.
+//! [`load_historical_transition_band_table`] is deliberately narrower: it binds
+//! the table to the recorded report and results bytes for historical transition
+//! reporting, but does not admit those bytes as a current trace proof because
+//! it cannot recover the run-bound source witness after the process exits.
 //! [`ensure_diffable_pair`] adds the last one: two tables of different run scope
 //! are two populations, and their difference is not cohort movement.
 //!
 //! # Rotation, once per comparator output
 //!
-//! [`persist_band_table`] keys the previous table on **run identity** — the
+//! [`persist_current_run_band_table`] keys the previous table on **run identity** — the
 //! content hash of the comparator output the table was derived from. Re-running
 //! the tool over an unchanged results directory therefore rewrites the same
 //! table in place and leaves `msl_band_table_previous.json` alone, instead of
@@ -78,6 +82,13 @@
 //! this module only records what that classifier decided, per model, alongside
 //! the reason every other cohort model was not classified at all.
 
+mod transitions;
+
+pub use transitions::{
+    BandChangedModel, BandTransitionCounts, BandTransitions, CoverageDroppedModel, EnteredModel,
+    LeftModel, diff_band_tables, ensure_diffable_pair,
+};
+
 use super::common::{
     TRACE_EXCLUSIONS_FILE_REL, git_worktree_content_digest, load_trace_exclusions_file,
     unix_timestamp_seconds, write_pretty_json,
@@ -88,9 +99,10 @@ use indexmap::IndexMap;
 use rumoca_sim::sim_trace_compare::{
     AgreementBand, MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE, MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
     MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
-    ModelDeviationMetric, TraceCertificationProfile, classify_trace_metric_channel_distribution,
+    ModelDeviationMetric, TraceCertificationProfile, TraceChannelPartition,
+    classify_trace_metric_channel_distribution,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -98,22 +110,33 @@ use std::path::{Path, PathBuf};
 
 /// Stable file name of the per-model band table inside a results directory.
 pub const BAND_TABLE_FILE: &str = "msl_band_table.json";
-/// The previous run's table, rotated aside by [`persist_band_table`].
+/// The previous run's table, rotated aside by [`persist_current_run_band_table`].
 pub const PREVIOUS_BAND_TABLE_FILE: &str = "msl_band_table_previous.json";
-/// Temporary file [`persist_band_table`] writes before renaming into place, so
+/// Temporary file [`persist_current_run_band_table`] writes before renaming into place, so
 /// a crash mid-write cannot leave a truncated table behind.
 const BAND_TABLE_TEMP_FILE: &str = "msl_band_table.json.tmp";
 /// Schema tag. Present in every table so a reader can reject foreign JSON
 /// instead of deserializing it into a table with zero rows.
 pub const BAND_TABLE_SCHEMA: &str = "msl_band_table";
 /// Schema version this build writes and accepts.
-pub const BAND_TABLE_SCHEMA_VERSION: u32 = 2;
+pub const BAND_TABLE_SCHEMA_VERSION: u32 = 3;
 
 const TRACE_COMPARISON_FILE: &str = "sim_trace_comparison.json";
 const MSL_RESULTS_FILE: &str = "msl_results.json";
 const OMC_SIMULATION_REFERENCE_FILE: &str = "omc_simulation_reference.json";
 const PARITY_CONFIG_FILE_REL: &str = "target/msl/parity-config.json";
 const SIM_OK_STATUS: &str = "sim_ok";
+
+/// Current evidence records must carry optional values as explicit `null`.
+/// Missing keys are malformed records, not older records this reader should
+/// silently complete.
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 /// Which agreement band the comparator placed a model in, or `Absent` when the
 /// model is not in the compared set at all.
@@ -170,6 +193,8 @@ pub enum TraceExitKind {
     PolicyExcluded,
     /// The comparator ran on this model and failed.
     ComparatorFailed,
+    /// Both traces are valid, but their channel-name universes are disjoint.
+    NoCommonVariables,
     /// The comparator ran and found nothing to compare: the two traces share no
     /// variable with comparable samples. Distinct from a comparator failure
     /// because it is a property of the traces, not a defect in the comparator.
@@ -188,6 +213,7 @@ impl TraceExitKind {
         match self {
             Self::PolicyExcluded => ExitReason::Excluded,
             Self::ComparatorFailed => ExitReason::ComparatorFailed,
+            Self::NoCommonVariables => ExitReason::NoCommonVariables,
             Self::NoComparableSamples => ExitReason::NoComparableSamples,
             Self::TraceNonidentifiable => ExitReason::TraceNonidentifiable,
             Self::RumocaTraceMissing => ExitReason::RumocaTraceMissing,
@@ -197,33 +223,139 @@ impl TraceExitKind {
 }
 
 /// One comparator-recorded non-comparison, as it appears on the wire.
+///
+/// Variant payloads make the evidence required by each reason structural:
+/// no-common and no-comparable outcomes cannot exist without their complete
+/// channel partition, while non-identifiability cannot exist without its
+/// outstanding proof profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TraceExitRecord {
-    pub kind: TraceExitKind,
-    pub detail: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub certification_profile: Option<TraceCertificationProfile>,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TraceExitRecord {
+    PolicyExcluded {
+        detail: String,
+    },
+    ComparatorFailed {
+        detail: String,
+    },
+    NoCommonVariables {
+        detail: String,
+        channel_partition: TraceChannelPartition,
+    },
+    NoComparableSamples {
+        detail: String,
+        channel_partition: TraceChannelPartition,
+    },
+    TraceNonidentifiable {
+        detail: String,
+        certification_profile: TraceCertificationProfile,
+    },
+    RumocaTraceMissing {
+        detail: String,
+    },
+    OmcTraceMissing {
+        detail: String,
+    },
 }
 
 impl TraceExitRecord {
-    /// Record a candidate the comparator did not compare.
-    pub fn new(kind: TraceExitKind, detail: impl Into<String>) -> Self {
-        Self {
-            kind,
+    pub fn policy_excluded(detail: impl Into<String>) -> Self {
+        Self::PolicyExcluded {
             detail: detail.into(),
-            certification_profile: None,
+        }
+    }
+
+    pub fn comparator_failed(detail: impl Into<String>) -> Self {
+        Self::ComparatorFailed {
+            detail: detail.into(),
+        }
+    }
+
+    pub fn no_common_variables(
+        detail: impl Into<String>,
+        channel_partition: TraceChannelPartition,
+    ) -> Self {
+        Self::NoCommonVariables {
+            detail: detail.into(),
+            channel_partition,
+        }
+    }
+
+    pub fn no_comparable_samples(
+        detail: impl Into<String>,
+        channel_partition: TraceChannelPartition,
+    ) -> Self {
+        Self::NoComparableSamples {
+            detail: detail.into(),
+            channel_partition,
+        }
+    }
+
+    pub fn rumoca_trace_missing(detail: impl Into<String>) -> Self {
+        Self::RumocaTraceMissing {
+            detail: detail.into(),
+        }
+    }
+
+    pub fn omc_trace_missing(detail: impl Into<String>) -> Self {
+        Self::OmcTraceMissing {
+            detail: detail.into(),
         }
     }
 
     /// Record an explicitly uncertified pointwise proof boundary.
     pub fn trace_nonidentifiable(profile: TraceCertificationProfile) -> Self {
-        Self {
-            kind: TraceExitKind::TraceNonidentifiable,
+        Self::TraceNonidentifiable {
             detail: format!(
                 "pointwise trace certification is non-identifying ({:?}); replacement proof obligations remain outstanding",
                 profile.reason()
             ),
-            certification_profile: Some(profile),
+            certification_profile: profile,
+        }
+    }
+
+    pub fn kind(&self) -> TraceExitKind {
+        match self {
+            Self::PolicyExcluded { .. } => TraceExitKind::PolicyExcluded,
+            Self::ComparatorFailed { .. } => TraceExitKind::ComparatorFailed,
+            Self::NoCommonVariables { .. } => TraceExitKind::NoCommonVariables,
+            Self::NoComparableSamples { .. } => TraceExitKind::NoComparableSamples,
+            Self::TraceNonidentifiable { .. } => TraceExitKind::TraceNonidentifiable,
+            Self::RumocaTraceMissing { .. } => TraceExitKind::RumocaTraceMissing,
+            Self::OmcTraceMissing { .. } => TraceExitKind::OmcTraceMissing,
+        }
+    }
+
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::PolicyExcluded { detail }
+            | Self::ComparatorFailed { detail }
+            | Self::NoCommonVariables { detail, .. }
+            | Self::NoComparableSamples { detail, .. }
+            | Self::TraceNonidentifiable { detail, .. }
+            | Self::RumocaTraceMissing { detail }
+            | Self::OmcTraceMissing { detail } => detail,
+        }
+    }
+
+    pub fn into_detail(self) -> String {
+        match self {
+            Self::PolicyExcluded { detail }
+            | Self::ComparatorFailed { detail }
+            | Self::NoCommonVariables { detail, .. }
+            | Self::NoComparableSamples { detail, .. }
+            | Self::TraceNonidentifiable { detail, .. }
+            | Self::RumocaTraceMissing { detail }
+            | Self::OmcTraceMissing { detail } => detail,
+        }
+    }
+
+    pub fn certification_profile(&self) -> Option<&TraceCertificationProfile> {
+        match self {
+            Self::TraceNonidentifiable {
+                certification_profile,
+                ..
+            } => Some(certification_profile),
+            _ => None,
         }
     }
 }
@@ -246,15 +378,14 @@ pub enum ExitReason {
     RumocaTraceMissing,
     /// The OMC reference trace is missing for this model.
     ReferenceMissing,
-    /// A trace was missing, but the run recorded which side only as free text.
-    /// Written for certifications produced before the comparator recorded a
-    /// [`TraceExitKind`]; a current run never produces it.
-    TraceMissingSideUnrecorded,
     /// The comparator ran on this model and failed. A comparator failure is a
     /// defect to fix, never a policy decision.
     ComparatorFailed,
     /// The two traces shared no variable with comparable samples, so there was
     /// nothing to band.
+    NoCommonVariables,
+    /// The two traces shared variable names, but no shared channel had a full
+    /// comparable horizon.
     NoComparableSamples,
     /// Typed evidence says pointwise trace identity cannot certify this model;
     /// replacement invariant/statistical obligations are still outstanding.
@@ -275,8 +406,8 @@ impl ExitReason {
             Self::NotAttempted => "not_attempted",
             Self::RumocaTraceMissing => "rumoca_trace_missing",
             Self::ReferenceMissing => "reference_missing",
-            Self::TraceMissingSideUnrecorded => "trace_missing_side_unrecorded",
             Self::ComparatorFailed => "comparator_failed",
+            Self::NoCommonVariables => "no_common_variables",
             Self::NoComparableSamples => "no_comparable_samples",
             Self::TraceNonidentifiable => "trace_nonidentifiable",
             Self::Excluded => "excluded",
@@ -285,39 +416,66 @@ impl ExitReason {
     }
 }
 
+/// Channel-universe evidence retained by one band row.
+///
+/// The variant makes it impossible to confuse a successful comparison with a
+/// failed comparison that nevertheless discovered the channel universe, or
+/// with a run that never had two traces to inspect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BandChannelAccounting {
+    Compared {
+        channel_partition: TraceChannelPartition,
+    },
+    NoComparison {
+        channel_partition: TraceChannelPartition,
+    },
+    Unavailable,
+}
+
 /// One cohort model's certification row.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BandRow {
     pub model_name: String,
     pub band: BandLabel,
     /// `Some` exactly when `band == BandLabel::Absent`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub exit_reason: Option<ExitReason>,
     /// Operator-facing detail behind `exit_reason` (solver status, OMC message,
     /// exclusion rationale).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub exit_detail: Option<String>,
-    #[serde(default)]
+    pub channel_accounting: BandChannelAccounting,
     pub compared_variables: usize,
-    #[serde(default)]
     pub channel_high_count: usize,
-    #[serde(default)]
     pub channel_minor_count: usize,
-    #[serde(default)]
     pub channel_deviation_count: usize,
-    #[serde(default)]
     pub channel_severe_count: usize,
     /// Worst per-channel bounded normalized L1 error ("max-dev").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub max_channel_bounded_normalized_l1: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub mean_channel_bounded_normalized_l1: Option<f64>,
     /// Model-level bounded normalized L1 score.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub bounded_normalized_l1_score: Option<f64>,
 }
 
 impl BandRow {
+    /// The one predicate used by every strict certification roster.
+    pub fn is_strict_high_certified(&self) -> bool {
+        self.band == BandLabel::High && self.has_complete_channel_accounting()
+    }
+
+    fn has_complete_channel_accounting(&self) -> bool {
+        matches!(
+            &self.channel_accounting,
+            BandChannelAccounting::Compared { channel_partition }
+                if channel_partition.non_compared_count() == 0
+        )
+    }
+
     fn compared(model_name: &str, metric: &ModelDeviationMetric) -> Self {
         let band = BandLabel::from_agreement(classify_trace_metric_channel_distribution(
             metric,
@@ -331,23 +489,32 @@ impl BandRow {
             band,
             exit_reason: None,
             exit_detail: None,
-            compared_variables: metric.compared_variables,
-            channel_high_count: metric.channel_high_count,
-            channel_minor_count: metric.channel_minor_count,
-            channel_deviation_count: metric.channel_deviation_count,
-            channel_severe_count: metric.channel_severe_count,
-            max_channel_bounded_normalized_l1: Some(metric.max_channel_bounded_normalized_l1),
-            mean_channel_bounded_normalized_l1: Some(metric.mean_channel_bounded_normalized_l1),
-            bounded_normalized_l1_score: Some(metric.bounded_normalized_l1_score),
+            channel_accounting: BandChannelAccounting::Compared {
+                channel_partition: metric.channel_partition().clone(),
+            },
+            compared_variables: metric.compared_variables(),
+            channel_high_count: metric.channel_high_count(),
+            channel_minor_count: metric.channel_minor_count(),
+            channel_deviation_count: metric.channel_deviation_count(),
+            channel_severe_count: metric.channel_severe_count(),
+            max_channel_bounded_normalized_l1: Some(metric.max_channel_bounded_normalized_l1()),
+            mean_channel_bounded_normalized_l1: Some(metric.mean_channel_bounded_normalized_l1()),
+            bounded_normalized_l1_score: Some(metric.bounded_normalized_l1_score()),
         }
     }
 
-    fn absent(model_name: &str, reason: ExitReason, detail: String) -> Self {
+    fn absent(
+        model_name: &str,
+        reason: ExitReason,
+        detail: String,
+        channel_accounting: BandChannelAccounting,
+    ) -> Self {
         Self {
             model_name: model_name.to_string(),
             band: BandLabel::Absent,
             exit_reason: Some(reason),
             exit_detail: Some(detail),
+            channel_accounting,
             compared_variables: 0,
             channel_high_count: 0,
             channel_minor_count: 0,
@@ -366,12 +533,38 @@ impl BandRow {
         fn metric(value: Option<f64>) -> String {
             value.map_or_else(|| "-".to_string(), |value| format!("{value:.12e}"))
         }
+        fn names(names: &[String]) -> String {
+            names
+                .iter()
+                .map(|name| format!("{}:{name}", name.len()))
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        fn partition(partition: &TraceChannelPartition) -> String {
+            format!(
+                "c[{}]u[{}]r[{}]o[{}]",
+                names(partition.compared()),
+                names(partition.shared_unmeasured()),
+                names(partition.rumoca_only()),
+                names(partition.reference_only()),
+            )
+        }
+        let channel_accounting = match &self.channel_accounting {
+            BandChannelAccounting::Compared { channel_partition } => {
+                format!("compared:{}", partition(channel_partition))
+            }
+            BandChannelAccounting::NoComparison { channel_partition } => {
+                format!("no-comparison:{}", partition(channel_partition))
+            }
+            BandChannelAccounting::Unavailable => "unavailable".to_string(),
+        };
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
             self.model_name,
             self.band.as_str(),
             self.exit_reason.map_or("-", ExitReason::as_str),
             self.exit_detail.as_deref().unwrap_or("-"),
+            channel_accounting,
             self.compared_variables,
             self.channel_high_count,
             self.channel_minor_count,
@@ -405,6 +598,7 @@ impl BandRow {
 
 /// Population counts derived from [`BandTable::rows`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BandTableCounts {
     pub cohort_models: usize,
     pub compared_models: usize,
@@ -412,7 +606,6 @@ pub struct BandTableCounts {
     pub near: usize,
     pub deviation: usize,
     pub absent: usize,
-    #[serde(default)]
     pub absent_by_reason: BTreeMap<String, usize>,
 }
 
@@ -424,14 +617,14 @@ pub struct BandTableCounts {
 /// digest describe the same comparator output, and a table whose digest does
 /// not match the directory it sits in is not that directory's evidence.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BandTableSource {
-    #[serde(default)]
     pub trace_comparison_file: String,
-    #[serde(default)]
     pub trace_comparison_digest: String,
-    #[serde(default)]
+    /// Digest of the exact OMC reference and source trace bytes validated by
+    /// the opaque current-run report witness.
+    pub trace_source_evidence_digest: String,
     pub results_file: String,
-    #[serde(default)]
     pub results_digest: String,
     /// The policy exclusion list that attributed this table's `excluded` rows.
     ///
@@ -440,9 +633,7 @@ pub struct BandTableSource {
     /// defect. Without the digest on the table, which list was used is ambient
     /// state, and two readings of one directory can disagree with nothing on
     /// record to say why.
-    #[serde(default)]
     pub exclusions_file: String,
-    #[serde(default)]
     pub exclusions_digest: String,
 }
 
@@ -451,7 +642,7 @@ pub struct BandTableSource {
 /// A Tier 1 focused run compares a handful of models; a Tier 2 cohort run
 /// compares the full roster. Letting the first rotate the second aside would
 /// destroy the cohort baseline, so scope travels with the table and
-/// [`persist_band_table`] refuses the narrowing rotation.
+/// [`persist_current_run_band_table`] refuses the narrowing rotation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BandTableRunScope {
@@ -474,17 +665,16 @@ impl BandTableRunScope {
 
 /// The per-model band table: one row per cohort model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BandTable {
     pub schema: String,
     pub schema_version: u32,
     pub generated_at_unix_seconds: i64,
-    #[serde(default)]
     pub run_scope: BandTableRunScope,
     /// Commit of the certification the rows describe, read from the run's
     /// `msl_results.json`. Never the reader's current HEAD: a table derived from
     /// an old results directory that claimed today's commit would attribute
     /// another run's numbers to this one.
-    #[serde(default)]
     pub git_commit: String,
     /// Digest of the working tree's uncommitted content at write time, absent
     /// when the tree was clean.
@@ -494,23 +684,20 @@ pub struct BandTable {
     /// lands: such tables are indistinguishable by commit, and file timestamps
     /// do not order them either once a directory is copied or re-cleaned.
     /// Stamping the content makes each working-tree state self-identifying.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub working_tree_digest: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub omc_version: Option<String>,
-    #[serde(default)]
     pub source: BandTableSource,
     /// Size of the run's `sim_target_models` roster.
     ///
     /// Recorded so "one row per cohort target" is checkable from the table
     /// alone. [`ensure_comparable`] holds `rows.len()` to it: a table whose row
     /// set is not the cohort is not a cohort table, whatever its counts say.
-    #[serde(default)]
     pub cohort_roster_models: usize,
     /// Digest over `rows`, so the table's *contents* are bound and not only its
     /// inputs. The source digests catch a table derived from another run; this
     /// catches a table whose rows were edited after derivation.
-    #[serde(default)]
     pub rows_digest: String,
     pub counts: BandTableCounts,
     pub rows: Vec<BandRow>,
@@ -527,12 +714,13 @@ impl BandTable {
         self.rows.iter().filter(|row| row.band.is_compared())
     }
 
-    /// Models the comparator placed in the strict-high band. This is the only
-    /// count the gate is allowed to quote as parity.
+    /// Strict-high numerical candidates whose complete trace-channel universe
+    /// was measured. This is still not whole-model proof admission: source and
+    /// IR obligations are checked by the proof-cohort harness.
     pub fn strict_high_models(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.band == BandLabel::High)
+            .filter(|row| row.is_strict_high_certified())
             .count()
     }
 
@@ -663,6 +851,15 @@ pub fn ensure_comparable(table: &BandTable) -> Result<()> {
              claims to describe"
         );
     }
+    if table.source.trace_source_evidence_digest.len() != 64
+        || !table
+            .source
+            .trace_source_evidence_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("band table carries no valid source-trace evidence digest");
+    }
     if table.rows.is_empty() {
         bail!("band table carries no rows; a table over zero models cannot witness a departure");
     }
@@ -769,6 +966,21 @@ fn ensure_rows_well_formed(table: &BandTable) -> Result<()> {
                         row.model_name
                     );
                 }
+                match (&row.channel_accounting, row.exit_reason) {
+                    (BandChannelAccounting::Compared { .. }, _) => bail!(
+                        "band table row '{}' is absent but carries compared-channel evidence",
+                        row.model_name
+                    ),
+                    (
+                        BandChannelAccounting::NoComparison { .. },
+                        Some(ExitReason::NoCommonVariables | ExitReason::NoComparableSamples),
+                    )
+                    | (BandChannelAccounting::Unavailable, _) => {}
+                    (BandChannelAccounting::NoComparison { .. }, _) => bail!(
+                        "band table row '{}' carries no-comparison channel evidence for the wrong exit reason",
+                        row.model_name
+                    ),
+                }
             }
             band => ensure_banded_row_well_formed(row, band)?,
         }
@@ -789,6 +1001,21 @@ fn ensure_banded_row_well_formed(row: &BandRow, band: BandLabel) -> Result<()> {
             "band table row '{}' is banded '{}' but compared no channels",
             row.model_name,
             band.as_str()
+        );
+    }
+    let BandChannelAccounting::Compared { channel_partition } = &row.channel_accounting else {
+        bail!(
+            "band table row '{}' is banded '{}' without compared-channel evidence",
+            row.model_name,
+            band.as_str()
+        );
+    };
+    if row.compared_variables != channel_partition.compared().len() {
+        bail!(
+            "band table row '{}' reports {} compared channels but accounts for {}",
+            row.model_name,
+            row.compared_variables,
+            channel_partition.compared().len()
         );
     }
     Ok(())
@@ -820,34 +1047,16 @@ pub fn derive_band_table(
     meta: BandTableMeta,
 ) -> Result<BandTable> {
     let mut rows: IndexMap<String, BandRow> = collect_compared_rows(trace)?;
-    add_exit_absences(
-        &mut rows,
-        &collect_exit_map(
-            trace,
-            "missing_trace",
-            ExitReason::TraceMissingSideUnrecorded,
-            None,
-        ),
-    );
+    add_exit_absences(&mut rows, &collect_exit_map(trace, "missing_trace")?);
     add_exit_absences(
         &mut rows,
         // Only the `skipped` map merges policy with comparator failure, and the
         // tracked exclusion list is the authority on which entries are policy.
-        &collect_exit_map(
-            trace,
-            "skipped",
-            ExitReason::ComparatorFailed,
-            Some(exclusions),
-        ),
+        &collect_exit_map(trace, "skipped")?,
     );
     add_exit_absences(
         &mut rows,
-        &collect_exit_map(
-            trace,
-            "trace_nonidentifiable",
-            ExitReason::TraceNonidentifiable,
-            None,
-        ),
+        &collect_exit_map(trace, "trace_nonidentifiable")?,
     );
     let roster = results.map(collect_cohort_roster).transpose()?;
     // The comparator may only speak about cohort members: a band or a recorded
@@ -888,8 +1097,14 @@ fn collect_compared_rows(trace: &Value) -> Result<IndexMap<String, BandRow>> {
     };
     let mut rows = IndexMap::new();
     for (model_name, payload) in models {
-        let metric: ModelDeviationMetric = serde_json::from_value(payload.clone())
+        let metric = super::omc_simulation_reference::parse_trace_model_metric(payload.clone())
             .with_context(|| format!("invalid trace metric for {model_name}"))?;
+        if metric.model_name() != model_name.as_str() {
+            bail!(
+                "trace metric key `{model_name}` does not match embedded model `{}`",
+                metric.model_name()
+            );
+        }
         rows.insert(model_name.clone(), BandRow::compared(model_name, &metric));
     }
     Ok(rows)
@@ -897,72 +1112,55 @@ fn collect_compared_rows(trace: &Value) -> Result<IndexMap<String, BandRow>> {
 
 /// Read one of the comparator's non-comparison maps.
 ///
-/// A current comparator writes `{"kind": ..., "detail": ...}` per entry and the
-/// kind decides the reason. A certification written before the comparator
-/// recorded kinds carries a bare string, which cannot distinguish the two
-/// boundaries the map merges; `untyped` names the honest fallback for that map
-/// rather than guessing from the text.
-///
-/// `policy` is the tracked exclusion list, passed only for the `skipped` map.
-/// Membership in that list is a *fact about the run's configuration*, not a
-/// reading of the reason text, so it can attribute an untyped entry without the
-/// string-sniffing this type exists to remove.
-fn collect_exit_map(
-    trace: &Value,
-    key: &str,
-    untyped: ExitReason,
-    policy: Option<&BTreeMap<String, String>>,
-) -> BTreeMap<String, BandRow> {
-    trace
+/// Current evidence has one closed tagged record per non-comparison. Any other
+/// shape is malformed; there is no legacy string fallback.
+fn collect_exit_map(trace: &Value, key: &str) -> Result<BTreeMap<String, BandRow>> {
+    let entries = trace
         .get(key)
         .and_then(Value::as_object)
-        .map(|entries| {
-            entries
-                .iter()
-                .map(|(model_name, entry)| {
-                    (
-                        model_name.clone(),
-                        exit_row(model_name, entry, untyped, policy),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn exit_row(
-    model_name: &str,
-    entry: &Value,
-    untyped: ExitReason,
-    policy: Option<&BTreeMap<String, String>>,
-) -> BandRow {
-    if let Ok(record) = serde_json::from_value::<TraceExitRecord>(entry.clone()) {
-        return BandRow::absent(model_name, record.kind.exit_reason(), record.detail);
+        .with_context(|| format!("trace comparison JSON is missing the `{key}` object"))?;
+    let mut rows = BTreeMap::new();
+    for (model_name, entry) in entries {
+        let record = serde_json::from_value::<TraceExitRecord>(entry.clone())
+            .with_context(|| format!("invalid `{key}` exit record for {model_name}"))?;
+        let (reason, detail, channel_accounting) = match record {
+            TraceExitRecord::NoCommonVariables {
+                detail,
+                channel_partition,
+            } => (
+                ExitReason::NoCommonVariables,
+                detail,
+                BandChannelAccounting::NoComparison { channel_partition },
+            ),
+            TraceExitRecord::NoComparableSamples {
+                detail,
+                channel_partition,
+            } => (
+                ExitReason::NoComparableSamples,
+                detail,
+                BandChannelAccounting::NoComparison { channel_partition },
+            ),
+            record => (
+                record.kind().exit_reason(),
+                record.into_detail(),
+                BandChannelAccounting::Unavailable,
+            ),
+        };
+        rows.insert(
+            model_name.clone(),
+            BandRow::absent(model_name, reason, detail, channel_accounting),
+        );
     }
-    let detail = reason_text(entry);
-    if policy.is_some_and(|policy| policy.contains_key(model_name)) {
-        return BandRow::absent(model_name, ExitReason::Excluded, detail);
-    }
-    BandRow::absent(model_name, untyped, detail)
+    Ok(rows)
 }
 
 /// The operator-facing detail of one `skipped` / `missing_trace` entry,
-/// whichever shape the certification that wrote it used.
-///
-/// Consumers that only want the human text go through here so a certification
-/// written before the comparator recorded [`TraceExitKind`]s still renders.
-pub fn trace_exit_detail(entry: &Value) -> String {
-    match serde_json::from_value::<TraceExitRecord>(entry.clone()) {
-        Ok(record) => record.detail,
-        Err(_) => reason_text(entry),
-    }
-}
-
-fn reason_text(reason: &Value) -> String {
-    reason
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| reason.to_string())
+/// as a checked current record. Malformed evidence is never rendered as if it
+/// were a historical free-text reason.
+pub fn trace_exit_detail(entry: &Value) -> Result<String> {
+    serde_json::from_value::<TraceExitRecord>(entry.clone())
+        .context("invalid trace exit record")
+        .map(TraceExitRecord::into_detail)
 }
 
 /// The run's `sim_target_models`: the models this certification set out to
@@ -1073,7 +1271,12 @@ fn add_policy_absences(
         }
         rows.insert(
             model_name.clone(),
-            BandRow::absent(model_name, ExitReason::Excluded, reason.clone()),
+            BandRow::absent(
+                model_name,
+                ExitReason::Excluded,
+                reason.clone(),
+                BandChannelAccounting::Unavailable,
+            ),
         );
     }
 }
@@ -1092,11 +1295,13 @@ fn add_sim_absences(
                 model_name,
                 ExitReason::NotCompared,
                 "rumoca simulated the model but the comparator did not compare it".to_string(),
+                BandChannelAccounting::Unavailable,
             ),
             Some(status) => BandRow::absent(
                 model_name,
                 ExitReason::SimFailed,
                 sim_detail(attempt, status),
+                BandChannelAccounting::Unavailable,
             ),
             // No `sim_status` at all: the run never reached simulation for this
             // cohort target. That is an exit reason, not an absence — on the
@@ -1106,6 +1311,7 @@ fn add_sim_absences(
                 model_name,
                 ExitReason::NotAttempted,
                 attempt.unattempted_detail.clone(),
+                BandChannelAccounting::Unavailable,
             ),
         };
         rows.insert(model_name.clone(), row);
@@ -1127,6 +1333,7 @@ fn add_unrecorded_targets(rows: &mut IndexMap<String, BandRow>, roster: &BTreeSe
                 model_name,
                 ExitReason::NotAttempted,
                 "the run recorded no result at all for this cohort target".to_string(),
+                BandChannelAccounting::Unavailable,
             ),
         );
     }
@@ -1170,7 +1377,6 @@ pub fn previous_band_table_path(results_dir: &Path) -> PathBuf {
 }
 
 /// Read a band table and enforce the acceptance contract on it.
-///
 /// This checks the table's internal shape only. A table read as a *directory's*
 /// evidence must additionally be bound to that directory's comparator output —
 /// see [`load_bound_band_table`].
@@ -1186,23 +1392,40 @@ pub fn load_band_table(path: &Path) -> Result<BandTable> {
 
 /// Read the table persisted in `results_dir` and check it against the artifacts
 /// sitting there.
-///
 /// A table is that directory's evidence only when it was derived from that
 /// directory's comparator output. Without this check, a well-formed table copied
 /// in from another run (or left behind by an earlier one) reads as the run's own
 /// band population, and every consumer downstream quotes it.
 pub fn load_bound_band_table(results_dir: &Path) -> Result<BandTable> {
+    let table = load_historical_transition_band_table(results_dir)?;
+    ensure_source_evidence_bound_to_dir(&table, results_dir)?;
+    Ok(table)
+}
+
+/// Load historical transition data bound to its report and results bytes.
+/// This is not current proof admission: only the in-memory current-run receipt
+/// proves which source traces produced the report. It exists so an explicitly
+/// persisted certification can be compared later without pretending that
+/// reopening ambient source files recreates that receipt.
+pub fn load_historical_transition_band_table(results_dir: &Path) -> Result<BandTable> {
     let path = band_table_path(results_dir);
     let table = load_band_table(&path)?;
-    ensure_bound_to_dir(&table, results_dir)
+    ensure_report_and_results_bound_to_dir(&table, results_dir)
         .with_context(|| format!("band table '{}' is not this run's", path.display()))?;
     Ok(table)
 }
 
 /// Reject a table that does not describe the comparator output in `results_dir`.
 pub fn ensure_bound_to_dir(table: &BandTable, results_dir: &Path) -> Result<()> {
+    ensure_report_and_results_bound_to_dir(table, results_dir)?;
+    ensure_source_evidence_bound_to_dir(table, results_dir)
+}
+
+fn ensure_report_and_results_bound_to_dir(table: &BandTable, results_dir: &Path) -> Result<()> {
     let trace_file = results_dir.join(TRACE_COMPARISON_FILE);
-    let trace_digest = file_digest(&trace_file)?;
+    let trace_bytes = fs::read(&trace_file)
+        .with_context(|| format!("failed to read '{}'", trace_file.display()))?;
+    let trace_digest = blake3::hash(&trace_bytes).to_hex().to_string();
     if table.source.trace_comparison_digest != trace_digest {
         bail!(
             "band table was derived from a different comparator output (table digest {}, '{}' \
@@ -1226,12 +1449,36 @@ pub fn ensure_bound_to_dir(table: &BandTable, results_dir: &Path) -> Result<()> 
     Ok(())
 }
 
+fn ensure_source_evidence_bound_to_dir(table: &BandTable, results_dir: &Path) -> Result<()> {
+    let trace_file = results_dir.join(TRACE_COMPARISON_FILE);
+    let trace_bytes = fs::read(&trace_file)
+        .with_context(|| format!("failed to read '{}'", trace_file.display()))?;
+    let reference_file = results_dir.join(OMC_SIMULATION_REFERENCE_FILE);
+    let reference_bytes = fs::read(&reference_file)
+        .with_context(|| format!("failed to read '{}'", reference_file.display()))?;
+    let paths = super::common::MslPaths::current().with_results_dir(results_dir);
+    let validated = super::omc_simulation_reference::validate_trace_report_against_sources(
+        &paths,
+        &trace_bytes,
+        &reference_bytes,
+    )?;
+    if table.source.trace_source_evidence_digest != validated.source_evidence_digest() {
+        bail!(
+            "band table was derived from different source traces (table digest {}, current digest {})",
+            digest_excerpt(&table.source.trace_source_evidence_digest),
+            digest_excerpt(validated.source_evidence_digest())
+        );
+    }
+    Ok(())
+}
+
 /// Read a results directory's comparator output, naming its absence.
 ///
 /// A cited results directory with no `sim_trace_comparison.json` never compared
 /// anything. `target/msl/task65-canary-parity` is exactly that shape, and it sat
 /// alongside directories that *had* comparator output — indistinguishable to
 /// anything that treated a missing file as "nothing to check".
+#[cfg(test)]
 fn read_comparator_output(trace_file: &Path) -> Result<Value> {
     if !trace_file.is_file() {
         bail!(
@@ -1244,7 +1491,6 @@ fn read_comparator_output(trace_file: &Path) -> Result<Value> {
 }
 
 /// Reject a comparator output that compared nothing.
-///
 /// `models_compared: 0` with all-zero agreement bands is a **vacuous
 /// comparison**: every band count is trivially satisfied and every percentage is
 /// 0/0. `target/msl/task4445-after` and `target/msl/task65-canary` both carry it,
@@ -1302,18 +1548,65 @@ fn optional_file_digest(path: &Path) -> Result<String> {
     file_digest(path)
 }
 
-/// Derive a table from the raw artifacts in `results_dir`.
-///
-/// Used for certifications written before the table existed, so an older results
-/// directory stays diffable instead of being silently uncomparable.
-pub fn derive_band_table_from_dir(
+#[cfg(test)]
+pub fn derive_band_table_from_test_artifacts(
     results_dir: &Path,
     run_scope: BandTableRunScope,
 ) -> Result<BandTable> {
     let trace_file = results_dir.join(TRACE_COMPARISON_FILE);
-    let results_file = results_dir.join(MSL_RESULTS_FILE);
     let trace = read_comparator_output(&trace_file)?;
     ensure_comparison_not_vacuous(&trace, &trace_file)?;
+    let trace_digest = file_digest(&trace_file)?;
+    derive_band_table_from_payload(
+        results_dir,
+        run_scope,
+        &trace,
+        &trace_digest,
+        &trace_digest,
+        read_omc_version(results_dir),
+    )
+}
+
+/// Derive a table from a validated current-run trace payload.
+///
+/// This boundary never rediscovers `sim_trace_comparison.json`. The caller
+/// supplies the payload and digest from
+/// the opaque orchestration receipt minted immediately after comparison.
+fn derive_band_table_from_current_trace(
+    results_dir: &Path,
+    run_scope: BandTableRunScope,
+    validated: &super::omc_simulation_reference::ValidatedTraceReport,
+) -> Result<BandTable> {
+    let trace = validated.payload();
+    let trace_digest = validated.report_digest();
+    derive_band_table_from_payload(
+        results_dir,
+        run_scope,
+        trace,
+        trace_digest,
+        validated.source_evidence_digest(),
+        validated.reference_omc_version(),
+    )
+}
+
+fn derive_band_table_from_payload(
+    results_dir: &Path,
+    run_scope: BandTableRunScope,
+    trace: &Value,
+    trace_digest: &str,
+    trace_source_evidence_digest: &str,
+    omc_version: Option<String>,
+) -> Result<BandTable> {
+    if trace_digest.len() != 64
+        || !trace_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("current-run trace comparison carries an invalid exact-byte digest");
+    }
+    ensure_comparison_not_vacuous(trace, Path::new("<current-run-trace-receipt>"))?;
+    let trace_file = results_dir.join(TRACE_COMPARISON_FILE);
+    let results_file = results_dir.join(MSL_RESULTS_FILE);
     let results = read_optional_json(&results_file)?;
     let git_commit = results
         .as_ref()
@@ -1329,30 +1622,27 @@ pub fn derive_band_table_from_dir(
         run_scope,
         git_commit,
         working_tree_digest: git_worktree_content_digest(&repo_root()),
-        omc_version: read_omc_version(results_dir),
+        omc_version,
         source: BandTableSource {
             trace_comparison_file: trace_file.display().to_string(),
-            trace_comparison_digest: file_digest(&trace_file)?,
+            trace_comparison_digest: trace_digest.to_string(),
+            trace_source_evidence_digest: trace_source_evidence_digest.to_string(),
             results_file: results_file.display().to_string(),
             results_digest: optional_file_digest(&results_file)?,
             exclusions_file: exclusions.file,
             exclusions_digest: exclusions.digest,
         },
     };
-    derive_band_table(&trace, results.as_ref(), &exclusions.entries, meta)
+    derive_band_table(trace, results.as_ref(), &exclusions.entries, meta)
 }
 
 /// The tracked policy exclusions, keyed by model name, with the digest of the
 /// list they came from.
 ///
-/// The list *decides* attribution: an untyped `skipped` entry is a policy
-/// exclusion when the model is on this list and a comparator defect when it is
-/// not. Reading it must therefore never fall back to "no exclusions" — that
-/// default silently reclassifies every policy skip as a defect, and it would do
-/// so as a function of the working directory, since the path is resolved from
-/// the workspace root found by walking up from the CWD. A list that cannot be
-/// read is a hard error, and the digest travels into the table so the reading is
-/// attributable after the fact.
+/// The list supplies reviewed policy absences for cohort members the comparator
+/// never reached. It never repairs or reclassifies a malformed comparator
+/// record. A list that cannot be read is a hard error, and the digest travels
+/// into the table so the reading is attributable after the fact.
 #[derive(Debug)]
 struct TrackedExclusions {
     entries: BTreeMap<String, String>,
@@ -1379,18 +1669,13 @@ fn exclusions_from(path: &Path) -> Result<TrackedExclusions> {
     })
 }
 
-/// The persisted table when one exists and belongs to this directory, else a
-/// table derived from the raw artifacts in `results_dir`.
-///
-/// The binding check is what makes this safe to use as evidence: a planted or
-/// stale `msl_band_table.json` is refused rather than read as the directory's
-/// population.
-pub fn load_or_derive_band_table(results_dir: &Path) -> Result<BandTable> {
+#[cfg(test)]
+pub fn load_or_derive_test_band_table(results_dir: &Path) -> Result<BandTable> {
     let path = band_table_path(results_dir);
     if path.is_file() {
-        return load_bound_band_table(results_dir);
+        return load_historical_transition_band_table(results_dir);
     }
-    let table = derive_band_table_from_dir(results_dir, BandTableRunScope::Full)?;
+    let table = derive_band_table_from_test_artifacts(results_dir, BandTableRunScope::Full)?;
     ensure_comparable(&table).with_context(|| {
         format!(
             "band table derived from '{}' is not comparable",
@@ -1443,13 +1728,33 @@ pub struct PersistedBandTable {
 /// The write is crash-atomic: the new table lands in a temporary file first, so
 /// an interrupted call leaves either the old table or the new one, never a
 /// truncated file.
-pub fn persist_band_table(
+#[cfg(test)]
+pub fn persist_test_band_table(
     results_dir: &Path,
     run_scope: BandTableRunScope,
 ) -> Result<PersistedBandTable> {
+    let table = derive_band_table_from_test_artifacts(results_dir, run_scope)?;
+    persist_derived_band_table(results_dir, run_scope, table)
+}
+
+/// Persist the band table derived from an already validated current-run trace
+/// receipt. This is the only persistence route used by the active MSL gate.
+pub fn persist_current_run_band_table(
+    run_scope: BandTableRunScope,
+    validated: &super::omc_simulation_reference::ValidatedTraceReport,
+) -> Result<PersistedBandTable> {
+    let results_dir = validated.results_dir();
+    let table = derive_band_table_from_current_trace(results_dir, run_scope, validated)?;
+    persist_derived_band_table(results_dir, run_scope, table)
+}
+
+fn persist_derived_band_table(
+    results_dir: &Path,
+    run_scope: BandTableRunScope,
+    table: BandTable,
+) -> Result<PersistedBandTable> {
     let path = band_table_path(results_dir);
     let previous_path = previous_band_table_path(results_dir);
-    let table = derive_band_table_from_dir(results_dir, run_scope)?;
     ensure_comparable(&table)?;
     let (existing, mut previous_not_diffable) = read_existing_table(&path);
 
@@ -1573,6 +1878,7 @@ fn rotate_existing_table(path: &Path, previous_path: &Path) -> Result<()> {
     })
 }
 
+#[cfg(test)]
 fn read_omc_version(results_dir: &Path) -> Option<String> {
     let path = results_dir.join(OMC_SIMULATION_REFERENCE_FILE);
     let raw = fs::read_to_string(path).ok()?;
@@ -1601,232 +1907,12 @@ fn read_optional_json(path: &Path) -> Result<Option<Value>> {
     read_required_json(path).map(Some)
 }
 
-/// A model that joined the compared set.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct EnteredModel {
-    pub model_name: String,
-    pub after_band: BandLabel,
-    /// What the previous certification said about it, when it had a row.
-    pub before_exit_reason: Option<ExitReason>,
-    pub before_exit_detail: Option<String>,
-}
-
-/// A model that left the compared set. Never silent: it always carries the band
-/// it held and the reason it is gone.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct LeftModel {
-    pub model_name: String,
-    pub before_band: BandLabel,
-    pub exit_reason: ExitReason,
-    pub exit_detail: Option<String>,
-}
-
-/// A model compared in both runs whose band moved.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct BandChangedModel {
-    pub model_name: String,
-    pub before_band: BandLabel,
-    pub after_band: BandLabel,
-}
-
-/// A model compared in both runs that is now compared over fewer channels.
-///
-/// A band is a share of the channels that were compared, so a model can hold its
-/// band while the evidence behind it collapses — 165 channels down to 3 still
-/// reads as `high`. Coverage loss is therefore its own event, not a band change.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CoverageDroppedModel {
-    pub model_name: String,
-    pub before_compared_variables: usize,
-    pub after_compared_variables: usize,
-    pub band: BandLabel,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct BandTransitionCounts {
-    pub before_cohort_models: usize,
-    pub after_cohort_models: usize,
-    pub before_compared: usize,
-    pub after_compared: usize,
-    pub common_compared: usize,
-    pub entered: usize,
-    pub left: usize,
-    pub band_changed: usize,
-    pub coverage_dropped: usize,
-    /// Channels lost across every model that stayed compared. A run can hold
-    /// every band and still lose most of its evidence.
-    pub compared_variables_lost: usize,
-    /// `left` broken down by exit reason, so a wave of solver regressions is
-    /// distinguishable from a wave of missing references.
-    pub left_by_reason: BTreeMap<String, usize>,
-}
-
-/// The full ENTERED / LEFT / BAND-CHANGED / COVERAGE-DROPPED surface between two
-/// certifications.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct BandTransitions {
-    pub counts: BandTransitionCounts,
-    pub entered: Vec<EnteredModel>,
-    pub left: Vec<LeftModel>,
-    pub band_changed: Vec<BandChangedModel>,
-    pub coverage_dropped: Vec<CoverageDroppedModel>,
-}
-
-impl BandTransitions {
-    /// The single line a gate summary prints for cohort movement.
-    pub fn summary_line(&self) -> String {
-        format!(
-            "cohort: entered {}, left {}, band-changed {}, coverage-dropped {} (compared {} -> {}, \
-             common {})",
-            self.counts.entered,
-            self.counts.left,
-            self.counts.band_changed,
-            self.counts.coverage_dropped,
-            self.counts.before_compared,
-            self.counts.after_compared,
-            self.counts.common_compared,
-        )
-    }
-}
-
-/// Refuse to diff two tables written at different run scopes.
-///
-/// A cohort table and a shard stripe are both valid tables of different
-/// populations. Diffing them yields an `entered`/`left` count that is really the
-/// difference between the two model sets, and nothing in the numbers says so.
-pub fn ensure_diffable_pair(before: &BandTable, after: &BandTable) -> Result<()> {
-    if before.run_scope != after.run_scope {
-        bail!(
-            "run_scope_mismatch: the before certification is '{}' over {} models and the after              certification is '{}' over {}; a cohort and a stripe are not like-for-like",
-            before.run_scope.as_str(),
-            before.counts.cohort_models,
-            after.run_scope.as_str(),
-            after.counts.cohort_models
-        );
-    }
-    Ok(())
-}
-
-/// Diff two certifications' band tables.
-///
-/// A model compared in `before` but not in `after` becomes a [`LeftModel`] with
-/// the exit reason `after` recorded. If `after` has no row for it at all, the
-/// departure is still reported — as [`ExitReason::NotCompared`] naming the
-/// missing row — because an unexplained disappearance is the defect this diff
-/// exists to catch, not a reason to drop the model.
-pub fn diff_band_tables(before: &BandTable, after: &BandTable) -> BandTransitions {
-    let mut transitions = BandTransitions::default();
-    for before_row in before.rows.iter().filter(|row| row.band.is_compared()) {
-        classify_before_row(before_row, after, &mut transitions);
-    }
-    for after_row in after.rows.iter().filter(|row| row.band.is_compared()) {
-        if before
-            .row(&after_row.model_name)
-            .is_some_and(|row| row.band.is_compared())
-        {
-            continue;
-        }
-        transitions.entered.push(entered_model(after_row, before));
-    }
-    transitions.counts = transition_counts(before, after, &transitions);
-    transitions
-}
-
-fn classify_before_row(before_row: &BandRow, after: &BandTable, out: &mut BandTransitions) {
-    match after.row(&before_row.model_name) {
-        Some(after_row) if after_row.band.is_compared() => {
-            if after_row.band != before_row.band {
-                out.band_changed.push(BandChangedModel {
-                    model_name: before_row.model_name.clone(),
-                    before_band: before_row.band,
-                    after_band: after_row.band,
-                });
-            }
-            if after_row.compared_variables < before_row.compared_variables {
-                out.coverage_dropped.push(CoverageDroppedModel {
-                    model_name: before_row.model_name.clone(),
-                    before_compared_variables: before_row.compared_variables,
-                    after_compared_variables: after_row.compared_variables,
-                    band: after_row.band,
-                });
-            }
-        }
-        Some(after_row) => out.left.push(LeftModel {
-            model_name: before_row.model_name.clone(),
-            before_band: before_row.band,
-            exit_reason: after_row.exit_reason.unwrap_or(ExitReason::NotCompared),
-            exit_detail: after_row.exit_detail.clone(),
-        }),
-        None => out.left.push(LeftModel {
-            model_name: before_row.model_name.clone(),
-            before_band: before_row.band,
-            exit_reason: ExitReason::NotCompared,
-            exit_detail: Some(
-                "the model has no row in the candidate band table; the run did not record why it \
-                 left the compared set"
-                    .to_string(),
-            ),
-        }),
-    }
-}
-
-fn entered_model(after_row: &BandRow, before: &BandTable) -> EnteredModel {
-    let before_row = before.row(&after_row.model_name);
-    EnteredModel {
-        model_name: after_row.model_name.clone(),
-        after_band: after_row.band,
-        before_exit_reason: before_row.and_then(|row| row.exit_reason),
-        before_exit_detail: before_row.and_then(|row| row.exit_detail.clone()),
-    }
-}
-
-fn transition_counts(
-    before: &BandTable,
-    after: &BandTable,
-    transitions: &BandTransitions,
-) -> BandTransitionCounts {
-    let before_compared = before.models_compared();
-    let after_compared = after.models_compared();
-    let mut left_by_reason = BTreeMap::new();
-    for left in &transitions.left {
-        *left_by_reason
-            .entry(left.exit_reason.as_str().to_string())
-            .or_insert(0) += 1;
-    }
-    BandTransitionCounts {
-        before_cohort_models: before.rows.len(),
-        after_cohort_models: after.rows.len(),
-        before_compared,
-        after_compared,
-        common_compared: before_compared - transitions.left.len(),
-        entered: transitions.entered.len(),
-        left: transitions.left.len(),
-        band_changed: transitions.band_changed.len(),
-        coverage_dropped: transitions.coverage_dropped.len(),
-        compared_variables_lost: transitions
-            .coverage_dropped
-            .iter()
-            .map(|drop| drop.before_compared_variables - drop.after_compared_variables)
-            .sum(),
-        left_by_reason,
-    }
-}
-
 #[derive(Debug, Clone, clap::Args)]
 pub struct Args {
-    /// Results directory to read the comparator artifacts from and write the
-    /// band table into. Defaults to the results directory the parity config
-    /// names, so the tool reads the same run the harness just wrote.
+    /// Results directory containing the already persisted current-schema band
+    /// table. Missing tables are never synthesized from ambient artifacts.
     #[arg(long)]
     results_dir: Option<PathBuf>,
-    /// Only check that the directory yields a comparable table bound to its own
-    /// comparator output; write nothing.
-    #[arg(long, default_value_t = false)]
-    check: bool,
-    /// Record the table as a focused (Tier 1) run's, which refuses to rotate a
-    /// full-cohort table aside.
-    #[arg(long, default_value_t = false)]
-    partial: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -1835,30 +1921,8 @@ pub fn run(args: Args) -> Result<()> {
         .results_dir
         .map(|dir| resolve_results_dir(&repo_root, dir))
         .unwrap_or_else(|| default_results_dir(&repo_root));
-    if args.check {
-        let table = load_or_derive_band_table(&results_dir)?;
-        print_band_table_summary(&results_dir, &table, None);
-        return Ok(());
-    }
-    let run_scope = if args.partial {
-        BandTableRunScope::Partial
-    } else {
-        BandTableRunScope::Full
-    };
-    let persisted = persist_band_table(&results_dir, run_scope)?;
-    if let Some(detail) = persisted.previous_not_diffable.as_deref() {
-        println!("MSL band table: no diff against the previous table ({detail})");
-    }
-    if let Some(reason) = persisted.not_persisted_reason.as_deref() {
-        println!("MSL band table: NOT WRITTEN — {reason}");
-    }
-    if persisted.rewrote_same_run {
-        println!(
-            "MSL band table: rewrote the table for this comparator output; the previous run's \
-             table was left in place"
-        );
-    }
-    print_band_table_summary(&results_dir, &persisted.table, persisted.previous.as_ref());
+    let table = load_bound_band_table(&results_dir)?;
+    print_band_table_summary(&results_dir, &table, None);
     Ok(())
 }
 

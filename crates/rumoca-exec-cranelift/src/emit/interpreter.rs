@@ -134,14 +134,7 @@ fn execute_general_op(
     context: GeneralOpContext<'_>,
 ) -> Result<(), CompileError> {
     let GeneralOpContext {
-        inputs:
-            RowInputs {
-                y,
-                p,
-                t,
-                seed,
-                external_tables,
-            },
+        inputs: RowInputs { y, p, t, seed },
         fold_carried,
         fold_indices,
         fold_captures,
@@ -576,16 +569,6 @@ fn execute_general_op(
                 }
             }
         }
-        LinearOp::TableBounds { dst, table_id, max } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let operation = if max { "bounds max" } else { "bounds min" };
-            let value = eval_table_bound_value_in(table_id, max, external_tables)
-                .map_err(|error| table_compile_error(operation, table_id, None, error))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableLookup { .. }
-        | LinearOp::TableLookupSlope { .. }
-        | LinearOp::TableNextEvent { .. } => execute_general_table_op(regs, op, external_tables)?,
         LinearOp::RandomInitialState { .. }
         | LinearOp::RandomResult { .. }
         | LinearOp::RandomState { .. }
@@ -1002,72 +985,6 @@ fn tensor_index_coordinate(regs: &[f64], index: rumoca_ir_solve::TensorIndex) ->
             read_reg_value(regs, register as usize) as usize - 1
         }
     }
-}
-
-fn execute_general_table_op(
-    regs: &mut [f64],
-    op: LinearOp,
-    external_tables: &[ExternalTableData],
-) -> Result<(), CompileError> {
-    match op {
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let column = read_reg_value(regs, column as usize);
-            let input = read_reg_value(regs, input as usize);
-            let value = eval_table_lookup_value_in(table_id, column, input, external_tables)
-                .map_err(|error| table_compile_error("lookup", table_id, Some(column), error))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let column = read_reg_value(regs, column as usize);
-            let input = read_reg_value(regs, input as usize);
-            let value = eval_table_lookup_slope_value_in(table_id, column, input, external_tables)
-                .map_err(|error| {
-                    table_compile_error("lookup slope", table_id, Some(column), error)
-                })?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => {
-            let table_id = read_reg_value(regs, table_id as usize);
-            let time = read_reg_value(regs, time as usize);
-            let value = eval_time_table_next_event_value_in(table_id, time, external_tables)
-                .map_err(|error| table_compile_error("next event", table_id, None, error))?;
-            set_reg_value(regs, dst as usize, value);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn table_compile_error(
-    operation: &'static str,
-    table_id: f64,
-    column: Option<f64>,
-    error: impl std::fmt::Display,
-) -> CompileError {
-    let message = if let Some(column) = column {
-        format!(
-            "external table {operation} failed for table id {table_id} column {column}: {error}"
-        )
-    } else {
-        format!("external table {operation} failed for table id {table_id}: {error}")
-    };
-    CompileError::Input(message)
 }
 
 fn read_input_value(

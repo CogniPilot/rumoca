@@ -21,12 +21,12 @@ This document catalogs the implicit and explicit contracts from the Modelica Lan
 | §3. Data Structures | 74–325 | Class tree, instance tree, modification env, connection set, DAE, type attributes, variability, class types, prefixes, arrays, state machines |
 | §4.1 LEX contracts | 326–345 | Contract catalog heading + lexical rules (13 contracts) |
 | §4.2 DECL contracts | 346–386 | Declaration rules (36 contracts) |
-| §4.3 INST contracts | 387–444 | Instantiation rules (53 contracts) |
+| §4.3 INST contracts | 387–444 | Instantiation rules (54 contracts) |
 | §4.4 EXPR contracts | 445–489 | Expression/operator rules (40 contracts) |
 | §4.5 EQN contracts | 490–532 | Equation rules (38 contracts) |
 | §4.6 ALG contracts | 533–554 | Algorithm rules (17 contracts) |
 | §4.7 CONN contracts | 555–589 | Connection rules (30 contracts) |
-| §4.8 FUNC contracts | 590–632 | Function rules (38 contracts) |
+| §4.8 FUNC contracts | 590–632 | Function rules (39 contracts) |
 | §4.9 TYPE contracts | 633–672 | Type/interface rules (35 contracts) |
 | §4.10 ARR contracts | 673–719 | Array rules (42 contracts) |
 | §4.11 PKG contracts | 720–736 | Package/import rules (12 contracts) |
@@ -341,7 +341,7 @@ Defines state-to-state transitions with priority and timing control.
 | LEX-010 | Float range minimum | §2.4.1 | "At least IEEE double precision range (1.797×10³⁰⁸ to 2.225×10⁻³⁰⁸)" |
 | LEX-011 | Integer range minimum | §2.4.2 | "Range at least  enough to represent largest positive IntegerType value" |
 | LEX-012 | Boolean literals only | §2.4.3 | "Only true and false permitted as Boolean literals" |
-| LEX-013 | String escapes required | §2.4.4 | "Backslash escape sequences required for quote, backslash, newline, tab, etc."
+| LEX-013 | String escapes required | §2.4.4 | "Backslash escape sequences required for quote, backslash, newline, tab, etc." |
 
 ### 4.2 Declaration Contracts (DECL)
 
@@ -382,7 +382,7 @@ Defines state-to-state transitions with priority and timing control.
 | DECL-033 | When-clause subcomponent | §4.5.3 | "Variable assigned in when-clause shall not be defined in sub-component of model or block" |
 | DECL-034 | Array class extends | §4.6.2 | "Not legal to combine equations/algorithms/components with extends from array class or simple type" |
 | DECL-035 | Local class flattenable | §4.6.3 | "Local class should be statically flattenable with partially flattened enclosing class" |
-| DECL-036 | Type class contents | §4.7 | "type – May only be predefined types, enumerations, array of type, or classes extending from type"
+| DECL-036 | Type class contents | §4.7 | "type – May only be predefined types, enumerations, array of type, or classes extending from type" |
 
 ### 4.3 Instantiation Contracts (INST)
 
@@ -440,7 +440,8 @@ Defines state-to-state transitions with priority and timing control.
 | INST-050 | Unqualified import conflict | §5.3.1 | "Error if multiple unqualified imports match same name" |
 | INST-051 | Constraining annotation conflict | §7.3.2.1 | "Error if annotations appear on both definition and constraining clause" |
 | INST-052 | Redeclaration dimension match | §7.3.2 | "Redeclaration must have same number of dimensions as original element" |
-| INST-053 | Conditional component removal | §5.6.2 | "Conditional components with false condition are removed and not part of simulation model"
+| INST-053 | Conditional component removal | §5.6.2 | "Conditional components with false condition are removed and not part of simulation model" |
+| INST-054 | Scope lookup order | §5.3.1 | "Lookup order per scope: declared elements including inherited, then qualified and selective imports, then unqualified imports" |
 
 ### 4.4 Expression/Operator Contracts (EXPR)
 
@@ -528,7 +529,7 @@ Defines state-to-state transitions with priority and timing control.
 | EQN-035 | Init pre equality | §8.6 | "Before start of integration, for all variables v, v = pre(v) must be guaranteed" |
 | EQN-036 | Assert evaluable level | §8.3.7 | "assertionLevel is an optional evaluable expression" |
 | EQN-037 | When not in initial eq | §8.6 | "It is not allowed to use when-clauses in initial equation/algorithm sections" |
-| EQN-038 | Connections.branch scope | §8.3.3 | "Connections.branch/root/potentialRoot same restrictions as connect in for/if-equations"
+| EQN-038 | Connections.branch scope | §8.3.3 | "Connections.branch/root/potentialRoot same restrictions as connect in for/if-equations" |
 
 ### 4.6 Algorithm Contracts (ALG)
 
@@ -537,7 +538,7 @@ Defines state-to-state transitions with priority and timing control.
 | ALG-001 | No equation syntax | §11 | "Equation equality = shall not be used in an algorithm section" |
 | ALG-002 | LHS component types | §11.1 | "Only type, record, operator record, connector may appear as left-hand-side" |
 | ALG-003 | For event evaluable | §11.2 | "If for-statement contains event-generating expressions, index shall be evaluable" |
-| ALG-004 | For no array overwrite | §11.2 | "No assignments to entire arrays subscripted with loop variable inside for" |
+| ALG-004 | For implicit-range stability | §11.2.2.1 | "An omitted iterator range requires that the iterator subscript at least one subscripted expression outside an expandable-connector component, and is deduced from that expression's dimension; where it subscripts several, their ranges must be identical; no assignment may target an entire array subscripted by that iterator, while element and slice assignments remain legal." |
 | ALG-005 | While scalar Boolean | §11.2 | "Expression of while-statement shall be a scalar Boolean expression" |
 | ALG-006 | While no events | §11.2 | "Event-generating expressions not allowed in while condition or body" |
 | ALG-007 | When not in function | §11.2 | "When-statement shall not be used inside a function class" |
@@ -550,7 +551,7 @@ Defines state-to-state transitions with priority and timing control.
 | ALG-014 | terminate not in function | §11.2 | "terminate-statement shall not be used in functions" |
 | ALG-015 | Assert execution halt | §11.2.8.1 | "A failed assert stops the execution of the current algorithm" |
 | ALG-016 | For range fixed | §11.2.2 | "For-statement range expressions are evaluated once before entering loop" |
-| ALG-017 | LHS initialization | §11.1 | "Variables on the left-hand side of := must be initialized when algorithm is invoked"
+| ALG-017 | LHS initialization | §11.1 | "Variables on the left-hand side of := must be initialized when algorithm is invoked" |
 
 ### 4.7 Connection Contracts (CONN)
 
@@ -625,10 +626,11 @@ Defines state-to-state transitions with priority and timing control.
 | FUNC-032 | External purity deprecated | §12.3 | "External functions not explicitly declared with pure or impure is deprecated." Such a function is normative-impure for transformations: "a function shall be treated as impure in the following cases (applied recursively): It is declared impure. It is an external function without explicit purity. It calls another function treated as impure, except when wrapped in pure(…)." The deprecation is a report, not a call restriction — MLS 3.6 §12.3 stated the report as a requirement ("a diagnostic must be given if called in a simulation model") and made callability explicit ("without any restriction on calling them"), which is the historical basis for accepting the call. Rumoca: WR001 on every such declaration; body recorded impure; recursive third case is task #76. |
 | FUNC-033 | Functional param type | §12.4.2 | "Function type parameter cannot be type-specifier of record or enumeration" |
 | FUNC-034 | Input default independence | §12.4.1 | "Default values for inputs shall not depend on non-input variables in the function" |
-| FUNC-035 | Derivative ordering | §12.7.1 | "Most restrictive derivative annotations should be written first"
+| FUNC-035 | Derivative ordering | §12.7.1 | "Most restrictive derivative annotations should be written first" |
 | FUNC-036 | ExternalObject lifecycle shape | §12.9.7 | "ExternalObject owner uses the specialized class `class`, directly extends ExternalObject, owns exactly non-replaceable constructor and destructor functions, and owns no other elements" |
 | FUNC-037 | ExternalObject lifecycle signatures | §12.9.7 | "Constructor has exactly one output of the owning ExternalObject type; destructor has exactly one input of that type and no outputs" |
 | FUNC-038 | ExternalObject lifecycle calls | §12.9.7 | "Constructor and destructor cannot be called explicitly; each constructed object is constructed and destroyed exactly once" |
+| FUNC-039 | External error is non-returning | §12.3, §12.9.7.1 | A call to an external function may terminate in a typed error rather than a value: `ModelicaError`, `ModelicaFormatError`, and `ModelicaVFormatError` do not return control to the caller, so the call produces no output. No output value and no numeric sentinel may represent such an evaluation as success. |
 
 ### 4.9 Type/Interface Contracts (TYPE)
 
@@ -668,7 +670,7 @@ Defines state-to-state transitions with priority and timing control.
 | TYPE-032 | Record expr compatible | §6.7 | "If A is record expression, B must also be record expression with same named elements" |
 | TYPE-033 | Real/Integer coercion | §6.7 | "If A is Real expression, B must be Real or Integer; result is Real" |
 | TYPE-034 | Integer division result | §6.7 | "For Integer exponentiation and division, result type is Real even if both operands Integer" |
-| TYPE-035 | Operator record consistency | §6.7 | "For array/if-expressions: if A has operator record base, B must have same one"
+| TYPE-035 | Operator record consistency | §6.7 | "For array/if-expressions: if A has operator record base, B must have same one" |
 
 ### 4.10 Array Contracts (ARR)
 
@@ -732,7 +734,7 @@ Defines state-to-state transitions with priority and timing control.
 | PKG-009 | Within required | §13.4.3 | "A non-top-level entity shall begin with a within-clause" |
 | PKG-010 | Within designates enclosing | §13.4.3 | "The within-clause shall designate the class of the enclosing entity" |
 | PKG-011 | Import fully qualified | §13.2.2 | "An imported package or definition should always be referred to by its fully qualified name" |
-| PKG-012 | Import not modifiable | §13.2.2 | "Import-clauses are not named elements and cannot be modified or redeclared"
+| PKG-012 | Import not modifiable | §13.2.2 | "Import-clauses are not named elements and cannot be modified or redeclared" |
 
 ### 4.12 Operator Record Contracts (OPREC)
 
@@ -748,7 +750,7 @@ Defines state-to-state transitions with priority and timing control.
 | OPREC-008 | Zero operator single | §14 | "'0' operator can only contain one function with zero inputs" |
 | OPREC-009 | Constructor mutual exclusion | §14.3 | "For pair of operator record classes C and D, at most one of C.'constructor'(d) and D.'constructor'(c) shall be legal" |
 | OPREC-010 | String operator output | §14.4 | "operator A.'String' shall only contain functions declaring one output of String type" |
-| OPREC-011 | Zero inner dimension | §14.5 | "If inner dimension is zero for matrix*vector/matrix, uses '0' operator; error if '0' not defined"
+| OPREC-011 | Zero inner dimension | §14.5 | "If inner dimension is zero for matrix*vector/matrix, uses '0' operator; error if '0' not defined" |
 
 ### 4.13 Simulation Contracts (SIM)
 
@@ -757,7 +759,7 @@ Defines state-to-state transitions with priority and timing control.
 | SIM-001 | Event iteration | §8.6/App B | "Iterate solving equations until z == pre(z) and m == pre(m)" |
 | SIM-002 | Initialization fixed | §8.6 | "Continuous Real with fixed=true adds equation vc = startExpression" |
 | SIM-003 | Parameter fixed default | §8.6 | "For parameters: fixed defaults to true" |
-| SIM-004 | Variable fixed default | §8.6 | "For other variables: fixed defaults to false" |
+| SIM-004 | Variable fixed default | §8.6 | "For other variables: fixed defaults to false"; such a `start` remains only a numerical guess, so executable Solve construction requires a distinct initialization-equation owner for every unpinned state coordinate and rejects an incomplete structural matching before runtime |
 | SIM-005 | Discrete-valued solved form | App B | "Discrete-valued variables must be solvable through sequence of assignments with no cyclic dependencies" |
 | SIM-006 | Integer solved form | App B | "Solved variable must appear uniquely as term (no multiplicative factor) on either side" |
 | SIM-007 | Non-Integer flip form | App B | "Non-Integer equations require at most flipping sides to obtain assignment form" |
@@ -788,7 +790,7 @@ Defines state-to-state transitions with priority and timing control.
 | CLK-017 | Sampling factor range | §16.7.5 | "Accumulated sub- and supersampling factors in range 1 to 2⁶³ must be supported" |
 | CLK-018 | Clock interval positive | §16.3 | "Clock(interval): interval must be strictly positive (interval > 0)" |
 | CLK-019 | intervalCounter positive | §16.3 | "Clock(intervalCounter, resolution): clocked component expression intervalCounter must be > 0" |
-| CLK-020 | Clock variable restrictions | §16.3 | "Clock variables cannot have prefixes flow, stream, discrete, parameter, or constant"
+| CLK-020 | Clock variable restrictions | §16.3 | "Clock variables cannot have prefixes flow, stream, discrete, parameter, or constant" |
 
 ### 4.15 Stream Connector Contracts (STRM)
 
@@ -877,7 +879,7 @@ areas.
 | ANN-012 | mayOnlyConnectOnce error | §18.8 | "Error if connection set has more than two elements" |
 | ANN-013 | Annotation placement | §18.1 | "Standard annotations shall only be used where their semantics is defined" |
 | ANN-014 | TestCase restriction | §18.7 | "Class with TestCase annotation shall not be used in other models unless those also have TestCase" |
-| ANN-015 | Extent coordinate order | §18.9.1.1 | "Coordinates of first point shall be less than coordinates of second point"
+| ANN-015 | Extent coordinate order | §18.9.1.1 | "Coordinates of first point shall be less than coordinates of second point" |
 
 ### 4.18 Unit Expression Contracts (UNIT)
 
@@ -891,7 +893,7 @@ areas.
 | UNIT-006 | Symbol first interpretation | §19.1 | "Unit-operands should first be interpreted as unit-symbol, only then as prefixed operand" |
 | UNIT-007 | SI unit recognition | §19.1 | "Tools shall recognize basic and derived units of the SI system" |
 | UNIT-008 | Non-SI unit recognition | §19.1 | "Tools shall recognize: minute, hour, day, liter, electronvolt, degree, debye" |
-| UNIT-009 | Dot notation required | §19.1 | "Multiplication uses dot notation: 'N.m' for newton-meter, not 'Nm'"
+| UNIT-009 | Dot notation required | §19.1 | "Multiplication uses dot notation: 'N.m' for newton-meter, not 'Nm'" |
 
 ---
 
@@ -901,12 +903,12 @@ areas.
 |----------|--------|-------|
 | Lexical | LEX | 13 |
 | Declarations | DECL | 36 |
-| Instantiation | INST | 53 |
+| Instantiation | INST | 54 |
 | Expressions | EXPR | 40 |
 | Equations | EQN | 38 |
 | Algorithms | ALG | 17 |
 | Connections | CONN | 30 |
-| Functions | FUNC | 38 |
+| Functions | FUNC | 39 |
 | Types/Interfaces | TYPE | 35 |
 | Arrays | ARR | 42 |
 | Packages | PKG | 12 |
@@ -917,7 +919,7 @@ areas.
 | State Machines | SM | 8 |
 | Annotations | ANN | 15 |
 | Unit Expressions | UNIT | 9 |
-| **Total** | | **438** |
+| **Total** | | **440** |
 
 ---
 
@@ -1006,5 +1008,5 @@ The following design decisions extend MLS requirements for implementation:
 | Data Structures | 26 |
 | Algorithmic Processes | 4 |
 | Contract Categories | 18 |
-| Total Contracts | 438 |
+| Total Contracts | 440 |
 | MLS Chapters Referenced | 21 |

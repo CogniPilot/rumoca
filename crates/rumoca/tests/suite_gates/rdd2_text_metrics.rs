@@ -1,12 +1,12 @@
-//! Pure-text metrics over emitted GALEC Production Code, plus their unit tests.
+//! Pure-text metrics over emitted C, plus their unit tests.
 //!
 //! This module is deliberately NOT behind the `rdd2-metric-gates` feature. Its
 //! functions need no model corpus, no release binary and no filesystem -- they
 //! are string analysis over C text -- so gating them would mean the detectors'
 //! own correctness tests compiled only under a feature that nothing in CI or
 //! `xtask` ever enables. A pin that nothing exercises is not a pin. The
-//! measured ceilings that DO need a corpus live in `galec_review_surface.rs`,
-//! which is gated and reaches these functions through `super`.
+//! future measured ceilings that need a corpus belong to their authenticated
+//! product gate; these detectors remain independently exercised here.
 //!
 //! The tests at the bottom are the real contract: every case is a spelling
 //! that an earlier revision of this code got wrong, so the detectors cannot
@@ -316,7 +316,7 @@ pub(super) fn strip_enclosing_parens(text: &str) -> &str {
 /// Whether `operand` names an entity known to be `int32_t` already.
 ///
 /// Accepts a bare identifier and a member path (`s->n`, `a.b`, `ctx->x.y`):
-/// GALEC C reaches into its context struct routinely, and a cast around
+/// Generated C reaches into its context struct routinely, and a cast around
 /// `ctx->count` is exactly as redundant as one around a loop variable. The
 /// final component decides, since that is the entity being read.
 pub(super) fn names_declared_int32(operand: &str, declared: &BTreeSet<String>) -> bool {
@@ -488,7 +488,7 @@ pub(super) fn test_redundant_cast_detector_covers_every_spelling_and_stays_type_
         "a redundant cast with no `- 1` offset must still be reported"
     );
 
-    // ESCAPE 3: member paths, which GALEC C emits routinely.
+    // ESCAPE 3: member paths, which generated C emits routinely.
     let member = "int32_t n; void f(S *s) { a[((int32_t)(s->n)) - 1] = 0; }";
     assert_eq!(
         redundant_int32_casts(member, &harvest(member)),

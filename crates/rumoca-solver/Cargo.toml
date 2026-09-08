@@ -10,6 +10,10 @@ homepage.workspace = true
 [features]
 default = ["sparse-linalg"]
 sparse-linalg = ["dep:faer"]
+# A feature-gated harness that lets an out-of-crate numerical backend drive a
+# real integrator through the checked retained-handle and activation contract.
+# It carries no production surface and is enabled only by backend test builds.
+test-support = []
 
 [dependencies]
 faer = { workspace = true, optional = true }
@@ -29,6 +33,7 @@ instant = { version = "0.1", features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rumoca-phase-solve = { workspace = true }
 # SPEC_0039 / SOLVE-C17: pattern fixtures are a test-only surface. Declaring
 # the feature here and nowhere else keeps it out of every production build of
 # this crate.

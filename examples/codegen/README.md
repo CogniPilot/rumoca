@@ -25,16 +25,15 @@ cargo run -p rumoca -- \
 cargo run -p rumoca -- \
   compile examples/models/GalecCounter.mo \
   --model GalecCounter \
-  --target galec-production \
-  --output examples/codegen/gen/galec_counter_production
+  --target galec \
+  --output examples/codegen/gen/galec_counter
 ```
 
 Scenarios:
 
 - `rumoca-scenario.ball_jax_ode.toml`: checked ODE RHS JAX target.
-- `rumoca-scenario.galec_counter_production.toml`: GALEC/eFMI Production
-  Code target (`.alg` plus generated C).
-- `rumoca-scenario.sympy_decay_c_ode.toml`: checked ODE RHS C target.
+- `rumoca-scenario.galec_counter.toml`: GALEC/eFMI Algorithm Code target.
+- `rumoca-scenario.sympy_decay_fmi3.toml`: FMI 3.0 ME+CS export.
 - `rumoca-scenario.sympy_decay_checked_dae_report.toml`: custom target
   directory that renders a readable report from the canonical checked DAE
   projection.

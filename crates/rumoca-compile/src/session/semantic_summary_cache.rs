@@ -408,7 +408,7 @@ fn write_summary_cache_with_manifest_fingerprint(
     if let Err(rename_err) = fs::rename(&tmp_path, path) {
         fs::copy(&tmp_path, path)
             .with_context(|| format!("copy {} -> {}", tmp_path.display(), path.display()))?;
-        let _ = fs::remove_file(&tmp_path);
+        let _temporary_cleanup = fs::remove_file(&tmp_path);
         if !path.is_file() {
             return Err(rename_err).context("finalize semantic summary cache file");
         }

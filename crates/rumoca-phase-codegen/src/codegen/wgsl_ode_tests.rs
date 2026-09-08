@@ -2,9 +2,11 @@
 //! under the SPEC_0021 file-size limit).
 
 use super::codegen_test_support::{
-    builtin_template, solve_problem_with_two_by_two_linsolve_derivative,
+    ContinuousSystemFixture, builtin_template, checked_continuous_system,
+    continuous_system_with_derivative, explicit_ode_layout,
+    render_solve_fixture_template as render_solve_template_with_name, solve_artifacts,
+    solve_layout_for_y, solve_layout_with_names, solve_problem_with_two_by_two_linsolve_derivative,
 };
-use super::render_solve_template_with_name;
 use rumoca_ir_solve as solve;
 
 fn validate_wgsl(source: &str) {
@@ -52,7 +54,7 @@ fn scalar_block_with_output_indices(
 fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: count as i64,
@@ -62,165 +64,101 @@ fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
 }
 
 fn solve_problem_with_scalar_derivative_rows() -> solve::SolveProblem {
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::ScalarPrograms(scalar_block(vec![
-            // der0 = -p[0] * y[0]
-            vec![
-                solve::LinearOp::LoadP { dst: 0, index: 0 },
-                solve::LinearOp::LoadY { dst: 1, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::Unary {
-                    dst: 3,
-                    op: solve::UnaryOp::Neg,
-                    arg: 2,
-                },
-                solve::LinearOp::StoreOutput { src: 3 },
-            ],
-            // der1 = if y[0] > 2 then 1 else pow(y[0], 3)
-            vec![
-                solve::LinearOp::LoadY { dst: 0, index: 0 },
-                solve::LinearOp::Const { dst: 1, value: 2.0 },
-                solve::LinearOp::Compare {
-                    dst: 2,
-                    op: solve::CompareOp::Gt,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::Const { dst: 3, value: 1.0 },
-                solve::LinearOp::Const { dst: 4, value: 3.0 },
-                solve::LinearOp::Binary {
-                    dst: 5,
-                    op: solve::BinaryOp::Pow,
-                    lhs: 0,
-                    rhs: 4,
-                },
-                solve::LinearOp::Select {
-                    dst: 6,
-                    cond: 2,
-                    if_true: 3,
-                    if_false: 5,
-                },
-                solve::LinearOp::StoreOutput { src: 6 },
-            ],
-        ]))],
-    };
-    problem
-}
-
-fn solve_problem_with_sparse_scalar_derivative_rows() -> solve::SolveProblem {
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::ScalarPrograms(
-            scalar_block_with_output_indices(
+    let solve_layout = explicit_ode_layout(2, 1);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![solve::ComputeNode::ScalarPrograms(scalar_block(vec![
+                // der0 = -p[0] * y[0]
                 vec![
-                    vec![
-                        solve::LinearOp::Const { dst: 0, value: 2.0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ],
-                    vec![
-                        solve::LinearOp::Const { dst: 0, value: 4.0 },
-                        solve::LinearOp::StoreOutput { src: 0 },
-                    ],
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::LoadY { dst: 1, index: 0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Mul,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::Unary {
+                        dst: 3,
+                        op: solve::UnaryOp::Neg,
+                        arg: 2,
+                    },
+                    solve::LinearOp::StoreOutput { src: 3 },
                 ],
-                vec![2, 4],
-            ),
-        )],
-    };
-    problem
+                // der1 = if y[0] > 2 then 1 else pow(y[0], 3)
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 0 },
+                    solve::LinearOp::Const { dst: 1, value: 2.0 },
+                    solve::LinearOp::Compare {
+                        dst: 2,
+                        op: solve::CompareOp::Gt,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::Const { dst: 3, value: 1.0 },
+                    solve::LinearOp::Const { dst: 4, value: 3.0 },
+                    solve::LinearOp::Binary {
+                        dst: 5,
+                        op: solve::BinaryOp::Pow,
+                        lhs: 0,
+                        rhs: 4,
+                    },
+                    solve::LinearOp::Select {
+                        dst: 6,
+                        cond: 2,
+                        if_true: 3,
+                        if_false: 5,
+                    },
+                    solve::LinearOp::StoreOutput { src: 6 },
+                ],
+            ]))],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 1);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract")
 }
 
 fn solve_problem_with_affine_stencil_derivative() -> solve::SolveProblem {
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::AffineStencil {
-            domain: tensor_domain(8),
-            output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(8))
-                .expect("valid dense output map"),
-            base_ops: vec![
-                solve::LinearOp::LoadP { dst: 0, index: 0 },
-                solve::LinearOp::LoadY { dst: 1, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::Unary {
-                    dst: 3,
-                    op: solve::UnaryOp::Neg,
-                    arg: 2,
-                },
-                solve::LinearOp::StoreOutput { src: 3 },
-            ],
-            load_strides: vec![solve::AffineStencilLoadStride {
-                op_position: 1,
-                terms: vec![solve::AffineStencilIndexStrideTerm {
-                    dimension: 0,
-                    stride: 1,
-                }],
-            }],
-            const_strides: Vec::new(),
-            metadata: solve::TensorNodeMetadata::default(),
-            span: fixture_span(),
-        }],
-    };
-    problem
-}
-
-fn solve_problem_with_map_derivative() -> solve::SolveProblem {
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::Map {
-            domain: tensor_domain(8),
-            output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(8))
-                .expect("valid dense output map"),
-            base_ops: vec![
-                solve::LinearOp::LoadP { dst: 0, index: 0 },
-                solve::LinearOp::LoadY { dst: 1, index: 0 },
-                solve::LinearOp::Binary {
-                    dst: 2,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 0,
-                    rhs: 1,
-                },
-                solve::LinearOp::StoreOutput { src: 2 },
-            ],
-            load_strides: vec![solve::AffineStencilLoadStride {
-                op_position: 1,
-                terms: vec![solve::AffineStencilIndexStrideTerm {
-                    dimension: 0,
-                    stride: 1,
-                }],
-            }],
-            const_strides: Vec::new(),
-            metadata: solve::TensorNodeMetadata::default(),
-            span: fixture_span(),
-        }],
-    };
-    problem
-}
-
-fn solve_problem_with_mixed_native_and_scalar_derivative() -> solve::SolveProblem {
-    let domain = tensor_domain(2);
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![
-            solve::ComputeNode::Map {
-                domain: domain.clone(),
-                output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+    let solve_layout = explicit_ode_layout(8, 1);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![solve::ComputeNode::AffineStencil {
+                domain: tensor_domain(8),
+                output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(8))
                     .expect("valid dense output map"),
                 base_ops: vec![
-                    solve::LinearOp::LoadY { dst: 0, index: 0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::LoadY { dst: 1, index: 0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Mul,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::Unary {
+                        dst: 3,
+                        op: solve::UnaryOp::Neg,
+                        arg: 2,
+                    },
+                    solve::LinearOp::StoreOutput { src: 3 },
                 ],
                 load_strides: vec![solve::AffineStencilLoadStride {
-                    op_position: 0,
+                    op_position: 1,
                     terms: vec![solve::AffineStencilIndexStrideTerm {
                         dimension: 0,
                         stride: 1,
@@ -229,17 +167,138 @@ fn solve_problem_with_mixed_native_and_scalar_derivative() -> solve::SolveProble
                 const_strides: Vec::new(),
                 metadata: solve::TensorNodeMetadata::default(),
                 span: fixture_span(),
-            },
-            solve::ComputeNode::ScalarPrograms(scalar_block_with_output_indices(
-                vec![vec![
-                    solve::LinearOp::Const { dst: 0, value: 9.0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ]],
-                vec![5],
-            )),
-        ],
-    };
-    problem
+            }],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 8, 1);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract")
+}
+
+fn solve_problem_with_map_derivative() -> solve::SolveProblem {
+    solve_problem_with_map_derivative_at(1)
+}
+
+fn solve_problem_with_map_derivative_at(op_position: usize) -> solve::SolveProblem {
+    try_solve_problem_with_map_derivative_at(op_position)
+        .expect("valid map fixture satisfies the checked root contract")
+}
+
+type MapFixtureResult = Result<solve::SolveProblem, Box<solve::SolveProblemShapeContractError>>;
+
+fn try_solve_problem_with_map_derivative_at(op_position: usize) -> MapFixtureResult {
+    let solve_layout = explicit_ode_layout(8, 1);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![solve::ComputeNode::Map {
+                domain: tensor_domain(8),
+                output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(8))
+                    .expect("valid dense output map"),
+                base_ops: vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::LoadY { dst: 1, index: 0 },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Mul,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::StoreOutput { src: 2 },
+                ],
+                load_strides: vec![solve::AffineStencilLoadStride {
+                    op_position,
+                    terms: vec![solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: 1,
+                    }],
+                }],
+                const_strides: Vec::new(),
+                metadata: solve::TensorNodeMetadata::default(),
+                span: fixture_span(),
+            }],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 8, 1);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .map_err(Box::new)
+}
+
+fn solve_problem_with_mixed_native_and_scalar_derivative() -> solve::SolveProblem {
+    let domain = tensor_domain(5);
+    let solve_layout = explicit_ode_layout(6, 0);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![
+                solve::ComputeNode::Map {
+                    domain: domain.clone(),
+                    output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
+                        .expect("valid dense output map"),
+                    base_ops: vec![
+                        solve::LinearOp::LoadY { dst: 0, index: 0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ],
+                    load_strides: vec![solve::AffineStencilLoadStride {
+                        op_position: 0,
+                        terms: vec![solve::AffineStencilIndexStrideTerm {
+                            dimension: 0,
+                            stride: 1,
+                        }],
+                    }],
+                    const_strides: Vec::new(),
+                    metadata: solve::TensorNodeMetadata::default(),
+                    span: fixture_span(),
+                },
+                solve::ComputeNode::ScalarPrograms(scalar_block_with_output_indices(
+                    vec![vec![
+                        solve::LinearOp::Const { dst: 0, value: 9.0 },
+                        solve::LinearOp::StoreOutput { src: 0 },
+                    ]],
+                    vec![5],
+                )),
+            ],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 6, 0);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract")
 }
 
 #[test]
@@ -249,58 +308,75 @@ fn test_wgsl_ode_bubbles_invalid_tensor_output_map_with_span() {
         11,
         29,
     );
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![solve::ComputeNode::Map {
-            domain: tensor_domain(2),
-            output_map: solve::TensorOutputMap {
-                start: 0,
-                strides: vec![solve::AffineStencilIndexStrideTerm {
-                    dimension: 0,
-                    stride: -1,
-                }],
-            },
-            base_ops: vec![
-                solve::LinearOp::Const { dst: 0, value: 1.0 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ],
-            load_strides: Vec::new(),
-            const_strides: Vec::new(),
-            metadata: solve::TensorNodeMetadata::default(),
-            span,
-        }],
-    };
-
-    let error = render_solve_template_with_name(
-        &problem,
-        &solve::SolveArtifacts::default(),
-        builtin_template("wgsl-ode", "model_layout.json.jinja"),
-        "BadTensorOutput",
+    let solve_layout = solve_layout_for_y(2);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![solve::ComputeNode::Map {
+                domain: tensor_domain(2),
+                output_map: solve::TensorOutputMap {
+                    start: 0,
+                    strides: vec![solve::AffineStencilIndexStrideTerm {
+                        dimension: 0,
+                        stride: -1,
+                    }],
+                },
+                base_ops: vec![
+                    solve::LinearOp::Const { dst: 0, value: 1.0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                load_strides: Vec::new(),
+                const_strides: Vec::new(),
+                metadata: solve::TensorNodeMetadata::default(),
+                span,
+            }],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 2, 0);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let error = solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
     )
-    .expect_err("invalid tensor output map should fail before WGSL layout rendering");
-
-    match error {
-        crate::errors::CodegenError::SolveScalarizationFailed {
-            message,
-            span: Some(actual_span),
-        } => {
-            assert_eq!(actual_span, span);
-            assert!(
-                message.contains("output map produced negative output index -1"),
-                "error should explain the invalid output map: {message}"
-            );
-        }
-        other => panic!("expected span-bearing scalarization error, got {other:?}"),
-    }
+    .expect_err("invalid tensor output map should fail during root construction");
+    assert_eq!(error.source_span(), Some(span));
+    assert!(
+        error
+            .to_string()
+            .contains("output map produced negative output index -1"),
+        "error should explain the invalid output map: {error}"
+    );
 }
 
 fn solve_problem_with_native_implicit_rhs_map() -> solve::SolveProblem {
     let domain = tensor_domain(3);
-    let mut problem = solve_problem_with_scalar_derivative_rows();
-    problem.continuous.implicit_rhs = solve::ComputeBlock {
+    let derivative_rhs = solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![vec![
+        solve::LinearOp::LoadY { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ]]));
+    let solve_layout = solve_layout_with_names(
+        solve::SolveLayout {
+            state_scalar_count: 1,
+            algebraic_scalar_count: 3,
+            ..solve::SolveLayout::default()
+        },
+        (0..4).map(|index| format!("x[{index}]")),
+    );
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let implicit_rhs = solve::ComputeBlock {
         nodes: vec![solve::ComputeNode::Map {
             domain: domain.clone(),
-            output_map: solve::TensorOutputMap::dense_contiguous(1, &domain)
+            output_map: solve::TensorOutputMap::dense_contiguous(0, &domain)
                 .expect("valid dense output map"),
             base_ops: vec![
                 solve::LinearOp::LoadY { dst: 0, index: 1 },
@@ -318,7 +394,43 @@ fn solve_problem_with_native_implicit_rhs_map() -> solve::SolveProblem {
             span: fixture_span(),
         }],
     };
-    problem
+    let continuous = checked_continuous_system(
+        &solve_layout,
+        &discrete,
+        &events,
+        &clocks,
+        ContinuousSystemFixture {
+            implicit_rhs: implicit_rhs.clone(),
+            implicit_row_targets: (0..3)
+                .map(|index| Some(solve::ScalarSlot::Y { index: index + 1 }))
+                .collect(),
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: (0..3).collect(),
+                    y_indices: (1..4).collect(),
+                    tearing: None,
+                }],
+            },
+            residual: implicit_rhs,
+            manifold: (
+                solve::ComputeBlock::default(),
+                solve::AlgebraicProjectionPlan::default(),
+            ),
+            derivative_rhs,
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 4, 1);
+    let initialization = solve::InitializationSolveSystem::empty();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract")
 }
 
 fn assert_kernel_entry_kind(
@@ -376,7 +488,7 @@ enum WgslKernelOutputKind {
 #[test]
 fn test_wgsl_ode_builtin_target_renders_row_parallel_kernel() {
     let problem = solve_problem_with_scalar_derivative_rows();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -406,7 +518,7 @@ fn test_wgsl_ode_builtin_target_renders_row_parallel_kernel() {
 #[test]
 fn test_wgsl_ode_builtin_target_renders_native_stencil_kernel() {
     let problem = solve_problem_with_affine_stencil_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -430,7 +542,7 @@ fn test_wgsl_ode_builtin_target_renders_native_stencil_kernel() {
 #[test]
 fn test_wgsl_ode_builtin_target_renders_native_map_kernel() {
     let problem = solve_problem_with_map_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -453,23 +565,8 @@ fn test_wgsl_ode_builtin_target_renders_native_map_kernel() {
 
 #[test]
 fn test_wgsl_ode_builtin_target_reports_invalid_native_stride_position() {
-    let mut problem = solve_problem_with_map_derivative();
-    let mut mutated = false;
-    if let solve::ComputeNode::Map { load_strides, .. } =
-        &mut problem.continuous.derivative_rhs.nodes[0]
-    {
-        load_strides[0].op_position = 99;
-        mutated = true;
-    }
-    assert!(mutated, "fixture should start with a native Map node");
-    let artifacts = solve::SolveArtifacts::default();
-    let error = render_solve_template_with_name(
-        &problem,
-        &artifacts,
-        builtin_template("wgsl-ode", "model_ode.wgsl.jinja"),
-        "BadMapDemo",
-    )
-    .expect_err("invalid native stride metadata should fail during rendering");
+    let error = try_solve_problem_with_map_derivative_at(99)
+        .expect_err("invalid native stride metadata should fail during root construction");
 
     assert!(
         error
@@ -482,7 +579,7 @@ fn test_wgsl_ode_builtin_target_reports_invalid_native_stride_position() {
 #[test]
 fn test_wgsl_ode_builtin_target_rejects_implicit_rhs() {
     let problem = solve_problem_with_native_implicit_rhs_map();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let error = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -499,7 +596,7 @@ fn test_wgsl_ode_builtin_target_rejects_implicit_rhs() {
 #[test]
 fn test_wgsl_ode_builtin_target_declines_linear_solve_component() {
     let problem = solve_problem_with_two_by_two_linsolve_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let error = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -517,7 +614,7 @@ fn test_wgsl_ode_builtin_target_declines_linear_solve_component() {
 #[test]
 fn test_wgsl_ode_layout_manifest_renders_bindings() {
     let problem = solve_problem_with_scalar_derivative_rows();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -568,7 +665,7 @@ fn test_wgsl_ode_layout_manifest_renders_bindings() {
 #[test]
 fn test_wgsl_ode_layout_manifest_derives_chunks_from_workgroup_size() {
     let problem = solve_problem_with_scalar_derivative_rows();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let template = builtin_template("wgsl-ode", "model_layout.json.jinja").replace(
         "{%- set workgroup_size = 64 %}",
         "{%- set workgroup_size = 1 %}",
@@ -611,39 +708,9 @@ fn test_wgsl_ode_layout_manifest_derives_chunks_from_workgroup_size() {
 }
 
 #[test]
-fn test_wgsl_ode_layout_manifest_reports_scalar_chunk_output_indices() {
-    let problem = solve_problem_with_sparse_scalar_derivative_rows();
-    let artifacts = solve::SolveArtifacts::default();
-    let rendered = render_solve_template_with_name(
-        &problem,
-        &artifacts,
-        builtin_template("wgsl-ode", "model_layout.json.jinja"),
-        "SparseScalarDemo",
-    )
-    .expect("wgsl-ode layout manifest should render sparse scalar chunk metadata");
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&rendered).expect("layout manifest must be valid JSON");
-    assert_eq!(parsed["rows"], 5);
-    assert_eq!(parsed["scalar_fallback_rows"], 2);
-    assert_kernel_entry_kind(
-        &parsed["kernels"][0],
-        "derivative_rhs_chunk0",
-        WgslKernelOutputKind::ScalarChunk,
-    );
-    assert_eq!(parsed["kernels"][0]["rows"], 2);
-    assert_eq!(parsed["kernels"][0]["workgroups"], 1);
-    assert_eq!(parsed["kernels"][0]["start_slot"], 0);
-    assert_eq!(
-        parsed["kernels"][0]["output_indices"],
-        serde_json::json!([2, 4])
-    );
-}
-
-#[test]
 fn test_wgsl_ode_layout_manifest_reports_native_stencil_kernel() {
     let problem = solve_problem_with_affine_stencil_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -692,7 +759,7 @@ fn test_wgsl_ode_layout_manifest_reports_native_stencil_kernel() {
 #[test]
 fn test_wgsl_ode_layout_manifest_reports_mixed_native_and_scalar_schedule() {
     let problem = solve_problem_with_mixed_native_and_scalar_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,
@@ -731,7 +798,7 @@ fn test_wgsl_ode_layout_manifest_reports_mixed_native_and_scalar_schedule() {
 #[test]
 fn test_wgsl_ode_layout_manifest_rejects_zero_workgroup_size() {
     let problem = solve_problem_with_map_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let template = builtin_template("wgsl-ode", "model_layout.json.jinja").replace(
         "{%- set workgroup_size = 64 %}",
         "{%- set workgroup_size = 0 %}",
@@ -750,7 +817,7 @@ fn test_wgsl_ode_layout_manifest_rejects_zero_workgroup_size() {
 #[test]
 fn test_wgsl_ode_layout_manifest_reports_native_map_kernel() {
     let problem = solve_problem_with_map_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
     let rendered = render_solve_template_with_name(
         &problem,
         &artifacts,

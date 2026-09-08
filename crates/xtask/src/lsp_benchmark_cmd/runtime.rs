@@ -1880,7 +1880,7 @@ fn cleanup_validation_timing_paths(paths: &LspTimingPaths) {
     .into_iter()
     .flatten()
     {
-        let _ = fs::remove_file(path);
+        let _stale_timing_removal_error = fs::remove_file(path);
     }
 }
 

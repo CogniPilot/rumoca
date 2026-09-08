@@ -13,10 +13,16 @@ pub(crate) struct OverlayScopeIndex<'a> {
     components: rustc_hash::FxHashMap<ast::QualifiedName, &'a ast::InstanceData>,
 }
 
+/// Import view of one lexical scope: alias bindings plus the names the
+/// lookup authority refused to bind (MLS §5.3.1).
+type ScopeImportView = (
+    Arc<qualify::ImportMap>,
+    Arc<import_scopes::ImportRefusalMap>,
+);
+
 #[derive(Default)]
 pub(crate) struct ImportCaches<'tree> {
-    instance: rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
-    source: rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
+    instance: rustc_hash::FxHashMap<ast::QualifiedName, ScopeImportView>,
     lexical_packages: rustc_hash::FxHashMap<String, Arc<qualify::ImportMap>>,
     lexical_constants:
         rustc_hash::FxHashMap<(ast::QualifiedName, Vec<String>), Arc<qualify::ImportMap>>,
@@ -86,13 +92,13 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         .declaration_source_scope
         .as_ref()
         .ok_or_else(|| missing_source_scope_error(instance, tree, "declaration"))?;
-    let mut declaration = cached_import_map_for_instance_scope(
+    let (mut declaration, declaration_refusals) = cached_import_map_for_instance_scope(
         declaration_scope,
         tree,
         class_index,
         import_cache,
         scope_index,
-    );
+    )?;
     // A replaceable package alias is an instance occurrence, not an import.
     // Keep the alias spelling so the already-resolved declaration target and
     // the owning InstanceId remain paired through Flat construction.
@@ -117,16 +123,18 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         .binding_source
         .as_ref()
         .or(instance.binding.as_ref());
-    let mut binding = binding_import_context_for_instance(ImportContextBuild {
-        instance,
-        tree,
-        class_index,
-        import_cache,
-        scope_index,
-        component_override_map,
-        declaration: &declaration,
-        binding_expr,
-    })?;
+    let (mut binding, binding_refusals) =
+        binding_import_context_for_instance(ImportContextBuild {
+            instance,
+            tree,
+            class_index,
+            import_cache,
+            scope_index,
+            component_override_map,
+            declaration: &declaration,
+            declaration_refusals: &declaration_refusals,
+            binding_expr,
+        })?;
     if let Some(binding_scope) = instance.binding_source_scope.as_ref()
         && let Some(binding_expr) = binding_expr
     {
@@ -147,8 +155,9 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
         scope_index,
         component_override_map,
         declaration: &declaration,
+        declaration_refusals: &declaration_refusals,
         binding_expr,
-    });
+    })?;
     let attribute_function_scopes = instance
         .attribute_source_scopes
         .iter()
@@ -160,7 +169,9 @@ pub(crate) fn variable_import_context_for_instance<'tree>(
 
     Ok(variables::VariableImportContext {
         declaration,
+        declaration_refusals,
         binding,
+        binding_refusals,
         attributes,
         declaration_function_scope: semantic_function_scope_for_instance_scope(
             declaration_scope,
@@ -182,14 +193,18 @@ struct ImportContextBuild<'a, 'tree> {
     scope_index: &'a OverlayScopeIndex<'a>,
     component_override_map: &'a ComponentOverrideMap,
     declaration: &'a Arc<qualify::ImportMap>,
+    declaration_refusals: &'a Arc<import_scopes::ImportRefusalMap>,
     binding_expr: Option<&'a ast::Expression>,
 }
 
 fn binding_import_context_for_instance(
     request: ImportContextBuild<'_, '_>,
-) -> Result<Arc<qualify::ImportMap>, FlattenError> {
+) -> Result<ScopeImportView, FlattenError> {
     if !(request.instance.binding_from_modification && request.binding_expr.is_some()) {
-        return Ok(Arc::clone(request.declaration));
+        return Ok((
+            Arc::clone(request.declaration),
+            Arc::clone(request.declaration_refusals),
+        ));
     }
     let binding_scope = request
         .instance
@@ -198,13 +213,13 @@ fn binding_import_context_for_instance(
         .ok_or_else(|| {
             missing_source_scope_error(request.instance, request.tree, "modifier binding")
         })?;
-    let mut imports = cached_import_map_for_instance_scope(
+    let (mut imports, refusals) = cached_import_map_for_instance_scope(
         binding_scope,
         request.tree,
         request.class_index,
         request.import_cache,
         request.scope_index,
-    );
+    )?;
     let binding_override_imports =
         override_import_data_for_qualified_scope(binding_scope, request.component_override_map);
     extend_cached_lexical_constant_aliases(
@@ -216,48 +231,45 @@ fn binding_import_context_for_instance(
         &mut request.import_cache.lexical_constants,
         &mut request.import_cache.member_def_ids,
     );
-    Ok(imports)
+    Ok((imports, refusals))
 }
 
 fn attribute_import_contexts_for_instance(
     request: ImportContextBuild<'_, '_>,
-) -> rustc_hash::FxHashMap<String, Arc<qualify::ImportMap>> {
-    request
-        .instance
-        .attribute_source_scopes
-        .iter()
-        .map(|(attr_name, scope)| {
-            let mut imports = cached_import_map_for_instance_scope(
+) -> Result<rustc_hash::FxHashMap<String, ScopeImportView>, FlattenError> {
+    let mut contexts = rustc_hash::FxHashMap::default();
+    for (attr_name, scope) in &request.instance.attribute_source_scopes {
+        let (mut imports, refusals) = cached_import_map_for_instance_scope(
+            scope,
+            request.tree,
+            request.class_index,
+            request.import_cache,
+            request.scope_index,
+        )?;
+        let override_imports =
+            override_import_data_for_qualified_scope(scope, request.component_override_map);
+        extend_cached_lexical_constant_aliases(
+            request.tree,
+            request.class_index,
+            scope,
+            &override_imports.package_names,
+            &mut imports,
+            &mut request.import_cache.lexical_constants,
+            &mut request.import_cache.member_def_ids,
+        );
+        if let Some(expr) = instance_attribute_expr(request.instance, attr_name) {
+            augment_imports_for_expr(
                 scope,
                 request.tree,
                 request.class_index,
-                request.import_cache,
+                expr,
+                Arc::make_mut(&mut imports),
                 request.scope_index,
             );
-            let override_imports =
-                override_import_data_for_qualified_scope(scope, request.component_override_map);
-            extend_cached_lexical_constant_aliases(
-                request.tree,
-                request.class_index,
-                scope,
-                &override_imports.package_names,
-                &mut imports,
-                &mut request.import_cache.lexical_constants,
-                &mut request.import_cache.member_def_ids,
-            );
-            if let Some(expr) = instance_attribute_expr(request.instance, attr_name) {
-                augment_imports_for_expr(
-                    scope,
-                    request.tree,
-                    request.class_index,
-                    expr,
-                    Arc::make_mut(&mut imports),
-                    request.scope_index,
-                );
-            }
-            (attr_name.clone(), imports)
-        })
-        .collect()
+        }
+        contexts.insert(attr_name.clone(), (imports, refusals));
+    }
+    Ok(contexts)
 }
 
 fn semantic_function_scope_for_instance_scope(
@@ -564,7 +576,8 @@ fn collect_component_ref_first_segment_alias(
         return;
     }
     let alias_path = rumoca_core::ComponentPath::from_flat_path(alias);
-    let Some(def_id) = tree.scope_tree.lookup(scope_id, &alias_path) else {
+    let rumoca_ir_ast::LookupOutcome::Found(def_id) = tree.scope_tree.lookup(scope_id, &alias_path)
+    else {
         return;
     };
     let Some(class_def) = class_index.get(def_id) else {
@@ -616,14 +629,17 @@ fn cached_import_map_for_instance_scope<'tree>(
     class_index: &ast::ClassDefIndex<'tree>,
     cache: &mut ImportCaches<'tree>,
     scope_index: &OverlayScopeIndex<'_>,
-) -> Arc<qualify::ImportMap> {
-    if let Some(imports) = cache.instance.get(scope) {
-        return Arc::clone(imports);
+) -> Result<ScopeImportView, FlattenError> {
+    if let Some((imports, refusals)) = cache.instance.get(scope) {
+        return Ok((Arc::clone(imports), Arc::clone(refusals)));
     }
-    let imports = import_map_for_instance_scope(scope, tree, class_index, cache, scope_index);
-    let imports = Arc::new(imports);
-    cache.instance.insert(scope.clone(), Arc::clone(&imports));
-    imports
+    let (imports, refusals) =
+        import_map_for_instance_scope(scope, tree, class_index, cache, scope_index)?;
+    let view = (Arc::new(imports), Arc::new(refusals));
+    cache
+        .instance
+        .insert(scope.clone(), (Arc::clone(&view.0), Arc::clone(&view.1)));
+    Ok(view)
 }
 
 fn import_map_for_instance_scope<'tree>(
@@ -632,33 +648,55 @@ fn import_map_for_instance_scope<'tree>(
     class_index: &ast::ClassDefIndex<'tree>,
     cache: &mut ImportCaches<'tree>,
     scope_index: &OverlayScopeIndex<'_>,
-) -> qualify::ImportMap {
+) -> Result<(qualify::ImportMap, import_scopes::ImportRefusalMap), FlattenError> {
     let scope_name = scope.to_flat_string();
-    let mut imports = scope_index
-        .classes
-        .get(scope)
-        .map(|class_data| {
-            let mut imports: qualify::ImportMap =
-                class_data.resolved_imports.iter().cloned().collect();
-            if let Some(source_scope) = class_data.source_scope.as_ref() {
-                let source_imports = cached_source_import_map(
-                    source_scope,
+    let mut imports = qualify::ImportMap::default();
+    let mut refusals = import_scopes::ImportRefusalMap::default();
+    if let Some(class_data) = scope_index.classes.get(scope) {
+        // MLS §13.2: the class declaration's own scope, decided by the one
+        // lookup authority. Imports are never merged across extends chains.
+        let source_scope_id = class_data.source_scope_id.ok_or_else(|| {
+            FlattenError::internal(format!(
+                "class instance {} carries no resolved source scope id for its imports",
+                class_data.qualified_name.to_flat_string()
+            ))
+        })?;
+        import_scopes::seed_effective_imports(tree, source_scope_id, &mut imports, &mut refusals)?;
+        if let Some(source_scope) = class_data.source_scope.as_ref() {
+            collect_lexical_constant_aliases_for_scope(
+                tree,
+                class_index,
+                source_scope,
+                &[],
+                &mut imports,
+                &mut cache.member_def_ids,
+            );
+            if let Some(source_def_id) = source_scope_def_id(class_index, source_scope) {
+                qualify::collect_lexical_package_aliases_for_def_id_with_member_cache(
                     tree,
                     class_index,
-                    &mut cache.source,
-                    &mut cache.member_def_ids,
-                );
-                imports.extend(
-                    source_imports
-                        .iter()
-                        .map(|(name, target)| (name.clone(), target.clone())),
+                    source_def_id,
+                    &mut imports,
+                    Some(&mut cache.member_def_ids),
                 );
             }
-            imports
-        })
-        .unwrap_or_default();
-    if class_index.get_by_qualified_name(&scope_name).is_some() {
-        qualify::collect_imports_for_source_scope(class_index, scope, &mut imports);
+        }
+    }
+    if let Some(class_def) = class_index.get_by_qualified_name(&scope_name) {
+        match class_def.scope_id {
+            Some(scope_id) => {
+                import_scopes::seed_effective_imports(tree, scope_id, &mut imports, &mut refusals)?;
+            }
+            // A definition without a resolved scope declares no imports of
+            // its own; anything else must fail rather than silently losing
+            // its import clauses.
+            None if class_def.imports.is_empty() => {}
+            None => {
+                return Err(FlattenError::internal(format!(
+                    "class {scope_name} declares imports but has no resolved scope id"
+                )));
+            }
+        }
         collect_lexical_constant_aliases_for_scope(
             tree,
             class_index,
@@ -681,7 +719,10 @@ fn import_map_for_instance_scope<'tree>(
             .as_ref(),
         );
     }
-    imports
+    // A name a declaration-backed alias channel binds is not an import; it
+    // takes precedence over an import-tier refusal.
+    refusals.retain(|name, _| !imports.contains_key(name));
+    Ok((imports, refusals))
 }
 
 fn extend_imports_if_absent(imports: &mut qualify::ImportMap, aliases: &qualify::ImportMap) {
@@ -715,40 +756,6 @@ fn cached_lexical_package_aliases<'tree>(
     }
     let imports = Arc::new(imports);
     cache.insert(class_name.to_string(), Arc::clone(&imports));
-    imports
-}
-
-fn cached_source_import_map<'tree>(
-    source_scope: &ast::QualifiedName,
-    tree: &ast::ClassTree,
-    class_index: &ast::ClassDefIndex<'tree>,
-    cache: &mut rustc_hash::FxHashMap<ast::QualifiedName, Arc<qualify::ImportMap>>,
-    member_cache: &mut qualify::MemberDefIdCache<'tree>,
-) -> Arc<qualify::ImportMap> {
-    if let Some(imports) = cache.get(source_scope) {
-        return Arc::clone(imports);
-    }
-    let mut imports = qualify::ImportMap::default();
-    qualify::collect_imports_for_source_scope(class_index, source_scope, &mut imports);
-    collect_lexical_constant_aliases_for_scope(
-        tree,
-        class_index,
-        source_scope,
-        &[],
-        &mut imports,
-        member_cache,
-    );
-    if let Some(source_def_id) = source_scope_def_id(class_index, source_scope) {
-        qualify::collect_lexical_package_aliases_for_def_id_with_member_cache(
-            tree,
-            class_index,
-            source_def_id,
-            &mut imports,
-            Some(member_cache),
-        );
-    }
-    let imports = Arc::new(imports);
-    cache.insert(source_scope.clone(), Arc::clone(&imports));
     imports
 }
 
@@ -881,11 +888,14 @@ pub(crate) fn prepare_context_for_equation_flattening(
         tree,
         class_index,
     )?;
+    // Every structural fold below resolves user-function calls by exact
+    // occurrence, so identity is issued before the first of them runs.
+    crate::seed_precollected_callable_identity(ctx, flat, tree, class_index)?;
     extract_record_aliases(ctx, overlay, tree)?;
     for (outer, inner) in &overlay.outer_prefix_to_inner {
         ctx.record_aliases.insert(outer.clone(), inner.clone());
     }
-    compute_transitive_alias_closure(&mut ctx.record_aliases);
+    compute_transitive_alias_closure(&mut ctx.record_aliases)?;
     array_comprehension::extract_component_array_dimensions(ctx, overlay);
     let expanded_array_comprehension_bindings =
         if array_comprehension::has_expandable_array_comprehension_bindings(overlay) {
@@ -902,23 +912,23 @@ pub(crate) fn prepare_context_for_equation_flattening(
             false
         };
     if expanded_array_comprehension_bindings {
+        // Expansion lowers fresh bindings from the overlay; their calls need
+        // the same occurrence attachment before dimensions are read again.
+        crate::canonicalize_seeded_flat_calls(flat, tree, class_index)?;
         ctx.build_parameter_lookup(flat, tree)?;
     }
     ctx.seed_flat_parameter_constant_keys(flat);
-    inject_model_nested_class_constants(tree, class_index, model_name, ctx);
-    inject_model_extends_redeclare_constants(tree, class_index, model_name, ctx);
+    inject_model_nested_class_constants(tree, class_index, model_name, ctx)?;
+    inject_model_extends_redeclare_constants(tree, class_index, model_name, ctx)?;
     inject_enclosing_class_constants(tree, class_index, model_name, ctx)?;
-    inject_component_instance_nested_class_constants(tree, class_index, overlay, ctx);
+    inject_component_instance_nested_class_constants(tree, class_index, overlay, ctx)?;
     // Re-apply parameter lookup from materialized flat variables after
     // class/package constant injection so record rebindings override injected
     // declaration defaults (MLS §7.2.3/§7.2.4, §8.3.3 structural ranges).
     ctx.build_parameter_lookup(flat, tree)?;
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
-    if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
-        ctx.build_parameter_lookup(flat, tree)?;
-    }
     ctx.refresh_enum_parameter_lookup(flat)?;
-    pre_evaluate_structural_equations(ctx, overlay, tree)?;
+    pre_evaluate_structural_equations(ctx, overlay, tree, class_index)?;
 
     // Classify parameter-variability for-equation families now that the
     // parameter/constant key set is stable, so the cheapen gate in equation
@@ -965,7 +975,6 @@ pub(crate) fn process_class_instances_for_flatten(
             ctx,
             flat,
             class_data,
-            class_data.class_def_id,
             component_override_map,
             tree,
             class_index,
@@ -1002,73 +1011,39 @@ pub(crate) fn finalize_flat_model(
         component_override_map,
     } = input;
     let overlay = overconstrained.overlay();
-    seed_flat_functions_from_context(ctx, flat);
-    functions::collect_functions(
-        flat,
-        overlay,
-        overconstrained.semantic_catalogs(),
-        tree,
-        class_index,
-        Some(model_name),
-    )?;
-    rewrite_function_extends_aliases_in_flat_functions(
-        flat,
-        tree,
-        class_index,
-        overconstrained.semantic_catalogs(),
-    )?;
-    functions::collect_functions(
-        flat,
-        overlay,
-        overconstrained.semantic_catalogs(),
-        tree,
-        class_index,
-        Some(model_name),
-    )?;
-    mark_record_constructor_calls(flat, tree);
-    // Attach callable identity before the rewrite fixed point so rewritten
-    // calls retain the exact collected target.
-    functions::canonicalize_collected_function_calls(flat, class_index)?;
-    mark_record_constructor_calls(flat, tree);
+    seed_and_collect_flat_functions(ctx, flat, overconstrained, tree, class_index, model_name)?;
     canonicalize_varrefs_via_record_aliases(flat, ctx);
     normalize_record_array_field_access_bindings(flat);
     reject_invalid_field_access_bindings(flat)?;
-    propagate_unexpanded_record_array_dims(flat, overlay);
-    let assertion_error_literal =
-        tree.scope_tree
-            .predefined_member(&rumoca_core::ComponentPath::from_parts([
-                "AssertionLevel",
-                "error",
-            ]));
-    constant_injection::fold_structural_initial_asserts(flat, ctx, assertion_error_literal)?;
-    flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
-        &flatten_graph.vcg_data.branches,
-        &flatten_graph.optional_edges,
-        &flatten_graph.vcg_data.definite_roots,
-        &flatten_graph.vcg_data.potential_roots,
-        flat,
-    );
+    if let Err(error) = propagate_unexpanded_record_array_dims(flat, overlay) {
+        return Err(crate::constant_eval::map_evaluation_error(
+            error,
+            "recovering unexpanded record-array dimensions",
+            None,
+        )?);
+    }
+    fold_structural_asserts_and_count_break_edges(ctx, flat, tree, flatten_graph)?;
 
     collapse_index_refs_to_known_varrefs(flat);
     inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
     ctx.seed_expanded_component_keys(flat);
     substitute_known_constants_in_flat(flat, ctx)?;
     ctx.build_parameter_lookup(flat, tree)?;
-    if ctx.recompute_symbolic_component_dimensions(flat, overlay, tree)? {
+    if ctx.discharge_deferred_colon_dimensions(flat, overlay, tree)? {
         ctx.build_parameter_lookup(flat, tree)?;
     }
     recover_indexed_lhs_dimensions(flat);
     mark_record_constructor_calls(flat, tree);
-    let collected_new_functions = collect_rewritten_functions_to_fixed_point(
-        flat,
-        overlay,
-        tree,
-        class_index,
-        model_name,
-        component_override_map,
-        &ctx.component_members,
-        overconstrained.semantic_catalogs(),
-    )?;
+    let collected_new_functions =
+        collect_rewritten_functions_to_fixed_point(FunctionRewriteFixedPointInput {
+            flat,
+            overconstrained,
+            tree,
+            class_index,
+            model_name,
+            component_override_map,
+            component_members: &ctx.component_members,
+        })?;
     if collected_new_functions {
         mark_record_constructor_calls(flat, tree);
         inject_referenced_qualified_class_constants(
@@ -1083,24 +1058,7 @@ pub(crate) fn finalize_flat_model(
         mark_record_constructor_calls(flat, tree);
         collapse_index_refs_to_known_varrefs(flat);
     }
-    functions::canonicalize_collected_function_calls(flat, class_index)?;
-    // The final function inventory now owns every reachable record constructor.
-    // Materialize complete aggregate output/local defaults before the one final
-    // source-level argument pass fills constructor and ordinary call slots.
-    functions::materialize_complete_record_value_defaults(flat)?;
-    functions::materialize_flat_function_call_args(flat)?;
-    // Late collection and default-argument materialization can each make a
-    // qualified constant newly reachable.
-    // Inject and substitute only after both producers have run so final
-    // executable call slots cannot reintroduce an unresolved constant.
-    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
-    substitute_known_constants_in_flat(flat, ctx)?;
-    resolve_nested_constructor_field_access_bindings(flat);
-    flat.finalize_effective_type_shapes().map_err(|error| {
-        FlattenError::internal(format!(
-            "finalized Flat effective type construction failed: {error:?}"
-        ))
-    })?;
+    finalize_flat_callable_and_type_inventory(ctx, flat, tree, class_index, model_name, overlay)?;
     // Connection planning consumes the final callable catalog (not a name
     // scan over a partial inventory), and the generated equalityConstraint
     // call must exist before reachability pruning. Name simplification remains
@@ -1118,6 +1076,96 @@ pub(crate) fn finalize_flat_model(
     Ok(())
 }
 
+fn fold_structural_asserts_and_count_break_edges(
+    ctx: &mut Context,
+    flat: &mut flat::Model,
+    tree: &ast::ClassTree,
+    flatten_graph: &FlattenGraphData,
+) -> Result<(), FlattenError> {
+    let assertion_error_literal =
+        tree.scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_parts([
+                "AssertionLevel",
+                "error",
+            ]));
+    constant_injection::fold_structural_initial_asserts(flat, ctx, assertion_error_literal)?;
+    flat.oc_break_edge_scalar_count = vcg::compute_break_edge_scalar_count(
+        &flatten_graph.vcg_data.branches,
+        &flatten_graph.optional_edges,
+        &flatten_graph.vcg_data.definite_roots,
+        &flatten_graph.vcg_data.potential_roots,
+        flat,
+    );
+    Ok(())
+}
+
+fn seed_and_collect_flat_functions(
+    ctx: &Context,
+    flat: &mut flat::Model,
+    overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    model_name: &str,
+) -> Result<(), FlattenError> {
+    seed_flat_functions_from_context(ctx, flat);
+    functions::collect_functions(
+        flat,
+        overconstrained.overlay(),
+        overconstrained.semantic_catalogs(),
+        tree,
+        class_index,
+        Some(model_name),
+    )?;
+    rewrite_function_extends_aliases_in_flat_functions(
+        flat,
+        tree,
+        class_index,
+        overconstrained.semantic_catalogs(),
+    )?;
+    functions::collect_functions(
+        flat,
+        overconstrained.overlay(),
+        overconstrained.semantic_catalogs(),
+        tree,
+        class_index,
+        Some(model_name),
+    )?;
+    mark_record_constructor_calls(flat, tree);
+    // Attach callable identity before the rewrite fixed point so rewritten
+    // calls retain the exact collected target.
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
+    mark_record_constructor_calls(flat, tree);
+    Ok(())
+}
+
+fn finalize_flat_callable_and_type_inventory(
+    ctx: &mut Context,
+    flat: &mut flat::Model,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    model_name: &str,
+    overlay: &ast::InstanceOverlay,
+) -> Result<(), FlattenError> {
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
+    // The final function inventory now owns every reachable record constructor.
+    // Materialize complete aggregate output/local defaults before the one final
+    // source-level argument pass fills constructor and ordinary call slots.
+    functions::materialize_complete_record_value_defaults(flat)?;
+    functions::materialize_flat_function_call_args(flat)?;
+    // Late collection and default-argument materialization can each make a
+    // qualified constant newly reachable.
+    // Inject and substitute only after both producers have run so final
+    // executable call slots cannot reintroduce an unresolved constant.
+    inject_referenced_qualified_class_constants(tree, class_index, model_name, flat, overlay, ctx)?;
+    substitute_known_constants_in_flat(flat, ctx)?;
+    resolve_nested_constructor_field_access_bindings(flat);
+    flat.finalize_effective_type_shapes().map_err(|error| {
+        FlattenError::internal(format!(
+            "finalized Flat effective type construction failed: {error:?}"
+        ))
+    })
+}
+
 fn finalize_flat_connections(
     flat: &mut flat::Model,
     overconstrained: &ast::FinalizedOverconstrainedCatalog<'_>,
@@ -1128,8 +1176,29 @@ fn finalize_flat_connections(
         .variables
         .values()
         .map(|variable| variable.source_span)
+        .chain(
+            overconstrained
+                .overlay()
+                .classes
+                .values()
+                .flat_map(|class| class.connections.iter())
+                .map(|connection| match connection {
+                    ast::InstanceConnection::Scalar(connection) => connection.span(),
+                    ast::InstanceConnection::Family(family) => family.span(),
+                }),
+        )
+        .chain(
+            tree.definitions
+                .classes
+                .values()
+                .map(|class| class.location.span()),
+        )
         .find(|span| !span.is_dummy())
-        .unwrap_or(rumoca_core::Span::DUMMY);
+        .ok_or_else(|| {
+            FlattenError::missing_source_context(
+                "stream-operator identity lookup has no source-backed Flat, connection, or class owner",
+            )
+        })?;
     let stream_operators = connections::stream_operator_identities(tree, identity_span)?;
     outer_refs::redirect_outer_refs(flat, &overconstrained.overlay().outer_prefix_to_inner);
     let connections_start = maybe_start_timer();
@@ -1141,44 +1210,49 @@ fn finalize_flat_connections(
     result
 }
 
+struct FunctionRewriteFixedPointInput<'request, 'catalog, 'tree> {
+    flat: &'request mut flat::Model,
+    overconstrained: &'request ast::FinalizedOverconstrainedCatalog<'catalog>,
+    tree: &'request ast::ClassTree,
+    class_index: &'request ast::ClassDefIndex<'tree>,
+    model_name: &'request str,
+    component_override_map: &'request ComponentOverrideMap,
+    component_members: &'request component_member_scope::ComponentMemberScopes,
+}
+
 fn collect_rewritten_functions_to_fixed_point(
-    flat: &mut flat::Model,
-    overlay: &ast::InstanceOverlay,
-    tree: &ast::ClassTree,
-    class_index: &ast::ClassDefIndex<'_>,
-    model_name: &str,
-    component_override_map: &ComponentOverrideMap,
-    component_members: &component_member_scope::ComponentMemberScopes,
-    semantic_catalogs: &ast::SemanticCatalogProjection,
+    input: FunctionRewriteFixedPointInput<'_, '_, '_>,
 ) -> Result<bool, FlattenError> {
     const FUNCTION_REWRITE_FIXED_POINT_LIMIT: usize = 8;
 
-    let initial_function_count = flat.functions.len();
+    let overlay = input.overconstrained.overlay();
+    let semantic_catalogs = input.overconstrained.semantic_catalogs();
+    let initial_function_count = input.flat.functions.len();
     for _ in 0..FUNCTION_REWRITE_FIXED_POINT_LIMIT {
-        let function_count_before = flat.functions.len();
+        let function_count_before = input.flat.functions.len();
         rewrite_function_overrides_in_flat_model(
-            flat,
-            tree,
-            class_index,
-            component_override_map,
-            component_members,
+            input.flat,
+            input.tree,
+            input.class_index,
+            input.component_override_map,
+            input.component_members,
             semantic_catalogs,
         )?;
         functions::collect_functions(
-            flat,
+            input.flat,
             overlay,
             semantic_catalogs,
-            tree,
-            class_index,
-            Some(model_name),
+            input.tree,
+            input.class_index,
+            Some(input.model_name),
         )?;
-        if flat.functions.len() == function_count_before {
-            return Ok(flat.functions.len() != initial_function_count);
+        if input.flat.functions.len() == function_count_before {
+            return Ok(input.flat.functions.len() != initial_function_count);
         }
     }
 
     Err(FlattenError::function_rewrite_no_converge(
         FUNCTION_REWRITE_FIXED_POINT_LIMIT,
-        flat.functions.len(),
+        input.flat.functions.len(),
     ))
 }

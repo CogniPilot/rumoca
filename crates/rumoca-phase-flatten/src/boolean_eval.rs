@@ -245,9 +245,9 @@ impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> 
         if self.structural_only && self.refuses_non_structural([lhs, rhs], &prefix) {
             return None;
         }
-        let lhs = try_resolve_enum_value(self.ctx, lhs, &prefix)?;
-        let rhs = try_resolve_enum_value(self.ctx, rhs, &prefix)?;
-        Some(rumoca_core::enum_values_equal(&lhs, &rhs))
+        let lhs = try_resolve_enum_identity(self.ctx, lhs, &prefix)?;
+        let rhs = try_resolve_enum_identity(self.ctx, rhs, &prefix)?;
+        Some(lhs.declaration() == rhs.declaration() && lhs.ordinal() == rhs.ordinal())
     }
 
     fn coerce_integral_real(&self, value: f64, _span: rumoca_core::Span) -> Option<i64> {
@@ -435,66 +435,59 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
     adapter.finish_boolean(value)
 }
 
-/// Try to resolve an expression to an enumeration value string.
-///
-/// For enumeration literals like `Types.FilterType.LowPass`, returns the qualified name.
-/// For parameter references, tries to look up their bound enumeration value.
-pub(crate) fn try_resolve_enum_value(
+pub(crate) fn try_resolve_enum_display(
     ctx: Option<&Context>,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
 ) -> Option<String> {
+    try_resolve_enum_identity(ctx, expr, prefix).map(|value| resolved_enum_display_name(&value))
+}
+
+fn try_resolve_enum_identity(
+    ctx: Option<&Context>,
+    expr: &ast::Expression,
+    _prefix: &ast::QualifiedName,
+) -> Option<rumoca_eval_flat::constant::ResolvedEnumValue> {
     match expr {
         ast::Expression::ComponentReference(cr) => {
-            let qualified_name = build_qualified_name(prefix, cr);
-
-            // Check if this is a parameter with a known enumeration value
-            if let Some(ctx) = ctx
-                && let Some(enum_val) = ctx.get_enum_param(&qualified_name)
+            let ctx = ctx?;
+            if let Some((instance_id, root_def_id)) =
+                ctx.current_class_instance_id.zip(cr.root_def_id())
             {
-                return Some(enum_val);
-            }
-            if let Some(ctx) = ctx {
-                let cref_name = cr.to_string();
-                if let Some(enum_val) =
-                    scoped_lookup_map(&ctx.enum_parameter_values, &cref_name, prefix)
-                {
-                    return Some(enum_val);
-                }
-            }
-            if let Some(ctx) = ctx
-                && cr.parts.len() >= 2
-            {
-                let tail_name = cr
-                    .parts
-                    .iter()
-                    .skip(1)
-                    .map(|p| p.ident.text.to_string())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                let alt_name = if prefix.parts.is_empty() {
-                    tail_name.clone()
-                } else {
-                    format!("{prefix}.{tail_name}")
+                let identity = rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                    instance_id,
+                    root_def_id,
                 };
-                if let Some(enum_val) = ctx.get_enum_param(&alt_name) {
-                    return Some(enum_val);
+                if let Some(rumoca_eval_flat::constant::Value::ResolvedEnum(value)) =
+                    ctx.parameter_values_by_identity.get(&identity)
+                {
+                    return Some(value.clone());
                 }
             }
 
-            // If it looks like an enumeration literal (multiple parts, not a known parameter),
-            // return the qualified name directly
-            if cr.parts.len() > 1 {
-                // It's likely an enumeration literal like Types.FilterType.LowPass
-                // Return just the CR parts (not the prefix)
-                let literal_name: Vec<String> =
-                    cr.parts.iter().map(|p| p.ident.text.to_string()).collect();
-                return Some(literal_name.join("."));
+            let literal = cr.parts.last()?.ident.text.as_ref();
+            let mut matches = cr.parts.iter().rev().skip(1).filter_map(|part| {
+                ctx.resolved_enum_catalog
+                    .get(part.def_id?, literal)
+                    .cloned()
+            });
+            let selected = matches.next()?;
+            if matches.next().is_none() {
+                return Some(selected);
             }
-
             None
         }
         _ => None,
+    }
+}
+
+pub(crate) fn resolved_enum_display_name(
+    value: &rumoca_eval_flat::constant::ResolvedEnumValue,
+) -> String {
+    if value.display_type().is_empty() {
+        value.literal().to_string()
+    } else {
+        format!("{}.{}", value.display_type(), value.literal())
     }
 }
 
@@ -763,6 +756,16 @@ mod tests {
         ast::Expression::ComponentReference(comp_ref(path))
     }
 
+    fn cref_expr_with_target(path: &str, target: rumoca_core::DefId) -> ast::Expression {
+        let mut reference = comp_ref(path);
+        reference
+            .parts
+            .last_mut()
+            .expect("fixture reference has one path segment")
+            .def_id = Some(target);
+        ast::Expression::ComponentReference(reference)
+    }
+
     fn eq_expr(lhs: ast::Expression, rhs: ast::Expression) -> ast::Expression {
         ast::Expression::Binary {
             op: rumoca_core::OpBinary::Eq,
@@ -874,17 +877,77 @@ mod tests {
         assert_eq!(value, Some(false));
     }
 
+    fn resolved_enum_fixture(
+        owner: rumoca_core::DefId,
+        display_type: &str,
+        literal: &str,
+    ) -> (
+        rumoca_eval_flat::constant::ResolvedEnumCatalog,
+        rumoca_eval_flat::constant::ResolvedEnumValue,
+    ) {
+        let catalog = rumoca_eval_flat::constant::ResolvedEnumCatalog::try_from_declarations(vec![
+            rumoca_eval_flat::constant::ResolvedEnumDeclaration {
+                declaration: owner,
+                type_name: display_type.to_string(),
+                literals: vec![literal.to_string()],
+            },
+        ])
+        .unwrap();
+        let value = catalog.get(owner, literal).unwrap().clone();
+        (catalog, value)
+    }
+
+    fn resolved_enum_literal(
+        display_type: &str,
+        owner: rumoca_core::DefId,
+        literal: &str,
+    ) -> ast::Expression {
+        let mut parts = crate::path_utils::segments(display_type)
+            .into_iter()
+            .enumerate()
+            .map(|(index, part)| ast::ComponentRefPart {
+                ident: token(part),
+                subs: None,
+                def_id: Some(rumoca_core::DefId::new(13_000 + index as u32)),
+            })
+            .collect::<Vec<_>>();
+        parts
+            .last_mut()
+            .expect("fixture enum type has at least one segment")
+            .def_id = Some(owner);
+        parts.push(ast::ComponentRefPart {
+            ident: token(literal),
+            subs: None,
+            def_id: Some(owner),
+        });
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts,
+            span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
+        })
+    }
+
     #[test]
-    fn enum_equality_accepts_suffix_qualification() {
+    fn enum_equality_accepts_one_resolved_owner_and_ordinal() {
+        let owner = rumoca_core::DefId::new(12_001);
+        let parameter = rumoca_core::DefId::new(12_101);
+        let instance = rumoca_core::InstanceId::new(12_201);
+        let (catalog, value) = resolved_enum_fixture(owner, "Pkg.Mode", "on");
         let mut ctx = Context::new();
-        ctx.enum_parameter_values.insert(
-            "controllerType".to_string(),
-            "Modelica.Blocks.Types.SimpleController.PI".to_string(),
+        ctx.resolved_enum_catalog = catalog;
+        ctx.current_class_instance_id = Some(instance);
+        ctx.parameter_values_by_identity.insert(
+            rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: instance,
+                root_def_id: parameter,
+            },
+            rumoca_eval_flat::constant::Value::ResolvedEnum(value),
         );
 
         let expr = eq_expr(
-            cref_expr("controllerType"),
-            cref_expr("SimpleController.PI"),
+            cref_expr_with_target("mode", parameter),
+            resolved_enum_literal("Pkg.Mode", owner, "on"),
         );
         let value = try_eval_boolean_with_ctx_inner(
             &expr,
@@ -897,38 +960,40 @@ mod tests {
     }
 
     #[test]
-    fn enum_equality_accepts_shared_type_literal_tail() {
+    fn enum_equality_rejects_same_spelling_from_distinct_resolved_owners() {
+        let first_owner = rumoca_core::DefId::new(12_002);
+        let second_owner = rumoca_core::DefId::new(12_003);
+        let parameter = rumoca_core::DefId::new(12_102);
+        let instance = rumoca_core::InstanceId::new(12_202);
+        let first_catalog =
+            rumoca_eval_flat::constant::ResolvedEnumCatalog::try_from_declarations(vec![
+                rumoca_eval_flat::constant::ResolvedEnumDeclaration {
+                    declaration: first_owner,
+                    type_name: "Pkg.Mode".to_string(),
+                    literals: vec!["on".to_string()],
+                },
+                rumoca_eval_flat::constant::ResolvedEnumDeclaration {
+                    declaration: second_owner,
+                    type_name: "Pkg.Mode".to_string(),
+                    literals: vec!["on".to_string()],
+                },
+            ])
+            .unwrap();
+        let first_value = first_catalog.get(first_owner, "on").unwrap().clone();
         let mut ctx = Context::new();
-        ctx.enum_parameter_values.insert(
-            "frameResolve".to_string(),
-            "sensor_frame_a2.MultiBody.Types.ResolveInFrameA.frame_resolve".to_string(),
+        ctx.resolved_enum_catalog = first_catalog;
+        ctx.current_class_instance_id = Some(instance);
+        ctx.parameter_values_by_identity.insert(
+            rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: instance,
+                root_def_id: parameter,
+            },
+            rumoca_eval_flat::constant::Value::ResolvedEnum(first_value),
         );
 
         let expr = eq_expr(
-            cref_expr("frameResolve"),
-            cref_expr("Modelica.Mechanics.MultiBody.Types.ResolveInFrameA.frame_resolve"),
-        );
-        let value = try_eval_boolean_with_ctx_inner(
-            &expr,
-            Some(&ctx),
-            &ast::QualifiedName::new(),
-            &crate::test_support::connection_operators(),
-        )
-        .expect("fixture contains no VCG query");
-        assert_eq!(value, Some(true));
-    }
-
-    #[test]
-    fn enum_equality_rejects_different_enum_type() {
-        let mut ctx = Context::new();
-        ctx.enum_parameter_values.insert(
-            "mode".to_string(),
-            "Modelica.Blocks.Types.Init.PI".to_string(),
-        );
-
-        let expr = eq_expr(
-            cref_expr("mode"),
-            cref_expr("Modelica.Blocks.Types.SimpleController.PI"),
+            cref_expr_with_target("mode", parameter),
+            resolved_enum_literal("Pkg.Mode", second_owner, "on"),
         );
         let value = try_eval_boolean_with_ctx_inner(
             &expr,
@@ -938,6 +1003,73 @@ mod tests {
         )
         .expect("fixture contains no VCG query");
         assert_eq!(value, Some(false));
+    }
+
+    #[test]
+    fn enum_parameter_lookup_refuses_foreign_same_spelling_declaration() {
+        let owner = rumoca_core::DefId::new(12_005);
+        let selected_parameter = rumoca_core::DefId::new(12_105);
+        let foreign_parameter = rumoca_core::DefId::new(12_106);
+        let instance = rumoca_core::InstanceId::new(12_205);
+        let (catalog, value) = resolved_enum_fixture(owner, "Pkg.Mode", "on");
+        let mut ctx = Context::new();
+        ctx.resolved_enum_catalog = catalog;
+        ctx.current_class_instance_id = Some(instance);
+        ctx.parameter_values_by_identity.insert(
+            rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: instance,
+                root_def_id: selected_parameter,
+            },
+            rumoca_eval_flat::constant::Value::ResolvedEnum(value),
+        );
+
+        let expr = eq_expr(
+            cref_expr_with_target("mode", foreign_parameter),
+            resolved_enum_literal("Pkg.Mode", owner, "on"),
+        );
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn enum_equality_refuses_an_identity_free_literal() {
+        let owner = rumoca_core::DefId::new(12_004);
+        let parameter = rumoca_core::DefId::new(12_104);
+        let instance = rumoca_core::InstanceId::new(12_204);
+        let (catalog, value) = resolved_enum_fixture(owner, "Pkg.Mode", "on");
+        let mut ctx = Context::new();
+        ctx.resolved_enum_catalog = catalog;
+        ctx.current_class_instance_id = Some(instance);
+        ctx.parameter_values_by_identity.insert(
+            rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: instance,
+                root_def_id: parameter,
+            },
+            rumoca_eval_flat::constant::Value::ResolvedEnum(value),
+        );
+
+        let mut identity_free = comp_ref("Pkg.Mode.on");
+        for part in &mut identity_free.parts {
+            part.def_id = None;
+        }
+        let expr = eq_expr(
+            cref_expr_with_target("mode", parameter),
+            ast::Expression::ComponentReference(identity_free),
+        );
+        let value = try_eval_boolean_with_ctx_inner(
+            &expr,
+            Some(&ctx),
+            &ast::QualifiedName::new(),
+            &crate::test_support::connection_operators(),
+        )
+        .expect("fixture contains no VCG query");
+        assert_eq!(value, None);
     }
 
     #[test]

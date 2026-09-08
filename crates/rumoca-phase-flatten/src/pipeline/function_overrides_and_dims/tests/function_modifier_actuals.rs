@@ -28,7 +28,10 @@ fn gravity_alias_fixture() -> GravityAliasFixture {
         modifications: vec![rumoca_ir_ast::ExtendModification {
             expr: rumoca_ir_ast::Expression::Modification {
                 target: resolved_comp_ref(&[("gravityType", standard_gravity_type_def)]),
-                value: Arc::new(resolved_ast_var(&[("gravityType", world_gravity_type_def)])),
+                value: Some(Arc::new(resolved_ast_var(&[(
+                    "gravityType",
+                    world_gravity_type_def,
+                )]))),
                 span: test_span(),
             },
             each: false,
@@ -92,8 +95,14 @@ fn gravity_alias_fixture() -> GravityAliasFixture {
 
     let mut override_functions = OverrideFunctionMap::default();
     override_functions.insert(
-        "world".to_string(),
-        override_target("World", world_def, ClassType::Model),
+        world_occurrence_def,
+        override_target_with_slot(
+            "World",
+            world_occurrence_def,
+            world_def,
+            ClassType::Model,
+            true,
+        ),
     );
     GravityAliasFixture {
         tree,
@@ -109,8 +118,12 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
     let fixture = gravity_alias_fixture();
     let tree = fixture.tree;
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let ctx =
-        FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &fixture.override_functions);
+    let ctx = FunctionOverrideRewriteContext::new_test(
+        &tree,
+        &class_index,
+        &[],
+        &fixture.override_functions,
+    );
     let mut expr = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "world.gravityAcceleration",
@@ -121,6 +134,7 @@ fn replaceable_function_alias_preserves_modifier_actuals() {
         ),
         args: vec![core_var(&[("r", fixture.radius)])],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -152,6 +166,7 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
         ),
         args: vec![core_var(&[("r", fixture.radius)])],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     let origin = rumoca_ir_flat::EquationOrigin::ComponentEquation {
@@ -171,7 +186,7 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
     let family = |body| rumoca_ir_flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 1,
@@ -193,6 +208,7 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
     flat.add_initial_structured_equation(family(call));
     let mut component_overrides = ComponentOverrideMap::default();
     component_overrides.insert(ComponentPath::root(), fixture.override_functions);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
     rewrite_function_overrides_in_flat_model(
         &mut flat,
@@ -200,6 +216,7 @@ fn structured_template_and_scalar_row_keep_the_same_bound_function_inputs() {
         &class_index,
         &component_overrides,
         &crate::pipeline::component_member_scope::ComponentMemberScopes::default(),
+        &semantic_catalogs,
     )
     .expect("exact function modifier rewrite");
 
@@ -288,6 +305,7 @@ fn rewrite_gravity_call(
         ),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
     rewrite_function_overrides_in_expression_with_ctx(&mut expression, ctx)
@@ -340,14 +358,14 @@ fn same_leaf_receivers_materialize_defaults_from_exact_exposure_owner() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "a".to_string(),
+        receiver_a,
         override_target("WorldA", receiver_a, ClassType::Model),
     );
     overrides.insert(
-        "b".to_string(),
+        receiver_b,
         override_target("WorldB", receiver_b, ClassType::Model),
     );
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
 
     let a_args = rewrite_gravity_call("a", receiver_a, implementation, &ctx);
     let b_args = rewrite_gravity_call("b", receiver_b, implementation, &ctx);
@@ -402,12 +420,16 @@ fn same_spelling_receiver_and_unrelated_package_cannot_replace_exact_prefix_owne
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "world".to_string(),
+        receiver_b,
         override_target("WorldB", receiver_b, ClassType::Model),
     );
     let unrelated_packages = vec![override_target("WorldB", receiver_b, ClassType::Package)];
-    let ctx =
-        FunctionOverrideRewriteContext::new(&tree, &class_index, &unrelated_packages, &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(
+        &tree,
+        &class_index,
+        &unrelated_packages,
+        &overrides,
+    );
 
     let args = rewrite_gravity_call("world", receiver_a, implementation, &ctx);
     let Some(("g0", Expression::Literal { value, .. })) = named_arg(&args[0]) else {
@@ -460,13 +482,14 @@ fn inherited_exposure_and_explicit_redeclare_use_exact_precedence() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "world".to_string(),
+        derived_receiver,
         override_target("DerivedWorld", derived_receiver, ClassType::Model),
     );
     overrides.insert(
-        "gravity".to_string(),
+        implementation,
         OverrideTarget {
             alias: "gravity".to_string(),
+            alias_slot: implementation,
             name: "Standard".to_string(),
             def_id: implementation,
             class_type: ClassType::Function,
@@ -483,7 +506,7 @@ fn inherited_exposure_and_explicit_redeclare_use_exact_precedence() {
             }],
         },
     );
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
 
     let args = rewrite_gravity_call("world", derived_receiver, implementation, &ctx);
     assert_eq!(args.len(), 1, "the g0 slot must be materialized once");

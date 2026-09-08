@@ -38,6 +38,42 @@ impl TestSource {
     }
 }
 
+/// State declaration attributes for fixtures whose initialization is not the
+/// behavior under test.
+///
+/// Supplying both attributes is semantically significant: MLS §8.6 turns the
+/// exact start into the state's initialization equation only when `fixed` is
+/// true; with `fixed` false the same start remains a numerical guess and the
+/// fixture must provide a distinct initialization equation.
+fn real_state_attributes<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    declaration: dae::DaeProvenance,
+    start_value: f64,
+    fixed: bool,
+) -> Result<dae::VariableAttributes<'dae>, dae::DaeConstructionError> {
+    let start = model.expressions(|expressions| {
+        expressions
+            .at(declaration)
+            .literal(dae::DaeLiteral::Real(start_value))
+    })?;
+    Ok(dae::VariableAttributes {
+        component_ref: None,
+        binding: None,
+        start: Some(start),
+        fixed: Some(rumoca_core::Fixity::from(fixed)),
+        min: None,
+        max: None,
+        nominal: None,
+        unit: None,
+        state_select: rumoca_core::StateSelect::Default,
+        description: None,
+        causality: dae::VariableCausality::Local,
+        is_tunable: false,
+        is_held: false,
+        origin: dae::VariableOrigin::Source,
+    })
+}
+
 /// Re-seal a lowered root by naming every one of its seven child aggregates at
 /// [`solve::SolveProblem::construct`], then require the result to reproduce
 /// the lowered root exactly.
@@ -49,7 +85,7 @@ impl TestSource {
 /// children do not carry would make the re-sealed root differ.
 fn reseal_solve_problem(
     problem: &solve::SolveProblem,
-) -> Result<solve::SolveProblem, solve::SolveProblemShapeContractError> {
+) -> Result<solve::SolveProblem, Box<solve::SolveProblemShapeContractError>> {
     let resealed = solve::SolveProblem::construct(
         problem.layout().clone(),
         problem.solve_layout().clone(),
@@ -58,7 +94,8 @@ fn reseal_solve_problem(
         problem.discrete().clone(),
         problem.events().clone(),
         problem.clocks().clone(),
-    )?;
+    )
+    .map_err(Box::new)?;
     assert_eq!(
         serde_json::to_value(&resealed).expect("a re-sealed Solve root serializes"),
         serde_json::to_value(problem).expect("a lowered Solve root serializes"),

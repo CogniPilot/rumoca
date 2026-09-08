@@ -19,26 +19,28 @@ fn test_typecheck_instanced_rejects_missing_type_identity_even_for_unique_suffix
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class should resolve");
     let r_decl = test.components.get("r").expect("r declaration");
     let mut overlay = InstanceOverlay::new();
     let id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: id,
-        qualified_name: QualifiedName::from_dotted("Test.r"),
-        type_id: TypeId::UNKNOWN,
-        // Simulate an instanced relative/imported type path.
-        type_name: "Units.Reluctance".to_string(),
-        type_def_id: None,
-        is_primitive: true,
-        source_location: r_decl.location.clone(),
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: id,
+            qualified_name: QualifiedName::from_dotted("Test.r"),
+            type_id: TypeId::UNKNOWN,
+            // Simulate an instanced relative/imported type path.
+            type_name: "Units.Reluctance".to_string(),
+            type_def_id: None,
+            is_primitive: true,
+            source_location: r_decl.location.clone(),
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("a rendered suffix cannot replace exact producer identity");
     assert!(
         err.iter()
@@ -72,26 +74,28 @@ fn test_typecheck_instanced_rejects_ambiguous_suffix_type_name() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class should resolve");
     let r_decl = test.components.get("r").expect("r declaration");
     let mut overlay = InstanceOverlay::new();
     let id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: id,
-        qualified_name: QualifiedName::from_dotted("Test.r"),
-        type_id: TypeId::UNKNOWN,
-        // Ambiguous between A.Units.Reluctance and B.Units.Reluctance.
-        type_name: "Units.Reluctance".to_string(),
-        type_def_id: None,
-        is_primitive: true,
-        source_location: r_decl.location.clone(),
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: id,
+            qualified_name: QualifiedName::from_dotted("Test.r"),
+            type_id: TypeId::UNKNOWN,
+            // Ambiguous between A.Units.Reluctance and B.Units.Reluctance.
+            type_name: "Units.Reluctance".to_string(),
+            type_def_id: None,
+            is_primitive: true,
+            source_location: r_decl.location.clone(),
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("ambiguous suffix type names should remain unresolved");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET001")
@@ -118,14 +122,18 @@ fn test_typecheck_instanced_resolves_dotted_type_via_anchor_def_id() {
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let typed = typecheck(resolved).expect("typecheck should succeed");
-    let tree = typed.into_inner();
+    let standalone_tree = typed;
+    let tree = resolve(parse(source))
+        .expect("the instanced path starts from its own Resolve proof")
+        .inner()
+        .clone();
 
     let medium_def_id = tree
         .name_map
         .get("Outer.Medium")
         .copied()
         .expect("Outer.Medium should resolve");
-    let medium_package_type = tree
+    let medium_package_type = standalone_tree
         .type_table
         .lookup("Outer.Medium")
         .expect("Outer.Medium package type should exist");
@@ -136,19 +144,21 @@ fn test_typecheck_instanced_resolves_dotted_type_via_anchor_def_id() {
 
     let mut overlay = InstanceOverlay::new();
     let id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: id,
-        qualified_name: QualifiedName::from_dotted("Outer.Test.p"),
-        type_id: TypeId::UNKNOWN,
-        type_name: "Medium.AbsolutePressure".to_string(),
-        // Anchor only the first segment (`Medium`) and require dotted-tail resolution.
-        type_def_id: Some(medium_def_id),
-        is_primitive: true,
-        source_location: p_decl.location.clone(),
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: id,
+            qualified_name: QualifiedName::from_dotted("Outer.Test.p"),
+            type_id: TypeId::UNKNOWN,
+            type_name: "Medium.AbsolutePressure".to_string(),
+            // Anchor only the first segment (`Medium`) and require dotted-tail resolution.
+            type_def_id: Some(medium_def_id),
+            is_primitive: true,
+            source_location: p_decl.location.clone(),
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    typecheck_instanced(&tree, &mut overlay, "Outer.Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Outer.Test")
         .expect("instanced typecheck should resolve anchored dotted type names");
 
     let p_inst = overlay
@@ -185,7 +195,7 @@ fn test_typecheck_instanced_detects_user_defined_equation_mismatch() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .definitions
         .classes
@@ -197,27 +207,31 @@ fn test_typecheck_instanced_detects_user_defined_equation_mismatch() {
 
     let mut overlay = InstanceOverlay::new();
     let lhs_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: lhs_id,
-        qualified_name: rumoca_ir_ast::QualifiedName::from_dotted("Test.lhs"),
-        type_id: TypeId::UNKNOWN,
-        type_name: "LeftPayload".to_string(),
-        type_def_id: lhs_decl.type_def_id,
-        is_primitive: false,
-        ..Default::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: lhs_id,
+            qualified_name: rumoca_ir_ast::QualifiedName::from_dotted("Test.lhs"),
+            type_id: TypeId::UNKNOWN,
+            type_name: "LeftPayload".to_string(),
+            type_def_id: lhs_decl.type_def_id,
+            is_primitive: false,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
     let rhs_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: rhs_id,
-        qualified_name: rumoca_ir_ast::QualifiedName::from_dotted("Test.rhs"),
-        type_id: TypeId::UNKNOWN,
-        type_name: "RightPayload".to_string(),
-        type_def_id: rhs_decl.type_def_id,
-        is_primitive: false,
-        ..Default::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: rhs_id,
+            qualified_name: rumoca_ir_ast::QualifiedName::from_dotted("Test.rhs"),
+            type_id: TypeId::UNKNOWN,
+            type_name: "RightPayload".to_string(),
+            type_def_id: rhs_decl.type_def_id,
+            is_primitive: false,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("instanced mismatch should fail typecheck");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET002")),
@@ -245,7 +259,7 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -265,20 +279,22 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
         false,
     );
     let payload_id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: payload_id,
-        qualified_name: QualifiedName::from_dotted("holder.payload"),
-        source_location: holder
-            .components
-            .get("payload")
-            .expect("payload field")
-            .location
-            .clone(),
-        type_name: "ExtendedPayload".to_string(),
-        type_def_id: extended.def_id,
-        is_primitive: false,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: payload_id,
+            qualified_name: QualifiedName::from_dotted("holder.payload"),
+            source_location: holder
+                .components
+                .get("payload")
+                .expect("payload field")
+                .location
+                .clone(),
+            type_name: "ExtendedPayload".to_string(),
+            type_def_id: extended.def_id,
+            is_primitive: false,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
     add_instanced_component(&mut overlay, "holder.payload.extra", extra, true);
 
     let projected = test
@@ -286,18 +302,20 @@ fn test_typecheck_instanced_uses_effective_projected_field_type() {
         .get("projected")
         .expect("projected component");
     let projected_id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: projected_id,
-        qualified_name: QualifiedName::from_ident("projected"),
-        source_location: projected.location.clone(),
-        type_name: projected.type_name.to_string(),
-        type_def_id: projected.type_def_id,
-        binding: projected.binding.clone(),
-        is_primitive: false,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: projected_id,
+            qualified_name: QualifiedName::from_ident("projected"),
+            source_location: projected.location.clone(),
+            type_name: projected.type_name.to_string(),
+            type_def_id: projected.type_def_id,
+            binding: projected.binding.clone(),
+            is_primitive: false,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("effective projected record type should be preserved");
 }
 
@@ -320,7 +338,7 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -345,20 +363,22 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_bindings() {
     let mut outer_payload_ref = make_comp_ref("payload");
     outer_payload_ref.parts[0].ident.location = nested.location.clone();
     let nested_id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: nested_id,
-        qualified_name: QualifiedName::from_dotted("holder.payload"),
-        source_location: nested.location.clone(),
-        type_name: nested.type_name.to_string(),
-        type_def_id: nested.type_def_id,
-        binding: Some(Expression::ComponentReference(outer_payload_ref)),
-        binding_source_scope: Some(QualifiedName::new()),
-        binding_from_modification: true,
-        is_primitive: false,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: nested_id,
+            qualified_name: QualifiedName::from_dotted("holder.payload"),
+            source_location: nested.location.clone(),
+            type_name: nested.type_name.to_string(),
+            type_def_id: nested.type_def_id,
+            binding: Some(Expression::ComponentReference(outer_payload_ref)),
+            binding_source_scope: Some(QualifiedName::new()),
+            binding_from_modification: true,
+            is_primitive: false,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("outer RightPayload must not capture nested LeftPayload");
     assert!(
         diagnostics
@@ -382,7 +402,7 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_structural_values() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -406,42 +426,46 @@ fn test_typecheck_instanced_uses_modifier_source_scope_for_structural_values() {
 
     let nested_n = holder.components.get("n").expect("nested n");
     let nested_n_id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: nested_n_id,
-        qualified_name: QualifiedName::from_dotted("holder.n"),
-        source_location: nested_n.location.clone(),
-        type_name: nested_n.type_name.to_string(),
-        type_def_id: nested_n.type_def_id,
-        variability: nested_n.variability.clone(),
-        binding: Some(Expression::ComponentReference(make_comp_ref("n"))),
-        binding_source_scope: Some(QualifiedName::new()),
-        binding_from_modification: true,
-        start: Some(Expression::Terminal {
-            terminal_type: TerminalType::UnsignedInteger,
-            token: Token {
-                text: "0".into(),
-                ..Default::default()
-            },
-            span: rumoca_core::Span::DUMMY,
-        }),
-        is_primitive: true,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: nested_n_id,
+            qualified_name: QualifiedName::from_dotted("holder.n"),
+            source_location: nested_n.location.clone(),
+            type_name: nested_n.type_name.to_string(),
+            type_def_id: nested_n.type_def_id,
+            variability: nested_n.variability.clone(),
+            binding: Some(Expression::ComponentReference(make_comp_ref("n"))),
+            binding_source_scope: Some(QualifiedName::new()),
+            binding_from_modification: true,
+            start: Some(Expression::Terminal {
+                terminal_type: TerminalType::UnsignedInteger,
+                token: Token {
+                    text: "0".into(),
+                    ..Default::default()
+                },
+                span: rumoca_core::Span::DUMMY,
+            }),
+            is_primitive: true,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
     let nested_x = holder.components.get("x").expect("nested x");
     let nested_x_id = overlay.alloc_id();
-    overlay.add_component(InstanceData {
-        instance_id: nested_x_id,
-        qualified_name: QualifiedName::from_dotted("holder.x"),
-        source_location: nested_x.location.clone(),
-        type_name: nested_x.type_name.to_string(),
-        type_def_id: nested_x.type_def_id,
-        dims_expr: nested_x.shape_expr.clone(),
-        is_primitive: true,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id: nested_x_id,
+            qualified_name: QualifiedName::from_dotted("holder.x"),
+            source_location: nested_x.location.clone(),
+            type_name: nested_x.type_name.to_string(),
+            type_def_id: nested_x.type_def_id,
+            dims_expr: nested_x.shape_expr.clone(),
+            is_primitive: true,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("source-scoped structural parameter should typecheck");
     let nested_x = overlay
         .components

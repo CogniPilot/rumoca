@@ -114,6 +114,7 @@ fn resolve_field_on_constant_expr(
             name,
             args,
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             ..
         } => named_constructor_arg(args, field)
             .cloned()
@@ -182,13 +183,7 @@ pub(super) fn scalar_parameter_literal(
             span,
         });
     }
-    ctx.enum_parameter_values
-        .get(key)
-        .map(|v| rumoca_core::Expression::VarRef {
-            name: rumoca_core::Reference::generated(v.clone()),
-            subscripts: vec![],
-            span,
-        })
+    None
 }
 
 pub(super) fn reference_key_has_array_shape(key: &str, ctx: &Context, scope: &str) -> bool {
@@ -444,9 +439,13 @@ pub(super) fn named_constructor_arg<'a>(
             name,
             args,
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             ..
         } = arg
-            && name.as_str().strip_prefix("__rumoca_named_arg__.") == Some(field)
+            && name
+                .as_str()
+                .strip_prefix(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)
+                == Some(field)
         {
             return args.first();
         }
@@ -490,14 +489,6 @@ pub(super) fn resolve_constant_field_access(
                 span,
             });
         }
-        if let Some(value) = ctx.enum_parameter_values.get(&key) {
-            return Some(rumoca_core::Expression::VarRef {
-                name: rumoca_core::Reference::generated(value.clone()),
-                subscripts: vec![],
-                span,
-            });
-        }
-
         let alias_expr = ctx.constant_values.get(&current)?;
         let rumoca_core::Expression::VarRef {
             name, subscripts, ..

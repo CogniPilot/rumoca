@@ -11,7 +11,7 @@ use std::ops::ControlFlow;
 
 use rumoca_core::{DefId, InstanceId, Variability};
 use rumoca_ir_ast::{
-    self as ast, ComponentReference, ComponentReferenceContext, Visitor, contains_function_call,
+    self as ast, ComponentReference, ComponentReferenceContext, Visitor,
     walk_component_reference_default, walk_expression_default,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -191,14 +191,9 @@ fn collect_assignment_dependence(
     binders: &[String],
     graph: &mut DependenceGraph,
 ) {
-    let is_der = |expr: &ast::Expression| {
-        contains_function_call(expr, |comp, _| {
-            comp.parts.len() == 1 && comp.parts[0].ident.text.as_ref() == "der"
-        })
-    };
     let rhs_refs = collect_reference_ids(rhs, binders).resolved;
 
-    if is_der(lhs) || is_der(rhs) {
+    if contains_derivative_call(lhs) || contains_derivative_call(rhs) {
         graph
             .der_roots
             .extend(collect_reference_ids(lhs, binders).resolved);
@@ -212,6 +207,24 @@ fn collect_assignment_dependence(
             .or_default()
             .extend(rhs_refs);
     }
+}
+
+fn contains_derivative_call(expr: &ast::Expression) -> bool {
+    struct Finder(bool);
+
+    impl Visitor for Finder {
+        fn visit_expression(&mut self, expr: &ast::Expression) -> ControlFlow<()> {
+            if matches!(expr, ast::Expression::DerivativeCall { .. }) {
+                self.0 = true;
+                return ControlFlow::Break(());
+            }
+            walk_expression_default(self, expr)
+        }
+    }
+
+    let mut finder = Finder(false);
+    let _visit_outcome = finder.visit_expression(expr);
+    finder.0
 }
 
 fn derivative_reachable(graph: &DependenceGraph) -> FxHashSet<DefId> {
@@ -357,7 +370,7 @@ fn collect_reference_ids(expr: &ast::Expression, binders: &[String]) -> Referenc
         binders,
         references: &mut references,
     };
-    let _ = collector.visit_expression(expr);
+    let _visit_outcome = collector.visit_expression(expr);
     references
 }
 

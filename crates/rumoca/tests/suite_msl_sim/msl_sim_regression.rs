@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 use rumoca::Compiler;
-use rumoca_sim::simulate_dae_with_diagnostics;
+use rumoca_sim::simulate_dae;
 use rumoca_sim::{SimOptions, SimResult, SimSolverMode};
 
 fn example_path(name: &str) -> PathBuf {
@@ -114,10 +114,10 @@ fn switched_rlc_msl_retains_storage_states_through_step() {
         ..SimOptions::default()
     };
 
-    let simple_result = simulate_dae_with_diagnostics(&simple.dae, &opts)
+    let simple_result = simulate_dae(simple.dae().as_ref(), &opts)
         .expect("handwritten switched RLC example should simulate");
-    let msl_result = simulate_dae_with_diagnostics(&msl.dae, &opts)
-        .expect("MSL switched RLC example should simulate");
+    let msl_result =
+        simulate_dae(msl.dae().as_ref(), &opts).expect("MSL switched RLC example should simulate");
 
     // MLS Appendix B / SPEC_0022: variables appearing differentiated remain
     // states. The MSL capacitor voltage and inductor current are both physical
@@ -184,8 +184,8 @@ fn pinned_relative_position_initializes_the_mass_it_holds() {
         .compile_str(PINNED_SPRING_MASS, "PinnedSpringMass.mo")
         .expect("pinned spring/mass model should compile");
 
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae().as_ref(),
         &SimOptions {
             t_end: 0.1,
             dt: Some(0.05),
@@ -221,8 +221,7 @@ fn pid_msl_responds_to_step_error() {
         ..SimOptions::default()
     };
 
-    let result =
-        simulate_dae_with_diagnostics(&pid.dae, &opts).expect("PIDMSL example should simulate");
+    let result = simulate_dae(pid.dae().as_ref(), &opts).expect("PIDMSL example should simulate");
 
     // MLS Appendix B B.1a: continuous equations are simultaneous and unordered.
     // The forcing equation `pid.u = 1 - x` must not be overwritten by later
@@ -269,8 +268,8 @@ fn saturated_inductor_projects_across_the_saturation_knee() {
         .compile_str(SATURATED_INDUCTOR, "SaturatedInductorRun.mo")
         .expect("MSL saturated inductor example should compile");
 
-    let result = simulate_dae_with_diagnostics(
-        &compiled.dae,
+    let result = simulate_dae(
+        compiled.dae().as_ref(),
         &SimOptions {
             t_end: 0.1,
             dt: Some(2.0e-4),

@@ -65,7 +65,7 @@ pub(crate) use override_scope::{
     override_context_for_scope, override_package_names,
     override_package_names_with_preferred_aliases,
 };
-pub(crate) use override_target::{ComponentOverrideMap, OverrideTarget};
+pub(crate) use override_target::{AliasOverrideTable, ComponentOverrideMap, OverrideTarget};
 use override_target::{
     FunctionModifierArg, FunctionSlot, OverrideContext, OverrideFunctionMap, ResolvedClassRef,
     function_modifier_arg_from_ast, is_receiver_alias_type, resolved_class_ref_for_def_id,

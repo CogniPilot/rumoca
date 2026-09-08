@@ -23,6 +23,76 @@ kind = 'Parse'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_explicit_ranges_are_accepted_in_every_iterator_syntax'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_implicit_statement_range_fails_closed_until_supported'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_implicit_equation_range_fails_closed_until_supported'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_implicit_comprehension_range_fails_closed_until_supported'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_implicit_reduction_range_fails_closed_until_supported'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_implicit_later_index_range_fails_closed_until_supported'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_unrelated_rejections_cannot_satisfy_the_implicit_range_witness'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Parse'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_explicit_range_equation_loop_is_allowed'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_explicit_range_comprehension_is_allowed'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'ALG-004'
+case_id = 'alg_004_whole_array_assignment_with_explicit_range_is_allowed'
+test_file = 'tests/alg_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'ALG-005'
 case_id = 'alg_005_while_boolean'
 test_file = 'tests/alg_contracts.rs'
@@ -630,6 +700,13 @@ case_id = 'eqn_008_for_equation_vector'
 test_file = 'tests/eqn_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'EQN-008'
+case_id = 'eqn_008_scalar_for_equation_range_is_rejected'
+test_file = 'tests/eqn_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
 
 [[cases]]
 contract_id = 'EQN-008'
@@ -1332,6 +1409,13 @@ kind = 'Compile'
 outcome = 'Accept'
 
 [[cases]]
+contract_id = 'INST-034'
+case_id = 'inst_034_encapsulated_upward_lookup_rejected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
 contract_id = 'INST-037'
 case_id = 'inst_037_identical_inherited_child_class_is_kept_once'
 test_file = 'tests/inst_contracts.rs'
@@ -1379,6 +1463,20 @@ case_id = 'inst_053_conditional_true_kept'
 test_file = 'tests/inst_contracts.rs'
 kind = 'Compile'
 outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-054'
+case_id = 'inst_054_scope_lookup_order'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
+contract_id = 'INST-054'
+case_id = 'inst_054_wildcard_import_ambiguity_rejected'
+test_file = 'tests/inst_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
 
 [[cases]]
 contract_id = 'LEX-001'
@@ -2851,6 +2949,20 @@ kind = 'Compile'
 outcome = 'Reject'
 
 [[cases]]
+contract_id = 'FUNC-022'
+case_id = 'func_022_impure_call_in_constant_binding_rejected'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Reject'
+
+[[cases]]
+contract_id = 'FUNC-022'
+case_id = 'func_022_impure_call_in_parameter_binding_is_accepted'
+test_file = 'tests/func_contracts.rs'
+kind = 'Compile'
+outcome = 'Accept'
+
+[[cases]]
 contract_id = 'FUNC-034'
 case_id = 'func_034_input_default_depends_on_output_rejected'
 test_file = 'tests/func_contracts.rs'
@@ -3505,13 +3617,6 @@ outcome = 'Reject'
 contract_id = 'FUNC-031'
 case_id = 'func_031_zero_derivative_names_non_input_rejected'
 test_file = 'tests/func_contracts.rs'
-kind = 'Compile'
-outcome = 'Reject'
-
-[[cases]]
-contract_id = 'ALG-004'
-case_id = 'alg_004_whole_array_assignment_in_for_rejected'
-test_file = 'tests/alg_contracts.rs'
 kind = 'Compile'
 outcome = 'Reject'
 

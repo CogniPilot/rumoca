@@ -82,7 +82,7 @@ pub struct SimulationConfig {
     pub external_interface: Option<ExternalInterfaceConfig>,
     /// Complete top-level Modelica model. If a controller is needed, compose
     /// it with the plant in Modelica and point this section at that wrapper.
-    #[serde(default, alias = "physics")]
+    #[serde(default)]
     pub model: Option<ModelConfig>,
     #[serde(default)]
     controller: Option<toml::Value>,

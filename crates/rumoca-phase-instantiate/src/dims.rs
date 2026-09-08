@@ -1,13 +1,61 @@
-use super::find_class_in_tree;
 use super::inheritance::location_to_span;
 use super::inheritance::resolve_effective_components_for_eval;
 use super::{InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
-use rumoca_core::is_builtin_type;
-use rumoca_eval_ast::eval_instantiate::{evaluate_array_dimensions, try_eval_integer_shape_expr};
+use rumoca_eval_ast::eval_instantiate::{
+    evaluate_array_dimensions_with_index, try_eval_integer_shape_expr_with_proof,
+};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 use std::sync::Arc;
+
+/// The rewrite vocabularies an unqualified name in a shape, condition, or
+/// attribute expression can resolve through.
+///
+/// Import bindings come from the one lookup authority for the expression's
+/// declaring scope and carry per-segment declaration identity; no import is
+/// ever re-selected by clause order or re-derived from a rendered spelling.
+/// Package-constant aliases remain rendered-name pairs because they alias
+/// package members exposed by redeclared or enclosing packages (MLS §5.3.2),
+/// which are not imports.
+#[derive(Clone, Copy)]
+pub(crate) struct ImportRewrite<'a> {
+    /// Root-issued index of resolved declaration identities. Every production
+    /// rewrite and shape evaluation in one instantiation reuses this index.
+    pub(crate) class_index: &'a ast::ClassDefIndex<'a>,
+    /// Constant aliases of actively redeclared packages. These deliberately
+    /// take precedence over import bindings: a redeclared package's constants
+    /// replace same-named aliases of the replaced package.
+    pub(crate) overriding_aliases: &'a [(String, String)],
+    /// Import bindings of the expression's declaring scope (MLS §13.2).
+    pub(crate) effective: Option<&'a ast::EffectiveImports>,
+    /// Enclosing package-constant aliases, consulted only after imports.
+    pub(crate) fallback_aliases: &'a [(String, String)],
+}
+
+impl<'a> ImportRewrite<'a> {
+    pub(crate) fn without_imports(class_index: &'a ast::ClassDefIndex<'a>) -> Self {
+        Self {
+            class_index,
+            overriding_aliases: &[],
+            effective: None,
+            fallback_aliases: &[],
+        }
+    }
+
+    fn names_alias(&self, alias: &str) -> bool {
+        self.overriding_aliases
+            .iter()
+            .any(|(candidate, _)| candidate == alias)
+            || self.effective.is_some_and(|effective| {
+                effective.mentions(&rumoca_core::ComponentPath::from_flat_path(alias))
+            })
+            || self
+                .fallback_aliases
+                .iter()
+                .any(|(candidate, _)| candidate == alias)
+    }
+}
 
 /// Collect array subscripts from a type alias inheritance chain.
 ///
@@ -19,46 +67,60 @@ use std::sync::Arc;
 fn collect_type_alias_subscripts(
     tree: &ast::ClassTree,
     class_def: Option<&ast::ClassDef>,
-) -> Vec<ast::Subscript> {
-    const MAX_DEPTH: usize = 16;
+) -> InstantiateResult<Vec<ast::Subscript>> {
     let mut subscripts = Vec::new();
     let mut current = class_def;
     let mut visited_defs = std::collections::HashSet::<DefId>::new();
-    let mut visited_names = std::collections::HashSet::<String>::new();
 
-    for _ in 0..MAX_DEPTH {
-        let Some(class) = current else {
-            break;
-        };
-
-        if let Some(def_id) = class.def_id {
-            if !visited_defs.insert(def_id) {
-                break;
-            }
-        } else if !visited_names.insert(class.name.text.to_string()) {
-            break;
+    while let Some(class) = current {
+        let def_id = class.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("type alias `{}`", class.name.text),
+                class.location.span(),
+            ))
+        })?;
+        if !visited_defs.insert(def_id) {
+            return Err(Box::new(InstantiateError::instantiation_cycle(
+                format!("type alias `{}`", class.name.text),
+                class.location.span(),
+            )));
         }
 
         if !class.array_subscripts.is_empty() {
             subscripts.extend(class.array_subscripts.clone());
         }
 
-        // Type aliases are expected to use a single base type.
-        let Some(ext) = class.extends.first() else {
-            break;
+        // Only a short class definition can carry alias array subscripts, and
+        // a short definition has exactly one extends edge (MLS §4.6). A class
+        // with zero extends clauses, or a long definition with several (MLS
+        // §7.1 permits multiple inheritance), contributes no further alias
+        // dimensions, so the walk terminates here with the subscripts already
+        // collected.
+        let [ext] = class.extends.as_slice() else {
+            current = None;
+            continue;
         };
         let base_name = ext.base_name.to_string();
-        if is_builtin_type(&base_name) {
-            break;
+        if super::inheritance::predefined_extend_name(tree, ext)?.is_some() {
+            current = None;
+            continue;
         }
 
-        current = ext
-            .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
-            .or_else(|| find_class_in_tree(tree, &base_name));
+        let base_def_id = ext.base_def_id.or(ext.base_name.def_id).ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("type-alias extends edge `{base_name}`"),
+                ext.location.span(),
+            ))
+        })?;
+        current = Some(tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("type-alias extends edge `{base_name}` ({base_def_id:?})"),
+                ext.location.span(),
+            ))
+        })?);
     }
 
-    subscripts
+    Ok(subscripts)
 }
 
 /// Resolve array dimensions inherited from a type alias chain.
@@ -67,18 +129,20 @@ pub(super) fn resolve_type_alias_dimensions(
     class_def: Option<&ast::ClassDef>,
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
+    class_index: &ast::ClassDefIndex<'_>,
 ) -> InstantiateResult<Vec<i64>> {
-    let subscripts = collect_type_alias_subscripts(tree, class_def);
+    let subscripts = collect_type_alias_subscripts(tree, class_def)?;
     if subscripts.is_empty() {
         return Ok(Vec::new());
     }
 
-    let Some(dims) = evaluate_array_dimensions(
+    let Some(dims) = evaluate_array_dimensions_with_index(
         &[],
         &subscripts,
         mod_env,
         effective_components,
         tree,
+        class_index,
         resolve_effective_components_for_eval,
     ) else {
         let name = class_def
@@ -105,24 +169,24 @@ pub(super) fn resolve_component_dimensions(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    imports: &[(String, String)],
-) -> (Vec<i64>, Vec<ast::Subscript>) {
+    imports: ImportRewrite<'_>,
+) -> InstantiateResult<(Vec<i64>, Vec<ast::Subscript>)> {
     let mut dims = Vec::new();
     let mut dims_expr = Vec::new();
     let mut shape_eval_succeeded = false;
-    let qualified_shape_expr = qualify_shape_subscripts_imports(tree, &comp.shape_expr, imports);
+    let qualified_shape_expr = qualify_shape_subscripts_imports(tree, &comp.shape_expr, imports)?;
     let needs_late_recompute =
         !qualified_shape_expr.is_empty() && shape_expr_needs_late_recompute(&qualified_shape_expr);
 
     if !qualified_shape_expr.is_empty() {
-        if let Some(eval_dims) = eval_shape_expr_dims(
+        if let Some(evaluation) = eval_shape_expr_dims(
             &qualified_shape_expr,
             mod_env,
             effective_components,
             tree,
-            imports,
-        ) {
-            if needs_late_recompute {
+            imports.class_index,
+        )? {
+            if needs_late_recompute && !evaluation.translation_constant {
                 // Defer symbolic dimensions to later phases that have full local
                 // scope/modifier context (MLS §10.1 structural dimensions).
                 // Do not trust parser/early fallback dimensions here, because they
@@ -131,7 +195,7 @@ pub(super) fn resolve_component_dimensions(
                 // converged.
                 dims_expr = qualified_shape_expr.clone();
             } else {
-                dims = eval_dims;
+                dims = evaluation.dims;
                 shape_eval_succeeded = true;
             }
         } else if needs_late_recompute {
@@ -157,7 +221,7 @@ pub(super) fn resolve_component_dimensions(
         dims.extend_from_slice(type_dims);
     }
 
-    (dims, dims_expr)
+    Ok((dims, dims_expr))
 }
 
 fn shape_expr_needs_late_recompute(shape_expr: &[ast::Subscript]) -> bool {
@@ -188,51 +252,71 @@ fn mod_env_has_package_alias_bindings(mod_env: &ast::ModificationEnvironment) ->
     })
 }
 
+struct EvaluatedShape {
+    dims: Vec<i64>,
+    translation_constant: bool,
+}
+
 fn eval_shape_expr_dims(
     shape_expr: &[ast::Subscript],
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-    imports: &[(String, String)],
-) -> Option<Vec<i64>> {
+    class_index: &ast::ClassDefIndex<'_>,
+) -> InstantiateResult<Option<EvaluatedShape>> {
     let mut dims = Vec::with_capacity(shape_expr.len());
+    let mut translation_constant = true;
     for sub in shape_expr {
         let ast::Subscript::Expression(expr) = sub else {
-            return None;
+            return Ok(None);
         };
-        let expr = qualify_shape_expr_imports(tree, expr, imports);
         // MLS §10.1: structural dimension expressions may use compile-time `if`
         // branches over parameter/constant conditions.
-        let dim = try_eval_integer_shape_expr(
-            &expr,
+        let Some(evaluation) = try_eval_integer_shape_expr_with_proof(
+            expr,
             mod_env,
             effective_components,
             tree,
+            class_index,
             resolve_effective_components_for_eval,
-        )?;
+        ) else {
+            return Ok(None);
+        };
+        let dim = evaluation.value();
         if dim < 0 {
-            return None;
+            return Ok(None);
         }
+        translation_constant &= evaluation.is_translation_constant();
         dims.push(dim);
     }
-    Some(dims)
+    Ok(Some(EvaluatedShape {
+        dims,
+        translation_constant,
+    }))
 }
 
 pub(super) fn qualify_shape_subscripts_imports(
     tree: &ast::ClassTree,
     shape_expr: &[ast::Subscript],
-    imports: &[(String, String)],
-) -> Vec<ast::Subscript> {
+    imports: ImportRewrite<'_>,
+) -> InstantiateResult<Vec<ast::Subscript>> {
     shape_expr
         .iter()
-        .map(|subscript| match subscript {
-            ast::Subscript::Expression(expr) => {
-                ast::Subscript::Expression(qualify_shape_expr_imports(tree, expr, imports))
-            }
-            ast::Subscript::Range { token } => ast::Subscript::Range {
-                token: token.clone(),
-            },
-            ast::Subscript::Empty => ast::Subscript::Empty,
+        .map(|subscript| {
+            Ok(match subscript {
+                ast::Subscript::Expression(expr) => {
+                    ast::Subscript::Expression(qualify_shape_expr_imports_with_index(
+                        tree,
+                        imports.class_index,
+                        expr,
+                        imports,
+                    )?)
+                }
+                ast::Subscript::Range { token } => ast::Subscript::Range {
+                    token: token.clone(),
+                },
+                ast::Subscript::Empty => ast::Subscript::Empty,
+            })
         })
         .collect()
 }
@@ -244,13 +328,12 @@ pub(super) fn qualify_shape_subscripts_imports(
 /// expression is an import alias.
 pub(super) fn expr_mentions_import_alias(
     expr: &ast::Expression,
-    imports: &[(String, String)],
+    imports: ImportRewrite<'_>,
 ) -> bool {
     let names_alias = |cref: &ast::ComponentReference| {
-        cref.parts.first().is_some_and(|first| {
-            let alias = first.ident.text.as_ref();
-            imports.iter().any(|(candidate, _)| candidate == alias)
-        })
+        cref.parts
+            .first()
+            .is_some_and(|first| imports.names_alias(first.ident.text.as_ref()))
     };
     let recurse = |expr| expr_mentions_import_alias(expr, imports);
     match expr {
@@ -274,6 +357,7 @@ pub(super) fn expr_mentions_import_alias(
         ast::Expression::FunctionCall { comp, args, .. } => {
             names_alias(comp) || args.iter().any(recurse)
         }
+        ast::Expression::DerivativeCall { args, .. } => args.iter().any(recurse),
         _ => false,
     }
 }
@@ -281,99 +365,240 @@ pub(super) fn expr_mentions_import_alias(
 pub(super) fn qualify_shape_expr_imports(
     tree: &ast::ClassTree,
     expr: &ast::Expression,
-    imports: &[(String, String)],
-) -> ast::Expression {
-    match expr {
-        ast::Expression::ComponentReference(cref) => {
-            ast::Expression::ComponentReference(qualify_component_ref_imports(tree, cref, imports))
-        }
-        ast::Expression::Range {
-            start,
-            step,
-            end,
-            span,
-        } => ast::Expression::Range {
-            start: Arc::new(qualify_shape_expr_imports(tree, start, imports)),
-            step: step
-                .as_ref()
-                .map(|expr| Arc::new(qualify_shape_expr_imports(tree, expr, imports))),
-            end: Arc::new(qualify_shape_expr_imports(tree, end, imports)),
-            span: *span,
-        },
-        ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
-            op: op.clone(),
-            rhs: Arc::new(qualify_shape_expr_imports(tree, rhs, imports)),
-            span: *span,
-        },
-        ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
-            op: op.clone(),
-            lhs: Arc::new(qualify_shape_expr_imports(tree, lhs, imports)),
-            rhs: Arc::new(qualify_shape_expr_imports(tree, rhs, imports)),
-            span: *span,
-        },
-        ast::Expression::If {
-            branches,
-            else_branch,
-            span,
-        } => ast::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(cond, body)| {
-                    (
-                        qualify_shape_expr_imports(tree, cond, imports),
-                        qualify_shape_expr_imports(tree, body, imports),
-                    )
-                })
-                .collect(),
-            else_branch: Arc::new(qualify_shape_expr_imports(tree, else_branch, imports)),
-            span: *span,
-        },
-        ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
-            inner: Arc::new(qualify_shape_expr_imports(tree, inner, imports)),
-            span: *span,
-        },
-        ast::Expression::FunctionCall {
-            comp,
-            args,
-            is_partial_application,
-            span,
-        } => ast::Expression::FunctionCall {
-            comp: qualify_component_ref_imports(tree, comp, imports),
-            args: args
-                .iter()
-                .map(|arg| qualify_shape_expr_imports(tree, arg, imports))
-                .collect(),
-            is_partial_application: *is_partial_application,
-            span: *span,
-        },
-        _ => expr.clone(),
+    imports: ImportRewrite<'_>,
+) -> InstantiateResult<ast::Expression> {
+    qualify_shape_expr_imports_with_index(tree, imports.class_index, expr, imports)
+}
+
+fn qualify_shape_expr_imports_with_index(
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+    expr: &ast::Expression,
+    imports: ImportRewrite<'_>,
+) -> InstantiateResult<ast::Expression> {
+    ShapeImportQualifier {
+        tree,
+        class_index,
+        imports,
+    }
+    .qualify(expr)
+}
+
+#[derive(Clone, Copy)]
+struct ShapeImportQualifier<'a> {
+    tree: &'a ast::ClassTree,
+    class_index: &'a ast::ClassDefIndex<'a>,
+    imports: ImportRewrite<'a>,
+}
+
+impl ShapeImportQualifier<'_> {
+    fn qualify(self, expr: &ast::Expression) -> InstantiateResult<ast::Expression> {
+        Ok(match expr {
+            ast::Expression::ComponentReference(cref) => ast::Expression::ComponentReference(
+                qualify_component_ref_imports(self.tree, self.class_index, cref, self.imports)?,
+            ),
+            ast::Expression::Range {
+                start,
+                step,
+                end,
+                span,
+            } => ast::Expression::Range {
+                start: Arc::new(self.qualify(start)?),
+                step: step
+                    .as_ref()
+                    .map(|expr| -> InstantiateResult<_> { Ok(Arc::new(self.qualify(expr)?)) })
+                    .transpose()?,
+                end: Arc::new(self.qualify(end)?),
+                span: *span,
+            },
+            ast::Expression::Unary { op, rhs, span } => ast::Expression::Unary {
+                op: op.clone(),
+                rhs: Arc::new(self.qualify(rhs)?),
+                span: *span,
+            },
+            ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
+                op: op.clone(),
+                lhs: Arc::new(self.qualify(lhs)?),
+                rhs: Arc::new(self.qualify(rhs)?),
+                span: *span,
+            },
+            ast::Expression::If {
+                branches,
+                else_branch,
+                span,
+            } => ast::Expression::If {
+                branches: branches
+                    .iter()
+                    .map(|(cond, body)| Ok((self.qualify(cond)?, self.qualify(body)?)))
+                    .collect::<InstantiateResult<Vec<_>>>()?,
+                else_branch: Arc::new(self.qualify(else_branch)?),
+                span: *span,
+            },
+            ast::Expression::Parenthesized { inner, span } => ast::Expression::Parenthesized {
+                inner: Arc::new(self.qualify(inner)?),
+                span: *span,
+            },
+            ast::Expression::FunctionCall {
+                comp,
+                args,
+                is_partial_application,
+                span,
+            } => ast::Expression::FunctionCall {
+                comp: qualify_component_ref_imports(
+                    self.tree,
+                    self.class_index,
+                    comp,
+                    self.imports,
+                )?,
+                args: args
+                    .iter()
+                    .map(|arg| self.qualify(arg))
+                    .collect::<InstantiateResult<Vec<_>>>()?,
+                is_partial_application: *is_partial_application,
+                span: *span,
+            },
+            ast::Expression::DerivativeCall { args, span } => ast::Expression::DerivativeCall {
+                args: args
+                    .iter()
+                    .map(|arg| self.qualify(arg))
+                    .collect::<InstantiateResult<Vec<_>>>()?,
+                span: *span,
+            },
+            _ => expr.clone(),
+        })
     }
 }
 
-/// Expand an import alias root into the segments of its target path.
+/// Expand an alias root into the segments of its target path.
 ///
-/// The expanded prefix segments name real declarations, so each one carries the
-/// declaration identity Resolve recorded for that qualified name (SPEC_0036: a
-/// rewritten reference must not lose per-segment identity). The alias segment
-/// itself keeps the identity Resolve proved for the alias, which already names
-/// the imported declaration.
+/// Import aliases are decided by the lookup authority's effective bindings
+/// for the expression's declaring scope: the binding carries an identity for
+/// every segment, so the rewritten reference is rebuilt from identities and
+/// never re-derives one from a rendered spelling (SPEC_0036). A name the
+/// authority refused as ambiguous is a typed error, never a silent pass.
+/// Package-constant aliases keep their rendered-pair mechanism because they
+/// alias package members, not imports.
 fn qualify_component_ref_imports(
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
     cref: &ast::ComponentReference,
-    imports: &[(String, String)],
-) -> ast::ComponentReference {
+    imports: ImportRewrite<'_>,
+) -> InstantiateResult<ast::ComponentReference> {
     let Some(first) = cref.parts.first() else {
-        return cref.clone();
+        return Ok(cref.clone());
     };
     let alias = first.ident.text.as_ref();
-    let Some((_, target)) = imports
-        .iter()
-        .rev()
-        .find(|(candidate, _)| candidate == alias)
-    else {
-        return cref.clone();
-    };
 
+    if let Some((_, target)) = imports
+        .overriding_aliases
+        .iter()
+        .find(|(candidate, _)| candidate == alias)
+    {
+        return Ok(qualify_reference_with_alias_target(
+            tree, cref, first, target,
+        ));
+    }
+
+    if let Some(effective) = imports.effective {
+        match effective.get(&rumoca_core::ComponentPath::from_flat_path(alias)) {
+            Some(ast::EffectiveImport::Bound(binding)) => {
+                return qualify_reference_with_import_binding(class_index, cref, first, binding);
+            }
+            Some(ast::EffectiveImport::Refused(refusal)) => {
+                let reason = match refusal {
+                    ast::ImportRefusal::AmbiguousUnqualifiedImport => {
+                        "found in more than one package through unqualified imports (MLS §5.3.1)"
+                    }
+                    ast::ImportRefusal::AmbiguousInherited => {
+                        "ambiguous among inherited declarations (MLS §5.3.1)"
+                    }
+                };
+                return Err(Box::new(InstantiateError::ambiguous_imported_name(
+                    alias.to_string(),
+                    reason.to_string(),
+                    cref.span,
+                )));
+            }
+            None => {}
+        }
+    }
+
+    if let Some((_, target)) = imports
+        .fallback_aliases
+        .iter()
+        .find(|(candidate, _)| candidate == alias)
+    {
+        return Ok(qualify_reference_with_alias_target(
+            tree, cref, first, target,
+        ));
+    }
+
+    Ok(cref.clone())
+}
+
+/// Rebuild a reference from an import binding's per-segment identities.
+///
+/// Every segment's spelling is read structurally from that declaration's own
+/// name (a class's name token, or a member declaration inside the preceding
+/// package segment); the identity itself travels unchanged and no segment is
+/// ever recovered from a rendered path.
+fn qualify_reference_with_import_binding(
+    class_index: &ast::ClassDefIndex<'_>,
+    cref: &ast::ComponentReference,
+    first: &ast::ComponentRefPart,
+    binding: &ast::ImportBinding,
+) -> InstantiateResult<ast::ComponentReference> {
+    let mut parts = Vec::new();
+    for def_id in binding.segments() {
+        // `def_id` is the exact effective target selected by Resolve. In
+        // particular, an inherited component belongs to the base declaration,
+        // not to the package named by the preceding prefix segment. Read the
+        // declaration spelling from that identity; do not retry lookup against
+        // the derived package or linearize its extends graph here.
+        let segment = class_index.local_name(def_id);
+        let Some(segment) = segment else {
+            return Err(Box::new(InstantiateError::missing_resolved_identity(
+                format!("import binding segment {def_id:?}"),
+                cref.span,
+            )));
+        };
+        parts.push(ast::ComponentRefPart {
+            ident: rumoca_core::Token {
+                text: Arc::from(segment),
+                ..rumoca_core::Token::default()
+            },
+            subs: None,
+            def_id: Some(def_id),
+        });
+    }
+    let Some(last) = parts.last_mut() else {
+        return Err(Box::new(InstantiateError::missing_resolved_identity(
+            "import binding without a target segment".to_string(),
+            cref.span,
+        )));
+    };
+    last.subs = first.subs.clone();
+    parts.extend(cref.parts.iter().skip(1).cloned());
+
+    Ok(ast::ComponentReference {
+        local: cref.local,
+        parts,
+        span: cref.span,
+        qualified_display_name: cref.qualified_display_name.clone(),
+    })
+}
+
+/// Rebuild a reference from a package-constant alias target.
+///
+/// The pair's target spelling was rendered from the aliased declaration's
+/// identity when the alias set was built, so looking each prefix back up
+/// round-trips the same identity.
+fn qualify_reference_with_alias_target(
+    tree: &ast::ClassTree,
+    cref: &ast::ComponentReference,
+    first: &ast::ComponentRefPart,
+    target: &str,
+) -> ast::ComponentReference {
     let mut qualified_prefix = String::new();
     let mut parts = rumoca_core::ComponentPath::from_flat_path(target)
         .into_parts()
@@ -409,9 +634,15 @@ fn qualify_component_ref_imports(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_component_dimensions, resolve_type_alias_dimensions};
+    use super::{
+        ImportRewrite, qualify_shape_subscripts_imports, resolve_component_dimensions,
+        resolve_effective_components_for_eval, resolve_type_alias_dimensions,
+    };
+    use rumoca_eval_ast::eval_instantiate::try_eval_integer_shape_expr_with_index;
     use rumoca_ir_ast as ast;
     use rumoca_ir_ast::AstIndexMap as IndexMap;
+    use rumoca_phase_parse::parse_to_ast;
+    use rumoca_phase_resolve::resolve;
     use std::sync::Arc;
 
     fn make_token(text: &str) -> rumoca_core::Token {
@@ -436,6 +667,24 @@ mod tests {
             name: vec![make_token(text)],
             def_id: None,
         }
+    }
+
+    fn make_resolved_name(text: &str, def_id: rumoca_core::DefId) -> ast::Name {
+        let mut name = make_name(text);
+        name.def_id = Some(def_id);
+        name
+    }
+
+    fn insert_class(
+        tree: &mut ast::ClassTree,
+        name: &str,
+        def_id: rumoca_core::DefId,
+        mut class: ast::ClassDef,
+    ) {
+        class.def_id = Some(def_id);
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+        tree.definitions.classes.insert(name.to_string(), class);
     }
 
     fn make_dim_subscript(dim: i64) -> ast::Subscript {
@@ -465,6 +714,144 @@ mod tests {
         ))
     }
 
+    fn assert_imported_dimension(
+        tree: &ast::ClassTree,
+        model_name: &str,
+        exposure_name: &str,
+        base_target: rumoca_core::DefId,
+        expected: i64,
+    ) {
+        let class_index = ast::ClassDefIndex::from_tree(tree);
+        let model = tree
+            .get_class_by_qualified_name(model_name)
+            .expect("model exists");
+        let effective = tree.effective_imports(model.scope_id.expect("model scope is resolved"));
+        let binding = match effective.get(&rumoca_core::ComponentPath::from_flat_path("N")) {
+            Some(ast::EffectiveImport::Bound(binding)) => binding,
+            other => panic!("expected bound inherited import, got {other:?}"),
+        };
+        assert_eq!(binding.target(), base_target);
+
+        let component = model.components.get("x").expect("x exists");
+        let imports = ImportRewrite {
+            class_index: &class_index,
+            overriding_aliases: &[],
+            effective: Some(&effective),
+            fallback_aliases: &[],
+        };
+        let qualified = qualify_shape_subscripts_imports(tree, &component.shape_expr, imports)
+            .expect("qualification consumes the issued binding");
+        let ast::Subscript::Expression(ast::Expression::ComponentReference(reference)) =
+            &qualified[0]
+        else {
+            panic!("expected qualified component reference: {qualified:?}");
+        };
+        assert_eq!(
+            reference
+                .parts
+                .iter()
+                .map(|part| part.ident.text.as_ref())
+                .collect::<Vec<_>>(),
+            ["P", exposure_name, "'n.x'"],
+            "quoted declaration spelling must come from the structural DefId index"
+        );
+        assert_eq!(
+            reference.parts.last().and_then(|part| part.def_id),
+            Some(base_target),
+            "Instantiate must retain the inherited declaration identity"
+        );
+        assert!(
+            component.shape.is_empty(),
+            "the fixture must not carry a numeric parser fallback"
+        );
+
+        let effective_components = resolve_effective_components_for_eval(tree, model);
+        let ast::Subscript::Expression(qualified_dimension) = &qualified[0] else {
+            panic!("expected expression dimension: {qualified:?}");
+        };
+        assert_eq!(
+            try_eval_integer_shape_expr_with_index(
+                qualified_dimension,
+                &ast::ModificationEnvironment::default(),
+                &effective_components,
+                tree,
+                &class_index,
+                resolve_effective_components_for_eval,
+            ),
+            Some(expected),
+            "dimension evaluation must consume the effective imported occurrence"
+        );
+        let (dimensions, deferred) = resolve_component_dimensions(
+            component,
+            &[],
+            &ast::ModificationEnvironment::default(),
+            &effective_components,
+            tree,
+            imports,
+        )
+        .expect("quoted inherited import dimension resolves");
+        assert_eq!(dimensions, vec![expected]);
+        assert!(
+            deferred.is_empty(),
+            "a constructor-proved translation constant must not be rechecked downstream"
+        );
+    }
+
+    #[test]
+    fn renamed_inherited_import_preserves_quoted_name_identity_and_dimension() {
+        let source = r#"
+            package P
+              package Base
+                constant Integer m = 2;
+                constant Integer 'n.x' = m + 1;
+              end Base;
+              package DerivedSibling extends Base(m = 4); end DerivedSibling;
+              package DerivedDirect extends Base('n.x' = 7); end DerivedDirect;
+              model Sibling
+                import N = P.DerivedSibling.'n.x';
+                Real x[N];
+              end Sibling;
+              model Direct
+                import N = P.DerivedDirect.'n.x';
+                Real x[N];
+              end Direct;
+            end P;
+        "#;
+        let stored = parse_to_ast(source, "<inherited_import_identity>").expect("fixture parses");
+        let mut tree = ast::ClassTree::from_parsed(stored);
+        tree.source_map.add("<inherited_import_identity>", source);
+        let tree = resolve(ast::ParsedTree::new(tree))
+            .expect("fixture resolves")
+            .inner()
+            .clone();
+        let base_target = tree
+            .get_class_by_qualified_name("P.Base")
+            .and_then(|class| class.components.get("'n.x'"))
+            .and_then(|component| component.def_id)
+            .expect("base member has resolved identity");
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
+        let target_declaration = class_index
+            .component(base_target)
+            .expect("target identity indexes its declaration");
+        assert!(matches!(
+            target_declaration.variability,
+            rumoca_core::Variability::Constant(_)
+        ));
+        assert!(
+            target_declaration.binding.is_some(),
+            "the target constant must retain its declaration binding"
+        );
+        assert_eq!(
+            class_index
+                .parent_def_id(base_target)
+                .and_then(|owner| class_index.get(owner))
+                .map(|owner| owner.name.text.as_ref()),
+            Some("Base")
+        );
+        assert_imported_dimension(&tree, "P.Sibling", "DerivedSibling", base_target, 5);
+        assert_imported_dimension(&tree, "P.Direct", "DerivedDirect", base_target, 7);
+    }
+
     #[test]
     fn test_resolve_component_dimensions_appends_type_alias_dims() {
         let comp = ast::Component {
@@ -472,14 +859,17 @@ mod tests {
             shape_expr: vec![make_dim_subscript(2)],
             ..ast::Component::empty_with_span(test_span())
         };
+        let tree = ast::ClassTree::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
             &[4],
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
-            &ast::ClassTree::default(),
-            &[],
-        );
+            &tree,
+            super::ImportRewrite::without_imports(&class_index),
+        )
+        .expect("dimensions resolve");
         assert_eq!(dims, vec![2, 4]);
         assert!(dims_expr.is_empty());
     }
@@ -491,14 +881,17 @@ mod tests {
             shape_expr: vec![make_dim_subscript(2)],
             ..ast::Component::empty_with_span(test_span())
         };
+        let tree = ast::ClassTree::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
-            &ast::ClassTree::default(),
-            &[],
-        );
+            &tree,
+            super::ImportRewrite::without_imports(&class_index),
+        )
+        .expect("dimensions resolve");
         assert_eq!(dims, vec![2]);
         assert!(dims_expr.is_empty());
     }
@@ -510,14 +903,17 @@ mod tests {
             shape_expr: vec![make_cref_subscript("Medium.nC")],
             ..ast::Component::empty_with_span(test_span())
         };
+        let tree = ast::ClassTree::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
-            &ast::ClassTree::default(),
-            &[],
-        );
+            &tree,
+            super::ImportRewrite::without_imports(&class_index),
+        )
+        .expect("dimensions resolve");
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
     }
@@ -542,14 +938,17 @@ mod tests {
                 ..ast::Component::empty_with_span(test_span())
             },
         );
+        let tree = ast::ClassTree::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
             &effective_components,
-            &ast::ClassTree::default(),
-            &[],
-        );
+            &tree,
+            super::ImportRewrite::without_imports(&class_index),
+        )
+        .expect("dimensions resolve");
         assert!(dims.is_empty());
         assert_eq!(dims_expr.len(), 1);
     }
@@ -566,14 +965,17 @@ mod tests {
             ],
             ..ast::Component::empty_with_span(test_span())
         };
+        let tree = ast::ClassTree::default();
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let (dims, dims_expr) = resolve_component_dimensions(
             &comp,
             &[],
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
-            &ast::ClassTree::default(),
-            &[],
-        );
+            &tree,
+            super::ImportRewrite::without_imports(&class_index),
+        )
+        .expect("dimensions resolve");
         assert!(
             dims.is_empty(),
             "mixed colon dimensions must defer to late inference, not keep partial fallback dims"
@@ -587,12 +989,18 @@ mod tests {
         // type QuaternionBase = Real[4];
         // type Orientation = QuaternionBase;
         let mut tree = ast::ClassTree::default();
+        let real_id = rumoca_core::DefId::new(90);
+        let quaternion_id = rumoca_core::DefId::new(91);
+        let orientation_id = rumoca_core::DefId::new(92);
+        tree.scope_tree
+            .add_predefined_member(rumoca_core::ComponentPath::from_flat_path("Real"), real_id);
 
         let quaternion_base = ast::ClassDef {
             name: make_token("QuaternionBase"),
             class_type: rumoca_core::ClassType::Type,
             extends: vec![ast::Extend {
-                base_name: make_name("Real"),
+                base_name: make_resolved_name("Real", real_id),
+                base_def_id: Some(real_id),
                 ..Default::default()
             }],
             array_subscripts: vec![make_dim_subscript(4)],
@@ -603,27 +1011,160 @@ mod tests {
             name: make_token("Orientation"),
             class_type: rumoca_core::ClassType::Type,
             extends: vec![ast::Extend {
-                base_name: make_name("QuaternionBase"),
+                base_name: make_resolved_name("QuaternionBase", quaternion_id),
+                base_def_id: Some(quaternion_id),
                 ..Default::default()
             }],
             ..Default::default()
         };
 
-        tree.definitions
-            .classes
-            .insert("QuaternionBase".to_string(), quaternion_base);
-        tree.definitions
-            .classes
-            .insert("Orientation".to_string(), orientation);
+        insert_class(&mut tree, "QuaternionBase", quaternion_id, quaternion_base);
+        insert_class(&mut tree, "Orientation", orientation_id, orientation);
 
         let class_def = tree.definitions.classes.get("Orientation");
+        let class_index = ast::ClassDefIndex::from_tree(&tree);
         let dims = resolve_type_alias_dimensions(
             &tree,
             class_def,
             &ast::ModificationEnvironment::default(),
             &IndexMap::default(),
+            &class_index,
         )
         .expect("type alias dimensions should resolve");
         assert_eq!(dims, vec![4]);
+    }
+
+    #[test]
+    fn type_alias_dimensions_follow_more_than_the_old_limit() {
+        let mut tree = ast::ClassTree::default();
+        let real_id = rumoca_core::DefId::new(100);
+        tree.scope_tree
+            .add_predefined_member(rumoca_core::ComponentPath::from_flat_path("Real"), real_id);
+        for index in 0..24_u32 {
+            let def_id = rumoca_core::DefId::new(101 + index);
+            let (base_name, base_def_id) = if index == 0 {
+                ("Real".to_string(), real_id)
+            } else {
+                (
+                    format!("Alias{}", index - 1),
+                    rumoca_core::DefId::new(100 + index),
+                )
+            };
+            let class = ast::ClassDef {
+                name: make_token(&format!("Alias{index}")),
+                class_type: rumoca_core::ClassType::Type,
+                extends: vec![ast::Extend {
+                    base_name: make_resolved_name(&base_name, base_def_id),
+                    base_def_id: Some(base_def_id),
+                    ..Default::default()
+                }],
+                array_subscripts: (index == 0)
+                    .then(|| make_dim_subscript(4))
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            };
+            insert_class(&mut tree, &format!("Alias{index}"), def_id, class);
+        }
+        let root = tree.get_class_by_def_id(rumoca_core::DefId::new(124));
+        let dimensions = super::collect_type_alias_subscripts(&tree, root)
+            .expect("long acyclic alias graph is valid");
+        assert_eq!(dimensions, vec![make_dim_subscript(4)]);
+    }
+
+    #[test]
+    fn type_alias_dimensions_reject_cycles_and_missing_edges() {
+        let mut tree = ast::ClassTree::default();
+        let a_id = rumoca_core::DefId::new(201);
+        let b_id = rumoca_core::DefId::new(202);
+        for (name, def_id, base_name, base_id) in [("A", a_id, "B", b_id), ("B", b_id, "A", a_id)] {
+            insert_class(
+                &mut tree,
+                name,
+                def_id,
+                ast::ClassDef {
+                    name: make_token(name),
+                    extends: vec![ast::Extend {
+                        base_name: make_resolved_name(base_name, base_id),
+                        base_def_id: Some(base_id),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+        }
+        let a = tree.get_class_by_def_id(a_id);
+        assert!(super::collect_type_alias_subscripts(&tree, a).is_err());
+
+        let missing_id = rumoca_core::DefId::new(299);
+        let broken_id = rumoca_core::DefId::new(203);
+        insert_class(
+            &mut tree,
+            "Broken",
+            broken_id,
+            ast::ClassDef {
+                name: make_token("Broken"),
+                extends: vec![ast::Extend {
+                    base_name: make_resolved_name("Missing", missing_id),
+                    base_def_id: Some(missing_id),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let broken = tree.get_class_by_def_id(broken_id);
+        assert!(super::collect_type_alias_subscripts(&tree, broken).is_err());
+    }
+
+    #[test]
+    fn builtin_spelling_does_not_override_resolved_user_identity() {
+        let mut tree = ast::ClassTree::default();
+        let predefined_real = rumoca_core::DefId::new(300);
+        let user_real = rumoca_core::DefId::new(301);
+        let alias = rumoca_core::DefId::new(302);
+        let package = rumoca_core::DefId::new(303);
+        tree.scope_tree.add_predefined_member(
+            rumoca_core::ComponentPath::from_flat_path("Real"),
+            predefined_real,
+        );
+        let user_real_class = ast::ClassDef {
+            def_id: Some(user_real),
+            name: make_token("Real"),
+            extends: vec![ast::Extend {
+                base_name: make_resolved_name("Real", predefined_real),
+                base_def_id: Some(predefined_real),
+                ..Default::default()
+            }],
+            array_subscripts: vec![make_dim_subscript(7)],
+            ..Default::default()
+        };
+        let mut package_class = ast::ClassDef {
+            name: make_token("P"),
+            ..Default::default()
+        };
+        package_class
+            .classes
+            .insert("Real".to_string(), user_real_class);
+        insert_class(&mut tree, "P", package, package_class);
+        tree.name_map.insert("P.Real".to_string(), user_real);
+        tree.def_map.insert(user_real, "P.Real".to_string());
+        insert_class(
+            &mut tree,
+            "Alias",
+            alias,
+            ast::ClassDef {
+                name: make_token("Alias"),
+                extends: vec![ast::Extend {
+                    base_name: make_resolved_name("Real", user_real),
+                    base_def_id: Some(user_real),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let alias = tree.get_class_by_def_id(alias);
+        let dimensions = super::collect_type_alias_subscripts(&tree, alias)
+            .expect("resolved user identity is followed despite builtin spelling");
+        assert_eq!(dimensions, vec![make_dim_subscript(7)]);
     }
 }

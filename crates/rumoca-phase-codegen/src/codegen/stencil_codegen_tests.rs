@@ -1,10 +1,14 @@
-use super::*;
+use super::codegen_test_support::{
+    continuous_system_with_derivative,
+    render_solve_fixture_template as render_solve_template_with_name, solve_artifacts,
+    solve_layout_for_y,
+};
 use rumoca_ir_solve as solve;
 
 fn tensor_domain(count: usize) -> rumoca_core::StructuredIndexDomain {
     rumoca_core::StructuredIndexDomain {
         binders: vec![rumoca_core::StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: count as i64,
@@ -22,49 +26,66 @@ fn fixture_span() -> rumoca_core::Span {
 }
 
 fn solve_problem_with_stencil_and_scalar_derivative() -> solve::SolveProblem {
-    let mut problem = solve::SolveProblem::default();
-    problem.continuous.derivative_rhs = solve::ComputeBlock {
-        nodes: vec![
-            solve::ComputeNode::AffineStencil {
-                domain: tensor_domain(2),
-                output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(2))
-                    .expect("valid dense output map"),
-                base_ops: vec![
-                    solve::LinearOp::Const { dst: 0, value: 1.0 },
-                    solve::LinearOp::StoreOutput { src: 0 },
-                ],
-                load_strides: Vec::new(),
-                const_strides: vec![solve::AffineStencilConstStride {
-                    op_position: 0,
-                    terms: vec![solve::AffineStencilConstStrideTerm {
-                        dimension: 0,
-                        stride: 1.0,
-                    }],
-                }],
-                metadata: Default::default(),
-                span: fixture_span(),
-            },
-            solve::ComputeNode::ScalarPrograms(
-                solve::ScalarProgramBlock::with_source_span(
-                    vec![vec![
-                        solve::LinearOp::Const { dst: 0, value: 3.0 },
+    let solve_layout = solve_layout_for_y(3);
+    let continuous = continuous_system_with_derivative(
+        &solve_layout,
+        solve::ComputeBlock {
+            nodes: vec![
+                solve::ComputeNode::AffineStencil {
+                    domain: tensor_domain(2),
+                    output_map: solve::TensorOutputMap::dense_contiguous(0, &tensor_domain(2))
+                        .expect("valid dense output map"),
+                    base_ops: vec![
+                        solve::LinearOp::Const { dst: 0, value: 1.0 },
                         solve::LinearOp::StoreOutput { src: 0 },
-                    ]],
-                    fixture_span()
-                        .require_provenance("stencil codegen scalar fixture")
-                        .expect("fixture span is source-backed"),
-                )
-                .expect("fixture program is computable"),
-            ),
-        ],
-    };
-    problem
+                    ],
+                    load_strides: Vec::new(),
+                    const_strides: vec![solve::AffineStencilConstStride {
+                        op_position: 0,
+                        terms: vec![solve::AffineStencilConstStrideTerm {
+                            dimension: 0,
+                            stride: 1.0,
+                        }],
+                    }],
+                    metadata: Default::default(),
+                    span: fixture_span(),
+                },
+                solve::ComputeNode::ScalarPrograms(
+                    solve::ScalarProgramBlock::with_source_span(
+                        vec![vec![
+                            solve::LinearOp::Const { dst: 0, value: 3.0 },
+                            solve::LinearOp::StoreOutput { src: 0 },
+                        ]],
+                        fixture_span()
+                            .require_provenance("stencil codegen scalar fixture")
+                            .expect("fixture span is source-backed"),
+                    )
+                    .expect("fixture program is computable"),
+                ),
+            ],
+        },
+    );
+    let layout = solve::VarLayout::from_parts(indexmap::IndexMap::new(), 3, 0);
+    let initialization = solve::InitializationSolveSystem::empty();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    solve::SolveProblem::construct(
+        layout,
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("Solve fixture aggregates satisfy the checked root contract")
 }
 
 #[test]
 fn scalar_program_plan_exposes_scalarized_stencils_without_render_helpers() {
     let problem = solve_problem_with_stencil_and_scalar_derivative();
-    let artifacts = solve::SolveArtifacts::default();
+    let artifacts = solve_artifacts(&problem);
 
     let rendered = render_solve_template_with_name(
         &problem,

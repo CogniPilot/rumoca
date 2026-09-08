@@ -9,7 +9,7 @@ fn production_lowering_enters_only_through_construct() {
     let model = scalar_real_model(&source);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.variable_count(), 1);
         assert_eq!(view.continuous_equation_count(), 1);
         let variable = view.variable(view.variable_id(0).unwrap()).unwrap();
@@ -24,6 +24,120 @@ fn production_lowering_enters_only_through_construct() {
             dae::DaeProvenanceOrigin::Source
         );
     });
+}
+
+#[test]
+fn scalar_fixture_requires_its_use_site_declaration_path() {
+    let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
+    let residual_span = source.span("x - 1.0", 0);
+    let mut model = scalar_real_model(&source);
+    let instance = model.variables[&VarName::new("x")].instance_id;
+    let Expression::Binary { lhs, .. } = &mut model.equations[0].residual else {
+        panic!("fixture must retain its subtraction");
+    };
+    let Expression::VarRef { name, .. } = lhs.as_mut() else {
+        panic!("fixture must retain its variable use");
+    };
+    *name = Reference::new("x").with_instance_id(instance);
+
+    let error = construct(&model, source.map).expect_err("an instance alone is not a resolved use");
+    assert!(
+        matches!(&error, ToDaeError::UnsupportedFlatSemantics { feature, span, .. }
+            if *feature == "record equation identity" && *span == residual_span),
+        "unexpected first refusal: {error:?}"
+    );
+}
+
+#[test]
+fn scalar_fixture_requires_its_materialized_occurrence_relation() {
+    let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
+    let residual_span = source.span("x - 1.0", 0);
+    let mut model = scalar_real_model(&source);
+    model.instance_relations.clear();
+
+    let error = construct(&model, source.map).expect_err("the instance must belong to this root");
+    assert!(
+        matches!(&error, ToDaeError::UnsupportedFlatSemantics { feature, span, .. }
+            if *feature == "record equation identity" && *span == residual_span),
+        "unexpected first refusal: {error:?}"
+    );
+}
+
+#[test]
+fn scalar_fixture_has_a_wire_valid_occurrence_graph() {
+    let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
+    let model = scalar_real_model(&source);
+    let wire = serde_json::to_vec(&model).expect("the scalar fixture is serializable");
+    let replayed: flat::Model = serde_json::from_slice(&wire)
+        .expect("the scalar fixture must satisfy the actual Flat wire contract");
+    let Expression::Binary { lhs, .. } = &replayed.equations[0].residual else {
+        panic!("the replayed fixture retains its subtraction");
+    };
+    let Expression::VarRef { span, .. } = lhs.as_ref() else {
+        panic!("the replayed fixture retains its variable use");
+    };
+    assert_eq!(*span, source.span("x", 1));
+    let product =
+        construct(&replayed, source.map).expect("the replayed fixture reaches checked DAE");
+    product
+        .dae()
+        .inspect(|view| assert_eq!(view.variable_count(), 1));
+}
+
+#[test]
+fn scalar_fixture_wire_rejects_an_ownerless_materialized_occurrence() {
+    let source = TestSource::new("model M Real x; equation 0 = x - 1.0; end M;");
+    let mut model = scalar_real_model(&source);
+    let instance = model.variables[&VarName::new("x")].instance_id;
+    model.instance_relations.get_mut(&instance).unwrap().owner = None;
+    let wire = serde_json::to_vec(&model).expect("the malformed candidate is serializable");
+    let error = serde_json::from_slice::<flat::Model>(&wire)
+        .expect_err("a materialized child cannot replace a Class root");
+    assert!(
+        error
+            .to_string()
+            .contains("only a class-body occurrence may be an ownership root"),
+        "unexpected wire refusal: {error}"
+    );
+}
+
+#[test]
+fn row_major_packing_accepts_a_representable_dae_extent() {
+    let source = TestSource::new("model M Real x[1]; end M;");
+    let span = source.span("x[1]", 0);
+    let provenance = dae::DaeProvenance::source(span).expect("fixture span is source-backed");
+    dae::Dae::construct(source.map, |construction| {
+        let scalar = construction.expressions(|expressions| {
+            expressions
+                .at(provenance)
+                .literal(dae::DaeLiteral::Real(1.0))
+        })?;
+        let packed = pack_row_major_body(construction, &[scalar], &[1], provenance)?;
+        assert_ne!(
+            packed, scalar,
+            "the accepted rank-one shape remains an explicit array owner"
+        );
+        Ok(())
+    })
+    .expect("an extent in the DAE u32 domain remains accepted");
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn row_major_packing_rejects_an_unrepresentable_extent_before_fallback() {
+    let source = TestSource::new("model M Real x[1]; end M;");
+    let span = source.span("x[1]", 0);
+    let provenance = dae::DaeProvenance::source(span).expect("fixture span is source-backed");
+    let extent = usize::try_from(u64::from(u32::MAX) + 1).expect("64-bit fixture extent");
+    let error = dae::Dae::construct(source.map, |construction| {
+        pack_row_major_body(construction, &[], &[0, extent], provenance).map(|_| ())
+    })
+    .expect_err("an extent outside the DAE identity domain must fail closed");
+
+    assert_eq!(
+        error,
+        dae::DaeConstructionError::ArrayExtentOverflow { extent, span }
+    );
 }
 
 /// MLS §10.3.2 / ARR-015: a typed Flat `vector(A)` reaches the checked DAE
@@ -72,7 +186,7 @@ fn typed_flat_vector_call_reaches_the_checked_compact_dae_constructor() {
 
     let dae = construct(&model, source.map)
         .expect("typed Flat vector(A) has a checked compact DAE owner");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let y = view
             .variables()
             .map(|(_, variable)| variable)
@@ -149,7 +263,7 @@ fn typed_flat_rank_three_transpose_reaches_the_checked_dae_constructor() {
 
     let dae = construct(&model, source.map)
         .expect("typed Flat transpose(A) has an exact checked compact DAE owner");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let y = view
             .variables()
             .map(|(_, variable)| variable)
@@ -189,7 +303,7 @@ fn scalar_initial_expression_reaches_a_checked_condition_coordinate() {
 
     let dae = construct(&model, source.map)
         .expect("zero-arity initial() has a checked scalar Boolean owner");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.condition_count(), 1);
         let condition_id = view.condition_id(0).expect("the initial condition exists");
         let condition = view
@@ -339,6 +453,53 @@ fn missing_predefined_type_identity_fails_before_dae_construction() {
 }
 
 #[test]
+fn duplicate_runtime_coordinate_identity_names_both_owners_at_the_second_span() {
+    let source = TestSource::new("model M Real first; Real second; end M;");
+    let second_span = source.span("Real second", 0);
+    let mut model = test_model();
+    model.is_partial = true;
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "first",
+        "Real first",
+        7,
+        Vec::new(),
+        false,
+    );
+    add_primitive_variable(
+        &mut model,
+        &source,
+        "second",
+        "Real second",
+        8,
+        Vec::new(),
+        false,
+    );
+    let first_id = model.variables[&VarName::new("first")].instance_id;
+    model
+        .variables
+        .get_mut(&VarName::new("second"))
+        .expect("fixture second coordinate exists")
+        .instance_id = first_id;
+
+    let error = construct(&model, source.map)
+        .expect_err("one exact Flat instance cannot own two runtime coordinates");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics {
+            feature,
+            detail,
+            span,
+        } if feature == "Flat shape contract"
+            && detail.contains("DuplicateVariableInstanceId")
+            && detail.contains("first")
+            && detail.contains("second")
+            && span == second_span
+    ));
+}
+
+#[test]
 fn undefined_references_fail_before_construction() {
     let source = TestSource::new("model M Real x; equation 0 = x - 1.0; // missing\nend M;");
     let mut model = scalar_real_model(&source);
@@ -383,9 +544,6 @@ fn binding_lowering_does_not_fallback_to_declaration_provenance() {
     });
     model.is_partial = true;
 
-    let analysis = analyze(&model).expect("valid binding must be accepted during analysis");
-    let variable_plan =
-        plan_variable_construction(&model, &analysis).expect("valid attributes must be planned");
     let Some(Expression::Literal { span, .. }) = model
         .variables
         .get_mut(&VarName::new("x"))
@@ -394,9 +552,12 @@ fn binding_lowering_does_not_fallback_to_declaration_provenance() {
         panic!("fixture must retain its scalar binding");
     };
     *span = Span::DUMMY;
+    let analysis = analyze(&model).expect("binding provenance is checked at its lowering owner");
+    let variable_plan = plan_variable_construction(&model, &analysis.analysis)
+        .expect("valid attributes must receive an issued construction plan");
 
-    let error = dae::Dae::construct(source.map, |construction| {
-        build_checked(&model, &analysis, &variable_plan, construction)
+    let error = dae::Dae::construct(source.map, move |construction| {
+        build_checked(analysis, variable_plan, construction)
     })
     .expect_err("lowering must recheck exact binding provenance");
     assert!(matches!(

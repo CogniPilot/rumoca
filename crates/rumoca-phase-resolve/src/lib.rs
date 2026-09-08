@@ -19,7 +19,6 @@
 //! - `contents` - Phase 2c: Equation, statement, expression resolution
 //! - `cycles` - Phase 3: Inheritance cycle detection
 //! - `lookup` - Name lookup helpers
-//! - [`validation`] - Post-resolution validation (unresolved symbol detection)
 
 mod contents;
 mod cycles;
@@ -31,18 +30,17 @@ mod path_utils;
 mod registration;
 pub mod semantic_checks;
 mod traversal_adapter;
-pub mod validation;
 
 pub use errors::{ResolveError, ResolveResult};
-pub use validation::{UnresolvedKind, UnresolvedSymbol, ValidationResult, validate_resolution};
 
 use rumoca_core::{
     BUILTIN_FUNCTIONS, BUILTIN_TYPES, BUILTIN_VARIABLES, ComponentPath,
-    ConnectionGraphOperatorRole, DefId, Diagnostic, Diagnostics, PrimaryLabel, ScopeId, SourceMap,
-    Span, maybe_elapsed_ms, maybe_start_timer,
+    ConnectionGraphOperatorRole, DefId, Diagnostic, Diagnostics, ScopeId, SourceMap, Span,
+    maybe_elapsed_ms, maybe_start_timer,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use std::sync::Arc;
 
 type ClassTree = ast::ClassTree;
 type Location = rumoca_core::Location;
@@ -75,8 +73,8 @@ pub struct ResolvedSemanticCatalogs(ast::SemanticCatalogProjection);
 
 impl ResolvedSemanticCatalogs {
     /// Transfer a detached copy into Typecheck's atomic publication. This is
-    /// the only cross-crate erasure of the Resolve brand while AS-025 keeps
-    /// the semantic catalog in the InstanceOverlay storage root.
+    /// the only cross-crate erasure of the Resolve brand while the
+    /// SPEC_0036 AST proof cutover remains incomplete.
     #[doc(hidden)]
     pub fn clone_for_typecheck_publication(&self) -> ast::SemanticCatalogProjection {
         self.0.clone()
@@ -93,14 +91,31 @@ impl ResolvedSemanticCatalogs {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedTree {
-    tree: ClassTree,
+    tree: Arc<ClassTree>,
     semantic_catalogs: ResolvedSemanticCatalogs,
+}
+
+/// Opaque read-only sharing of one exact Resolve root.
+///
+/// Typecheck retains this exact shared allocation in the proof that Flatten
+/// later consumes, so a caller cannot pair that proof with another resolved
+/// tree.
+#[derive(Debug, Clone)]
+pub struct ResolvedTreeProjection {
+    tree: Arc<ClassTree>,
+}
+
+impl ResolvedTreeProjection {
+    /// Immutable view of the exact resolved root behind this projection.
+    pub fn inner(&self) -> &ClassTree {
+        &self.tree
+    }
 }
 
 impl ResolvedTree {
     fn new(tree: ClassTree, semantic_catalogs: ast::SemanticCatalogProjection) -> Self {
         Self {
-            tree,
+            tree: Arc::new(tree),
             semantic_catalogs: ResolvedSemanticCatalogs(semantic_catalogs),
         }
     }
@@ -109,19 +124,21 @@ impl ResolvedTree {
         &self.tree
     }
 
+    /// Share this exact resolved root with Typecheck's closed proof mint.
+    ///
+    /// The projection is read-only and carries no Resolve phase capability.
+    #[doc(hidden)]
+    pub fn project_for_typecheck(&self) -> ResolvedTreeProjection {
+        ResolvedTreeProjection {
+            tree: Arc::clone(&self.tree),
+        }
+    }
+
     /// Exact semantic identities projected only after every Resolve check has
     /// succeeded. The projection itself does not repeat MLS lifecycle-shape
     /// validation; the unforgeable `ResolvedTree` is the proof of that check.
     pub fn semantic_catalogs(&self) -> &ResolvedSemanticCatalogs {
         &self.semantic_catalogs
-    }
-
-    pub fn into_inner(self) -> ClassTree {
-        self.tree
-    }
-
-    pub fn into_parts(self) -> (ClassTree, ResolvedSemanticCatalogs) {
-        (self.tree, self.semantic_catalogs)
     }
 }
 
@@ -202,18 +219,14 @@ fn location_has_valid_span(loc: &Location) -> bool {
 pub struct ResolutionStats {
     /// Types fully resolved (type_def_id set to actual type's DefId)
     pub types_fully_resolved: usize,
-    /// Types partially resolved (first part found in direct scope)
-    pub types_partial_direct: usize,
-    /// Types partially resolved (first part found via inheritance)
-    pub types_partial_inherited: usize,
+    /// Types whose instance-dependent tail retains one ScopeTree-proved prefix.
+    pub types_partially_resolved: usize,
     /// Types that couldn't be resolved at all
     pub types_unresolved: usize,
     /// Details of unresolved types: (type_name, location)
     pub types_unresolved_details: Vec<(String, String)>,
     /// Extends clauses fully resolved
     pub extends_resolved: usize,
-    /// Extends clauses resolved via inherited member lookup
-    pub extends_inherited: usize,
     /// Extends clauses that couldn't be resolved
     pub extends_unresolved: usize,
     /// Component references resolved (first part found)
@@ -228,21 +241,16 @@ impl std::fmt::Display for ResolutionStats {
         writeln!(f)?;
         writeln!(f, "Type References:")?;
         writeln!(f, "  Fully resolved:      {:>6}", self.types_fully_resolved)?;
-        writeln!(f, "  Partial (direct):    {:>6}", self.types_partial_direct)?;
         writeln!(
             f,
-            "  Partial (inherited): {:>6}",
-            self.types_partial_inherited
+            "  Partially resolved:  {:>6}",
+            self.types_partially_resolved
         )?;
         writeln!(f, "  Unresolved:          {:>6}", self.types_unresolved)?;
-        let total_types = self.types_fully_resolved
-            + self.types_partial_direct
-            + self.types_partial_inherited
-            + self.types_unresolved;
+        let total_types =
+            self.types_fully_resolved + self.types_partially_resolved + self.types_unresolved;
         if total_types > 0 {
-            let resolved = self.types_fully_resolved
-                + self.types_partial_direct
-                + self.types_partial_inherited;
+            let resolved = self.types_fully_resolved + self.types_partially_resolved;
             writeln!(
                 f,
                 "  Resolution rate:     {:>5.1}%",
@@ -258,7 +266,6 @@ impl std::fmt::Display for ResolutionStats {
         writeln!(f)?;
         writeln!(f, "Extends Clauses:")?;
         writeln!(f, "  Resolved:            {:>6}", self.extends_resolved)?;
-        writeln!(f, "  Via inheritance:     {:>6}", self.extends_inherited)?;
         writeln!(f, "  Unresolved:          {:>6}", self.extends_unresolved)?;
         writeln!(f)?;
         writeln!(f, "Component References:")?;
@@ -348,8 +355,6 @@ struct ResolveTimingSummary {
     contents_ms: u128,
     cycle_check_ms: u128,
     semantic_checks_ms: u128,
-    validation_ms: u128,
-    unresolved_emit_ms: u128,
     total_ms: u128,
     def_count: usize,
     class_count: usize,
@@ -379,8 +384,6 @@ fn write_resolve_timing_summary(summary: &ResolveTimingSummary) {
         contents_ms = summary.contents_ms,
         cycle_check_ms = summary.cycle_check_ms,
         semantic_checks_ms = summary.semantic_checks_ms,
-        validation_ms = summary.validation_ms,
-        unresolved_emit_ms = summary.unresolved_emit_ms,
         total_ms = summary.total_ms,
         def_count = summary.def_count,
         class_count = summary.class_count,
@@ -394,8 +397,6 @@ fn write_resolve_timing_summary(summary: &ResolveTimingSummary) {
         summary.contents_ms,
         summary.cycle_check_ms,
         summary.semantic_checks_ms,
-        summary.validation_ms,
-        summary.unresolved_emit_ms,
         summary.total_ms,
         summary.def_count,
         summary.class_count,
@@ -750,21 +751,8 @@ fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
     }
     let semantic_checks_ms = maybe_elapsed_ms(semantic_checks_start);
 
-    // Validate unresolved symbols gathered by post-resolution visitor (MLS §5.3)
-    let validation_start = maybe_start_timer();
-    let validation = validation::validate_resolution(&tree);
-    let validation_ms = maybe_elapsed_ms(validation_start);
-    let unresolved_emit_start = maybe_start_timer();
-    emit_unresolved_symbol_diagnostics(&mut resolver, &tree, &validation);
-    let unresolved_emit_ms = maybe_elapsed_ms(unresolved_emit_start);
-
     #[cfg(target_arch = "wasm32")]
-    let _ = (
-        total_start,
-        semantic_checks_ms,
-        validation_ms,
-        unresolved_emit_ms,
-    );
+    let _ = (total_start, semantic_checks_ms);
 
     #[cfg(not(target_arch = "wasm32"))]
     write_resolve_timing_summary(&ResolveTimingSummary {
@@ -773,8 +761,6 @@ fn resolve_attempt(parsed: ParsedTree) -> ResolutionAttempt {
         contents_ms: resolver.last_core_timing.contents_ms,
         cycle_check_ms: resolver.last_core_timing.cycle_check_ms,
         semantic_checks_ms,
-        validation_ms,
-        unresolved_emit_ms,
         total_ms: maybe_elapsed_ms(total_start),
         def_count: tree.name_map.len(),
         class_count: count_declared_classes(&tree.definitions),
@@ -814,52 +800,6 @@ pub fn resolve_parsed(def: StoredDefinition) -> Result<ResolvedTree, Diagnostics
     let tree = ClassTree::from_parsed(def);
     let parsed = ParsedTree::new(tree);
     resolve(parsed)
-}
-
-/// Emit diagnostics for unresolved symbols discovered by validation.
-///
-/// MLS §5.3 name lookup failures are reported as resolve-phase diagnostics.
-fn emit_unresolved_symbol_diagnostics(
-    resolver: &mut Resolver,
-    tree: &ClassTree,
-    validation: &ValidationResult,
-) {
-    for unresolved in &validation.unresolved {
-        if unresolved.kind == UnresolvedKind::TypeReference
-            && unresolved.path.len() == 1
-            && tree
-                .scope_tree
-                .inherited_member(unresolved.scope_id, &unresolved.path)
-                == Some(rumoca_ir_ast::InheritedMember::Ambiguous)
-        {
-            // Conflicting inherited children are a partially flattened-class
-            // error (MLS §5.6.1.4 / INST-037). Keep the structured ambiguity
-            // for instantiation's EI010 diagnostic instead of misreporting it
-            // as a static name-not-found error.
-            continue;
-        }
-        let (kind, code) = match unresolved.kind {
-            UnresolvedKind::TypeReference => ("type reference", "ER002"),
-            UnresolvedKind::ExtendsBase => ("extends base class", "ER003"),
-            UnresolvedKind::ComponentReference => ("component reference", "ER002"),
-            UnresolvedKind::FunctionCall => ("function call", "ER002"),
-        };
-
-        let Some(span) = location_span_or_emit(
-            &mut resolver.diagnostics,
-            &unresolved.source_location,
-            &resolver.source_map,
-            kind,
-        ) else {
-            continue;
-        };
-        let primary_label = PrimaryLabel::new(span).with_message(format!("unresolved {kind}"));
-        resolver.diagnostics.emit(rumoca_core::Diagnostic::error(
-            code,
-            format!("unresolved {kind}: '{}'", unresolved.name),
-            primary_label,
-        ));
-    }
 }
 
 #[cfg(test)]

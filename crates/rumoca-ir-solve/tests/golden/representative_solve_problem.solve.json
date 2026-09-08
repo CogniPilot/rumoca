@@ -1,35 +1,45 @@
 {
-  "schema_version": 61,
+  "schema_version": 65,
   "layout": {
     "bindings": {
       "x": {
         "Y": {
-          "index": 0,
-          "byte_offset": 0
+          "index": 0
         }
       },
       "y": {
         "Y": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 1
         }
       },
       "hold.y": {
         "Y": {
-          "index": 2,
-          "byte_offset": 16
+          "index": 2
         }
       },
       "p": {
         "P": {
-          "index": 0,
-          "byte_offset": 0
+          "index": 0
         }
       },
-      "__pre__.hold.y": {
+      "d": {
         "P": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 1
+        }
+      },
+      "__pre__.d": {
+        "P": {
+          "index": 3
+        }
+      },
+      "__root_relation__": {
+        "P": {
+          "index": 5
+        }
+      },
+      "__clock_activation__": {
+        "P": {
+          "index": 6
         }
       }
     },
@@ -46,7 +56,16 @@
       "p": [
         1
       ],
-      "__pre__.hold.y": [
+      "d": [
+        2
+      ],
+      "__pre__.d": [
+        2
+      ],
+      "__root_relation__": [
+        1
+      ],
+      "__clock_activation__": [
         1
       ]
     },
@@ -71,14 +90,29 @@
         "start": 0,
         "end": 1
       },
-      "__pre__.hold.y": {
+      "d": {
+        "source": 12574613516396348497,
+        "start": 0,
+        "end": 1
+      },
+      "__pre__.d": {
+        "source": 12574613516396348497,
+        "start": 0,
+        "end": 1
+      },
+      "__root_relation__": {
+        "source": 12574613516396348497,
+        "start": 0,
+        "end": 1
+      },
+      "__clock_activation__": {
         "source": 12574613516396348497,
         "start": 0,
         "end": 1
       }
     },
     "y_scalars": 3,
-    "p_scalars": 2
+    "p_scalars": 7
   },
   "solve_layout": {
     "solver_maps": {
@@ -104,29 +138,109 @@
         ]
       }
     },
-    "variable_storage_runs": [],
-    "variable_declarations": [],
+    "variable_storage_runs": [
+      {
+        "base": {
+          "Y": 0
+        },
+        "scalar_count": 1,
+        "role": "State",
+        "value_kind": "Real"
+      },
+      {
+        "base": {
+          "Y": 1
+        },
+        "scalar_count": 1,
+        "role": "Algebraic",
+        "value_kind": "Real"
+      },
+      {
+        "base": {
+          "Y": 2
+        },
+        "scalar_count": 1,
+        "role": "Output",
+        "value_kind": "Real"
+      },
+      {
+        "base": {
+          "P": 0
+        },
+        "scalar_count": 1,
+        "role": "Parameter",
+        "value_kind": "Real"
+      },
+      {
+        "base": {
+          "P": 1
+        },
+        "scalar_count": 2,
+        "role": "DiscreteReal",
+        "value_kind": "Real"
+      }
+    ],
+    "variable_declarations": [
+      {
+        "role": "State",
+        "value_kind": "Real",
+        "time_domain": "continuous_time"
+      },
+      {
+        "role": "Algebraic",
+        "value_kind": "Real",
+        "time_domain": "continuous_time"
+      },
+      {
+        "role": "Output",
+        "value_kind": "Real",
+        "time_domain": "continuous_time"
+      },
+      {
+        "role": "Parameter",
+        "value_kind": "Real",
+        "time_domain": "static"
+      },
+      {
+        "role": "DiscreteReal",
+        "value_kind": "Real",
+        "time_domain": "event_discrete"
+      }
+    ],
     "state_scalar_count": 1,
     "algebraic_scalar_count": 1,
     "output_scalar_count": 1,
     "parameter_count": 1,
-    "compiled_parameter_len": 2,
+    "static_parameter_names": [
+      "p"
+    ],
+    "compiled_parameter_len": 7,
     "input_scalar_names": [],
     "discrete_real_scalar_names": [
-      "hold.y"
+      "d[1]",
+      "d[2]"
     ],
     "discrete_valued_scalar_names": [],
     "relation_memory_parameter_indices": [
-      1
+      5
     ],
-    "initial_event_parameter_index": 1,
+    "initial_event_parameter_index": null,
     "terminal_event_parameter_index": null,
     "initial_homotopy_parameter_index": null,
     "pre_param_bindings": [
       {
-        "dest_p_index": 1,
+        "dest_p_index": 3,
         "source": {
-          "Y": {
+          "P": {
+            "index": 1
+          }
+        },
+        "clock_schedule": null
+      },
+      {
+        "dest_p_index": 4,
+        "source": {
+          "P": {
             "index": 2
           }
         },
@@ -185,8 +299,7 @@
     "implicit_row_targets": [
       {
         "Y": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 1
         }
       }
     ],
@@ -316,8 +429,7 @@
         "causal_seed_rows": [],
         "static_causal_seed_rows": [],
         "dynamic_causal_seed_rows": [],
-        "value_stages": [],
-        "causal_solution_certified": false
+        "value_stages": []
       },
       "derivative": {
         "simultaneous_plan": { "blocks": [] },
@@ -327,8 +439,7 @@
         "causal_seed_rows": [],
         "static_causal_seed_rows": [],
         "dynamic_causal_seed_rows": [],
-        "value_stages": [],
-        "causal_solution_certified": false
+        "value_stages": []
       },
       "root": {
         "simultaneous_plan": { "blocks": [] },
@@ -338,8 +449,7 @@
         "causal_seed_rows": [],
         "static_causal_seed_rows": [],
         "dynamic_causal_seed_rows": [],
-        "value_stages": [],
-        "causal_solution_certified": false
+        "value_stages": []
       },
       "event": {
         "simultaneous_plan": { "blocks": [] },
@@ -349,8 +459,7 @@
         "causal_seed_rows": [],
         "static_causal_seed_rows": [],
         "dynamic_causal_seed_rows": [],
-        "value_stages": [],
-        "causal_solution_certified": false
+        "value_stages": []
       },
       "clock_events": []
     }
@@ -392,17 +501,36 @@
     "row_targets": [
       {
         "Y": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 1
         }
       }
     ],
     "row_roles": [
       "Solved"
     ],
-    "projection_unknowns": [],
+    "mandatory_row_count": 1,
+    "projection_unknowns": [
+      {
+        "Y": {
+          "index": 1
+        }
+      }
+    ],
     "projection_plan": {
-      "blocks": []
+      "blocks": [
+        {
+          "rows": [
+            0
+          ],
+          "unknowns": [
+            {
+              "Y": {
+                "index": 1
+              }
+            }
+          ]
+        }
+      ]
     },
     "update_rhs": {
       "programs": [],
@@ -413,10 +541,57 @@
   },
   "discrete": {
     "event_iteration_plan": {
-      "runs": []
+      "runs": [
+        {
+          "variable": 4,
+          "pre_binding_start": 0,
+          "owner": {
+            "ScalarRows": {
+              "start_row": 0
+            }
+          }
+        }
+      ]
     },
+    "runtime_assignment_source_rows": [
+      0,
+      1
+    ],
     "runtime_assignment_rhs": {
       "programs": [
+        [
+          {
+            "LoadP": {
+              "dst": 0,
+              "index": 5
+            }
+          },
+          {
+            "Const": {
+              "dst": 1,
+              "value": 1.0
+            }
+          },
+          {
+            "Const": {
+              "dst": 2,
+              "value": 0.0
+            }
+          },
+          {
+            "Select": {
+              "dst": 3,
+              "cond": 0,
+              "if_true": 1,
+              "if_false": 2
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 3
+            }
+          }
+        ],
         [
           {
             "LoadP": {
@@ -436,56 +611,79 @@
           "source": 12574613516396348497,
           "start": 0,
           "end": 1
+        },
+        {
+          "source": 12574613516396348497,
+          "start": 0,
+          "end": 1
         }
       ],
       "output_indices": [
-        0
+        0,
+        1
       ]
     },
     "runtime_assignment_targets": [
       {
         "P": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 1
+        }
+      },
+      {
+        "P": {
+          "index": 2
         }
       }
     ],
     "runtime_assignment_roles": [
-      "RelationEvaluating"
+      "RelationFree",
+      "RelationFree"
     ],
     "post_commit_assignment_rhs": {
-      "programs": [],
-      "program_spans": [],
-      "output_indices": []
-    },
-    "post_commit_assignment_targets": [],
-    "post_commit_assignment_runtime_rows": [],
-    "rhs": {
       "programs": [
         [
           {
-            "LoadY": {
+            "LoadP": {
               "dst": 0,
-              "index": 1
+              "index": 5
             }
           },
           {
             "Const": {
               "dst": 1,
+              "value": 1.0
+            }
+          },
+          {
+            "Const": {
+              "dst": 2,
               "value": 0.0
             }
           },
           {
-            "Compare": {
-              "dst": 2,
-              "op": "Gt",
-              "lhs": 0,
-              "rhs": 1
+            "Select": {
+              "dst": 3,
+              "cond": 0,
+              "if_true": 1,
+              "if_false": 2
             }
           },
           {
             "StoreOutput": {
-              "src": 2
+              "src": 3
+            }
+          }
+        ],
+        [
+          {
+            "LoadP": {
+              "dst": 0,
+              "index": 1
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 0
             }
           }
         ]
@@ -495,34 +693,131 @@
           "source": 12574613516396348497,
           "start": 0,
           "end": 1
+        },
+        {
+          "source": 12574613516396348497,
+          "start": 0,
+          "end": 1
         }
       ],
       "output_indices": [
-        0
+        0,
+        1
+      ]
+    },
+    "post_commit_assignment_targets": [
+      {
+        "P": {
+          "index": 1
+        }
+      },
+      {
+        "P": {
+          "index": 2
+        }
+      }
+    ],
+    "post_commit_assignment_runtime_rows": [
+      0,
+      1
+    ],
+    "rhs": {
+      "programs": [
+        [
+          {
+            "LoadP": {
+              "dst": 0,
+              "index": 5
+            }
+          },
+          {
+            "Const": {
+              "dst": 1,
+              "value": 1.0
+            }
+          },
+          {
+            "Const": {
+              "dst": 2,
+              "value": 0.0
+            }
+          },
+          {
+            "Select": {
+              "dst": 3,
+              "cond": 0,
+              "if_true": 1,
+              "if_false": 2
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 3
+            }
+          }
+        ],
+        [
+          {
+            "LoadP": {
+              "dst": 0,
+              "index": 1
+            }
+          },
+          {
+            "StoreOutput": {
+              "src": 0
+            }
+          }
+        ]
+      ],
+      "program_spans": [
+        {
+          "source": 12574613516396348497,
+          "start": 0,
+          "end": 1
+        },
+        {
+          "source": 12574613516396348497,
+          "start": 0,
+          "end": 1
+        }
+      ],
+      "output_indices": [
+        0,
+        1
       ]
     },
     "update_targets": [
       {
-        "Y": {
-          "index": 2,
-          "byte_offset": 16
+        "P": {
+          "index": 1
+        }
+      },
+      {
+        "P": {
+          "index": 2
         }
       }
     ],
     "row_roles": [
-      "EventAction"
+      "Equation",
+      "Equation"
     ],
     "pre_modes": [
-      "Fixed"
+      "FollowCurrent",
+      "FollowCurrent"
     ],
     "observation_refresh": [
+      false,
       false
     ],
     "observation_refresh_reads_y": false,
     "integrator_history_effects": [
+      "restart",
       "restart"
     ],
     "clock_owners": [
+      null,
       null
     ],
     "guarded_assignments": [],
@@ -584,8 +879,7 @@
     "root_relation_memory_targets": [
       {
         "P": {
-          "index": 1,
-          "byte_offset": 8
+          "index": 5
         }
       }
     ],
@@ -650,7 +944,7 @@
       }
     ],
     "activation_parameter_indices": [
-      0
+      6
     ]
   }
 }

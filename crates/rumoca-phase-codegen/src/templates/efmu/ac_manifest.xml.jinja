@@ -1,0 +1,55 @@
+{%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
+{%- macro variable_element(kind) -%}{% if kind == "real" %}RealVariable{% elif kind == "integer" %}IntegerVariable{% elif kind == "boolean" %}BooleanVariable{% else %}{{ fail("unprepared Algorithm Code scalar type: " ~ kind) }}{% endif %}{%- endmacro -%}
+{%- macro block_causality(value) -%}{% if value == "input" %}input{% elif value == "output" %}output{% elif value == "tunable_parameter" %}tunableParameter{% elif value == "dependent_parameter" %}dependentParameter{% elif value == "constant" %}constant{% elif value == "state" %}state{% else %}{{ fail("unprepared Algorithm Code causality: " ~ value) }}{% endif %}{%- endmacro -%}
+{%- macro scalar(kind, value) -%}
+{%- if kind == "real" -%}{{ value | xs_double }}{%- elif kind == "boolean" -%}{% if value %}true{% else %}false{% endif %}{%- elif kind == "integer" -%}{{ value }}{%- else -%}{{ fail("unprepared Algorithm Code start scalar: " ~ kind) }}{%- endif -%}
+{%- endmacro -%}
+{%- macro start(value) -%}
+{%- if value.start.form == "scalar" -%}{{ scalar(value.kind, value.start.value) }}
+{%- elif value.start.form == "tensor" -%}{% for item in value.start.values %}{{ scalar(value.kind, item) }}{% if not loop.last %} {% endif %}{% endfor %}
+{%- else -%}{{ fail("unprepared Algorithm Code start form: " ~ value.start.form) }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro method(method, signals, kind) %}
+{%- if signals|length == 0 %}
+    <BlockMethod{{ attr("id", method.presentation.algorithm_code_identity) }}{{ attr("kind", kind) }}/>
+{%- else %}
+    <BlockMethod{{ attr("id", method.presentation.algorithm_code_identity) }}{{ attr("kind", kind) }}>
+      <Signals>
+{%- for signal in signals %}
+        <Signal{{ attr("value", signal) }}/>
+{%- endfor %}
+      </Signals>
+    </BlockMethod>
+{%- endif %}
+{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Manifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schemas/AlgorithmCode/efmiAlgorithmCodeManifest.xsd" xsdVersion="0.14.0" kind="AlgorithmCode" efmiVersion="1.0.0"{{ attr("id", "{" ~ __rumoca_artifact_identity_v1_ac_manifest ~ "}") }}{{ attr("name", algorithm_code.presentation.manifest_name) }}{{ attr("generationDateAndTime", artifact.generated_at) }}{{ attr("generationTool", artifact.generation_tool) }}{{ attr("fileRefId", algorithm_code.presentation.manifest.algorithm_code_file) }}>
+  <Files>
+    <File{{ attr("id", algorithm_code.presentation.manifest.algorithm_code_file) }}{{ attr("name", algorithm_code.artifact_layout.algorithm_code_source.file_name) }}{{ attr("path", algorithm_code.artifact_layout.algorithm_code_source.file_path) }} needsChecksum="true"{{ attr("checksum", artifact.checksums.alg_sha1) }} role="Code"/>
+  </Files>
+  <Clock{{ attr("id", algorithm_code.presentation.manifest.algorithm_code_clock) }}{{ attr("variableRefId", algorithm_code.presentation.clock.algorithm_code_identity) }}/>
+  <BlockMethods>
+{{ method(algorithm_code.manifest_methods.startup, algorithm_code.methods.startup_signals, "Startup") }}
+{{ method(algorithm_code.manifest_methods.recalibrate, algorithm_code.methods.recalibrate_signals, "Recalibrate") }}
+{{ method(algorithm_code.manifest_methods.do_step, algorithm_code.methods.do_step_signals, "DoStep") }}
+  </BlockMethods>
+  <ErrorSignalStatus{{ attr("id", algorithm_code.presentation.error_status_algorithm_code_identity) }}/>
+  <Units/>
+  <Variables>
+{%- for variable in algorithm_code.variables %}
+    <{{ variable_element(variable.kind) }}{{ attr("id", variable.presentation.algorithm_code_identity) }}{{ attr("name", variable.name) }}{{ attr("blockCausality", block_causality(variable.causality)) }}{{ attr("start", start(variable.start)) }}
+{%- if variable.kind == "real" %}{% if variable.real_min is not none %}{{ attr("min", variable.real_min | xs_double) }}{% endif %}{% if variable.real_max is not none %}{{ attr("max", variable.real_max | xs_double) }}{% endif %}{% if variable.real_nominal is not none %}{{ attr("nominal", variable.real_nominal | xs_double) }}{% endif %}
+{%- elif variable.kind == "integer" %}{% if variable.integer_min is not none %}{{ attr("min", variable.integer_min) }}{% endif %}{% if variable.integer_max is not none %}{{ attr("max", variable.integer_max) }}{% endif %}{% endif -%}
+{%- if variable.dimensions|length == 0 %}/>
+{%- else %}>
+      <Dimensions>
+{%- for dimension in variable.dimensions %}
+        <Dimension{{ attr("number", dimension.number) }}{{ attr("size", dimension.size) }}/>
+{%- endfor %}
+      </Dimensions>
+    </{{ variable_element(variable.kind) }}>
+{%- endif %}
+{%- endfor %}
+  </Variables>
+</Manifest>

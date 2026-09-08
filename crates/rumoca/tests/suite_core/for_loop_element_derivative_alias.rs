@@ -16,7 +16,8 @@
 //! §8.3.2 below constrains exactly one element per row; `u` aliases `der(x[1])`
 //! at most, never the whole derivative array.
 
-use rumoca::Compiler;
+use rumoca::{Compiler, CompilerError};
+use rumoca_compile::compile::FailedPhase;
 use rumoca_sim::{SimOptions, eval_dae_at, structural_report_for_dae};
 
 /// Three states driven by one shared algebraic. Three elements is the smallest
@@ -84,4 +85,46 @@ fn for_loop_element_derivative_rows_are_not_whole_array_aliases() {
             "{name} = {value}, expected u = 3 + 2*x[1] = 5 (all: {derivatives:?})"
         );
     }
+}
+
+#[test]
+fn partial_tensor_derivative_is_rejected_before_dae_construction() {
+    let source = r#"
+model PartialTensorDerivative
+  Real x[2](each start = 0.0, each fixed = true);
+equation
+  der(x[1]) = 1.0;
+  x[2] = 0.0;
+end PartialTensorDerivative;
+"#;
+    let error = Compiler::new()
+        .model("PartialTensorDerivative")
+        .compile_str_dae(source, "PartialTensorDerivative.mo")
+        .expect_err("a tensor-wide DAE state cannot be inferred from partial derivative coverage");
+
+    let CompilerError::CompileDiagnosticsError { failures, .. } = error else {
+        panic!("expected a structured ToDae refusal, got {error:?}");
+    };
+    let [failure] = failures.as_slice() else {
+        panic!("expected one partial-coverage refusal, got {failures:?}");
+    };
+    assert_eq!(failure.phase, Some(FailedPhase::ToDae));
+    assert_eq!(failure.error_code.as_deref(), Some("ED019"));
+    assert!(
+        failure.error.contains("partial tensor derivative state"),
+        "unexpected diagnostic: {failure:?}"
+    );
+    let expected_start = source
+        .find("der(x[1])")
+        .expect("fixture retains the partial derivative expression");
+    assert_eq!(
+        failure
+            .primary_label
+            .as_ref()
+            .expect("ED019 retains the incomplete derivative occurrence")
+            .span
+            .start
+            .0,
+        expected_start
+    );
 }

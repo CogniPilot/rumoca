@@ -16,7 +16,7 @@ solver-diffsol = ["dep:rumoca-solver-diffsol"]
 solver-rk45 = ["dep:rumoca-solver-rk45"]
 # HTML simulation report renderer. Pure-Rust deps (web + compile);
 # cross-compiles cleanly. Independent of scheduled loop execution so
-# non-lockstep CLIs can still emit HTML reports from `simulate`.
+# non-lockstep CLIs can still emit HTML reports from the canonical DAE run.
 report = ["dep:rumoca-compile"]
 scenario-config = [
     "dep:rumoca-codec",
@@ -72,7 +72,7 @@ anyhow = { workspace = true, optional = true }
 tiny_http = { version = "0.12", optional = true }
 toml = { workspace = true, optional = true }
 
-[target.'cfg(all(target_os = "linux", not(target_arch = "wasm32")))'.dependencies]
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 libc = "0.2"
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_env = "musl")))'.dependencies]

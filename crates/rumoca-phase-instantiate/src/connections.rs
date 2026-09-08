@@ -303,18 +303,14 @@ fn extract_connections_from_for_equation(
     }
 
     if indices.is_empty() {
-        // No indices, just process the equations directly
-        for eq in equations {
-            extract_connections_from_equation(
-                connections,
-                eq,
-                prefix,
-                params,
-                source_map,
-                expansion_budget,
-            )?;
-        }
-        return Ok(());
+        return extract_indexless_connections(
+            connections,
+            equations,
+            prefix,
+            params,
+            source_map,
+            expansion_budget,
+        );
     }
 
     let binder_names = indices
@@ -385,29 +381,75 @@ fn extract_connections_from_for_equation(
             return Ok(());
         }
         ForRangeExpansion::MaterializationLimit { count, remaining } => {
-            return Err(Box::new(InstantiateError::structural_param_error(
-                index_name.to_string(),
-                format!(
-                    "connection for-equation fallback would materialize {count} iterations; SPEC_0032 structural-work limit is {MAX_MATERIALIZED_CONNECTION_ITERATIONS} and remaining transaction budget is {remaining}"
-                ),
-                required_location_to_span(
-                    first_index.range.get_location(),
-                    source_map,
-                    "connection for-equation range",
-                )?,
-            )));
+            return connection_materialization_limit_error(
+                first_index,
+                index_name,
+                count,
+                remaining,
+                source_map,
+            );
         }
         ForRangeExpansion::Unevaluable => {}
     }
 
+    unevaluable_connection_range_error(first_index, index_name, prefix, source_map)
+}
+
+fn extract_indexless_connections(
+    connections: &mut Vec<ast::InstanceConnection>,
+    equations: &[ast::Equation],
+    prefix: &ast::QualifiedName,
+    params: &ConnectionParams<'_>,
+    source_map: &SourceMap,
+    expansion_budget: &mut ConnectionExpansionBudget,
+) -> InstantiateResult<()> {
+    for equation in equations {
+        extract_connections_from_equation(
+            connections,
+            equation,
+            prefix,
+            params,
+            source_map,
+            expansion_budget,
+        )?;
+    }
+    Ok(())
+}
+
+fn connection_materialization_limit_error(
+    index: &rumoca_ir_ast::ForIndex,
+    index_name: &str,
+    count: usize,
+    remaining: usize,
+    source_map: &SourceMap,
+) -> InstantiateResult<()> {
+    Err(Box::new(InstantiateError::structural_param_error(
+        index_name.to_string(),
+        format!(
+            "connection for-equation fallback would materialize {count} iterations; SPEC_0032 structural-work limit is {MAX_MATERIALIZED_CONNECTION_ITERATIONS} and remaining transaction budget is {remaining}"
+        ),
+        required_location_to_span(
+            index.range.get_location(),
+            source_map,
+            "connection for-equation range",
+        )?,
+    )))
+}
+
+fn unevaluable_connection_range_error(
+    index: &rumoca_ir_ast::ForIndex,
+    index_name: &str,
+    prefix: &ast::QualifiedName,
+    source_map: &SourceMap,
+) -> InstantiateResult<()> {
     Err(Box::new(InstantiateError::structural_param_error(
         index_name.to_string(),
         format!(
             "cannot evaluate connection for-equation range `{}` in `{prefix}`",
-            first_index.range
+            index.range
         ),
         required_location_to_span(
-            first_index.range.get_location(),
+            index.range.get_location(),
             source_map,
             "connection for-equation range",
         )?,
@@ -1245,6 +1287,13 @@ fn substitute_index_in_expr(expr: &ast::Expression, var_name: &str, value: i64) 
                 .map(|a| substitute_index_in_expr(a, var_name, value))
                 .collect(),
             is_partial_application: *is_partial_application,
+            span: *span,
+        },
+        ast::Expression::DerivativeCall { args, span } => ast::Expression::DerivativeCall {
+            args: args
+                .iter()
+                .map(|arg| substitute_index_in_expr(arg, var_name, value))
+                .collect(),
             span: *span,
         },
         ast::Expression::Range {

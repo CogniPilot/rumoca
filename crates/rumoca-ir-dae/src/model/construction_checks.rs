@@ -26,7 +26,13 @@ pub(crate) fn check_type_capacity(
     ty: &ValueType,
     at: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
-    if ty.is_record() || ty.scalar_count().is_some() {
+    if ty.is_record() {
+        if ty.record_name().is_some() && ty.record_field_count() != 0 {
+            return Ok(());
+        }
+        return Err(DaeConstructionError::ShapeMismatch { span: at.span() });
+    }
+    if ty.scalar_count().is_some() {
         return Ok(());
     }
     Err(DaeConstructionError::CapacityExceeded {

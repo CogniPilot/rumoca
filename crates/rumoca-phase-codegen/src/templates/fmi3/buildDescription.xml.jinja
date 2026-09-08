@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- set model_identifier = "Rumoca_" ~ (__rumoca_artifact_identity_v1_fmu | replace("-", "_")) %}
 <fmiBuildDescription fmiVersion="3.0">
   <BuildConfiguration modelIdentifier="{{ model_identifier }}">
     <SourceFileSet language="C99">

@@ -2,8 +2,8 @@
 //
 // Why this exists: the main rumoca WASM module (Modelica / template /
 // simulation workflows) must stay small and universal. The GALEC → eFMI
-// Algorithm Code (.alg) + GALEC-derived embedded C projection ships as a
-// *separate* module (`rumoca_bind_wasm_galec.js`) that is imported only when a
+// Algorithm Code (.alg) projection ships as a *separate* module
+// (`rumoca_bind_wasm_galec.js`) that is imported only when a
 // user actually selects a GALEC codegen target. This mirrors the lazy diffsol
 // addon (`rumoca_diffsol.js`) and keeps the core module untouched.
 //
@@ -17,12 +17,8 @@
 // from (the addon wasm sits next to it); pass "./" from a worker co-located
 // with the package.
 
-/** The three GALEC codegen targets served by the addon (all ir = "dae"). */
-export const GALEC_TARGETS = Object.freeze([
-  "galec",
-  "galec-production",
-  "embedded-c-galec",
-]);
+/** The Algorithm Code target served by the addon. */
+export const GALEC_TARGETS = Object.freeze(["galec"]);
 
 /** True iff `target` is one of the GALEC codegen targets. */
 export function isGalecTarget(target) {
@@ -75,7 +71,7 @@ function parseAddonJson(text, context) {
 /**
  * Compile the workspace sources in the addon and project the model to
  * `target`, returning the parsed success payload
- * `{ ok, target, model_identifier, alg, c_header, c_source }`.
+ * `{ ok, target, model_identifier, alg }`.
  *
  * `workspaceSources` is a JSON object string mapping each document path to its
  * Modelica text — the same map the core compile uses — so a model spanning
@@ -161,71 +157,18 @@ export async function galecDefinition(
   ]);
 }
 
-function galecCResultToFiles(result) {
-  const base = String(result?.model_identifier || "model");
-  return [
-    { path: `${base}.h`, content: String(result?.c_header ?? "") },
-    { path: `${base}.c`, content: String(result?.c_source ?? "") },
-  ];
-}
-
-/**
- * Parse edited GALEC `.alg` text and render the derived C header/source.
- * Unlike `renderGalecTargetFiles`, this path does not recompile Modelica:
- * the current `.alg` editor contents are the source of truth.
- */
-export async function renderGalecCFromAlg(
-  pkgBase,
-  algSource,
-  fileName,
-  modelName,
-  target = "embedded-c-galec",
-) {
-  const addon = await requireGalecAddon(pkgBase);
-  if (typeof addon.render_galec_c_from_alg !== "function") {
-    throw new Error(
-      "this rumoca build predates render_galec_c_from_alg; rebuild the package",
-    );
-  }
-  const parsed = parseAddonJson(
-    addon.render_galec_c_from_alg(
-      String(algSource ?? ""),
-      String(fileName || "generated.alg"),
-      String(modelName || "model"),
-      String(target || "embedded-c-galec"),
-    ),
-    "render_galec_c_from_alg",
-  );
-  if (!parsed || parsed.ok !== true) {
-    throw new Error((parsed && parsed.error) || "GALEC-to-C generation failed");
-  }
-  return galecCResultToFiles(parsed);
-}
-
 /**
  * Shape a GALEC addon result into the `{ path, content }[]` file list used by
  * the codegen presentation (the same shape `render_target` returns), so the
  * generated artifacts can be written and inspected like any other target.
  *
- * The `.alg` (eFMI Algorithm Code) is always produced; the two C tracks add the
- * `.h` header and `.c` source. Paths are flat leaf names — the identity-free
- * addon does not mint the eFMU container (manifests / __content.xml / SHA-1
- * checksums), so it would be dishonest to wrap these in an AlgorithmCode/…
- * container layout; that packaging is the native CLI's job.
+ * The identity-free addon does not mint the eFMU container (manifests,
+ * `__content.xml`, or SHA-1 checksums), so the returned `.alg` uses a flat leaf
+ * path. Container packaging is the native CLI's job.
  */
-export function galecResultToFiles(target, result) {
-  // Name the files with the SAME identifier the addon used (dots -> underscores)
-  // so the generated `#include "<id>.h"` resolves. Using the bare model leaf
-  // would break C compilation for a package-qualified model (`MyLib.Demo` emits
-  // `#include "MyLib_Demo.h"`, not `Demo.h`). The addon always supplies
-  // `model_identifier`.
+export function galecResultToFiles(result) {
   const base = String(result?.model_identifier || "model");
-  const files = [{ path: `${base}.alg`, content: String(result?.alg ?? "") }];
-  if (target === "galec-production" || target === "embedded-c-galec") {
-    files.push({ path: `${base}.h`, content: String(result?.c_header ?? "") });
-    files.push({ path: `${base}.c`, content: String(result?.c_source ?? "") });
-  }
-  return files;
+  return [{ path: `${base}.alg`, content: String(result?.alg ?? "") }];
 }
 
 /**
@@ -241,5 +184,5 @@ export async function renderGalecTargetFiles(
   target,
 ) {
   const parsed = await renderGalec(pkgBase, workspaceSources, modelName, target);
-  return galecResultToFiles(target, parsed);
+  return galecResultToFiles(parsed);
 }

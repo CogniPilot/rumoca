@@ -170,7 +170,6 @@ fn when_elsewhen_retains_one_owner_and_ordered_branch_spans() {
         &blocks,
         &ast::QualifiedName::new(),
         owner_span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("flatten one when/elsewhen owner");
@@ -204,7 +203,6 @@ fn when_producer_rejects_an_empty_branch_list() {
         &[],
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("source when owner requires its first branch");
@@ -250,7 +248,6 @@ fn when_chain_still_rejects_mismatched_dynamic_branch_targets() {
         &blocks,
         &ast::QualifiedName::new(),
         owner_span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("dynamic branches with different targets violate EQN-013");
@@ -286,7 +283,6 @@ fn mutually_exclusive_when_if_branches_may_define_the_same_target() {
         &blocks,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("alternative conditional branches contribute one target definition");
@@ -317,7 +313,6 @@ fn structural_false_when_if_ignores_inactive_duplicate_target() {
         &blocks,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("the inactive structural x definition must not collide");
@@ -357,7 +352,6 @@ fn duplicate_flat_summary_reports_second_span_and_producer_rejects() {
         &blocks,
         &ast::QualifiedName::new(),
         second,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("the Flat producer validates each completed branch");
@@ -467,7 +461,6 @@ fn for_expansion_cannot_define_one_scalar_target_twice() {
         &blocks,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("expanded iterations cannot repeatedly define one scalar target");
@@ -504,7 +497,6 @@ fn function_call_outputs_must_be_unique_within_one_tuple() {
         &blocks,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("one tuple cannot name the same output target twice");
@@ -534,7 +526,6 @@ fn when_assert_preserves_optional_level() {
         &equation,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("source assert is a checked when action");
@@ -574,7 +565,6 @@ fn when_assert_and_terminate_reject_extra_or_missing_arguments() {
             &prefix,
             span,
             &ctx.current_imports,
-            None,
         )
         .expect_err("assert arity must fail at its source owner");
         assert!(matches!(
@@ -591,7 +581,6 @@ fn when_assert_and_terminate_reject_extra_or_missing_arguments() {
             &prefix,
             span,
             &ctx.current_imports,
-            None,
         )
         .expect_err("terminate arity must fail at its source owner");
         assert!(matches!(
@@ -624,7 +613,6 @@ fn when_assert_decoder_rejects_duplicate_and_unknown_named_arguments() {
             &prefix,
             span,
             &ctx.current_imports,
-            None,
         )
         .expect_err("every assert slot must be known and filled once");
         assert!(matches!(
@@ -646,7 +634,6 @@ fn when_terminate_decoder_unwraps_only_named_message() {
         &prefix,
         span,
         &ctx.current_imports,
-        None,
     )
     .expect("named terminate message is a single checked slot")
     .expect("terminate remains an event action");
@@ -668,7 +655,6 @@ fn when_terminate_decoder_unwraps_only_named_message() {
         &prefix,
         span,
         &ctx.current_imports,
-        None,
     )
     .expect_err("unknown terminate slot must fail at the call");
     assert!(matches!(
@@ -690,7 +676,6 @@ fn nested_when_if_rejects_mismatched_explicit_else_target() {
         &Some(vec![assignment("second", 2)]),
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("one if plus else must compare target sets");
@@ -710,7 +695,6 @@ fn nested_when_if_rejects_missing_first_condition_block() {
         &Some(vec![assignment("target", 1)]),
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("malformed if-equation cannot select an else without a first condition");
@@ -735,7 +719,6 @@ fn nested_when_if_distinguishes_absent_from_explicit_empty_else() {
         &None,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("an absent else remains absent");
@@ -756,7 +739,6 @@ fn nested_when_if_distinguishes_absent_from_explicit_empty_else() {
         &Some(Vec::new()),
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("an explicit empty else has an empty target set");
@@ -777,7 +759,6 @@ fn streams_error_in_when_fails_instead_of_disappearing() {
         &ast::QualifiedName::new(),
         span,
         &ctx.current_imports,
-        None,
     )
     .expect_err("unrepresented Streams.error must never become an empty branch");
 
@@ -841,7 +822,6 @@ fn direct_when_body_helper_rejects_empty_recovery_node_at_owner_span() {
         &ast::Equation::Empty,
         &ast::QualifiedName::new(),
         span,
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect_err("the when-body helper must not discard Equation::Empty");
@@ -875,7 +855,6 @@ fn when_for_equation_expands_all_index_ranges() {
         &equations,
         &ast::QualifiedName::new(),
         rumoca_core::Span::DUMMY,
-        None,
         &crate::test_support::connection_operators(),
     )
     .unwrap();

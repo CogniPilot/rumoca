@@ -13,7 +13,7 @@
 | `cargo xtask verify docs` | Documentation build (rustdoc + mdBook books) |
 | `cargo xtask verify msl-parity` | MSL parity gate on its own |
 | `cargo xtask verify corpus-pin` | Pinned real-model corpus: the RDD2 flight stack and the MSL canary roster |
-| `cargo xtask verify embedded` | Size and precision budget for the embedded flight artifacts |
+| `cargo xtask verify embedded` | Fail-closed placeholder for the future `efmu` `SolveAlgorithmProduct` size/precision budget |
 | `cargo xtask verify template-runtimes` | Opt-in execution tests for generated target code |
 
 Editor surfaces have their own gates:
@@ -88,17 +88,18 @@ propose a pin it would then call unobserved: a run that moves nothing yields
 an empty proposal and a note telling you to choose other observables or raise
 `t_end`.
 
-### The embedded budget
+### The embedded budget (not yet active)
 
-`verify corpus-pin` proves the flight models still compile. `verify embedded`
-proves the C that comes out still fits on the microcontroller it flies on.
-Those are different failures: a projection change can keep every corpus row
-green while doubling the scratch struct, or while letting a `double` back
-into an inner loop.
+No deployable Embedded/Production C product is currently eligible for this
+gate. The checked-in budget therefore has no active rows and is deliberately
+inadmissible: `verify embedded` fails closed instead of reporting that zero
+artifacts fit. Fresh fall-only ceilings must be authenticated when the
+`efmu` `SolveAlgorithmProduct` ships; retired measurements are historical evidence,
+not proof about that product.
 
-Per row of `infra/verification/embedded-budget.json` the gate compiles the
-model with the workspace compiler, cross-compiles every emitted `.c` at `-Os`
-for Cortex-M7 hard float, and then enforces five things:
+Once an authenticated row exists in `infra/verification/embedded-budget.json`,
+the gate compiles the model with the workspace compiler, cross-compiles every
+emitted `.c` at `-Os` for Cortex-M7 hard float, and then enforces five things:
 
 - **No warnings.** The generated C advertises warning-free compilation, so any
   output from the cross compiler fails the row.
@@ -119,7 +120,7 @@ for Cortex-M7 hard float, and then enforces five things:
   disassembled, or whose listing parses to no instruction at all, is a failed
   measurement rather than a count of zero.
 
-Both roots are named on argv and neither has a fallback:
+After activation, both roots are named on argv and neither has a fallback:
 
 ```bash
 cargo xtask verify embedded \

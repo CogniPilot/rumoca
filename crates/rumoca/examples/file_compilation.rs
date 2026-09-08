@@ -57,7 +57,7 @@ fn main() -> anyhow::Result<()> {
         .model(model_name)
         .compile_file(path_to_str(&model_file)?)?;
 
-    let (states, algebraics, equations) = result.dae.inspect(|view| {
+    let (states, algebraics, equations) = result.dae().inspect(|view| {
         (
             view.variables()
                 .filter(|(_, variable)| {
@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     println!("Balanced: {}", result.is_balanced());
 
     if let Some(path) = cleanup_file {
-        let _ = fs::remove_file(path);
+        let _cleanup_error = fs::remove_file(path);
     }
 
     Ok(())

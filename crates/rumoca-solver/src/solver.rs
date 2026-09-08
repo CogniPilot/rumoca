@@ -210,7 +210,7 @@ pub struct SimVariableMeta {
     pub min: Option<String>,
     pub max: Option<String>,
     pub nominal: Option<String>,
-    pub fixed: Option<bool>,
+    pub fixed: rumoca_core::Fixity,
     pub description: Option<String>,
 }
 

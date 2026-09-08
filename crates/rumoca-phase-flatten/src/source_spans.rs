@@ -2,6 +2,12 @@ use rumoca_core::{Location, SourceMap, Span};
 
 use crate::FlattenError;
 
+pub(crate) fn required_span(span: Span, context: &'static str) -> Result<Span, FlattenError> {
+    span.require_provenance(context)
+        .map(|provenance| provenance.span())
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+}
+
 pub(crate) fn required_location_span(
     source_map: &SourceMap,
     location: &Location,

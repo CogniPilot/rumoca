@@ -68,7 +68,7 @@ pub fn format_coverage_report_with_source_name(
         .map_err(|e| FormatError::SyntaxError(e.to_string()))?;
     let component_layout = ComponentDeclarationLayout::collect(&ast);
     let mut collector = AstTriviaCoverageCollector::new(source, options, &component_layout);
-    let _ = ast::Visitor::visit_stored_definition(&mut collector, &ast);
+    let _visit_outcome = ast::Visitor::visit_stored_definition(&mut collector, &ast);
     Ok(collector.into_report())
 }
 
@@ -422,7 +422,11 @@ impl<'source, 'options> AstTriviaReplacementCollector<'source, 'options> {
                 .trivia
                 .gap_between_token_and_expression(name, value)
                 .and_then(|gap| gap.compact_assignment_operator_replacement()),
-            ast::Expression::Modification { target, value, .. } => self
+            ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => self
                 .trivia
                 .gap_between_component_reference_and_expression(target, value)
                 .and_then(|gap| gap.compact_assignment_operator_replacement()),
@@ -541,7 +545,12 @@ impl<'source, 'options> AstTriviaReplacementCollector<'source, 'options> {
         &self,
         expr: &ast::Expression,
     ) -> Option<TriviaGap<'source>> {
-        let ast::Expression::Modification { target, value, .. } = expr else {
+        let ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = expr
+        else {
             return None;
         };
         let ast::Expression::ClassModification {
@@ -1173,7 +1182,12 @@ impl<'source, 'options> AstTriviaCoverageCollector<'source, 'options> {
         &self,
         expr: &ast::Expression,
     ) -> Option<TriviaGap<'source>> {
-        let ast::Expression::Modification { target, value, .. } = expr else {
+        let ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = expr
+        else {
             return None;
         };
         let ast::Expression::ClassModification {
@@ -1248,7 +1262,11 @@ impl<'source, 'options> AstTriviaCoverageCollector<'source, 'options> {
                     self.trivia.gap_between_token_and_expression(name, value),
                 );
             }
-            ast::Expression::Modification { target, value, .. } => {
+            ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => {
                 self.record_gap(
                     FormatCoverageCategory::ArgumentAssignment,
                     self.trivia

@@ -4,10 +4,10 @@
 //! not a structural Boolean event indicator and must not be folded to `true`.
 
 use rumoca_core::{BuiltinFunction, Expression, ExpressionVisitor, OpBinary};
-use rumoca_phase_flatten::flatten_ref;
+use rumoca_phase_flatten::{FlattenOptions, flatten_typed};
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
-use rumoca_phase_typecheck::typecheck_instanced;
+use rumoca_phase_typecheck::typecheck_instanced_tree;
 use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 const SAMPLE_TIME_SOURCE: &str = r#"
@@ -112,15 +112,16 @@ end SampleTime;
     let model = "SampleTime";
     let tree = resolved.inner();
 
-    let mut overlay = match instantiate_model_with_outcome(tree, model) {
+    let overlay = match instantiate_model_with_outcome(tree, model) {
         InstantiationOutcome::Success(overlay) => overlay,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
         }
         InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
     };
-    typecheck_instanced(&resolved, &mut overlay, model).expect("typecheck should succeed");
-    let flat = flatten_ref(tree, &overlay, model).expect("flatten should succeed");
+    let typed =
+        typecheck_instanced_tree(&resolved, overlay, model).expect("typecheck should succeed");
+    let flat = flatten_typed(typed, FlattenOptions::default()).expect("flatten should succeed");
 
     let sample_rhs = flat
         .equations
@@ -227,8 +228,9 @@ end ExactClockIdentity;
         );
     }
 
-    let dae = rumoca_phase_dae::to_dae(&flat, tree.source_map.clone())
+    let product = rumoca_phase_dae::construct(&flat, tree.source_map.clone())
         .expect("exact clock identities must construct a checked DAE");
+    let dae = product.dae();
     dae.inspect(|view| {
         assert_eq!(view.previous_value_count(), 1);
         let previous = view
@@ -261,7 +263,7 @@ end ShadowedSubSample;
         matches!(binding, Expression::FunctionCall { name, .. } if name.as_str().ends_with("subSample")),
         "shadowing user declaration must not become a synchronous builtin: {binding:?}"
     );
-    rumoca_phase_dae::to_dae(&flat, tree.source_map.clone())
+    let _product = rumoca_phase_dae::construct(&flat, tree.source_map.clone())
         .expect("shadowed user function must remain an ordinary checked function call");
 }
 
@@ -981,16 +983,17 @@ fn flatten_source(
     tree.source_map.add(file_name, source);
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("source resolves");
-    let mut overlay = match instantiate_model_with_outcome(resolved.inner(), model_name) {
+    let overlay = match instantiate_model_with_outcome(resolved.inner(), model_name) {
         InstantiationOutcome::Success(overlay) => overlay,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
         }
         InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
     };
-    typecheck_instanced(&resolved, &mut overlay, model_name).expect("source typechecks");
-    let flat = flatten_ref(resolved.inner(), &overlay, model_name).expect("source flattens");
-    (resolved.into_inner(), flat)
+    let typed =
+        typecheck_instanced_tree(&resolved, overlay, model_name).expect("source typechecks");
+    let flat = flatten_typed(typed, FlattenOptions::default()).expect("source flattens");
+    (resolved.inner().clone(), flat)
 }
 
 #[derive(Default)]

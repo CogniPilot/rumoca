@@ -16,7 +16,7 @@ use rumoca_compile::scenario::{ScenarioConfigFile, ScenarioTask, parse_scenario_
 use rumoca_sim::scenario_config::SimulationConfig as ScenarioSimulationConfig;
 use rumoca_sim::{
     DiffsolMethod, SimOptions, SimPacingMode, SimResult, SimSolverMode, SimulationRequestSummary,
-    SimulationRunMetrics, simulate_with_diagnostics_auto_nan_trace,
+    SimulationRunMetrics, simulate_dae,
 };
 use serde_json::{Value, json};
 
@@ -79,23 +79,21 @@ impl ScenarioResult {
         self.codegen.clone()
     }
 
-    fn to_dict(&self, py: Python<'_>) -> PyObject {
+    fn to_dict(&self, py: Python<'_>) -> ApiResult<PyObject> {
         let dict = PyDict::new_bound(py);
-        let _ = dict.set_item("task", &self.task);
-        let _ = dict.set_item("status", &self.status);
-        let _ = dict.set_item("model", &self.model);
-        let _ = dict.set_item("schedule", &self.schedule);
-        let _ = dict.set_item("output_paths", self.output_paths.clone());
-        let _ = dict.set_item("termination", &self.termination);
+        dict.set_item("task", &self.task)?;
+        dict.set_item("status", &self.status)?;
+        dict.set_item("model", &self.model)?;
+        dict.set_item("schedule", &self.schedule)?;
+        dict.set_item("output_paths", self.output_paths.clone())?;
+        dict.set_item("termination", &self.termination)?;
         let diagnostics = PyList::empty_bound(py);
         for diagnostic in &self.diagnostics {
-            if let Ok(diagnostic) = Py::new(py, diagnostic.clone()) {
-                let _ = diagnostics.append(diagnostic);
-            }
+            diagnostics.append(Py::new(py, diagnostic.clone())?)?;
         }
-        let _ = dict.set_item("diagnostics", diagnostics);
-        let _ = dict.set_item("metrics", json_value_to_py(py, &self.metrics));
-        dict.into_py(py)
+        dict.set_item("diagnostics", diagnostics)?;
+        dict.set_item("metrics", json_value_to_py(py, &self.metrics))?;
+        Ok(dict.into_py(py))
     }
 
     fn __repr__(&self) -> String {
@@ -143,10 +141,9 @@ pub(crate) fn codegen_file_in_session(
     let source = fs::read_to_string(path)
         .map_err(|e| ApiError::Compile(format!("Failed to read {path}: {e}")))?;
     let roots = merged_code_generation_roots(session_roots, roots);
-    let (result, compiled_model) =
-        compile_source_in_session(session, &source, Some(model_name), path, &roots)
-            .map_err(|e| ApiError::Compile(e.0))?;
-    let files = render_target_files(&result, &compiled_model, target)?;
+    let result = compile_source_in_session(session, &source, Some(model_name), path, &roots)
+        .map_err(|e| ApiError::Compile(e.0))?;
+    let files = render_target_files(&result, target)?;
     CodegenResult::new(target.to_string(), files)
         .save_all_to(output)
         .map_err(Into::into)
@@ -173,7 +170,7 @@ fn run_codegen_scenario(
         .map_err(|e| ApiError::Compile(format!("Failed to read {}: {e}", model_path.display())))?;
     let roots = merged_roots(base, session_roots, &config.source_roots);
     let compile_started = Instant::now();
-    let (result, compiled_model) = compile_source_in_session(
+    let result = compile_source_in_session(
         session,
         &source,
         Some(&model_name),
@@ -181,8 +178,9 @@ fn run_codegen_scenario(
         &roots,
     )
     .map_err(|e| ApiError::Compile(e.0))?;
+    let compiled_model = result.model_name().to_owned();
     let compile_seconds = compile_started.elapsed().as_secs_f64();
-    let files = render_target_files(&result, &compiled_model, &target)?;
+    let files = render_target_files(&result, &target)?;
     let codegen = CodegenResult::new(target.clone(), files);
     let output_dir_string = output_path.to_string_lossy().to_string();
     let written = codegen.save_all_to(&output_dir_string)?;
@@ -236,7 +234,7 @@ fn run_batch_simulation(
         .map_err(|e| ApiError::Compile(format!("Failed to read {}: {e}", model_path.display())))?;
     let roots = merged_roots(base, session_roots, &config.source_roots);
     let compile_started = Instant::now();
-    let (result, model_name) = compile_source_in_session(
+    let result = compile_source_in_session(
         session,
         &source,
         Some(&model_config.name),
@@ -244,11 +242,11 @@ fn run_batch_simulation(
         &roots,
     )
     .map_err(|e| ApiError::Compile(e.0))?;
+    let model_name = result.model_name().to_owned();
     let compile_seconds = compile_started.elapsed().as_secs_f64();
     let (opts, solver_label) = sim_options_from_config(&config)?;
     let simulate_started = Instant::now();
-    let sim = simulate_with_diagnostics_auto_nan_trace(&result.dae, &opts)
-        .map_err(|e| ApiError::Sim(format!("{e}")))?;
+    let sim = simulate_dae(result.dae(), &opts).map_err(|e| ApiError::Sim(format!("{e}")))?;
     let metrics = SimulationRunMetrics {
         compile_seconds: Some(compile_seconds),
         simulate_seconds: Some(simulate_started.elapsed().as_secs_f64()),

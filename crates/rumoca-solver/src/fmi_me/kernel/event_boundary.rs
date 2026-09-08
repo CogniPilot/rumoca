@@ -1,7 +1,7 @@
 //! Component-owned processing of one Modelica event boundary.
 
 use super::{
-    MeError, SolveMeKernel, advance_states_to_event_probe, event_right_limit_state_derivatives,
+    MeError, MeKernelBody, advance_states_to_event_probe, event_right_limit_state_derivatives,
     event_update_application_time,
 };
 use crate::{
@@ -24,7 +24,7 @@ pub(super) fn event_boundary_horizon(event: RuntimeEventStop, target: f64, horiz
     }
 }
 
-impl SolveMeKernel {
+impl MeKernelBody {
     pub(super) fn process_runtime_event_boundary(
         &mut self,
         event_time: f64,
@@ -65,19 +65,25 @@ impl SolveMeKernel {
         if event.terminal
             && let Some(index) = self
                 .runtime
-                .model
-                .problem
-                .solve_layout
+                .model()
+                .problem()
+                .solve_layout()
                 .terminal_event_parameter_index
             && let Some(slot) = self.params.get_mut(index)
         {
             *slot = 1.0;
         }
-        let (event_pre_y, event_pre_p) = self.event_pre_for_update(event_time, event)?;
-        self.boundary_event_pre_y = Some(event_pre_y.clone());
-        self.boundary_event_pre_p = Some(event_pre_p.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
+        self.prepare_event_pre_for_update(event_time, event)?;
+        self.boundary_event_pre_y.set(
+            self.pending_event_pre_y
+                .get("event update requires a latched pre-event solver vector")?,
+            "boundary solver latch",
+        )?;
+        self.boundary_event_pre_p.set(
+            self.pending_event_pre_p
+                .get("event update requires a latched pre-event parameter vector")?,
+            "boundary parameter latch",
+        )?;
         self.seed_scheduled_root_relation_overrides(event_time, event);
         let application_time = event_update_application_time(
             event_time,
@@ -89,7 +95,7 @@ impl SolveMeKernel {
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(application_time, event, row_filter, None)
+        self.apply_discrete_event_updates(application_time, event, row_filter, false)
     }
 
     fn apply_event_right_limit(
@@ -111,24 +117,22 @@ impl SolveMeKernel {
             advance_states_to_event_probe(&mut self.states, &derivatives, event_time, right_time);
         }
         self.time = right_time;
-        let iteration_y = self.current_solver_y()?;
-        let event_pre_y = if let Some(event_pre_y) = self.boundary_event_pre_y.clone() {
-            event_pre_y
-        } else {
-            self.current_solver_y()?
-        };
-        let event_pre_p = self
-            .boundary_event_pre_p
-            .clone()
-            .unwrap_or_else(|| self.params.clone());
-        self.pending_event_pre_y = Some(event_pre_y);
-        self.pending_event_pre_p = Some(event_pre_p);
+        self.pending_event_pre_y.set(
+            self.boundary_event_pre_y
+                .get("event right-limit update requires the latched boundary solver vector")?,
+            "right-limit solver latch",
+        )?;
+        self.pending_event_pre_p.set(
+            self.boundary_event_pre_p
+                .get("event right-limit update requires the latched boundary parameter vector")?,
+            "right-limit parameter latch",
+        )?;
         let row_filter = if self.state_time_coincidence.is_some() {
             EventUpdateRowFilter::UnownedOnly
         } else {
             EventUpdateRowFilter::All
         };
-        self.apply_discrete_event_updates(right_time, event, row_filter, Some(iteration_y))?;
+        self.apply_discrete_event_updates(right_time, event, row_filter, true)?;
         self.set_post_event_eval_time(Some(right_time));
         Ok(())
     }

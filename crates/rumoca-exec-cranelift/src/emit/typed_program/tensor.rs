@@ -7,10 +7,10 @@ struct MatrixIndexRequest {
     row: Value,
     column: Value,
     shared: Value,
-    inner: i64,
-    columns: i64,
-    lhs_layout: solve::SolveMatrixOperandLayout,
-    rhs_layout: solve::SolveMatrixOperandLayout,
+    lhs_row_stride: i64,
+    lhs_inner_stride: i64,
+    rhs_inner_stride: i64,
+    rhs_column_stride: i64,
 }
 
 struct MatrixInitialRequest {
@@ -18,7 +18,6 @@ struct MatrixInitialRequest {
     column: Value,
     zero_index: Value,
     inner: i64,
-    columns: i64,
     scalar_type: solve::SolveScalarType,
     semantics: rumoca_core::RealMatrixMultiplySemantics,
 }
@@ -635,13 +634,7 @@ impl ProgramLowerer<'_, '_> {
         let output_count = i64::from(plan.output_count());
         let inner = i64::from(plan.inner());
         let columns = i64::from(plan.columns());
-        let solve::SolveMatrixMultiplyArithmetic::Real {
-            accumulator,
-            semantics,
-        } = plan.arithmetic();
-        let scalar_type = solve::SolveScalarType::Real {
-            format: accumulator,
-        };
+        let (scalar_type, semantics) = matrix_multiply_arithmetic(plan);
 
         let outer = self.begin_matrix_outer_loop(output_count);
         let (output, zero_index) = (outer.output, outer.zero_index);
@@ -664,7 +657,6 @@ impl ProgramLowerer<'_, '_> {
                 column,
                 zero_index,
                 inner,
-                columns,
                 scalar_type,
                 semantics,
             },
@@ -695,10 +687,10 @@ impl ProgramLowerer<'_, '_> {
             row,
             column,
             shared,
-            inner,
-            columns,
-            lhs_layout: plan.lhs_layout(),
-            rhs_layout: plan.rhs_layout(),
+            lhs_row_stride: i64::from(plan.lhs_row_stride()),
+            lhs_inner_stride: i64::from(plan.lhs_inner_stride()),
+            rhs_inner_stride: i64::from(plan.rhs_inner_stride()),
+            rhs_column_stride: i64::from(plan.rhs_column_stride()),
         });
         let lhs_value = self.load_scalar(&lhs, lhs_index)?;
         let rhs_value = self.load_scalar(&rhs, rhs_index)?;
@@ -723,7 +715,7 @@ impl ProgramLowerer<'_, '_> {
         self.builder.switch_to_block(inner_exit);
         self.builder.seal_block(inner_exit);
         let result = self.builder.block_params(inner_exit)[0];
-        self.store_scalar(&destination, output, result)?;
+        self.store_matrix_multiply_result(&destination, row, column, plan, result)?;
         let next_output = self.builder.ins().iadd_imm(output, 1);
         self.builder.ins().jump(outer.header, &[next_output.into()]);
         self.builder.seal_block(outer.header);
@@ -783,10 +775,10 @@ impl ProgramLowerer<'_, '_> {
             row: request.row,
             column: request.column,
             shared: request.zero_index,
-            inner: request.inner,
-            columns: request.columns,
-            lhs_layout: plan.lhs_layout(),
-            rhs_layout: plan.rhs_layout(),
+            lhs_row_stride: i64::from(plan.lhs_row_stride()),
+            lhs_inner_stride: i64::from(plan.lhs_inner_stride()),
+            rhs_inner_stride: i64::from(plan.rhs_inner_stride()),
+            rhs_column_stride: i64::from(plan.rhs_column_stride()),
         });
         let lhs_value = self.load_scalar(lhs, lhs_index)?;
         let rhs_value = self.load_scalar(rhs, rhs_index)?;
@@ -800,22 +792,75 @@ impl ProgramLowerer<'_, '_> {
     }
 
     fn matrix_multiply_indices(&mut self, request: MatrixIndexRequest) -> (Value, Value) {
-        let lhs = match request.lhs_layout {
-            solve::SolveMatrixOperandLayout::Vector => request.shared,
-            solve::SolveMatrixOperandLayout::RowMajorMatrix => {
-                let start = self.builder.ins().imul_imm(request.row, request.inner);
-                self.builder.ins().iadd(start, request.shared)
-            }
-        };
-        let rhs = match request.rhs_layout {
-            solve::SolveMatrixOperandLayout::Vector => request.shared,
-            solve::SolveMatrixOperandLayout::RowMajorMatrix => {
-                let start = self.builder.ins().imul_imm(request.shared, request.columns);
-                self.builder.ins().iadd(start, request.column)
-            }
-        };
+        let lhs_row = self
+            .builder
+            .ins()
+            .imul_imm(request.row, request.lhs_row_stride);
+        let lhs_inner = self
+            .builder
+            .ins()
+            .imul_imm(request.shared, request.lhs_inner_stride);
+        let lhs = self.builder.ins().iadd(lhs_row, lhs_inner);
+        let rhs_inner = self
+            .builder
+            .ins()
+            .imul_imm(request.shared, request.rhs_inner_stride);
+        let rhs_column = self
+            .builder
+            .ins()
+            .imul_imm(request.column, request.rhs_column_stride);
+        let rhs = self.builder.ins().iadd(rhs_inner, rhs_column);
         (lhs, rhs)
     }
+
+    fn store_matrix_multiply_result(
+        &mut self,
+        destination: &ValueLocation,
+        row: Value,
+        column: Value,
+        plan: solve::SolveMatrixMultiplyPlan,
+        result: Value,
+    ) -> Result<(), CompileError> {
+        let result_row = self
+            .builder
+            .ins()
+            .imul_imm(row, i64::from(plan.result_row_stride()));
+        let result_column = self
+            .builder
+            .ins()
+            .imul_imm(column, i64::from(plan.result_column_stride()));
+        let result_index = self.builder.ins().iadd(result_row, result_column);
+        self.store_scalar(destination, result_index, result)
+    }
+}
+
+fn matrix_multiply_arithmetic(
+    plan: solve::SolveMatrixMultiplyPlan,
+) -> (
+    solve::SolveScalarType,
+    rumoca_core::RealMatrixMultiplySemantics,
+) {
+    let solve::SolveMatrixMultiplyArithmetic::Real {
+        accumulator,
+        semantics,
+        order: solve::SolveMatrixMultiplyOrder::AscendingSharedAxis,
+        primitive_rounding: solve::SolveMatrixMultiplyRounding::RoundToNearestTiesToEven,
+        contraction: solve::SolveMatrixMultiplyContraction::SeparateMultiplyAdd,
+        intermediate_precision:
+            solve::SolveMatrixMultiplyIntermediatePrecision::AccumulatorFormatOnly,
+        final_rounding: solve::SolveMatrixMultiplyFinalRounding::None,
+        signed_zero: solve::SolveMatrixMultiplySignedZero::IeeePrimitiveResult,
+        nan: solve::SolveMatrixMultiplyNan::QuietPayloadAndSignQuotient,
+        infinity: solve::SolveMatrixMultiplyInfinity::IeeePrimitiveResult,
+        subnormal: solve::SolveMatrixMultiplySubnormal::GradualUnderflow,
+        status: solve::SolveMatrixMultiplyStatus::NoObservableFloatingStatus,
+    } = plan.arithmetic();
+    (
+        solve::SolveScalarType::Real {
+            format: accumulator,
+        },
+        semantics,
+    )
 }
 
 fn zero_scalar(lowerer: &mut ProgramLowerer<'_, '_>, scalar: solve::SolveScalarType) -> Value {

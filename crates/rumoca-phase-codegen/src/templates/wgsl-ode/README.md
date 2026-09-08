@@ -33,9 +33,9 @@ kernel without tolerance-qualified differential evidence.
 - `wgsl_ode_tests` checks that each compact map or affine-stencil family emits
   one native kernel and that layout metadata remains family-sized rather than
   scalar-row-sized.
-- `gpu_schedule.test.mjs` validates the host-side dispatch plan, while
-  `book_live_smoke.mjs` is the hardware-dependent end-to-end WebGPU execution
-  smoke for the Wave2D fixture.
+- `wgsl_ode_tests` validates the emitted dispatch/layout contract, while the
+  standalone `wgsl-ode` target remains independent of any browser simulation
+  facade.
 
 ## Example
 

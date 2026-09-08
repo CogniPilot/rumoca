@@ -1,7 +1,9 @@
 mod corpus_pin;
 mod embedded;
+mod embedded_head_to_head;
 mod fuzz;
 mod kani;
+mod lean_pilot;
 mod msl_cargo_setup_timing;
 mod msl_local_run;
 mod msl_quality_baseline;
@@ -32,6 +34,7 @@ use crate::{
 
 use corpus_pin::VerifyCorpusPinArgs;
 use embedded::VerifyEmbeddedArgs;
+use embedded_head_to_head::VerifyEmbeddedHeadToHeadArgs;
 use fuzz::VerifyFuzzArgs;
 use msl_cargo_setup_timing::{
     MslCargoSetupStepMetadata, MslCargoSetupTimingStep, run_msl_cargo_setup_step,
@@ -111,10 +114,6 @@ pub(crate) struct VerifyTemplateRuntimeArgs {
     /// Template backend group to verify. The default runs all backend groups.
     #[arg(long, value_enum, default_value_t = TemplateRuntimeBackend::All)]
     pub(crate) backend: TemplateRuntimeBackend,
-
-    /// Fail when an external toolchain required by the selected backend is absent.
-    #[arg(long)]
-    pub(crate) require_external_tools: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -122,7 +121,6 @@ pub(crate) enum TemplateRuntimeBackend {
     #[default]
     All,
     Render,
-    C,
     Casadi,
     Cuda,
     Fmi,
@@ -216,12 +214,6 @@ pub(crate) struct VerifyMslParityArgs {
     /// local `cargo test` resolves it through Cargo's normal test-binary env.
     #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
     prebuilt_model_worker: Option<PathBuf>,
-    /// Path to the prebuilt `rumoca-sim-worker` binary the harness should spawn
-    /// (used with `--prebuilt-test-binary` for the sim-running jobs; the harness
-    /// resolves it via `CARGO_BIN_EXE_rumoca-sim-worker`). Not needed for the
-    /// fan-in merge, which runs no simulations.
-    #[arg(long, value_name = "PATH", requires = "prebuilt_test_binary")]
-    prebuilt_sim_worker: Option<PathBuf>,
     /// Accept a cohort-shaped run whose OMC comparator produced no agreement
     /// bands. The run still prints "parity unmeasured: comparator did not run"
     /// and still reports no parity number; this only stops that from failing
@@ -425,6 +417,8 @@ pub(crate) enum VerifyCommand {
     Lint,
     /// Required bounded proofs under the repository-pinned Kani toolchain
     Kani(VerifyKaniArgs),
+    /// Experimental production C61 checker extraction and Lean proof replay
+    LeanPilot(lean_pilot::VerifyLeanPilotArgs),
     /// Workspace tests that mirror the main test matrix
     Workspace(test_cmd::WorkspaceArgs),
     /// Environment-dependent example template runtime checks
@@ -457,12 +451,15 @@ pub(crate) enum VerifyCommand {
     /// stack and the MSL canary roster, compiled and compared against their
     /// recorded behavior. Fails closed when the corpus is not on the machine.
     CorpusPin(VerifyCorpusPinArgs),
-    /// Size and precision budget for the embedded flight artifacts: every
-    /// emitted translation unit cross-compiled for Cortex-M7 hard float,
-    /// weighed against the ceilings in `infra/verification/embedded-budget.json`
-    /// and read for heap or double-precision symbols. Fails closed when the
-    /// flight models or the ARM toolchain are not on the machine.
+    /// Fail-closed placeholder for the future `efmu` `SolveAlgorithmProduct`
+    /// size and precision budget. Until authenticated rows land, the checked-in empty
+    /// roster is deliberately inadmissible rather than a green zero-artifact
+    /// measurement.
     Embedded(VerifyEmbeddedArgs),
+    /// Regenerate one embedded kernel and its pinned competitor, execute both
+    /// under the same Cortex-M7 toolchain, and enforce the checked instruction
+    /// gap ratchet. Missing tools or comparators are hard failures.
+    EmbeddedHeadToHead(VerifyEmbeddedHeadToHeadArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -609,6 +606,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
     match args.command {
         VerifyCommand::Lint => run_lint_job(root),
         VerifyCommand::Kani(args) => kani::run(root, &args),
+        VerifyCommand::LeanPilot(args) => lean_pilot::run(root, &args),
         VerifyCommand::Workspace(args) => args.run(root),
         VerifyCommand::TemplateRuntimes(args) => run_template_runtime_checks(root, args),
         VerifyCommand::Examples => run_examples_smoke(root),
@@ -628,6 +626,7 @@ pub(crate) fn run(args: VerifyArgs, root: &Path) -> Result<()> {
         VerifyCommand::Fuzz(args) => fuzz::run(&args, root),
         VerifyCommand::CorpusPin(args) => corpus_pin::run(root, &args),
         VerifyCommand::Embedded(args) => embedded::run(root, &args),
+        VerifyCommand::EmbeddedHeadToHead(args) => embedded_head_to_head::run(root, &args),
     }
 }
 
@@ -781,11 +780,6 @@ const TEMPLATE_RUNTIME_GROUPS: &[TemplateRuntimeTestGroup] = &[
         ],
     },
     TemplateRuntimeTestGroup {
-        backend: TemplateRuntimeBackend::C,
-        test: TEMPLATE_RUNTIME_TEST,
-        filters: &["c_ode_"],
-    },
-    TemplateRuntimeTestGroup {
         backend: TemplateRuntimeBackend::Casadi,
         test: TEMPLATE_RUNTIME_TEST,
         filters: &["casadi_"],
@@ -846,7 +840,7 @@ fn template_runtime_test_stems() -> Vec<&'static str> {
 }
 
 fn run_template_runtime_checks(root: &Path, args: VerifyTemplateRuntimeArgs) -> Result<()> {
-    let _required_tools = RequiredExternalToolsMarker::new(root, args.require_external_tools)?;
+    let _required_tools = RequiredExternalToolsMarker::new(root)?;
     trim_template_runtime_artifacts(root)?;
 
     for group in TEMPLATE_RUNTIME_GROUPS
@@ -865,9 +859,9 @@ struct RequiredExternalToolsMarker {
 }
 
 impl RequiredExternalToolsMarker {
-    fn new(root: &Path, required: bool) -> Result<Self> {
+    fn new(root: &Path) -> Result<Self> {
         let path = root.join("target/template-runtimes/strict");
-        let created = required && !path.exists();
+        let created = !path.exists();
         if created {
             let parent = path
                 .parent()
@@ -882,7 +876,7 @@ impl RequiredExternalToolsMarker {
 impl Drop for RequiredExternalToolsMarker {
     fn drop(&mut self) {
         if self.created {
-            let _ = fs::remove_file(&self.path);
+            let _marker_removal_error = fs::remove_file(&self.path);
         }
     }
 }
@@ -1334,7 +1328,6 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
             root,
             binary,
             args.prebuilt_model_worker.as_deref(),
-            args.prebuilt_sim_worker.as_deref(),
             test_target,
             &mut cargo_setup_steps,
         )
@@ -1358,13 +1351,11 @@ fn run_msl_quality_gate(root: &Path, args: &VerifyMslParityArgs) -> Result<()> {
 /// Nix/crane and shared through CI) instead of recompiling. The gate's config +
 /// baseline setup has already run, so this only executes the binary with the
 /// right test filter — no `cargo test`, hence no workspace compile + LTO in the
-/// consuming job. Sim-running gates spawn `rumoca-sim-worker`, which the harness
-/// resolves via `CARGO_BIN_EXE_rumoca-sim-worker`; point that at the prebuilt one.
+/// consuming job. The current model worker owns compilation and simulation.
 fn run_prebuilt_msl_test(
     root: &Path,
     binary: &Path,
     model_worker: Option<&Path>,
-    sim_worker: Option<&Path>,
     test_target: &str,
     cargo_setup_steps: &mut Vec<MslCargoSetupTimingStep>,
 ) -> Result<()> {
@@ -1372,7 +1363,6 @@ fn run_prebuilt_msl_test(
     let binaries = MslTestBinaries {
         test_binary: binary,
         model_worker,
-        sim_worker,
         msl_tools: tools.as_deref(),
     };
     run_msl_test_binary(
@@ -1399,8 +1389,8 @@ fn run_msl_quality_gate_cargo_commands(
 
     // The merge-and-gate fan-in entry runs NO simulations: it loads the per-shard
     // `msl_results.json`, concatenates them, and runs the quality ratchet on the
-    // merged aggregate. So it needs neither the optimized `rumoca-sim-worker` /
-    // `rumoca-msl-tools` binaries (only the sharded sim run spawns those) nor an
+    // merged aggregate. So it needs neither the optimized `rumoca-msl-tools`
+    // binary (only the sharded sim run uses it) nor an
     // optimized build of the harness. Building just the merge test in debug
     // avoids rebuilding the whole workspace in the fan-in job,
     // which otherwise runs sequentially after the shards and inflates the gate.
@@ -1649,7 +1639,7 @@ impl Drop for MslResourceMonitor {
     fn drop(&mut self) {
         self.stop.take();
         if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+            let _worker_panic = worker.join();
         }
         print_resource_snapshot("final", &self.config, true);
     }

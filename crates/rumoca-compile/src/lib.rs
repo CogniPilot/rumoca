@@ -73,12 +73,13 @@ pub mod source_roots {
         resolve_source_root_cache_dir, set_cache_root_override,
     };
     pub use crate::source_root_discovery::{
-        SourceRootDuplicateSkip, SourceRootLoadPlan, canonical_path_key,
-        classify_configured_source_root_kind, merge_source_root_paths, plan_source_root_loads,
-        referenced_unloaded_source_root_paths, render_source_root_indexing_failed_message,
-        render_source_root_indexing_finished_message, render_source_root_indexing_started_message,
-        render_source_root_status_message, source_requires_unloaded_source_roots,
-        source_root_paths_changed, source_root_source_set_key, source_root_status_display_name,
+        SourceRootDiscoveryError, SourceRootDuplicateSkip, SourceRootIoOperation,
+        SourceRootLoadPlan, canonical_path_key, classify_configured_source_root_kind,
+        merge_source_root_paths, plan_source_root_loads, referenced_unloaded_source_root_paths,
+        render_source_root_indexing_failed_message, render_source_root_indexing_finished_message,
+        render_source_root_indexing_started_message, render_source_root_status_message,
+        source_requires_unloaded_source_roots, source_root_paths_changed,
+        source_root_source_set_key, source_root_status_display_name,
         sources_require_loaded_source_roots,
     };
 }
@@ -134,33 +135,29 @@ pub mod workspace {
 
 /// Curated code-generation helpers for proven-valid compiler artifacts.
 pub mod codegen {
-    pub use crate::codegen_api::templates;
     pub use crate::codegen_api::{
-        CodegenError, SolveTemplateRenderer, dae_to_template_json,
-        render_algorithm_code_template_with_artifact, render_ast_template_with_name,
-        render_dae_template, render_dae_template_with_name, render_flat_template_with_name,
-        render_solve_template_with_name,
+        CodegenError, dae_to_template_json, render_casadi_execution_model,
     };
     pub mod targets {
+        pub use crate::codegen_target::PublishedTargetArtifact;
         pub use crate::codegen_target::{
-            AssetBundle, BuiltinTargetDescriptor, ChecksumAlgorithm, ChecksumNeed,
-            RenderedTargetFile, TargetArchive, TargetArchiveFormat, TargetArchiveRoot,
-            TargetAssetFile, TargetBundle, TargetCapabilities, TargetCompatibilityEntry,
-            TargetFeatureSupport, TargetFile, TargetIntegerDomain, TargetManifest, TargetPackage,
-            TargetPartial, TargetTemplateIr, TargetTemplateSource, TensorCapabilities,
+            ArtifactGenerationInstant, ArtifactIdentitySeed, ArtifactSessionInput,
+            ArtifactSessionInputError, BuiltinTargetDescriptor, CheckedTargetBundle,
+            CompletedArtifactMemberRef, CompletedPackage, CompletedRenderedFile,
+            CompletedRenderedFileRef, CompletedTargetArtifact, CompletedUnpackaged,
+            TargetAlgorithmCodeArithmetic, TargetArtifactIdentityScope,
+            TargetArtifactIdentityScopeKind, TargetArtifactKind, TargetBundle, TargetCapabilities,
+            TargetCompatibilityEntry, TargetFeatureSupport, TargetFileDescriptor,
+            TargetRequiredProduct, TargetSemanticContext, TargetSemanticView, TensorCapabilities,
             TensorCapability, TensorLayoutCapability, builtin_target_compatibility_matrix,
-            builtin_target_descriptors_for_ir, ensure_target_has_rendered_files,
-            parse_target_manifest, render_dae_target_files, safe_target_join,
-            target_ir_is_dae_renderable, target_manifest_ir, validate_dae_target_capabilities,
-            validate_solve_target_capabilities, validate_solve_tensor_inventory,
+            builtin_target_descriptors, builtin_target_descriptors_requiring,
         };
     }
 }
 
-/// Read-only DAE analysis helpers exposed through the compile facade.
+/// Source-balance evidence returned by checked DAE construction.
 pub mod analysis {
     pub use rumoca_phase_dae::balance::{BalanceBreakdown, BalanceDetail};
-    pub use rumoca_phase_dae::balance_detail;
 }
 
 /// Structural-analysis primitives over a branded checked-DAE view.
@@ -221,12 +218,12 @@ pub mod compile {
         LocalComponentInfo, ModelDiagnostics, ModelFailureDiagnostic, NavigationClassTargetInfo,
         ParsedSourceDocument, ParsedSourceRootLoad, PhaseResult, SemanticDiagnosticsMode, Session,
         SessionChange, SessionConfig, SessionSnapshot, SourceRootActivityKind,
-        SourceRootActivityPhase, SourceRootActivitySnapshot, SourceRootDurability, SourceRootKind,
-        SourceRootLoadMode, SourceRootLoadReport, SourceRootStatusSnapshot, StrictCheckTiming,
-        StrictCompilation, StrictCompileFailure, StrictCompileReport, StructuralOverride,
-        WorkspaceSymbol, WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming,
-        compile_phase_timing_stats, install_compile_phase_observer,
-        reset_compile_phase_timing_stats,
+        SourceRootActivityPhase, SourceRootActivitySnapshot, SourceRootApplyDisposition,
+        SourceRootDurability, SourceRootKind, SourceRootLoadMode, SourceRootLoadReport,
+        SourceRootLoadReservation, SourceRootStatusSnapshot, StrictCheckTiming, StrictCompilation,
+        StrictCompileFailure, StrictCompileReport, StructuralOverride, WorkspaceSymbol,
+        WorkspaceSymbolKind, WorkspaceSymbolSnapshotTiming, compile_phase_timing_stats,
+        install_compile_phase_observer, reset_compile_phase_timing_stats,
     };
 }
 

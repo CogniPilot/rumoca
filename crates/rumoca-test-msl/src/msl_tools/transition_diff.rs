@@ -5,10 +5,8 @@
 //! Phase/sim transitions are only meaningful over models both runs carry, so
 //! this report also diffs the two runs' per-model band tables
 //! ([`super::band_table`]). A certification is **comparable** when its results
-//! directory yields a table that passes [`band_table::ensure_comparable`] —
-//! either a persisted `msl_band_table.json` or one derived on the fly from
-//! `sim_trace_comparison.json` + `msl_results.json`, so a directory written
-//! before the artifact existed is still diffable.
+//! directory carries a persisted current-schema table that passes
+//! [`band_table::ensure_comparable`] and is bound to that directory's inputs.
 //!
 //! When both sides are comparable the report carries ENTERED / LEFT /
 //! BAND-CHANGED per model, and every LEFT row names the reason the model is no
@@ -19,7 +17,7 @@
 
 use super::band_table::{
     self, BandChangedModel, BandTransitions, CoverageDroppedModel, EnteredModel, LeftModel,
-    load_or_derive_band_table,
+    load_historical_transition_band_table,
 };
 use super::common::{MslPaths, get_git_commit, unix_timestamp_seconds, write_pretty_json};
 use anyhow::{Context, Result, bail};
@@ -267,8 +265,8 @@ fn build_report_from_paths(paths: &InputPaths) -> Result<TransitionDiffReport> {
 /// Read both sides' band tables and diff them, naming the side that failed
 /// rather than returning an empty diff.
 fn compare_band_tables(paths: &InputPaths) -> BandTableComparison {
-    let before = load_or_derive_band_table(&paths.before_dir);
-    let after = load_or_derive_band_table(&paths.after_dir);
+    let before = load_historical_transition_band_table(&paths.before_dir);
+    let after = load_historical_transition_band_table(&paths.after_dir);
     match (before, after) {
         (Ok(before), Ok(after)) => match band_table::ensure_diffable_pair(&before, &after) {
             Ok(()) => BandTableComparison::Comparable(Box::new(band_table::diff_band_tables(
@@ -589,8 +587,18 @@ fn collect_trace_bands(trace: &Value) -> Result<IndexMap<String, String>> {
     };
     let mut bands = IndexMap::new();
     for (model_name, metric_value) in models {
-        let metric: ModelDeviationMetric = serde_json::from_value(metric_value.clone())
-            .with_context(|| format!("invalid trace metric for {model_name}"))?;
+        let metric =
+            super::omc_simulation_reference::parse_trace_model_metric(metric_value.clone())
+                .with_context(|| format!("invalid trace metric for {model_name}"))?;
+        if metric.model_name() != model_name.as_str() {
+            bail!(
+                "trace metric key `{model_name}` does not match embedded model `{}`",
+                metric.model_name()
+            );
+        }
+        if !metric.has_complete_channel_coverage() {
+            bail!("trace metric for `{model_name}` leaves channel proof obligations unresolved");
+        }
         bands.insert(
             model_name.clone(),
             trace_band_name(classify_metric(&metric)),
@@ -1167,7 +1175,7 @@ mod tests {
         // A genuinely different comparator output: same model, more channels.
         write_certification_with_widths(&after_dir, &[("Stay", "sim_ok")], &[("Stay", 12)]);
         // Persist the before run's table, then plant it in the after directory.
-        band_table::persist_band_table(&before_dir, band_table::BandTableRunScope::Full)
+        band_table::persist_test_band_table(&before_dir, band_table::BandTableRunScope::Full)
             .expect("persist before");
         fs::copy(
             band_table::band_table_path(&before_dir),
@@ -1258,9 +1266,16 @@ mod tests {
             .collect::<serde_json::Map<_, _>>();
         write_pretty_json(
             &dir.join(TRACE_COMPARISON_FILE),
-            &json!({ "models": models, "missing_trace": {}, "skipped": {} }),
+            &json!({
+                "models": models,
+                "missing_trace": {},
+                "skipped": {},
+                "trace_nonidentifiable": {}
+            }),
         )
         .expect("write trace comparison");
+        band_table::persist_test_band_table(dir, band_table::BandTableRunScope::Full)
+            .expect("persist current-schema transition table");
     }
 
     fn results_payload(entries: &[(&str, &str)]) -> Value {
@@ -1303,10 +1318,19 @@ mod tests {
     }
 
     fn trace_metric(model_name: &str, high: usize, minor: usize, deviation: usize) -> Value {
+        let compared_count = high + minor + deviation;
+        let compared = (0..compared_count)
+            .map(|index| format!("channel-{index:08}"))
+            .collect::<Vec<_>>();
         json!({
             "model_name": model_name,
-            "compared_variables": high + minor + deviation,
-            "samples_compared": 10,
+            "channel_partition": {
+                "compared": compared,
+                "shared_unmeasured": [],
+                "rumoca_only": [],
+                "reference_only": []
+            },
+            "samples_compared": compared_count * 2,
             "bounded_normalized_l1_score": 0.0,
             "mean_channel_bounded_normalized_l1": 0.0,
             "max_channel_bounded_normalized_l1": 0.0,
@@ -1314,7 +1338,36 @@ mod tests {
             "channel_minor_count": minor,
             "channel_deviation_count": deviation,
             "channel_severe_count": 0,
-            "worst_variables": []
+            "channel_high_percent": high as f64 / (high + minor + deviation) as f64,
+            "channel_minor_percent": minor as f64 / (high + minor + deviation) as f64,
+            "channel_deviation_percent": deviation as f64 / (high + minor + deviation) as f64,
+            "channel_severe_percent": 0.0,
+            "channel_violation_mass": 0.0,
+            "initial_condition": {
+                "channels_compared": high + minor + deviation,
+                "channels_unmeasured": 0,
+                "high_count": high,
+                "minor_count": minor,
+                "deviation_count": deviation,
+                "severe_count": 0,
+                "high_percent": high as f64 / (high + minor + deviation) as f64,
+                "minor_percent": minor as f64 / (high + minor + deviation) as f64,
+                "deviation_percent": deviation as f64 / (high + minor + deviation) as f64,
+                "severe_percent": 0.0,
+                "violation_mass_total": 0.0,
+                "violation_mass_mean_per_channel": 0.0,
+                "mean_channel_bounded_normalized_error": 0.0,
+                "max_channel_bounded_normalized_error": 0.0
+            },
+            "worst_variables": [],
+            "state_selection": null,
+            "rumoca_sim_wall_seconds": null,
+            "rumoca_sim_seconds": null,
+            "rumoca_sim_build_seconds": null,
+            "rumoca_sim_run_seconds": null,
+            "omc_sim_system_seconds": null,
+            "omc_total_system_seconds": null,
+            "omc_wall_seconds": null
         })
     }
 

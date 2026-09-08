@@ -18,7 +18,7 @@ use tower_lsp::lsp_types::{
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::diagnostics::compute_diagnostics;
+use crate::diagnostics::{compute_diagnostics, internal_error_to_diagnostic};
 use crate::navigation;
 
 /// The GALEC `.alg` language server: a document store plus diagnostics on open
@@ -60,7 +60,15 @@ impl GalecLanguageServer {
     /// Store a document's text and publish its diagnostics.
     async fn analyze(&self, uri: Url, text: String) {
         let key = document_key(&uri);
-        let diagnostics = compute_diagnostics(&text, &key);
+        let diagnostics = match compute_diagnostics(&text, &key) {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                self.client
+                    .log_message(MessageType::ERROR, error.to_string())
+                    .await;
+                vec![internal_error_to_diagnostic(&error, &text)]
+            }
+        };
         self.documents.write().await.insert(key, text);
         self.client
             .publish_diagnostics(uri, diagnostics, None)

@@ -1,6 +1,8 @@
-mod arena_walks;
+pub(super) mod arena_walks;
 mod quotient_owners;
 pub use quotient_owners::{RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView};
+
+use rumoca_core::checked_extent_product;
 
 use super::*;
 
@@ -8,6 +10,82 @@ use super::*;
 pub struct DaeView<'dae> {
     pub(super) dae: &'dae Dae,
     pub(super) marker: PhantomData<&'dae mut &'dae ()>,
+}
+
+/// Name-free variable facts exposed to a cross-stage refinement checker.
+///
+/// This projection cannot reveal display labels, scalar names, provenance,
+/// runtime values, or arena identities. A checker that accepts only this type
+/// therefore cannot accidentally turn presentation data into cross-stage
+/// identity.
+pub struct DaeVariableRefinementView {
+    entries: Box<[DaeVariableRefinementEntry]>,
+}
+
+pub struct DaeVariableRefinementEntry {
+    source_occurrence: rumoca_core::SourceOccurrenceId,
+    role: VariableRole,
+    fixed: rumoca_core::Fixity,
+    variability: ExpressionVariability,
+    is_tunable: bool,
+    causality: VariableCausality,
+    scalar_type: ScalarType,
+    dimensions: Box<[u32]>,
+    scalar_count: usize,
+}
+
+impl DaeVariableRefinementView {
+    #[must_use]
+    pub fn entries(&self) -> &[DaeVariableRefinementEntry] {
+        std::ops::Deref::deref(&self.entries)
+    }
+}
+
+impl DaeVariableRefinementEntry {
+    #[must_use]
+    pub const fn source_occurrence(&self) -> rumoca_core::SourceOccurrenceId {
+        self.source_occurrence
+    }
+
+    #[must_use]
+    pub const fn role(&self) -> VariableRole {
+        self.role
+    }
+
+    #[must_use]
+    pub const fn fixed(&self) -> rumoca_core::Fixity {
+        self.fixed
+    }
+
+    #[must_use]
+    pub const fn variability(&self) -> ExpressionVariability {
+        self.variability
+    }
+
+    #[must_use]
+    pub const fn is_tunable(&self) -> bool {
+        self.is_tunable
+    }
+
+    #[must_use]
+    pub const fn causality(&self) -> VariableCausality {
+        self.causality
+    }
+
+    #[must_use]
+    pub const fn scalar_type(&self) -> ScalarType {
+        self.scalar_type
+    }
+
+    #[must_use]
+    pub fn dimensions(&self) -> &[u32] {
+        std::ops::Deref::deref(&self.dimensions)
+    }
+
+    #[must_use]
+    pub const fn scalar_count(&self) -> usize {
+        self.scalar_count
+    }
 }
 
 /// Exact packed layout of one field projected from a record value.
@@ -39,12 +117,6 @@ impl RecordFieldLayout {
     pub const fn field_width(self) -> usize {
         self.field_width
     }
-}
-
-fn checked_extent_product(extents: &[u32]) -> Option<usize> {
-    extents
-        .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
 }
 
 macro_rules! storage_count_accessors {
@@ -107,6 +179,28 @@ macro_rules! raw_id_slice_view {
 }
 
 impl<'dae> DaeView<'dae> {
+    /// Restrict this inspection brand to the name-free facts admitted by the
+    /// DAE-to-Solve refinement checker.
+    #[must_use]
+    pub fn variable_refinement(self) -> DaeVariableRefinementView {
+        let entries = self
+            .variables()
+            .map(|(_, variable)| DaeVariableRefinementEntry {
+                source_occurrence: variable.source_occurrence(),
+                role: variable.role(),
+                fixed: variable.fixed(),
+                variability: variable.variability(),
+                is_tunable: variable.is_tunable(),
+                causality: variable.causality(),
+                scalar_type: variable.value_type().scalar_type(),
+                dimensions: variable.value_type().dimensions().into(),
+                scalar_count: variable.scalar_count(),
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        DaeVariableRefinementView { entries }
+    }
+
     pub fn predefined_string_declaration(self) -> Option<rumoca_core::DefId> {
         self.dae.storage.predefined_string_declaration
     }
@@ -214,6 +308,13 @@ impl<'dae> DaeView<'dae> {
         self.dae.storage.value_types.get(id.index() as usize)
     }
 
+    /// Total lookup for a value-type identity issued by this exact branded DAE
+    /// view: the identity is minted only over an occupied arena slot, so the
+    /// brand carries the resolution proof.
+    pub fn exact_value_type(self, id: ValueTypeId<'dae>) -> &'dae ValueType {
+        &self.dae.storage.value_types[id.index() as usize]
+    }
+
     pub fn record_field(
         self,
         id: ValueTypeId<'dae>,
@@ -307,6 +408,22 @@ impl<'dae> DaeView<'dae> {
         })
     }
 
+    /// Every identity in the finalized function arena, minted by the same
+    /// walk that observes its occupied slot.
+    pub fn function_identities(self) -> impl ExactSizeIterator<Item = FunctionId<'dae>> {
+        arena_walks::ArenaWalk::new(&self.dae.storage.functions)
+            .map(|(raw, _)| FunctionId::from_raw(raw))
+    }
+
+    /// Total lookup for an identity issued by this exact branded DAE view.
+    pub fn exact_function(self, id: FunctionId<'dae>) -> FunctionView<'dae> {
+        FunctionView {
+            dae: self.dae,
+            id,
+            entry: &self.dae.storage.functions[id.index() as usize],
+        }
+    }
+
     pub fn function_definition(
         self,
         id: FunctionDefinitionId<'dae>,
@@ -319,6 +436,43 @@ impl<'dae> DaeView<'dae> {
             .definitions
             .get(id.ordinal() as usize)?;
         Some(FunctionDefinitionView { id, entry })
+    }
+
+    /// Total lookup for an owner-local identity issued by this exact DAE.
+    pub fn exact_function_definition(
+        self,
+        id: FunctionDefinitionId<'dae>,
+    ) -> FunctionDefinitionView<'dae> {
+        FunctionDefinitionView {
+            id,
+            entry: &self.dae.storage.functions[id.function().index() as usize].definitions
+                [id.ordinal() as usize],
+        }
+    }
+
+    /// Total lookup for a parameter identity issued by this exact branded DAE
+    /// view: the identity is minted only over an occupied parameter slot, so
+    /// the brand carries the resolution proof.
+    pub fn exact_function_parameter(
+        self,
+        id: FunctionParameterId<'dae>,
+    ) -> FunctionParameterView<'dae> {
+        FunctionParameterView {
+            id,
+            entry: &self.dae.storage.functions[id.function().index() as usize].parameter_values
+                [id.ordinal() as usize],
+        }
+    }
+
+    /// Total lookup for a value identity issued by this exact branded DAE
+    /// view: the identity is minted only over an occupied value slot, so the
+    /// brand carries the resolution proof.
+    pub fn exact_function_value(self, id: FunctionValueId<'dae>) -> FunctionValueView<'dae> {
+        FunctionValueView {
+            id,
+            entry: &self.dae.storage.functions[id.function().index() as usize].values
+                [id.ordinal() as usize],
+        }
     }
 
     pub fn function_fold(self, id: FunctionFoldId<'dae>) -> Option<FunctionFoldView<'dae>> {
@@ -395,6 +549,29 @@ impl<'dae> DaeView<'dae> {
                 .value_types
                 .get(*self.dae.storage.expressions.value_types.get(index)? as usize)?,
         })
+    }
+
+    /// Every identity in the finalized expression arena, minted by the same
+    /// walk that observes its occupied slot.
+    pub fn expression_identities(self) -> impl ExactSizeIterator<Item = ExprId<'dae>> {
+        arena_walks::ArenaWalk::new(&self.dae.storage.expressions.nodes)
+            .map(|(raw, _)| ExprId::from_raw(raw))
+    }
+
+    /// Total lookup for an expression identity issued by this exact DAE.
+    pub fn exact_expression(self, id: ExprId<'dae>) -> ExpressionView<'dae> {
+        let index = id.index() as usize;
+        let value_type = self.dae.storage.expressions.value_types[index];
+        ExpressionView {
+            dae: self.dae,
+            node: &self.dae.storage.expressions.nodes[index],
+            provenance: self.dae.storage.expressions.provenance[index],
+            variability: self.dae.storage.expressions.variability[index],
+            binder_domain: self.dae.storage.expressions.binder_domains[index],
+            function_scope: self.dae.storage.expressions.function_scopes[index],
+            value_type_id: ValueTypeId::from_raw(value_type),
+            value_type: &self.dae.storage.value_types[value_type as usize],
+        }
     }
 
     pub fn continuous_equation(self, index: usize) -> Option<ResidualEquationView<'dae>> {
@@ -601,6 +778,13 @@ pub struct VariableView<'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+const fn optional_expression_id<'dae>(raw: Option<u32>) -> Option<ExprId<'dae>> {
+    match raw {
+        Some(raw) => Some(ExprId::from_raw(raw)),
+        None => None,
+    }
+}
+
 impl<'dae> VariableView<'dae> {
     view_getters! {
         const fn id -> VariableId<'dae> = |view| view.id;
@@ -609,20 +793,22 @@ impl<'dae> VariableView<'dae> {
         const fn value_type -> &'dae ValueType = |view| view.value_type;
         const fn value_type_id -> ValueTypeId<'dae> = |view| view.value_type_id;
         const fn declaration -> DaeProvenance = |view| view.entry.declaration;
+        const fn source_occurrence -> rumoca_core::SourceOccurrenceId =
+            |view| view.entry.source_occurrence;
         fn name -> &'dae VarName = |view| &view.entry.name;
         fn component_reference -> Option<&'dae ComponentReference> =
             |view| view.attributes().component_ref.as_ref();
         fn binding -> Option<ExprId<'dae>> =
-            |view| view.attributes().binding.map(ExprId::from_raw);
+            |view| optional_expression_id(view.attributes().binding);
         fn start -> Option<ExprId<'dae>> =
-            |view| view.attributes().start.map(ExprId::from_raw);
-        fn fixed -> Option<bool> = |view| view.attributes().fixed;
+            |view| optional_expression_id(view.attributes().start);
+        fn fixed -> rumoca_core::Fixity = |view| view.attributes().fixed;
         fn minimum -> Option<ExprId<'dae>> =
-            |view| view.attributes().min.map(ExprId::from_raw);
+            |view| optional_expression_id(view.attributes().min);
         fn maximum -> Option<ExprId<'dae>> =
-            |view| view.attributes().max.map(ExprId::from_raw);
+            |view| optional_expression_id(view.attributes().max);
         fn nominal -> Option<ExprId<'dae>> =
-            |view| view.attributes().nominal.map(ExprId::from_raw);
+            |view| optional_expression_id(view.attributes().nominal);
         fn unit -> Option<&'dae str> = |view| view.attributes().unit.as_deref();
         fn state_select -> StateSelect = |view| view.attributes().state_select;
         fn description -> Option<&'dae str> =
@@ -727,6 +913,14 @@ impl<'dae> FunctionView<'dae> {
         })
     }
 
+    /// Every reaching-definition identity owned by this finalized function.
+    pub fn definition_identities(
+        self,
+    ) -> impl ExactSizeIterator<Item = FunctionDefinitionId<'dae>> {
+        arena_walks::ArenaWalk::new(&self.entry.definitions)
+            .map(move |(raw, _)| FunctionDefinitionId::from_raw(self.id.index(), raw))
+    }
+
     /// Result definitions of a Modelica body.
     ///
     /// An MLS §12.9 external body defines its outputs through its foreign
@@ -819,6 +1013,7 @@ impl<'dae> ExternalFunctionView<'dae> {
         fn symbol -> &'dae VarName = |view| &view.entry.symbol;
         fn linkage -> &'dae ExternalLinkage = |view| &view.entry.linkage;
         fn argument_count -> usize = |view| view.entry.arguments.len();
+        fn provenance -> DaeProvenance = |view| view.entry.provenance;
     }
 
     /// Output bound by the MLS §12.9 `output = symbol(...)` return form.
@@ -1323,9 +1518,9 @@ impl<'dae> ExpressionView<'dae> {
                         value: ExprId::from_raw(*format),
                     },
                     None => StringConversionFormatView::Options {
-                        minimum_length: minimum_length.map(ExprId::from_raw),
-                        left_justified: left_justified.map(ExprId::from_raw),
-                        significant_digits: significant_digits.map(ExprId::from_raw),
+                        minimum_length: optional_expression_id(*minimum_length),
+                        left_justified: optional_expression_id(*left_justified),
+                        significant_digits: optional_expression_id(*significant_digits),
                     },
                 },
             },

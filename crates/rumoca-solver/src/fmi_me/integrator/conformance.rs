@@ -28,6 +28,7 @@ use super::{
     MeIntegrationError, MeIntegratorBackend, MeNumericalFailure, MeStepCandidate, MeStepProposal,
     sample_complete,
 };
+use crate::fmi_me::MeContinuousStateDomain;
 
 use super::DerivativeClosure;
 
@@ -287,7 +288,11 @@ pub(crate) fn max_sampler_error(
     {
         let _window = controller.activate();
         plugin.initialize(
-            &MeContinuousPoint::new(time, state.clone(), 1)?,
+            &MeContinuousPoint::new(
+                time,
+                state.clone(),
+                MeContinuousStateDomain::verification_fixture(1),
+            )?,
             controller.issue_handle(),
         )?;
     }
@@ -296,7 +301,11 @@ pub(crate) fn max_sampler_error(
     let mut sampled = vec![0.0_f64];
     for _ in 0..steps {
         let request = MeAdvanceRequest::new(
-            MeContinuousPoint::new(time, state.clone(), 1)?,
+            MeContinuousPoint::new(
+                time,
+                state.clone(),
+                MeContinuousStateDomain::verification_fixture(1),
+            )?,
             None,
             time + width_per_step,
             None,
@@ -309,7 +318,7 @@ pub(crate) fn max_sampler_error(
         // The suite drives the *whole* checked path, binding the candidate to
         // the actual request exactly as the session does, so the order it
         // consumes is the declared one that survived host validation.
-        let step = MeStepProposal::bind(request, candidate, 1)?;
+        let step = MeStepProposal::bind(request, candidate)?;
         let width = step.accepted().time() - step.previous().time();
         for tenth in 1..10 {
             let theta = f64::from(tenth) / 10.0;
@@ -378,7 +387,12 @@ mod tests {
     fn an_unrelated_plugin_is_admitted_through_exactly_the_checked_contract() {
         let controller = unit_rate_controller();
         let mut plugin = HermiteStepIntegrator::new(1, SamplerQuality::Native);
-        let start = MeContinuousPoint::new(0.0, vec![0.0], 1).expect("checked point");
+        let start = MeContinuousPoint::new(
+            0.0,
+            vec![0.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("checked point");
         {
             let _window = controller.activate();
             plugin
@@ -391,7 +405,7 @@ mod tests {
             let _window = controller.activate();
             plugin.advance(&request).expect("one accepted step")
         };
-        let step = MeStepProposal::bind(request, candidate, 1).expect("the candidate binds");
+        let step = MeStepProposal::bind(request, candidate).expect("the candidate binds");
         assert!((step.accepted().time() - 0.5).abs() <= f64::EPSILON);
         assert_eq!(step.order(), HERMITE_ORDER);
 
@@ -409,7 +423,12 @@ mod tests {
     fn one_issued_handle_serves_every_later_host_call() {
         let controller = unit_rate_controller();
         let mut plugin = HermiteStepIntegrator::new(1, SamplerQuality::Native);
-        let start = MeContinuousPoint::new(0.0, vec![0.0], 1).expect("checked point");
+        let start = MeContinuousPoint::new(
+            0.0,
+            vec![0.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("checked point");
         {
             let _window = controller.activate();
             plugin
@@ -425,7 +444,7 @@ mod tests {
                 let _window = controller.activate();
                 plugin.advance(&request).expect("one accepted step")
             };
-            let step = MeStepProposal::bind(request, candidate, 1).expect("the candidate binds");
+            let step = MeStepProposal::bind(request, candidate).expect("the candidate binds");
             point = step.accepted().clone();
         }
         assert!((point.states()[0] - 0.75).abs() < 1.0e-12);
@@ -444,7 +463,12 @@ mod tests {
     fn a_component_request_from_inside_sample_is_refused() {
         let controller = unit_rate_controller();
         let mut plugin = HermiteStepIntegrator::new(1, SamplerQuality::ProbesInactiveCapability);
-        let start = MeContinuousPoint::new(0.0, vec![0.0], 1).expect("checked point");
+        let start = MeContinuousPoint::new(
+            0.0,
+            vec![0.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("checked point");
         {
             let _window = controller.activate();
             plugin
@@ -477,7 +501,12 @@ mod tests {
     fn the_same_probe_is_legal_inside_an_open_window() {
         let controller = unit_rate_controller();
         let mut plugin = HermiteStepIntegrator::new(1, SamplerQuality::ProbesInactiveCapability);
-        let start = MeContinuousPoint::new(0.0, vec![0.0], 1).expect("checked point");
+        let start = MeContinuousPoint::new(
+            0.0,
+            vec![0.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("checked point");
         {
             let _window = controller.activate();
             plugin
@@ -542,7 +571,12 @@ mod tests {
         for quality in [SamplerQuality::Native, SamplerQuality::DegradedLinear] {
             let controller = MeDerivativeController::over_closure(1, Rc::clone(&derivative));
             let mut plugin = HermiteStepIntegrator::new(1, quality);
-            let start = MeContinuousPoint::new(0.0, vec![0.0], 1).expect("checked point");
+            let start = MeContinuousPoint::new(
+                0.0,
+                vec![0.0],
+                MeContinuousStateDomain::verification_fixture(1),
+            )
+            .expect("checked point");
             {
                 let _window = controller.activate();
                 plugin
@@ -555,7 +589,7 @@ mod tests {
                 let _window = controller.activate();
                 plugin.advance(&request).expect("one accepted step")
             };
-            let step = MeStepProposal::bind(request, candidate, 1).expect("the candidate binds");
+            let step = MeStepProposal::bind(request, candidate).expect("the candidate binds");
             let mut sampled = vec![0.0];
             for endpoint in [step.previous(), step.accepted()] {
                 plugin
@@ -569,13 +603,18 @@ mod tests {
     #[test]
     fn the_time_only_plugin_satisfies_the_same_contract_vacuously() {
         let mut plugin = TimeOnlyIntegrator::new();
-        let start = MeContinuousPoint::new(0.0, Vec::new(), 0).expect("empty point");
+        let start = MeContinuousPoint::new(
+            0.0,
+            Vec::new(),
+            MeContinuousStateDomain::verification_fixture(0),
+        )
+        .expect("empty point");
         plugin
             .initialize(&start, detached_handle())
             .expect("initialize");
         let request = MeAdvanceRequest::new(start, None, 1.0, None, None).expect("request");
         let candidate = plugin.advance(&request).expect("one accepted step");
-        let step = MeStepProposal::bind(request, candidate, 0).expect("the candidate binds");
+        let step = MeStepProposal::bind(request, candidate).expect("the candidate binds");
         assert!(step.order() > 0);
         // Zero state: every coordinate inside the interval is exact, and every
         // coordinate outside it is refused, exactly as for the unrelated

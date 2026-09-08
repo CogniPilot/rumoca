@@ -16,10 +16,10 @@ use rumoca_compile::compile::{
     CompilePhaseEvent, DaeCompilationResult, FailedPhase, Session, SessionConfig, SourceRootKind,
     VariableRole, install_compile_phase_observer,
 };
+use rumoca_sim::sim_trace_compare::{SimTrace, SimTraceVariableMeta};
 use rumoca_sim::{
     BuildSimulationTimings, PreparedSimulation, SimError, SimFailureStage, SimOptions, SimResult,
-    SimSolverMode, build_simulation_with_stage_timing_and_solve_model,
-    check_prepared_initialization, run_prepared_simulation,
+    SimSolverMode, prepare_simulation,
 };
 use rumoca_worker::{
     MODEL_WORKER_MEMORY_LIMIT_MB_DEFAULT, MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE,
@@ -122,15 +122,15 @@ fn apply_compile_phase_durations(row: &mut WorkerModelResult, durations: Compile
 impl ProgressLog {
     fn new(model_name: &str, path: PathBuf) -> Self {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            let _progress_directory_error = fs::create_dir_all(parent);
         }
-        let _ = fs::remove_file(&path);
+        let _stale_progress_removal_error = fs::remove_file(&path);
         Self::append(model_name, path)
     }
 
     fn append(model_name: &str, path: PathBuf) -> Self {
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            let _progress_directory_error = fs::create_dir_all(parent);
         }
         Self {
             model_name: model_name.to_string(),
@@ -178,7 +178,7 @@ impl ProgressLog {
             .append(true)
             .open(&self.path)
         {
-            let _ = writeln!(file, "{line}");
+            let _progress_write_error = writeln!(file, "{line}");
         }
     }
 }
@@ -274,6 +274,7 @@ struct WorkerPreparedSimulation {
     tensor_kpi: Option<WorkerTensorKpi>,
     tensor_error: Option<String>,
     sim_build_started: bool,
+    initialization_started: bool,
     solve_completed: bool,
 }
 
@@ -283,30 +284,6 @@ struct WorkerTensorKpi {
     preserved_family_bodies: usize,
     scalarized_family_rows: usize,
     preservation_percent: Option<f64>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SimTraceArtifact {
-    model_name: String,
-    n_states: usize,
-    times: Vec<f64>,
-    names: Vec<String>,
-    data: Vec<Vec<f64>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    variable_meta: Option<Vec<SimTraceVariableMetaArtifact>>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct SimTraceVariableMetaArtifact {
-    name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    value_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    variability: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    time_domain: Option<String>,
 }
 
 fn panic_message(panic_info: Box<dyn std::any::Any + Send>) -> String {
@@ -391,66 +368,6 @@ fn model_artifact_dir_name(model_name: &str) -> String {
         .collect()
 }
 
-fn write_artifact_text(
-    request: &ModelWorkerRequest,
-    file_name: &str,
-    content: &str,
-) -> Result<String, String> {
-    let path = artifact_path(request, file_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "failed to create model worker artifact directory '{}': {error}",
-                parent.display()
-            )
-        })?;
-    }
-    fs::write(&path, content)
-        .map_err(|error| format!("failed to write '{}': {error}", path.display()))?;
-    Ok(artifact_relative_path(request, file_name))
-}
-
-/// Render a DAE-stage IR back to equivalent Modelica via the `dae-modelica`
-/// target template, so transforms (alias elimination, index reduction,
-/// dummy-derivative substitution, ...) can be read/diffed stage-to-stage.
-fn write_modelica_dae_artifact(
-    request: &ModelWorkerRequest,
-    file_name: &str,
-    dae: &rumoca_compile::compile::Dae,
-) -> Result<String, String> {
-    let template = rumoca_compile::codegen::templates::builtin_template_source(
-        "dae-modelica",
-        "dae_modelica.mo.jinja",
-    )
-    .ok_or_else(|| "missing built-in dae-modelica template".to_string())?;
-    let rendered = rumoca_compile::codegen::render_dae_template_with_name(
-        dae,
-        template,
-        rumoca_core::top_level_last_segment(&request.model_name),
-    )
-    .map_err(|error| format!("render dae-modelica: {error}"))?;
-    write_artifact_text(request, file_name, &rendered)
-}
-
-fn write_modelica_flat_artifact(
-    request: &ModelWorkerRequest,
-    file_name: &str,
-    flat: &rumoca_compile::compile::FlatModel,
-) -> Result<String, String> {
-    let template = rumoca_compile::codegen::templates::builtin_template_source(
-        "flat-modelica",
-        "flat_modelica.mo.jinja",
-    )
-    .ok_or_else(|| "missing built-in flat-modelica template".to_string())?;
-    let rendered = rumoca_compile::codegen::render_flat_template_with_name(
-        flat,
-        template,
-        rumoca_core::top_level_last_segment(&request.model_name),
-    )
-    .map_err(|error| format!("render flat-modelica: {error}"))?;
-    write_artifact_text(request, file_name, &rendered)
-}
-
 fn write_artifact_json<T: serde::Serialize>(
     request: &ModelWorkerRequest,
     file_name: &str,
@@ -493,17 +410,20 @@ fn write_sim_trace_artifact(
             )
         })?;
     }
-    let trace = SimTraceArtifact {
-        model_name: request.model_name.clone(),
-        n_states: result.n_states,
+    let trace = SimTrace {
+        model_name: Some(request.model_name.clone()),
         times: result.times.clone(),
         names: result.names.clone(),
-        data: result.data.clone(),
+        data: result
+            .data
+            .iter()
+            .map(|series| series.iter().copied().map(Some).collect())
+            .collect(),
         variable_meta: (!result.variable_meta.is_empty()).then(|| {
             result
                 .variable_meta
                 .iter()
-                .map(|meta| SimTraceVariableMetaArtifact {
+                .map(|meta| SimTraceVariableMeta {
                     name: meta.name.clone(),
                     role: Some(meta.role.clone()),
                     value_type: meta.value_type.clone(),
@@ -512,6 +432,7 @@ fn write_sim_trace_artifact(
                 })
                 .collect()
         }),
+        certification_profile: None,
     };
     let file = File::create(&trace_path).map_err(|error| {
         format!(
@@ -543,7 +464,7 @@ fn remove_stale_stage_artifacts(request: &ModelWorkerRequest) {
         "ir-solve.json",
         "sim-trace.json",
     ] {
-        let _ = fs::remove_file(artifact_path(request, file_name));
+        let _stale_artifact_removal_error = fs::remove_file(artifact_path(request, file_name));
     }
 }
 
@@ -949,7 +870,9 @@ fn run_simulation_pipeline(
 ) -> Result<WorkerRunOk, Box<WorkerRunErr>> {
     progress.event(WorkerProgressPhase::Solve, WorkerProgressEventKind::Started);
     let build = build_worker_prepared_simulation(dae, opts, progress, request)?;
-    if build.sim_build_started {
+    if build.initialization_started {
+        progress.event(WorkerProgressPhase::IC, WorkerProgressEventKind::Completed);
+    } else if build.sim_build_started {
         progress.event(
             WorkerProgressPhase::SimBuild,
             WorkerProgressEventKind::Completed,
@@ -961,30 +884,11 @@ fn run_simulation_pipeline(
         );
     }
 
-    progress.event(WorkerProgressPhase::IC, WorkerProgressEventKind::Started);
-    let ic_started = Instant::now();
-    check_prepared_initialization(&build.prepared).map_err(|err| {
-        Box::new(WorkerRunErr {
-            err,
-            build_timings: build.build_timings,
-            sim_build_seconds: build.sim_build_seconds,
-            phase: WorkerErrorPhase::Initialization {
-                ic_seconds: ic_started.elapsed().as_secs_f64(),
-            },
-            solve_file: build.solve_file.clone(),
-            solve_error: build.solve_error.clone(),
-            tensor_kpi: build.tensor_kpi,
-            tensor_error: build.tensor_error.clone(),
-        })
-    })?;
-    let ic_seconds = ic_started.elapsed().as_secs_f64();
-    progress.event(WorkerProgressPhase::IC, WorkerProgressEventKind::Completed);
+    let ic_seconds = build.build_timings.initialization_seconds;
 
     progress.event(WorkerProgressPhase::Sim, WorkerProgressEventKind::Started);
     let run_started = Instant::now();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_prepared_simulation(&build.prepared)
-    }));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build.prepared.run()));
     let sim_run_seconds = run_started.elapsed().as_secs_f64();
     match result {
         Ok(Ok(result)) => {
@@ -1035,12 +939,14 @@ fn build_worker_prepared_simulation(
 ) -> Result<WorkerPreparedSimulation, Box<WorkerRunErr>> {
     let build_started = Instant::now();
     let mut solve_file = None;
-    let mut solve_error = initial_structural_dae_artifact_error(dae, opts, request);
+    let mut solve_error = initial_structural_dae_artifact_error(dae, request);
     let solve_completed = Cell::new(false);
     let mut sim_build_started = false;
+    let mut initialization_started = false;
+    let mut initialization_started_at = None;
     let tensor_kpi = None;
     let tensor_error = None;
-    let prepared = build_simulation_with_stage_timing_and_solve_model(
+    let prepared = prepare_simulation(
         dae,
         opts,
         |stage| {
@@ -1049,6 +955,8 @@ fn build_worker_prepared_simulation(
                 progress,
                 &solve_completed,
                 &mut sim_build_started,
+                &mut initialization_started,
+                &mut initialization_started_at,
             );
         },
         |solve_model| {
@@ -1077,7 +985,12 @@ fn build_worker_prepared_simulation(
             err,
             build_timings: BuildSimulationTimings::default(),
             sim_build_seconds,
-            phase: if sim_build_started {
+            phase: if initialization_started {
+                WorkerErrorPhase::Initialization {
+                    ic_seconds: initialization_started_at
+                        .map_or(0.0, |started: Instant| started.elapsed().as_secs_f64()),
+                }
+            } else if sim_build_started {
                 WorkerErrorPhase::SimBuild
             } else {
                 WorkerErrorPhase::Build
@@ -1097,27 +1010,19 @@ fn build_worker_prepared_simulation(
         tensor_kpi,
         tensor_error,
         sim_build_started,
+        initialization_started,
         solve_completed: solve_completed.get(),
     })
 }
 
 fn initial_structural_dae_artifact_error(
     dae: &rumoca_compile::compile::Dae,
-    opts: &SimOptions,
     request: &ModelWorkerRequest,
 ) -> Option<String> {
-    if !request.emit_json && !request.emit_modelica {
+    if !request.emit_json {
         return None;
     }
-    let _ = opts;
-    let mut error = None;
-    if request.emit_modelica {
-        error = error.or(write_modelica_dae_artifact(request, "ir-structural-dae.mo", dae).err());
-    }
-    if request.emit_json {
-        error = error.or(write_artifact_json(request, "ir-structural-dae.json", dae).err());
-    }
-    error
+    write_artifact_json(request, "ir-structural-dae.json", dae).err()
 }
 
 fn observe_simulation_build_stage(
@@ -1125,23 +1030,35 @@ fn observe_simulation_build_stage(
     progress: &ProgressLog,
     solve_completed: &Cell<bool>,
     sim_build_started: &mut bool,
+    initialization_started: &mut bool,
+    initialization_started_at: &mut Option<Instant>,
 ) {
-    if stage != "sim_build" {
-        progress.event(WorkerProgressPhase::Solve, WorkerProgressEventKind::Started);
-        return;
+    match stage {
+        "sim_build" => {
+            if !solve_completed.get() {
+                progress.event(
+                    WorkerProgressPhase::Solve,
+                    WorkerProgressEventKind::Completed,
+                );
+                solve_completed.set(true);
+            }
+            progress.event(
+                WorkerProgressPhase::SimBuild,
+                WorkerProgressEventKind::Started,
+            );
+            *sim_build_started = true;
+        }
+        "sim_initialization" => {
+            progress.event(
+                WorkerProgressPhase::SimBuild,
+                WorkerProgressEventKind::Completed,
+            );
+            progress.event(WorkerProgressPhase::IC, WorkerProgressEventKind::Started);
+            *initialization_started = true;
+            *initialization_started_at = Some(Instant::now());
+        }
+        _ => progress.event(WorkerProgressPhase::Solve, WorkerProgressEventKind::Started),
     }
-    if !solve_completed.get() {
-        progress.event(
-            WorkerProgressPhase::Solve,
-            WorkerProgressEventKind::Completed,
-        );
-        solve_completed.set(true);
-    }
-    progress.event(
-        WorkerProgressPhase::SimBuild,
-        WorkerProgressEventKind::Started,
-    );
-    *sim_build_started = true;
 }
 
 fn observe_solve_model_artifact<T: serde::Serialize>(
@@ -1398,7 +1315,7 @@ fn write_partial_compile_success(
         elapsed_secs,
         result: row.clone(),
     };
-    let _ = write_model_worker_response_file(
+    let _partial_result_write_error = write_model_worker_response_file(
         &request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE),
         &response,
     );
@@ -1411,46 +1328,32 @@ fn write_compile_artifacts(
     result: Option<&rumoca_compile::compile::DaeCompilationResult>,
     progress: &ProgressLog,
 ) {
-    if !request.emit_json && !request.emit_modelica {
+    if !request.emit_json {
         return;
     }
     progress.event(
         WorkerProgressPhase::ArtifactWrite,
         WorkerProgressEventKind::Started,
     );
-    if request.emit_json {
-        write_ast_artifact(session, request, row);
-    }
+    write_ast_artifact(session, request, row);
     let Some(result) = result else {
-        if request.emit_json {
-            write_diagnostics_artifact(session, request, row);
-            write_flat_artifact_after_todae_failure(session, request, row);
-        }
+        write_diagnostics_artifact(session, request, row);
+        write_flat_artifact_after_todae_failure(session, request, row);
         progress.event(
             WorkerProgressPhase::ArtifactWrite,
             WorkerProgressEventKind::Completed,
         );
         return;
     };
-    if request.emit_modelica {
-        if let Err(error) =
-            write_modelica_flat_artifact(request, "ir-flat.mo", result.flat.as_ref())
-        {
-            row.ir_solve_error = Some(error);
-        }
-        if let Err(error) = write_modelica_dae_artifact(request, "ir-dae.mo", result.dae.as_ref()) {
-            row.ir_solve_error = Some(error);
-        }
+    // Flat JSON is an exact, explicitly requested machine artifact. Never
+    // substitute it silently for the unavailable textual product.
+    match write_artifact_json(request, "ir-flat.json", result.flat.as_ref()) {
+        Ok(path) => row.ir_flat_file = Some(path),
+        Err(error) => row.ir_solve_error = Some(error),
     }
-    if request.emit_json {
-        match write_artifact_json(request, "ir-flat.json", result.flat.as_ref()) {
-            Ok(path) => row.ir_flat_file = Some(path),
-            Err(error) => row.ir_solve_error = Some(error),
-        }
-        match write_artifact_json(request, "ir-dae.json", result.dae.as_ref()) {
-            Ok(path) => row.ir_dae_file = Some(path),
-            Err(error) => row.ir_solve_error = Some(error),
-        }
+    match write_artifact_json(request, "ir-dae.json", result.dae.as_ref()) {
+        Ok(path) => row.ir_dae_file = Some(path),
+        Err(error) => row.ir_solve_error = Some(error),
     }
     progress.event(
         WorkerProgressPhase::ArtifactWrite,
@@ -1497,8 +1400,10 @@ fn run_worker(args: Args) -> Result<(), String> {
             request.output_dir.display()
         )
     })?;
-    let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
-    let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
+    let _stale_result_removal_error =
+        fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
+    let _stale_partial_result_removal_error =
+        fs::remove_file(request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
     let progress = ProgressLog::new(
         &request.model_name,
         artifact_path(&request, "progress.jsonl"),
@@ -1542,7 +1447,7 @@ fn read_worker_commands(
         let line = match line {
             Ok(line) => line,
             Err(error) => {
-                let _ = sender.send(Err(format!(
+                let _receiver_closed = sender.send(Err(format!(
                     "failed to read model worker command stream: {error}"
                 )));
                 return CommandReaderExit::ReceiverDropped;
@@ -1560,9 +1465,10 @@ fn read_worker_commands(
     CommandReaderExit::ParentDisconnected
 }
 
-fn spawn_worker_command_reader() -> mpsc::Receiver<Result<ModelWorkerCommand, String>> {
+fn spawn_worker_command_reader()
+-> Result<mpsc::Receiver<Result<ModelWorkerCommand, String>>, String> {
     let (sender, receiver) = mpsc::channel();
-    let _ = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("rumoca-worker-control-reader".to_string())
         .spawn(move || {
             let stdin = std::io::stdin();
@@ -1571,8 +1477,9 @@ fn spawn_worker_command_reader() -> mpsc::Receiver<Result<ModelWorkerCommand, St
                 eprintln!("rumoca-worker parent control channel closed");
                 std::process::exit(MODEL_WORKER_PARENT_DISCONNECTED_EXIT_CODE);
             }
-        });
-    receiver
+        })
+        .map_err(|error| format!("failed to spawn model worker command reader: {error}"))?;
+    Ok(receiver)
 }
 
 fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
@@ -1580,7 +1487,7 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
     write_control_message(&ModelWorkerControlMessage::Ready {
         protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
     })?;
-    let commands = spawn_worker_command_reader();
+    let commands = spawn_worker_command_reader()?;
     loop {
         let command = commands
             .recv()
@@ -1594,9 +1501,12 @@ fn run_worker_daemon(source_root_path: &Path) -> Result<(), String> {
                     })?;
                     continue;
                 }
-                let _ = fs::remove_file(artifact_path(&request, "progress.jsonl"));
-                let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
-                let _ = fs::remove_file(request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
+                let _stale_progress_removal_error =
+                    fs::remove_file(artifact_path(&request, "progress.jsonl"));
+                let _stale_result_removal_error =
+                    fs::remove_file(request.output_dir.join(MODEL_WORKER_RESULT_FILE));
+                let _stale_partial_result_removal_error =
+                    fs::remove_file(request.output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
                 let response = compile_request(&mut session, request.clone());
                 write_model_worker_response_file(
                     &request.output_dir.join(MODEL_WORKER_RESULT_FILE),
@@ -1626,7 +1536,7 @@ fn run_worker_entry(args: Args) -> Result<(), String> {
 fn main() {
     let args = Args::parse();
     if let Err(error) = start_worker_memory_limit(args.memory_limit_mb) {
-        let _ = write_control_message(&ModelWorkerControlMessage::Error {
+        let _control_write_error = write_control_message(&ModelWorkerControlMessage::Error {
             protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
             message: error.to_string(),
         });
@@ -1654,6 +1564,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_every_serialized_key_is_required<T>(value: &T)
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        let serialized = serde_json::to_value(value).expect("serialize current artifact wire");
+        let object = serialized
+            .as_object()
+            .expect("current artifact wire root is an object");
+        for key in object.keys() {
+            let mut mutation = serialized.clone();
+            mutation
+                .as_object_mut()
+                .expect("current artifact wire root stays an object")
+                .remove(key);
+            assert!(
+                serde_json::from_value::<T>(mutation).is_err(),
+                "deleting current artifact wire key `{key}` must be rejected"
+            );
+        }
+    }
     use std::io::Cursor;
 
     fn compile_zero_sized_standalone_model() -> Box<DaeCompilationResult> {
@@ -1687,10 +1618,97 @@ mod tests {
             sim_timeout_secs: None,
             emit_json: false,
             nan_trace: false,
-            emit_modelica: false,
             source_root_path: PathBuf::new(),
             output_dir: PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn json_artifact_mode_writes_the_exact_flat_root() {
+        let result = compile_zero_sized_standalone_model();
+        let temp = tempfile::tempdir().expect("temporary artifact directory");
+        let mut request = simulation_request("EmptyBindings");
+        request.emit_json = true;
+        request.output_dir = temp.path().to_path_buf();
+        let mut row = summarize_dae_success("EmptyBindings", &result, 0.0);
+        let progress = ProgressLog::new(
+            "EmptyBindings",
+            artifact_path(&request, "artifact-progress.jsonl"),
+        );
+
+        write_compile_artifacts(
+            &mut Session::default(),
+            &request,
+            &mut row,
+            Some(result.as_ref()),
+            &progress,
+        );
+
+        let flat_json = artifact_path(&request, "ir-flat.json");
+        let emitted: serde_json::Value = serde_json::from_slice(
+            &fs::read(&flat_json).expect("JSON artifact mode must write ir-flat.json"),
+        )
+        .expect("ir-flat.json must contain valid JSON");
+        let expected = serde_json::to_value(result.flat.as_ref()).expect("serialize Flat root");
+        assert_eq!(
+            emitted, expected,
+            "the worker must dump the exact Flat root"
+        );
+        assert_eq!(
+            row.ir_flat_file.as_deref(),
+            Some("model_worker/EmptyBindings/ir-flat.json")
+        );
+    }
+
+    #[test]
+    fn simulation_trace_artifact_requires_every_key_and_keeps_nulls() {
+        let metadata = SimTraceVariableMeta {
+            name: "x".to_string(),
+            role: None,
+            value_type: None,
+            variability: None,
+            time_domain: None,
+        };
+        assert_every_serialized_key_is_required(&metadata);
+
+        let trace = SimTrace {
+            model_name: Some("M".to_string()),
+            times: Vec::new(),
+            names: Vec::new(),
+            data: Vec::new(),
+            variable_meta: Some(vec![metadata]),
+            certification_profile: None,
+        };
+        assert_every_serialized_key_is_required(&trace);
+        let serialized = serde_json::to_value(&trace).expect("serialize current trace artifact");
+        assert!(
+            serialized.get("n_states").is_none(),
+            "the trace wire format is owned by SimTrace, not worker-local summary fields"
+        );
+        let variable_meta = serialized["variable_meta"]
+            .as_array()
+            .expect("trace metadata is present");
+        for key in ["role", "value_type", "variability", "time_domain"] {
+            assert!(
+                variable_meta[0]
+                    .get(key)
+                    .is_some_and(serde_json::Value::is_null),
+                "optional metadata key `{key}` is an explicit null"
+            );
+        }
+
+        let temp = tempfile::tempdir().expect("temporary trace directory");
+        let path = temp.path().join("sim-trace.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&trace).expect("serialize shared trace type"),
+        )
+        .expect("write trace fixture");
+        let decoded = rumoca_sim::sim_trace_compare::load_trace_json(&path)
+            .expect("the worker's shared trace type must round-trip through the comparator reader");
+        assert_eq!(decoded.model_name.as_deref(), Some("M"));
+        assert_eq!(decoded.variable_meta.expect("metadata retained").len(), 1);
+        assert!(decoded.certification_profile.is_none());
     }
 
     #[test]

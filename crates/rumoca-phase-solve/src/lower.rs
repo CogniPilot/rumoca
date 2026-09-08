@@ -8,7 +8,7 @@ use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{self as structural, BltBlock, EquationRef, UnknownId};
 
 use crate::LowerError;
-use crate::layout::{LoweredLayout, StorageClass, lower_layout};
+use crate::layout::{LoweredLayout, lower_layout};
 
 pub(crate) mod call_scoped_actions;
 mod clocks;
@@ -52,20 +52,17 @@ pub(crate) fn lower_solve_problem(
     let derivatives = index_derivative_rows(view, &structural.rows)?;
     let mut continuous = lower_continuous(view, &lowered, &structural, &derivatives, manifold)?;
     let initialization = lower_initialization(view, &lowered, &derivatives, pins)?;
-    let (mut discrete, mut events, event_transactions) =
+    let (discrete, runtime_projection, events) =
         events::lower_discrete_and_events(view, &lowered, &clocks, &continuous)?;
-    discrete.event_transactions = call_scoped_actions::append_collected_actions(
-        view,
-        &lowered,
-        &clocks,
-        &discrete,
-        &mut events,
-        event_transactions,
-    )?;
     let pure_calls = lowered.pure_calls.borrow_mut().finish();
-    let refresh_owners = rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(
+    let refresh_plans = rumoca_eval_solve::refresh_plan::build_continuous_refresh_plans(
         &lowered.solve_layout,
-        &mut continuous,
+        (
+            &continuous.implicit_rhs,
+            &continuous.implicit_row_targets,
+            &mut continuous.algebraic_projection_plan,
+            &continuous.derivative_rhs,
+        ),
         &discrete,
         &events,
         &clocks.partition,
@@ -74,17 +71,18 @@ pub(crate) fn lower_solve_problem(
         Some(span) => LowerError::contract(error.to_string(), span),
         None => LowerError::unspanned_non_computable(error.to_string()),
     })?;
-    continuous.refresh_owners = refresh_owners;
-    let problem = solve::SolveProblem::construct(
+    let continuous = continuous
+        .finish(&lowered.solve_layout, refresh_plans)
+        .map_err(|error| LowerError::unspanned_non_computable(error.to_string()))?;
+    let discrete = runtime_projection.prepare(discrete, events)?;
+    let problem = solve::SolveProblem::construct_prepared(
         lowered.layout,
         lowered.solve_layout,
         continuous,
         initialization,
         discrete,
-        events,
         clocks.partition,
     )?;
-    solve::validate_problem_pure_call_sites(&problem, &pure_calls)?;
     Ok((problem, pure_calls))
 }
 
@@ -92,6 +90,46 @@ struct StructuralMatching<'dae> {
     rows: HashMap<usize, UnknownId<'dae>>,
     algebraic_blocks: Vec<AlgebraicBlockMatch<'dae>>,
     derivative_blocks: Vec<Vec<(usize, UnknownId<'dae>)>>,
+}
+
+struct ContinuousSystemDraft {
+    implicit_rhs: solve::ComputeBlock,
+    implicit_row_targets: Vec<Option<solve::ScalarSlot>>,
+    algebraic_projection_plan: solve::AlgebraicProjectionPlan,
+    residual: solve::ComputeBlock,
+    manifold_residual: solve::ComputeBlock,
+    manifold_projection_plan: solve::AlgebraicProjectionPlan,
+    derivative_rhs: solve::ComputeBlock,
+}
+
+impl ContinuousSystemDraft {
+    fn history_blocks(&self) -> [&solve::ComputeBlock; 4] {
+        [
+            &self.implicit_rhs,
+            &self.residual,
+            &self.manifold_residual,
+            &self.derivative_rhs,
+        ]
+    }
+
+    fn finish(
+        self,
+        solve_layout: &solve::SolveLayout,
+        refresh_plans: solve::ContinuousRefreshPlanInputs,
+    ) -> Result<solve::ContinuousSolveSystem, solve::ContinuousRefreshConstructionError> {
+        solve::ContinuousSolveSystem::construct(
+            solve_layout,
+            solve::ContinuousSolveSystemInputs::new(
+                self.implicit_rhs,
+                self.implicit_row_targets,
+                self.algebraic_projection_plan,
+                self.residual,
+                (self.manifold_residual, self.manifold_projection_plan),
+                self.derivative_rhs,
+                refresh_plans,
+            ),
+        )
+    }
 }
 
 /// One algebraic projection block's matched `(equation row, unknown)` pairs,
@@ -512,15 +550,13 @@ fn validate_structured_derivative_rows(
     Ok(())
 }
 
-// SPEC_0021: Exception - top-level continuous phase entry point and owner dispatch.
-#[allow(clippy::excessive_nesting, clippy::too_many_lines)]
 fn lower_continuous<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     structural: &StructuralMatching<'dae>,
     derivatives: &DerivativeRowIndex<'dae>,
     manifold: &[dae::ExprId<'dae>],
-) -> Result<solve::ContinuousSolveSystem, LowerError> {
+) -> Result<ContinuousSystemDraft, LowerError> {
     let function_conditional_owners = RefCell::new(FunctionConditionalOwnerRegistry::default());
     let context = ContinuousContext {
         view,
@@ -544,123 +580,193 @@ fn lower_continuous<'dae>(
         affine_derivatives: Some(&affine_derivatives),
         ..context
     };
-    let mut row = 0usize;
     let owners = view.continuous_owners().collect::<Vec<_>>();
-    let mut owner_index = 0usize;
-    while owner_index < owners.len() {
-        if let Some(first) = continuous_aggregate_call_candidate(context, row, owners[owner_index])?
-        {
-            let mut group = vec![first];
-            let mut next_owner = owner_index + 1;
-            let mut next_row = first.end_row();
-            while let Some(&owner) = owners.get(next_owner) {
-                let Some(candidate) =
-                    continuous_aggregate_call_candidate(context, next_row, owner)?
-                else {
-                    break;
-                };
-                if candidate.call != first.call {
-                    break;
-                }
-                next_row = candidate.end_row();
-                group.push(candidate);
-                next_owner += 1;
-            }
-            let reads_derivative = group
-                .iter()
-                .any(|candidate| aggregate_call_reads_derivative(view, candidate.call));
-            if group.len() > 1 && structural.derivative_blocks.is_empty() && !reads_derivative {
-                lower_continuous_aggregate_call_group(context, &mut output, &group)?;
-                row = next_row;
-                owner_index = next_owner;
-                continue;
-            }
+    let mut cursor = ContinuousOwnerCursor::new();
+    while let Some(&owner) = owners.get(cursor.owner) {
+        if try_lower_continuous_aggregate_owner_group(
+            context,
+            &mut output,
+            &owners,
+            owner,
+            &mut cursor,
+            structural.derivative_blocks.is_empty(),
+        )? {
+            continue;
         }
-        let owner = owners[owner_index];
         match owner {
             dae::ContinuousOwnerView::Residual { equation, .. } => {
-                let count = scalar_count(view, equation.residual());
-                let owner_rows = row..checked_ordinal_add(
-                    row,
-                    count,
-                    "continuous row ordinal overflow",
-                    equation.provenance().span(),
+                lower_continuous_residual_owner(
+                    context,
+                    &mut output,
+                    &covered_derivative_rows,
+                    structural.derivative_blocks.is_empty(),
+                    &mut cursor,
+                    equation,
                 )?;
-                if owner_rows
-                    .clone()
-                    .all(|row| covered_derivative_rows.contains(&row))
-                {
-                    row = owner_rows.end;
-                    owner_index += 1;
-                    continue;
-                }
-                let partially_covered = owner_rows
-                    .clone()
-                    .any(|row| covered_derivative_rows.contains(&row));
-                if !partially_covered
-                    && structural.derivative_blocks.is_empty()
-                    && count > 1
-                    && lower_algebraic_scalar_outputs(
-                        context,
-                        &mut output,
-                        row,
-                        equation.residual(),
-                        0..count,
-                        equation.provenance().span(),
-                    )?
-                {
-                    row = checked_ordinal_add(
-                        row,
-                        count,
-                        "continuous row ordinal overflow",
-                        equation.provenance().span(),
-                    )?;
-                    continue;
-                }
-                for scalar in 0..count {
-                    if covered_derivative_rows.contains(&row) {
-                        row += 1;
-                        continue;
-                    }
-                    lower_continuous_row(
-                        context,
-                        &mut output,
-                        row,
-                        equation.residual(),
-                        scalar,
-                        None,
-                        equation.provenance().span(),
-                    )?;
-                    row += 1;
-                }
             }
             dae::ContinuousOwnerView::Structured { family, .. } => {
-                let count = family.scalar_rows() as usize;
-                let mut owner_rows = row..checked_ordinal_add(
-                    row,
-                    count,
-                    "continuous row ordinal overflow",
-                    family.provenance().span(),
+                lower_continuous_structured_owner(
+                    context,
+                    &mut output,
+                    &covered_derivative_rows,
+                    &mut cursor,
+                    family,
                 )?;
-                if owner_rows
-                    .clone()
-                    .all(|row| covered_derivative_rows.contains(&row))
-                {
-                    row = owner_rows.end;
-                    owner_index += 1;
-                    continue;
-                }
-                if owner_rows.any(|row| covered_derivative_rows.contains(&row)) {
-                    return Err(LowerError::non_computable(
-                        "affine derivative block covers only part of a structured equation owner",
-                        family.provenance().span(),
-                    ));
-                }
-                row = lower_continuous_family(context, &mut output, row, family)?;
             }
         }
-        owner_index += 1;
     }
+    finish_continuous_draft(view, layout, structural, manifold, output)
+}
+
+struct ContinuousOwnerCursor {
+    owner: usize,
+    row: usize,
+}
+
+impl ContinuousOwnerCursor {
+    const fn new() -> Self {
+        Self { owner: 0, row: 0 }
+    }
+
+    fn complete_owner_at(&mut self, row: usize) {
+        self.row = row;
+        self.owner += 1;
+    }
+
+    fn complete_group_at(&mut self, owner: usize, row: usize) {
+        self.row = row;
+        self.owner = owner;
+    }
+}
+
+fn try_lower_continuous_aggregate_owner_group<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
+    owners: &[dae::ContinuousOwnerView<'dae>],
+    owner: dae::ContinuousOwnerView<'dae>,
+    cursor: &mut ContinuousOwnerCursor,
+    derivative_blocks_empty: bool,
+) -> Result<bool, LowerError> {
+    let Some(first) = continuous_aggregate_call_candidate(context, cursor.row, owner)? else {
+        return Ok(false);
+    };
+    let mut group = vec![first];
+    let mut next_owner = cursor.owner + 1;
+    let mut next_row = first.end_row();
+    while let Some(&owner) = owners.get(next_owner) {
+        let Some(candidate) = continuous_aggregate_call_candidate(context, next_row, owner)? else {
+            break;
+        };
+        if candidate.call != first.call {
+            break;
+        }
+        next_row = candidate.end_row();
+        group.push(candidate);
+        next_owner += 1;
+    }
+    let reads_derivative = group
+        .iter()
+        .any(|candidate| aggregate_call_reads_derivative(context.view, candidate.call));
+    if group.len() == 1 || !derivative_blocks_empty || reads_derivative {
+        return Ok(false);
+    }
+    lower_continuous_aggregate_call_group(context, output, &group)?;
+    cursor.complete_group_at(next_owner, next_row);
+    Ok(true)
+}
+
+fn lower_continuous_residual_owner<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
+    covered_derivative_rows: &BTreeSet<usize>,
+    derivative_blocks_empty: bool,
+    cursor: &mut ContinuousOwnerCursor,
+    equation: dae::ResidualEquationView<'dae>,
+) -> Result<(), LowerError> {
+    let span = equation.provenance().span();
+    let count = scalar_count(context.view, equation.residual());
+    let end = checked_ordinal_add(cursor.row, count, "continuous row ordinal overflow", span)?;
+    let owner_rows = cursor.row..end;
+    if owner_rows
+        .clone()
+        .all(|row| covered_derivative_rows.contains(&row))
+    {
+        cursor.complete_owner_at(end);
+        return Ok(());
+    }
+    let partially_covered = owner_rows
+        .clone()
+        .any(|row| covered_derivative_rows.contains(&row));
+    if !partially_covered
+        && derivative_blocks_empty
+        && count > 1
+        && lower_algebraic_scalar_outputs(
+            context,
+            output,
+            cursor.row,
+            equation.residual(),
+            0..count,
+            span,
+        )?
+    {
+        cursor.complete_owner_at(end);
+        return Ok(());
+    }
+    let mut row = cursor.row;
+    for scalar in 0..count {
+        if !covered_derivative_rows.contains(&row) {
+            lower_continuous_row(
+                context,
+                output,
+                row,
+                equation.residual(),
+                scalar,
+                None,
+                span,
+            )?;
+        }
+        row += 1;
+    }
+    cursor.complete_owner_at(row);
+    Ok(())
+}
+
+fn lower_continuous_structured_owner<'dae>(
+    context: ContinuousContext<'_, 'dae>,
+    output: &mut ContinuousOutput,
+    covered_derivative_rows: &BTreeSet<usize>,
+    cursor: &mut ContinuousOwnerCursor,
+    family: dae::StructuredFamilyView<'dae>,
+) -> Result<(), LowerError> {
+    let span = family.provenance().span();
+    let count = family.scalar_rows() as usize;
+    let end = checked_ordinal_add(cursor.row, count, "continuous row ordinal overflow", span)?;
+    let mut owner_rows = cursor.row..end;
+    if owner_rows
+        .clone()
+        .all(|row| covered_derivative_rows.contains(&row))
+    {
+        cursor.complete_owner_at(end);
+        return Ok(());
+    }
+    if owner_rows.any(|row| covered_derivative_rows.contains(&row)) {
+        return Err(LowerError::non_computable(
+            "affine derivative block covers only part of a structured equation owner",
+            span,
+        ));
+    }
+    let row = lower_continuous_family(context, output, cursor.row, family)?;
+    cursor.complete_owner_at(row);
+    Ok(())
+}
+
+fn finish_continuous_draft<'dae>(
+    view: dae::DaeView<'dae>,
+    layout: &LoweredLayout<'dae>,
+    structural: &StructuralMatching<'dae>,
+    manifold: &[dae::ExprId<'dae>],
+    output: ContinuousOutput,
+) -> Result<ContinuousSystemDraft, LowerError> {
     let ContinuousOutput {
         residual,
         derivative,
@@ -669,7 +775,7 @@ fn lower_continuous<'dae>(
     let (implicit_row_targets, algebraic_projection_plan) =
         lower_algebraic_projection(view, layout, structural)?;
     let (manifold_residual, manifold_projection_plan) = lower_manifold(view, layout, manifold)?;
-    Ok(solve::ContinuousSolveSystem {
+    Ok(ContinuousSystemDraft {
         implicit_rhs: residual.clone(),
         implicit_row_targets,
         algebraic_projection_plan,
@@ -680,7 +786,6 @@ fn lower_continuous<'dae>(
             layout.solve_layout.state_scalar_count(),
             first_model_span(view),
         )?,
-        refresh_owners: solve::ContinuousRefreshOwners::default(),
     })
 }
 
@@ -906,7 +1011,7 @@ fn lower_algebraic_projection<'dae>(
         };
         let span = first_model_span(view);
         let target = variable_scalar_slot(layout, variable.index(), scalar as usize, span)?;
-        let solve::ScalarSlot::Y { index, .. } = target else {
+        let solve::ScalarSlot::Y { index } = target else {
             unreachable!("algebraic declarations are Y slots")
         };
         if targeted[index] {
@@ -944,7 +1049,7 @@ fn lower_algebraic_projection<'dae>(
                 let UnknownId::Algebraic { variable, scalar } = *unknown else {
                     unreachable!("structural algebraic block contains only algebraics")
                 };
-                let solve::ScalarSlot::Y { index, .. } = variable_scalar_slot(
+                let solve::ScalarSlot::Y { index } = variable_scalar_slot(
                     layout,
                     variable.index(),
                     scalar as usize,
@@ -1084,8 +1189,7 @@ fn append_manifold_state_slot(
     span: Span,
     states: &mut BTreeSet<usize>,
 ) -> Result<(), LowerError> {
-    let solve::ScalarSlot::Y { index, .. } =
-        variable_scalar_slot(layout, state.index(), scalar, span)?
+    let solve::ScalarSlot::Y { index } = variable_scalar_slot(layout, state.index(), scalar, span)?
     else {
         unreachable!("state declarations are Y slots")
     };
@@ -1267,7 +1371,7 @@ fn lower_derivative_scalar_outputs<'dae>(
             return Ok(false);
         };
         expressions.push((expression, scalar));
-        let solve::ScalarSlot::Y { index, .. } =
+        let solve::ScalarSlot::Y { index } =
             variable_scalar_slot(context.layout, state.index(), target as usize, span)?
         else {
             unreachable!("state declarations are Y slots")
@@ -1431,7 +1535,7 @@ fn lower_continuous_row<'dae>(
                     })?,
             };
             let target = variable_scalar_slot(layout, state.index(), target as usize, span)?;
-            let solve::ScalarSlot::Y { index, .. } = target else {
+            let solve::ScalarSlot::Y { index } = target else {
                 unreachable!("state declarations are Y slots")
             };
             output.derivative.push_scalar(program, span, index);
@@ -1637,7 +1741,7 @@ fn contiguous_state_output<'dae>(
     span: Span,
 ) -> Result<usize, LowerError> {
     let output_start = match variable_scalar_slot(layout, state.index(), 0, span)? {
-        solve::ScalarSlot::Y { index, .. } => index,
+        solve::ScalarSlot::Y { index } => index,
         _ => unreachable!("state declarations are Y slots"),
     };
     for scalar in 1..rows {
@@ -1647,7 +1751,7 @@ fn contiguous_state_output<'dae>(
             .ok_or_else(|| LowerError::contract("implicit derivative slot overflow", span))?;
         if !matches!(
             slot,
-            solve::ScalarSlot::Y { index, .. } if index == expected
+            solve::ScalarSlot::Y { index } if index == expected
         ) {
             return Err(LowerError::contract(
                 "implicit derivative vector does not occupy contiguous Solve state slots",
@@ -1666,7 +1770,7 @@ fn contiguous_state_output_range<'dae>(
     span: Span,
 ) -> Result<usize, LowerError> {
     let output_start = match variable_scalar_slot(layout, state.index(), first_scalar, span)? {
-        solve::ScalarSlot::Y { index, .. } => index,
+        solve::ScalarSlot::Y { index } => index,
         _ => unreachable!("state declarations are Y slots"),
     };
     for offset in 1..rows {
@@ -1678,7 +1782,7 @@ fn contiguous_state_output_range<'dae>(
             .ok_or_else(|| LowerError::contract("tensor derivative slot overflow", span))?;
         if !matches!(
             variable_scalar_slot(layout, state.index(), scalar, span)?,
-            solve::ScalarSlot::Y { index, .. } if index == expected
+            solve::ScalarSlot::Y { index } if index == expected
         ) {
             return Err(LowerError::contract(
                 "tensor derivative range does not occupy contiguous Solve state slots",
@@ -1976,7 +2080,7 @@ fn lower_initialization<'dae>(
         ownership: &ownership,
     };
     let mut rows = ScalarRows::default();
-    let mut row_incidence: Vec<initial_projection::InitialRowIncidence<'dae>> = Vec::new();
+    let mut row_incidence: Vec<initial_projection::InitialRow<'dae>> = Vec::new();
     for owner in view.initialization_owners() {
         match owner {
             dae::InitializationOwnerView::Residual { equation, .. } => {
@@ -1989,17 +2093,25 @@ fn lower_initialization<'dae>(
                     rows.push(program, equation.provenance().span(), output);
                     // Only a one-scalar equation lets a whole-expression coordinate
                     // walk stand in for exact per-scalar incidence.
-                    row_incidence.push(match count {
-                        1 => initial_projection::InitialRowIncidence::Residual(equation.residual()),
-                        _ => initial_projection::InitialRowIncidence::Opaque,
+                    row_incidence.push(initial_projection::InitialRow {
+                        incidence: match count {
+                            1 => initial_projection::InitialRowIncidence::Residual(
+                                equation.residual(),
+                            ),
+                            _ => initial_projection::InitialRowIncidence::Opaque,
+                        },
+                        span: equation.provenance().span(),
                     });
                 }
             }
             dae::InitializationOwnerView::Structured { family, .. } => {
                 lower_initialization_family(context, family, &mut rows)?;
-                row_incidence.resize_with(rows.programs.len(), || {
-                    initial_projection::InitialRowIncidence::Opaque
-                });
+                while row_incidence.len() < rows.programs.len() {
+                    row_incidence.push(initial_projection::InitialRow {
+                        incidence: initial_projection::InitialRowIncidence::Opaque,
+                        span: rows.spans[row_incidence.len()],
+                    });
+                }
             }
         }
     }
@@ -2010,6 +2122,10 @@ fn lower_initialization<'dae>(
     // with numbers whether the two agree.
     let transferred =
         initial_pins::lower_transferred_initial_values(view, layout, &ownership, pins)?;
+    // Everything lowered so far is a mandatory source row; the carried
+    // stated-value rows are appended after this point, which is exactly the
+    // prefix witness the aggregate issuer re-proves.
+    let mandatory_row_count = rows.programs.len();
     rows.extend(transferred.checks);
     // A carried value is a sum of time-invariant terms about an already-seeded
     // state, so its parameter incidence is exactly the incidence of those terms.
@@ -2018,7 +2134,7 @@ fn lower_initialization<'dae>(
     // residual no block can ever satisfy.
     row_incidence.extend(transferred.check_incidence);
     let row_count = rows.programs.len();
-    let plan = initial_projection::plan_initialization_projection(&space, &row_incidence);
+    let plan = initial_projection::plan_initialization_projection(&space, &row_incidence)?;
     let mut updates = initial_discrete::lower_initial_discrete_values(view, layout)?;
     // MLS §8.6 orders these after the projection that solves the `fixed = false`
     // unknowns they read; `settle_initialization_system` iterates the whole set
@@ -2033,14 +2149,23 @@ fn lower_initialization<'dae>(
     updates.targets.extend(transferred.update_targets);
     reject_double_owned_initial_coordinates(view, &plan.unknowns, &updates.targets)?;
     let row_targets = initial_row_targets(view, &plan.plan, row_count)?;
-    Ok(solve::InitializationSolveSystem {
-        residual: rows.into_compute_block()?,
+    // The aggregate is minted through the checked issuer, which re-proves the
+    // role/target/block/unknown correlation this lowering just built; a
+    // refusal here is a planner defect, never a model one.
+    solve::InitializationSolveSystem::construct(
+        rows.into_compute_block()?,
         row_targets,
-        row_roles: plan.row_roles,
-        projection_unknowns: plan.unknowns,
-        projection_plan: plan.plan,
-        update_rhs: updates.rows.into_scalar_block()?,
-        update_targets: updates.targets,
+        plan.row_roles,
+        mandatory_row_count,
+        plan.unknowns,
+        plan.plan,
+        (updates.rows.into_scalar_block()?, updates.targets),
+    )
+    .map_err(|error| {
+        LowerError::contract(
+            format!("the lowered initialization system is not exactly correlated: {error}"),
+            first_model_span(view),
+        )
     })
 }
 
@@ -2132,8 +2257,8 @@ fn reject_double_owned_initial_coordinates(
 /// A storage-class-tagged slot identity, so a Y index never aliases a P index.
 fn slot_identity(slot: solve::ScalarSlot) -> Option<(bool, usize)> {
     match slot {
-        solve::ScalarSlot::Y { index, .. } => Some((false, index)),
-        solve::ScalarSlot::P { index, .. } => Some((true, index)),
+        solve::ScalarSlot::Y { index } => Some((false, index)),
+        solve::ScalarSlot::P { index } => Some((true, index)),
         solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
     }
 }
@@ -2493,8 +2618,8 @@ pub(super) fn variable_scalar_slot(
         .checked_add(scalar)
         .ok_or_else(|| LowerError::contract("variable scalar layout overflow", span))?;
     Ok(match entry.storage {
-        StorageClass::Y => solve::scalar_slot_y(index),
-        StorageClass::P => solve::scalar_slot_p(index),
+        solve::SolveStorageColumn::Y => solve::scalar_slot_y(index),
+        solve::SolveStorageColumn::P => solve::scalar_slot_p(index),
     })
 }
 

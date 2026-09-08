@@ -1,5 +1,4 @@
 version = 1
-ir = "solve"
 name = "casadi-ode"
 description = "CasADi explicit ODE rhs(t, x, u, p) from the solve IR"
 readiness_level = 1
@@ -11,7 +10,6 @@ continuous_states = true
 residual_equations = false
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -36,5 +34,7 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+artifact_kind = "python-source"
+semantic_context = "solve"
 path = "{{ model_name }}_casadi_ode.py"
 template = "casadi_ode.py.jinja"

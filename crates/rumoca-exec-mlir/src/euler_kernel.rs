@@ -11,7 +11,6 @@
 /// `llc-18 --march=nvptx64` is needed at runtime.
 use crate::error::MlirError;
 use crate::gpu_blob::{GpuCompiledBlob, run_tool_gpu};
-use crate::options::MlirTarget;
 use rumoca_phase_codegen::templates;
 use std::process::Command;
 use tempfile::TempDir;
@@ -25,12 +24,7 @@ pub fn compile_euler_update_ptx(chip: &str) -> Result<GpuCompiledBlob, MlirError
     let ll_path = tmpdir.path().join("euler_update.ll");
     let ptx_path = tmpdir.path().join("euler_update.ptx");
 
-    let source = templates::builtin_target("mlir")
-        .and_then(|target| target.asset_bytes("runtime/euler_update.ll"))
-        .ok_or(MlirError::MissingBuiltinAsset {
-            target: "mlir",
-            asset: "runtime/euler_update.ll",
-        })?;
+    let source = templates::mlir_euler_update_llvm();
     std::fs::write(&ll_path, source)?;
 
     run_tool_gpu(
@@ -44,11 +38,6 @@ pub fn compile_euler_update_ptx(chip: &str) -> Result<GpuCompiledBlob, MlirError
             .arg(&ptx_path),
     )?;
 
-    let ptx_bytes = std::fs::read(&ptx_path)?;
-    Ok(GpuCompiledBlob {
-        device_ir: ptx_bytes,
-        entry_point: "euler_update_kernel".to_string(),
-        target: MlirTarget::GpuCuda,
-        chip: chip.to_string(),
-    })
+    let ptx = std::fs::read_to_string(&ptx_path)?;
+    Ok(GpuCompiledBlob::euler_update(ptx, chip.to_string()))
 }

@@ -1,0 +1,90 @@
+{%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
+{%- macro language(value) -%}{% if value == "c" %}C{% else %}{{ fail("unprepared Production Code language: " ~ value) }}{% endif %}{%- endmacro -%}
+{%- macro standard(value) -%}{% if value == "c99" %}C99{% else %}{{ fail("unprepared Production Code standard: " ~ value) }}{% endif %}{%- endmacro -%}
+{%- macro platform(value) -%}{% if value == "legacy" %}Legacy{% else %}{{ fail("unprepared Production Code platform: " ~ value) }}{% endif %}{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Manifest xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schemas/ProductionCode/efmiProductionCodeManifest.xsd" xsdVersion="0.17.0" kind="ProductionCode" efmiVersion="1.0.0"{{ attr("id", "{" ~ __rumoca_artifact_identity_v1_pc_manifest ~ "}") }}{{ attr("name", production.presentation.manifest_name) }}{{ attr("generationDateAndTime", artifact.generated_at) }}{{ attr("generationTool", artifact.generation_tool) }}>
+  <ManifestReferences>
+    <ManifestReference{{ attr("id", production.manifest.identifiers.algorithm_code_reference) }}{{ attr("manifestRefId", "{" ~ __rumoca_artifact_identity_v1_ac_manifest ~ "}") }}{{ attr("checksum", artifact.checksums.ac_manifest_sha1) }} origin="true"/>
+  </ManifestReferences>
+  <Files>
+    <File{{ attr("id", production.manifest.identifiers.header_file) }}{{ attr("name", production.manifest.header.layout.file_name) }}{{ attr("path", production.manifest.header.layout.file_path) }} needsChecksum="true"{{ attr("checksum", artifact.checksums.production_header_sha1) }} role="Code"/>
+    <File{{ attr("id", production.manifest.identifiers.source_file) }}{{ attr("name", production.manifest.source.layout.file_name) }}{{ attr("path", production.manifest.source.layout.file_path) }} needsChecksum="true"{{ attr("checksum", artifact.checksums.production_source_sha1) }} role="Code"/>
+  </Files>
+  <CodeContainer{{ attr("language", language(production.code_container.language)) }}{{ attr("standard", standard(production.code_container.standard)) }}{{ attr("platform", platform(production.code_container.platform)) }}{{ attr("floatPrecision", production.real_abi.float_precision) }}>
+    <Target>Generic</Target>
+    <TargetTypes>
+      <TargetType{{ attr("id", production.manifest.identifiers.real_target_type) }}{{ attr("kind", production.real_abi.efmi_datatype) }}{{ attr("codedType", production.real_abi.c_scalar_type) }}/>
+      <TargetType{{ attr("id", production.manifest.identifiers.integer32_target_type) }} kind="efmiInteger32" codedType="int32_t"/>
+      <TargetType{{ attr("id", production.manifest.identifiers.unsigned_integer32_target_type) }} kind="efmiUnsignedInteger32" codedType="uint32_t"/>
+      <TargetType{{ attr("id", production.manifest.identifiers.boolean_target_type) }} kind="efmiBool" codedType="bool"/>
+    </TargetTypes>
+    <CodeFiles>
+      <CodeFile{{ attr("id", production.manifest.identifiers.header_code_file) }} fileType="ProductionCode" codeType="HeaderFile">
+        <FileReference{{ attr("fileRefId", production.manifest.identifiers.header_file) }}/>
+        <Typedefs>
+          <Typedef{{ attr("id", production.presentation.real_type) }}{{ attr("name", production.presentation.real_type) }}><Alias{{ attr("targetTypeRefId", production.manifest.identifiers.real_target_type) }}/></Typedef>
+          <Typedef{{ attr("id", production.presentation.integer32_type) }}{{ attr("name", production.presentation.integer32_type) }}><Alias{{ attr("targetTypeRefId", production.manifest.identifiers.integer32_target_type) }}/></Typedef>
+          <Typedef{{ attr("id", production.presentation.unsigned_integer32_type) }}{{ attr("name", production.presentation.unsigned_integer32_type) }}><Alias{{ attr("targetTypeRefId", production.manifest.identifiers.unsigned_integer32_target_type) }}/></Typedef>
+          <Typedef{{ attr("id", production.presentation.boolean_type) }}{{ attr("name", production.presentation.boolean_type) }}><Alias{{ attr("targetTypeRefId", production.manifest.identifiers.boolean_target_type) }}/></Typedef>
+          <Typedef{{ attr("id", production.presentation.status_type) }}{{ attr("name", production.presentation.status_type) }}><Alias{{ attr("targetTypeRefId", production.manifest.identifiers.integer32_target_type) }}/></Typedef>
+          <Typedef{{ attr("id", production.presentation.storage_type) }}{{ attr("name", production.presentation.storage_type) }}>
+            <Components>
+{%- for declaration in production.declarations %}
+              <Component{{ attr("id", declaration.presentation.component) }}{{ attr("name", declaration.presentation.component) }}{{ attr("typeDefRefId", declaration.type_identifier) }}{% if declaration.dimensions|length == 0 %}/>{% else %}>
+                <Dimensions>
+{%- for dimension in declaration.dimensions %}
+                  <Dimension{{ attr("number", dimension.number) }}{{ attr("size", dimension.size) }}/>
+{%- endfor %}
+                </Dimensions>
+              </Component>{% endif %}
+{%- endfor %}
+              <Component{{ attr("id", production.presentation.error_status_component) }}{{ attr("name", production.presentation.error_status_component) }}{{ attr("typeDefRefId", production.presentation.unsigned_integer32_type) }}/>
+            </Components>
+          </Typedef>
+        </Typedefs>
+        <Variables>
+          <Variable{{ attr("id", production.presentation.success_status.identifier) }}{{ attr("name", production.presentation.success_status.identifier) }}{{ attr("typeDefRefId", production.presentation.status_type) }}{{ attr("value", production.presentation.success_status.signed_i32) }} const="true" static="true"/>
+        </Variables>
+      </CodeFile>
+      <CodeFile{{ attr("id", production.manifest.identifiers.source_code_file) }} fileType="ProductionCode" codeType="SourceFile">
+        <FileReference{{ attr("fileRefId", production.manifest.identifiers.source_file) }}/>
+        <Includes>
+          <Include{{ attr("codeFileRefId", production.manifest.identifiers.header_code_file) }}/>
+        </Includes>
+        <Functions>
+{%- for method in production.methods %}
+          <Function{{ attr("id", method.presentation.function) }}{{ attr("name", method.presentation.function) }}>
+            <ReturnParameter{{ attr("id", method.presentation.return_parameter) }}{{ attr("typeDefRefId", method.return_type) }}/>
+            <FormalParameters>
+              <FormalParameter{{ attr("name", method.presentation.self_parameter) }}{{ attr("number", method.self_parameter_number) }}{{ attr("id", method.presentation.self_parameter) }}{{ attr("typeDefRefId", method.self_parameter_type) }} pointer="true"/>
+            </FormalParameters>
+          </Function>
+{%- endfor %}
+        </Functions>
+      </CodeFile>
+    </CodeFiles>
+    <LogicalData>
+      <DataReferences>
+{%- for declaration in production.declarations %}
+        <DataReference>
+          <ForeignVariableReference{{ attr("manifestReferenceRefId", production.manifest.identifiers.algorithm_code_reference) }}{{ attr("foreignRefId", declaration.presentation.algorithm_code_identity) }}/>
+          <FormalParameter{{ attr("formalParameterRefId", production.presentation.logical_data.parameter) }}{{ attr("componentIdentifier", declaration.presentation.component) }}/>
+        </DataReference>
+{%- endfor %}
+        <DataReference>
+          <ForeignVariableReference{{ attr("manifestReferenceRefId", production.manifest.identifiers.algorithm_code_reference) }}{{ attr("foreignRefId", production.presentation.error_status_algorithm_code_identity) }}/>
+          <FormalParameter{{ attr("formalParameterRefId", production.presentation.logical_data.parameter) }}{{ attr("componentIdentifier", production.presentation.error_status_component) }}/>
+        </DataReference>
+      </DataReferences>
+      <FunctionReferences>
+{%- for method in production.methods %}
+        <FunctionReference>
+          <ForeignFunctionReference{{ attr("manifestReferenceRefId", production.manifest.identifiers.algorithm_code_reference) }}{{ attr("foreignRefId", method.presentation.algorithm_code_identity) }}/>
+          <GlobalFunction{{ attr("functionRefId", method.presentation.function) }}/>
+        </FunctionReference>
+{%- endfor %}
+      </FunctionReferences>
+    </LogicalData>
+  </CodeContainer>
+</Manifest>

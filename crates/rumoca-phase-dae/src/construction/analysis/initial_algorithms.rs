@@ -321,7 +321,6 @@ fn reject_unsupported_statements(
 pub(super) fn analyze_initial_algorithms(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
 ) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
     let mut analysis = InitialAlgorithmAnalysis {
@@ -345,7 +344,7 @@ pub(super) fn analyze_initial_algorithms(
             let value = values
                 .remove(&target)
                 .expect("a replayed target keeps its value");
-            let duplicated = match plan_initial_target(flat, roles, states, &target, value)? {
+            let duplicated = match plan_initial_target(flat, roles, &target, value)? {
                 InitialTarget::Parameter(value) => {
                     analysis.parameters.insert(target.clone(), value).is_some()
                 }
@@ -366,10 +365,10 @@ pub(super) fn analyze_initial_algorithms(
         }
     }
     for assertion in &analysis.assertions {
-        validate_expression(&assertion.condition, roles, states)?;
-        validate_expression(&assertion.message, roles, states)?;
+        validate_expression(&assertion.condition, roles)?;
+        validate_expression(&assertion.message, roles)?;
         if let Some(level) = &assertion.level {
-            validate_expression(level, roles, states)?;
+            validate_expression(level, roles)?;
         }
     }
     reject_competing_initial_equations(flat, roles, &analysis.parameters)?;
@@ -428,17 +427,15 @@ fn reject_competing_initial_equations(
 fn plan_initial_target(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     target: &VarName,
     value: ReplayedValue,
 ) -> Result<InitialTarget, ToDaeError> {
     match roles[target] {
         PlannedRole::Parameter => {
-            plan_initial_parameter(flat, roles, states, target, value).map(InitialTarget::Parameter)
+            plan_initial_parameter(flat, roles, target, value).map(InitialTarget::Parameter)
         }
         PlannedRole::DiscreteReal | PlannedRole::DiscreteValue => {
-            plan_initial_discrete_value(flat, roles, states, target, value)
-                .map(InitialTarget::Discrete)
+            plan_initial_discrete_value(flat, roles, target, value).map(InitialTarget::Discrete)
         }
         role => Err(unsupported(
             format!(
@@ -463,7 +460,6 @@ fn plan_initial_target(
 fn plan_initial_discrete_value(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     target: &VarName,
     value: ReplayedValue,
 ) -> Result<InitialDiscreteValue, ToDaeError> {
@@ -489,7 +485,7 @@ fn plan_initial_discrete_value(
         ));
     }
     reject_unsettled_reads(flat, &value.expression, target, roles)?;
-    validate_expression(&value.expression, roles, states)?;
+    validate_expression(&value.expression, roles)?;
     Ok(InitialDiscreteValue {
         value: value.expression,
         span: value.span,
@@ -500,7 +496,6 @@ fn plan_initial_discrete_value(
 fn plan_initial_parameter(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     target: &VarName,
     value: ReplayedValue,
 ) -> Result<Expression, ToDaeError> {
@@ -533,7 +528,7 @@ fn plan_initial_parameter(
         ));
     }
     reject_runtime_reads(&value.expression, target, roles)?;
-    validate_expression(&value.expression, roles, states)?;
+    validate_expression(&value.expression, roles)?;
     Ok(value.expression)
 }
 

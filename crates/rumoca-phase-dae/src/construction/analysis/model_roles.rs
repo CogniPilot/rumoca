@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct ModelRoles {
-    pub(super) states: HashSet<VarName>,
+    pub(super) derivatives: DerivativePlans,
     pub(super) variables: HashMap<VarName, PlannedRole>,
     pub(super) expressions: HashMap<VarName, PlannedRole>,
 }
@@ -9,18 +9,9 @@ pub(super) struct ModelRoles {
 pub(super) fn analyze_model_roles(
     flat: &flat::Model,
     sampled_values: &HashMap<InstanceId, SampledTarget>,
+    states: StateTargets,
+    derivative_candidates: DerivativeCandidates,
 ) -> Result<ModelRoles, ToDaeError> {
-    let mut states = HashSet::new();
-    for equation in flat.equations.iter().chain(&flat.initial_equations) {
-        collect_derivative_targets(&equation.residual, &mut states)?;
-    }
-    for expression in flat
-        .variables
-        .values()
-        .flat_map(variable_attribute_expressions)
-    {
-        collect_derivative_targets(expression, &mut states)?;
-    }
     let mut assigned_discrete = event_targets(flat);
     assigned_discrete.extend(
         flat.variables
@@ -33,10 +24,29 @@ pub(super) fn analyze_model_roles(
         .variables
         .iter()
         .map(|(name, variable)| {
-            validate_variable(flat, name, variable, &states, &assigned_discrete)
-                .map(|role| (name.clone(), role))
+            let occurrence = rumoca_core::SourceOccurrenceId::try_from(variable.instance_id)
+                .map_err(|_| ToDaeError::internal("validated Flat retained an unset occurrence"))?;
+            validate_variable(
+                flat,
+                name,
+                variable,
+                occurrence,
+                &states,
+                &assigned_discrete,
+            )
+            .map(|role| (name.clone(), role))
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
+    let occurrence_roles = flat
+        .variables
+        .iter()
+        .map(|(name, variable)| {
+            let occurrence = rumoca_core::SourceOccurrenceId::try_from(variable.instance_id)
+                .map_err(|_| ToDaeError::internal("validated Flat retained an unset occurrence"))?;
+            Ok((occurrence, roles[name]))
+        })
+        .collect::<Result<HashMap<_, _>, ToDaeError>>()?;
+    let derivatives = admit_derivative_roles(derivative_candidates, &occurrence_roles)?;
     let mut expression_roles = roles.clone();
     expression_roles.extend(
         flat.enum_literal_ordinals
@@ -50,7 +60,7 @@ pub(super) fn analyze_model_roles(
             .map(|name| (name, PlannedRole::Aggregate)),
     );
     Ok(ModelRoles {
-        states,
+        derivatives,
         variables: roles,
         expressions: expression_roles,
     })
@@ -137,39 +147,6 @@ fn collect_previous_operand_names(expression: &Expression, discrete: &mut HashSe
     }
 }
 
-fn collect_derivative_targets(
-    expression: &Expression,
-    states: &mut HashSet<VarName>,
-) -> Result<(), ToDaeError> {
-    if let Expression::BuiltinCall {
-        function: BuiltinFunction::Der,
-        args,
-        span,
-    } = expression
-    {
-        require_span(*span, "derivative expression")?;
-        let [argument] = args.as_slice() else {
-            return Err(ToDaeError::unsupported_flat(
-                "derivative expression",
-                "der(...) must have exactly one resolved variable-reference operand",
-                *span,
-            ));
-        };
-        let Some((name, _)) = derivative_reference(argument) else {
-            return Err(ToDaeError::unsupported_flat(
-                "derivative expression",
-                "der(...) must have exactly one resolved variable-reference operand",
-                *span,
-            ));
-        };
-        states.insert(name.var_name().clone());
-    }
-    for child in expression_children(expression) {
-        collect_derivative_targets(child, states)?;
-    }
-    Ok(())
-}
-
 /// MLS §16.5.1: every variable of a clocked partition is a clocked
 /// discrete-time variable, whatever variability its declaration carries.
 ///
@@ -184,7 +161,7 @@ fn collect_derivative_targets(
 ///
 /// Only the two continuous non-state roles are corrected. A `der(...)` target
 /// keeps [`PlannedRole::State`] so an illegal continuous state inside a clocked
-/// partition is still reported by the expression validator rather than being
+/// partition is rejected at its exact clock-domain occurrence rather than being
 /// silently reclassified, and the non-runtime roles are never partition members
 /// to begin with.
 pub(super) fn apply_clocked_partition_roles(
@@ -217,10 +194,14 @@ fn validate_variable(
     flat: &flat::Model,
     name: &VarName,
     variable: &flat::Variable,
-    states: &HashSet<VarName>,
+    occurrence: rumoca_core::SourceOccurrenceId,
+    states: &StateTargets,
     assigned_discrete: &HashSet<VarName>,
 ) -> Result<PlannedRole, ToDaeError> {
-    if variable.from_expandable_connector && !variable.connected && variable.binding.is_none() {
+    if variable.from_expandable_connector
+        && variable.connected.is_unconnected()
+        && variable.binding.is_none()
+    {
         validate_variable_header(flat, name, variable)?;
         return Ok(PlannedRole::UnusedExpandable);
     }
@@ -240,6 +221,7 @@ fn validate_variable(
     let role = classify_variable_role(
         name,
         variable,
+        occurrence,
         states,
         assigned_discrete,
         scalar_type,
@@ -314,7 +296,8 @@ fn validate_variable_header(
 fn classify_variable_role(
     name: &VarName,
     variable: &flat::Variable,
-    states: &HashSet<VarName>,
+    occurrence: rumoca_core::SourceOccurrenceId,
+    states: &StateTargets,
     assigned_discrete: &HashSet<VarName>,
     scalar_type: dae::ScalarType,
     external_input: bool,
@@ -325,7 +308,7 @@ fn classify_variable_role(
         PlannedRole::Constant
     } else if matches!(variable.variability, Variability::Parameter(_)) {
         PlannedRole::Parameter
-    } else if states.contains(name) {
+    } else if states.contains(occurrence) {
         PlannedRole::State
     } else if assigned_discrete.contains(name)
         || matches!(variable.variability, Variability::Discrete(_))

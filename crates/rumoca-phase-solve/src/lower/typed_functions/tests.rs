@@ -4,23 +4,38 @@ use rumoca_core::{SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
 
 use super::*;
 
+mod compact_slices;
 mod fixtures;
 
 use fixtures::{integer_to_real_sibling_folds, lower_root_call, structured_range};
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "valid-by-construction event transaction fixture enumerates its complete typed ownership proof"
-)]
-fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
+fn local_source_attributes<'dae>() -> dae::VariableAttributes<'dae> {
+    dae::VariableAttributes {
+        component_ref: None,
+        binding: None,
+        start: None,
+        fixed: None,
+        min: None,
+        max: None,
+        nominal: None,
+        unit: None,
+        state_select: rumoca_core::StateSelect::Default,
+        description: None,
+        causality: dae::VariableCausality::Local,
+        is_tunable: false,
+        is_held: false,
+        origin: dae::VariableOrigin::Source,
+    }
+}
+
+fn mixed_event_transaction_fixture() -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add(
         "event_transaction.mo",
         "discrete Real x[2]; discrete Boolean valid; when Clock() then end when;",
     );
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 71)).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let (vector, boolean) = model.types(|types| {
             Ok((
                 types.intern(
@@ -39,15 +54,17 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
             Ok((
                 variables.discrete_real(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(1),
                     vector,
                     at,
-                    dae::VariableAttributes::default(),
+                    local_source_attributes(),
                 )?,
                 variables.discrete_value(
                     VarName::new("valid"),
+                    rumoca_core::InstanceId::new(2),
                     boolean,
                     at,
-                    dae::VariableAttributes::default(),
+                    local_source_attributes(),
                 )?,
             ))
         })?;
@@ -110,7 +127,12 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
         })?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
+    let model = mixed_event_transaction_fixture();
 
     model.inspect(|view| {
         let layout = crate::layout::lower_layout(view).unwrap();
@@ -139,6 +161,37 @@ fn mixed_event_transaction_retains_aggregate_inputs_and_atomic_targets() {
     });
 }
 
+fn disjoint_periodic_variables<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(dae::DiscreteRealId<'dae>, dae::DiscreteRealId<'dae>), dae::DaeConstructionError> {
+    let real = model.types(|types| {
+        types.intern(
+            rumoca_core::TypeId::new(0),
+            dae::ValueType::scalar(dae::ScalarType::Real),
+            at,
+        )
+    })?;
+    model.variables(|variables| {
+        Ok((
+            variables.discrete_real(
+                VarName::new("fast"),
+                rumoca_core::InstanceId::new(3),
+                real,
+                at,
+                local_source_attributes(),
+            )?,
+            variables.discrete_real(
+                VarName::new("slow"),
+                rumoca_core::InstanceId::new(4),
+                real,
+                at,
+                local_source_attributes(),
+            )?,
+        ))
+    })
+}
+
 /// Two disjoint periodic regions on different clock lattices, used to check
 /// they still form one lazily-evaluated atomic transaction.
 fn disjoint_periodic_regions_fixture() -> dae::Dae {
@@ -151,29 +204,7 @@ fn disjoint_periodic_regions_fixture() -> dae::Dae {
     let fast_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 100).unwrap();
     let slow_lattice = rumoca_core::ClockLattice::from_interval_counter(1, 20).unwrap();
     dae::Dae::construct(sources, |model| {
-        let real = model.types(|types| {
-            types.intern(
-                rumoca_core::TypeId::new(0),
-                dae::ValueType::scalar(dae::ScalarType::Real),
-                at,
-            )
-        })?;
-        let (fast, slow) = model.variables(|variables| {
-            Ok((
-                variables.discrete_real(
-                    VarName::new("fast"),
-                    real,
-                    at,
-                    dae::VariableAttributes::default(),
-                )?,
-                variables.discrete_real(
-                    VarName::new("slow"),
-                    real,
-                    at,
-                    dae::VariableAttributes::default(),
-                )?,
-            ))
-        })?;
+        let (fast, slow) = disjoint_periodic_variables(model, at)?;
         let (fast_clock, slow_clock) = model.clocks(|clocks| {
             let fast_clock = clocks.periodic(fast_lattice, at)?;
             let slow_clock = clocks.periodic(slow_lattice, at)?;
@@ -290,12 +321,11 @@ fn disjoint_periodic_regions_form_one_lazy_atomic_transaction() {
     });
 }
 
-#[test]
-fn aggregate_function_lowers_once_without_element_operations() {
+fn aggregate_function_model() -> dae::Dae {
     let mut sources = SourceMap::new();
     let source = sources.add("typed_function.mo", "function transform");
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 18)).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let (matrix, vector_two, vector_three) = model.types(|types| {
             Ok((
                 types.derived(dae::ValueType::array(dae::ScalarType::Real, [2, 3]), at)?,
@@ -354,7 +384,12 @@ fn aggregate_function_lowers_once_without_element_operations() {
         model.expressions(|expressions| expressions.at(at).call(function, 0, [matrix, vector]))?;
         Ok(())
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn aggregate_function_lowers_once_without_element_operations() {
+    let model = aggregate_function_model();
     let table = lower_root_call(&model);
     let [owner] = table.owners() else {
         panic!("one exact call owner expected");
@@ -366,14 +401,57 @@ fn aggregate_function_lowers_once_without_element_operations() {
         operation.operation(),
         solve::SolveOperation::Transpose { .. }
     )));
-    assert!(owner.body().operations().iter().any(|operation| matches!(
-        operation.operation(),
-        solve::SolveOperation::MatrixMultiply { .. }
-    )));
+    assert_eq!(
+        owner
+            .body()
+            .operations()
+            .iter()
+            .filter(|operation| matches!(
+                operation.operation(),
+                solve::SolveOperation::MatrixMultiply { .. }
+            ))
+            .count(),
+        1,
+        "one source tensor product must remain one tensor-native Solve operation"
+    );
+    let plan = owner
+        .body()
+        .operations()
+        .iter()
+        .find_map(|operation| match operation.operation() {
+            solve::SolveOperation::MatrixMultiply { plan, .. } => Some(*plan),
+            _ => None,
+        })
+        .expect("source tensor product owns its issued contract");
+    assert_eq!((plan.rows(), plan.inner(), plan.columns()), (3, 2, 1));
+    assert!(matches!(
+        plan.arithmetic(),
+        solve::SolveMatrixMultiplyArithmetic::Real {
+            accumulator: solve::SolveRealFormat::Binary64,
+            semantics:
+                rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
+            order: solve::SolveMatrixMultiplyOrder::AscendingSharedAxis,
+            primitive_rounding: solve::SolveMatrixMultiplyRounding::RoundToNearestTiesToEven,
+            contraction: solve::SolveMatrixMultiplyContraction::SeparateMultiplyAdd,
+            intermediate_precision:
+                solve::SolveMatrixMultiplyIntermediatePrecision::AccumulatorFormatOnly,
+            final_rounding: solve::SolveMatrixMultiplyFinalRounding::None,
+            signed_zero: solve::SolveMatrixMultiplySignedZero::IeeePrimitiveResult,
+            nan: solve::SolveMatrixMultiplyNan::QuietPayloadAndSignQuotient,
+            infinity: solve::SolveMatrixMultiplyInfinity::IeeePrimitiveResult,
+            subnormal: solve::SolveMatrixMultiplySubnormal::GradualUnderflow,
+            status: solve::SolveMatrixMultiplyStatus::NoObservableFloatingStatus,
+        }
+    ));
     assert!(owner.body().operations().iter().all(|operation| !matches!(
         operation.operation(),
         solve::SolveOperation::ProjectElement { .. }
             | solve::SolveOperation::ConstructAggregate { .. }
+            | solve::SolveOperation::Reduce { .. }
+            | solve::SolveOperation::Binary {
+                operator: solve::SolveBinaryOperator::Add | solve::SolveBinaryOperator::Multiply,
+                ..
+            }
     )));
 }
 
@@ -808,17 +886,17 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
     );
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 12)).unwrap();
     let model = dae::Dae::construct(sources, |model| {
-        let (boolean, integer) = model.types(|types| {
+        let (boolean, real) = model.types(|types| {
             Ok((
                 types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), at)?,
-                types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at)?,
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at)?,
             ))
         })?;
         let (function, ()) = model.function(
             dae::FunctionSignature::new(
                 VarName::new("fold_conditional"),
                 [boolean],
-                [integer, integer],
+                [real, real],
                 at,
             ),
             |model, reservation| {
@@ -832,14 +910,14 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
                     ))
                 })?;
                 let shared = model.functions(|functions| {
-                    functions.local(&reservation, VarName::new("shared"), integer, at)
+                    functions.local(&reservation, VarName::new("shared"), real, at)
                 })?;
                 let condition = model
                     .expressions(|expressions| expressions.at(at).function_parameter(condition))?;
                 let [zero, two, three] = model.expressions(|expressions| {
-                    [0, 2, 3]
+                    [0.0, 2.0, 3.0]
                         .into_iter()
-                        .map(|value| expressions.at(at).literal(dae::DaeLiteral::Integer(value)))
+                        .map(|value| expressions.at(at).literal(dae::DaeLiteral::Real(value)))
                         .collect::<Result<Vec<_>, _>>()
                         .map(|values| values.try_into().unwrap())
                 })?;
@@ -853,7 +931,7 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "i".to_owned(),
                                 lower: 1,
                                 upper: 3,
@@ -924,8 +1002,14 @@ fn fold_reverse_demand_lowers_one_correlated_assignment_group() {
     )
     .unwrap();
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[enabled]).unwrap();
-    assert_eq!(output[0].elements(), [solve::SolveValueKind::Integer(6)]);
-    assert_eq!(output[1].elements(), [solve::SolveValueKind::Integer(6)]);
+    assert_eq!(
+        output[0].elements(),
+        [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
+    );
+    assert_eq!(
+        output[1].elements(),
+        [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
+    );
 }
 
 #[test]
@@ -934,16 +1018,20 @@ fn function_fold_stays_one_compact_typed_owner() {
     let source = sources.add("typed_fold.mo", "function sum for i in 1:3 loop");
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 8)).unwrap();
     let model = dae::Dae::construct(sources, |model| {
-        let integer = model
-            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
         let (function, ()) = model.function(
-            dae::FunctionSignature::new(VarName::new("sum"), [], [integer], at),
+            dae::FunctionSignature::new(VarName::new("sum"), [], [real], at),
             |model, reservation| {
                 let output = model.functions(|functions| {
                     functions.output(&reservation, VarName::new("result"), 0, at)
                 })?;
-                let zero = model.expressions(|expressions| {
-                    expressions.at(at).literal(dae::DaeLiteral::Integer(0))
+                let (zero, integer_zero, one) = model.expressions(|expressions| {
+                    Ok((
+                        expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Integer(0))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?,
+                    ))
                 })?;
                 let mut body = model.functions(|functions| functions.begin(reservation, at))?;
                 model.functions(|functions| functions.assign(&mut body, output, zero, at))?;
@@ -951,7 +1039,7 @@ fn function_fold_stays_one_compact_typed_owner() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "i".to_owned(),
                                 lower: 1,
                                 upper: 3,
@@ -970,7 +1058,7 @@ fn function_fold_stays_one_compact_typed_owner() {
                 let condition = model.expressions(|expressions| {
                     expressions
                         .at(at)
-                        .binary(dae::BinaryOperator::Greater, binder, zero)
+                        .binary(dae::BinaryOperator::Greater, binder, integer_zero)
                 })?;
                 let message = model.expressions(|expressions| {
                     expressions
@@ -983,7 +1071,7 @@ fn function_fold_stays_one_compact_typed_owner() {
                 let update = model.expressions(|expressions| {
                     expressions
                         .at(at)
-                        .binary(dae::BinaryOperator::Add, current, binder)
+                        .binary(dae::BinaryOperator::Add, current, one)
                 })?;
                 model.functions(|functions| {
                     functions.assign_loop(&mut loop_body, output, update, at)
@@ -1019,7 +1107,10 @@ fn function_fold_stays_one_compact_typed_owner() {
         1
     );
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
-    assert_eq!(output[0].elements(), [solve::SolveValueKind::Integer(6)]);
+    assert_eq!(
+        output[0].elements(),
+        [solve::SolveValueKind::Real64(3.0_f64.to_bits())]
+    );
     assert_eq!(output[1].elements(), [solve::SolveValueKind::Boolean(true)]);
 }
 
@@ -1032,10 +1123,10 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
     );
     let at = dae::DaeProvenance::source(Span::from_offsets(source, 0, 8)).unwrap();
     let model = dae::Dae::construct(sources, |model| {
-        let integer = model
-            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), at))?;
+        let real = model
+            .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
         let (function, ()) = model.function(
-            dae::FunctionSignature::new(VarName::new("sequential"), [], [integer, integer], at),
+            dae::FunctionSignature::new(VarName::new("sequential"), [], [real, real], at),
             |model, reservation| {
                 let first = model.functions(|functions| {
                     functions.output(&reservation, VarName::new("first"), 0, at)
@@ -1045,8 +1136,8 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
                 })?;
                 let (zero, one) = model.expressions(|expressions| {
                     Ok((
-                        expressions.at(at).literal(dae::DaeLiteral::Integer(0))?,
-                        expressions.at(at).literal(dae::DaeLiteral::Integer(1))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Real(0.0))?,
+                        expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?,
                     ))
                 })?;
                 let mut body = model.functions(|functions| functions.begin(reservation, at))?;
@@ -1058,7 +1149,7 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "i".to_owned(),
                                 lower: 1,
                                 upper: 3,
@@ -1108,8 +1199,14 @@ fn function_fold_preserves_sequential_carried_redefinitions() {
         1
     );
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
-    assert_eq!(output[0].elements(), [solve::SolveValueKind::Integer(3)]);
-    assert_eq!(output[1].elements(), [solve::SolveValueKind::Integer(3)]);
+    assert_eq!(
+        output[0].elements(),
+        [solve::SolveValueKind::Real64(3.0_f64.to_bits())]
+    );
+    assert_eq!(
+        output[1].elements(),
+        [solve::SolveValueKind::Real64(3.0_f64.to_bits())]
+    );
 }
 
 #[test]
@@ -1142,7 +1239,7 @@ fn assertion_only_loop_uses_map_reduction_without_empty_fold() {
                     domains.structured(
                         StructuredIndexDomain {
                             binders: vec![StructuredIndexBinder {
-                                id: 0,
+                                id: rumoca_core::StructuredIndexBinderId::new(0),
                                 display_name: "i".to_owned(),
                                 lower: 1,
                                 upper: 3,
@@ -1476,8 +1573,14 @@ fn sibling_nested_folds_read_the_completed_value_of_the_earlier_sibling() {
     // Two enclosing iterations: alpha reaches 3 then 6, and beta accumulates
     // the completed alpha twice per iteration: 2 * 3 + 2 * 6 = 18. Reading the
     // enclosing loop's entry value instead would yield 6.
-    assert_eq!(output[0].elements(), [solve::SolveValueKind::Integer(6)]);
-    assert_eq!(output[1].elements(), [solve::SolveValueKind::Integer(18)]);
+    assert_eq!(
+        output[0].elements(),
+        [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
+    );
+    assert_eq!(
+        output[1].elements(),
+        [solve::SolveValueKind::Real64(18.0_f64.to_bits())]
+    );
 }
 
 /// A Real target assigned an Integer value, read by a later sibling loop
@@ -1498,16 +1601,16 @@ fn reverse_demand_capture_coerces_an_integer_definition_to_its_real_target() {
         panic!("one exact sibling-fold owner expected")
     };
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
-    // `count` completes at 3 then 6, `alpha` publishes each as a Real, and
-    // `beta` adds the completed `alpha` twice per enclosing iteration:
-    // 2 * 3 + 2 * 6 = 18.
+    // The first sibling publishes the exact Integer one, `alpha` publishes it
+    // as a Real, and `beta` adds the completed `alpha` twice per enclosing
+    // iteration: 2 * 1 + 2 * 1 = 4.
     assert_eq!(
         output[0].elements(),
-        [solve::SolveValueKind::Real64(18.0_f64.to_bits())]
+        [solve::SolveValueKind::Real64(4.0_f64.to_bits())]
     );
     assert_eq!(
         output[1].elements(),
-        [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
+        [solve::SolveValueKind::Real64(1.0_f64.to_bits())]
     );
 }
 
@@ -1769,14 +1872,14 @@ fn a_fold_body_captures_an_enclosing_scope_definition_instead_of_rebuilding_it()
     };
     assert_eq!(fold_count(owner.body()), 3);
     let output = rumoca_eval_solve::eval_pure_call(&table, owner.id(), &[]).unwrap();
-    // Two enclosing iterations: count reaches 3 then 6, alpha publishes each,
-    // and beta accumulates the completed alpha twice per iteration.
+    // The first sibling completes `count := 1`, alpha publishes that Integer
+    // as a Real, and beta consumes the completed alpha twice per iteration.
     assert_eq!(
         output[0].elements(),
-        [solve::SolveValueKind::Real64(18.0_f64.to_bits())]
+        [solve::SolveValueKind::Real64(4.0_f64.to_bits())]
     );
     assert_eq!(
         output[1].elements(),
-        [solve::SolveValueKind::Real64(6.0_f64.to_bits())]
+        [solve::SolveValueKind::Real64(1.0_f64.to_bits())]
     );
 }

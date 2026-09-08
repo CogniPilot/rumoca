@@ -83,28 +83,28 @@ impl MintVisitor {
             return;
         }
         for (ordinal, field) in fields.iter().enumerate() {
-            let name = field
-                .ident
-                .as_ref()
-                .map_or_else(|| ordinal.to_string(), std::string::ToString::to_string);
-            let allowed = if root {
-                matches!(field.vis, syn::Visibility::Inherited)
-            } else {
-                matches!(field.vis, syn::Visibility::Inherited)
-                    || is_construction_scoped(&field.vis)
-            };
-            if !allowed {
-                let scope = if root {
-                    "its minting module"
-                } else {
-                    "the construction authority"
-                };
-                self.record(format!(
-                    "`{owner}` field `{name}` is visible beyond {scope} ({})",
-                    visibility_label(&field.vis)
-                ));
-            }
+            self.check_field(owner, ordinal, field, root);
         }
+    }
+
+    fn check_field(&mut self, owner: &str, ordinal: usize, field: &syn::Field, root: bool) {
+        let inherited = matches!(field.vis, syn::Visibility::Inherited);
+        if inherited || (!root && is_construction_scoped(&field.vis)) {
+            return;
+        }
+        let name = field
+            .ident
+            .as_ref()
+            .map_or_else(|| ordinal.to_string(), std::string::ToString::to_string);
+        let scope = if root {
+            "its minting module"
+        } else {
+            "the construction authority"
+        };
+        self.record(format!(
+            "`{owner}` field `{name}` is visible beyond {scope} ({})",
+            visibility_label(&field.vis)
+        ));
     }
 }
 
@@ -282,7 +282,7 @@ fn the_plan_root_and_its_storage_have_exactly_one_mint_site() {
             .unwrap_or_else(|| panic!("`{root_type}` must be minted somewhere"));
         assert_eq!(
             sites,
-            &[expected_module.clone()],
+            std::slice::from_ref(&expected_module),
             "`{root_type}` must be minted only in `{expected_module}`, the module that also \
 declares its private fields; a second site means a plan can exist without the checks that \
 module performs"

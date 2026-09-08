@@ -25,6 +25,7 @@ fn discrete_initial_value_becomes_an_initialization_update_of_the_coordinate_and
         let count = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("count"),
+                rumoca_core::InstanceId::new(1),
                 integer,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -62,10 +63,10 @@ fn discrete_initial_value_becomes_an_initialization_update_of_the_coordinate_and
     else {
         panic!("a discrete coordinate occupies P storage");
     };
-    let [current, pre] = solve.initialization().update_targets.as_slice() else {
+    let [current, pre] = solve.initialization().update_targets() else {
         panic!(
             "one current and one pre update target expected, got {:?}",
-            solve.initialization().update_targets
+            solve.initialization().update_targets()
         );
     };
     assert_eq!(*current, rumoca_ir_solve::scalar_slot_p(index));
@@ -83,7 +84,7 @@ fn discrete_initial_value_becomes_an_initialization_update_of_the_coordinate_and
         .dest_p_index;
     assert_eq!(*pre, rumoca_ir_solve::scalar_slot_p(pre_index));
     assert_eq!(
-        solve.initialization().update_rhs.len(),
+        solve.initialization().update_rhs().len(),
         2,
         "each update target has its own row"
     );

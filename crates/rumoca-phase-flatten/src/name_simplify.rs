@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 /// Optional MLS §5.6-compatible shortening for export-oriented flat models.
 ///
 /// Use the shortest readable suffix that stays unique, adding parent hierarchy
-/// only when needed. Connector/overconstrained paths remain qualified because
-/// later balance logic still needs their public interface grouping.
+/// only when needed. Connector and record paths remain qualified because later
+/// balance logic still needs their public interface grouping.
 ///
 /// This pass only renames. It used to also expand `arr.member` (an array of
 /// components projected on one of their members) into an array expression, by
@@ -101,7 +101,6 @@ fn should_preserve_name(
     }
 
     matches!(var.causality, rumoca_core::Causality::Input(_))
-        || var.oc_record_path.is_some()
         || has_protected_segment_prefix(name, protected_prefixes)
 }
 
@@ -684,14 +683,13 @@ fn remap_component_reference(
 fn remap_equation_origin(origin: &mut flat::EquationOrigin, rename_map: &HashMap<String, String>) {
     match origin {
         flat::EquationOrigin::ComponentEquation { .. }
+        | flat::EquationOrigin::Connection { .. }
+        | flat::EquationOrigin::OutsideStream { .. }
+        | flat::EquationOrigin::EqualityConstraint { .. }
         | flat::EquationOrigin::FlowSum { .. }
+        | flat::EquationOrigin::UnconnectedFlow { .. }
         | flat::EquationOrigin::Algorithm { .. } => {}
-        flat::EquationOrigin::Connection { lhs, rhs } => {
-            *lhs = remap_name_string(lhs, rename_map);
-            *rhs = remap_name_string(rhs, rename_map);
-        }
-        flat::EquationOrigin::UnconnectedFlow { variable }
-        | flat::EquationOrigin::Reinit { state: variable }
+        flat::EquationOrigin::Reinit { state: variable }
         | flat::EquationOrigin::WhenAssignment { target: variable }
         | flat::EquationOrigin::Binding { variable } => {
             *variable = remap_name_string(variable, rename_map);

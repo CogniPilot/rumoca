@@ -33,8 +33,8 @@ pub(super) fn eval_binary_op(
         OpBinary::Ge => eval_ge(lhs, rhs, span),
         OpBinary::And => eval_and(lhs, rhs, span),
         OpBinary::Or => eval_or(lhs, rhs, span),
-        OpBinary::Empty | OpBinary::Assign => Err(EvalError::UnsupportedExpression {
-            kind: format!("binary operator: {:?}", op),
+        OpBinary::Empty | OpBinary::Assign => Err(EvalError::InvalidSemanticIr {
+            reason: format!("non-semantic binary operator {op:?} reached constant evaluation"),
             span,
         }),
     }
@@ -100,7 +100,10 @@ pub(super) fn eval_unary_op(op: &OpUnary, rhs: &Value, span: Span) -> Result<Val
         OpUnary::Minus | OpUnary::DotMinus => eval_negate(rhs, span),
         OpUnary::Plus | OpUnary::DotPlus => Ok(rhs.clone()),
         OpUnary::Not => eval_not(rhs, span),
-        OpUnary::Empty => Ok(rhs.clone()),
+        OpUnary::Empty => Err(EvalError::InvalidSemanticIr {
+            reason: "empty unary operator reached constant evaluation".to_string(),
+            span,
+        }),
     }
 }
 
@@ -369,6 +372,9 @@ fn eval_lt(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) < *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a < *b as f64)),
         (Value::String(a), Value::String(b)) => Ok(Value::Bool(a < b)),
+        (Value::ResolvedEnum(a), Value::ResolvedEnum(b)) => {
+            compare_resolved_enums(a, b, span, |left, right| left < right)
+        }
         _ => Err(EvalError::type_mismatch(
             "comparable",
             format!("{} < {}", lhs.type_name(), rhs.type_name()),
@@ -384,6 +390,9 @@ fn eval_le(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) <= *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a <= *b as f64)),
         (Value::String(a), Value::String(b)) => Ok(Value::Bool(a <= b)),
+        (Value::ResolvedEnum(a), Value::ResolvedEnum(b)) => {
+            compare_resolved_enums(a, b, span, |left, right| left <= right)
+        }
         _ => Err(EvalError::type_mismatch(
             "comparable",
             format!("{} <= {}", lhs.type_name(), rhs.type_name()),
@@ -399,6 +408,9 @@ fn eval_gt(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) > *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a > *b as f64)),
         (Value::String(a), Value::String(b)) => Ok(Value::Bool(a > b)),
+        (Value::ResolvedEnum(a), Value::ResolvedEnum(b)) => {
+            compare_resolved_enums(a, b, span, |left, right| left > right)
+        }
         _ => Err(EvalError::type_mismatch(
             "comparable",
             format!("{} > {}", lhs.type_name(), rhs.type_name()),
@@ -414,12 +426,31 @@ fn eval_ge(lhs: &Value, rhs: &Value, span: Span) -> Result<Value, EvalError> {
         (Value::Integer(a), Value::Real(b)) => Ok(Value::Bool((*a as f64) >= *b)),
         (Value::Real(a), Value::Integer(b)) => Ok(Value::Bool(*a >= *b as f64)),
         (Value::String(a), Value::String(b)) => Ok(Value::Bool(a >= b)),
+        (Value::ResolvedEnum(a), Value::ResolvedEnum(b)) => {
+            compare_resolved_enums(a, b, span, |left, right| left >= right)
+        }
         _ => Err(EvalError::type_mismatch(
             "comparable",
             format!("{} >= {}", lhs.type_name(), rhs.type_name()),
             span,
         )),
     }
+}
+
+fn compare_resolved_enums(
+    lhs: &super::value::ResolvedEnumValue,
+    rhs: &super::value::ResolvedEnumValue,
+    span: Span,
+    compare: impl FnOnce(i64, i64) -> bool,
+) -> Result<Value, EvalError> {
+    if lhs.declaration() != rhs.declaration() {
+        return Err(EvalError::type_mismatch(
+            "enumerations with the same declaration identity",
+            format!("{} and {}", lhs.display_type(), rhs.display_type()),
+            span,
+        ));
+    }
+    Ok(Value::Bool(compare(lhs.ordinal(), rhs.ordinal())))
 }
 
 // Logical operations

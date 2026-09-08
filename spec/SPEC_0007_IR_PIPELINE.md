@@ -25,7 +25,7 @@ Modelica source (.mo)
        │  rumoca-phase-typecheck, rumoca-phase-flatten
        ▼
   ┌──────────┐
-  │   Flat   │  rumoca-ir-flat       ◄─ codegen: flat Modelica export
+  │   Flat   │  rumoca-ir-flat       ◄─ inspection: exact current-version JSON
   └────┬─────┘
        │  rumoca-phase-dae
        ▼
@@ -44,28 +44,67 @@ Modelica source (.mo)
 | Backend | IR level | Why |
 |---|---|---|
 | Formatter, doc generator | AST | Needs syntax + spans; it is a target only when it preserves every supported construct or fails closed |
-| Flat Modelica export | Flat | Original expression structure |
+| Flat IR inspection | Flat | Exact current-version JSON including construction-state flags |
 | DAE residual and symbolic-analysis targets | DAE | MLS B.1 form, residual ownership, source traceability |
 | Numeric simulation and explicit-ODE products | `SolveProblem` | Register-machine plus tensor bytecode |
 | eFMI Algorithm Code | checked `AlgorithmCodePackage` derived from DAE | Causal GALEC lifecycle and language semantics |
-| eFMI Production Code and GALEC-derived embedded execution | checked `SolveAlgorithmBlock` derived from `AlgorithmCodePackage` (pending: 2026-08-08 plan, M3-4) | Typed executable lifecycle, storage, effects, and ABI obligations |
-| FMI 2/3 components | checked FMI component export IR derived from DAE + Solve | DAE metadata and tensor shape plus one executable checked kernel |
+| eFMI Production Code | the prepared `SolveAlgorithmBlock` view of one checked `SolveAlgorithmProduct` that retains its source `AlgorithmCodePackage` | Only the Solve-owned block authorizes C/H; the registered readiness-zero `efmu` slice is experimental |
+| FMI 2/3 components | checked projections of the sealed variable catalog retained by one `SolveModel` | One executable kernel owns identity, metadata, tensor shape, final runtime values, and version-specific interface coordinates |
 
 `rumoca-phase-codegen` renders text; execution adapters wrap toolchains and
 runtimes without owning compiler semantics.
 
 Every IR that crosses the code-generation boundary MUST already satisfy its
-stage invariants by construction. A target manifest selects the exact canonical
-or checked export IR it consumes; the compiler supplies a typed, read-only
-semantic view of that artifact to MiniJinja. Rendering MUST NOT resolve names,
-infer types or shapes, lower to another IR, mutate its input, or repair an
-invalid artifact.
+stage invariants by construction. The semantic-context enum maps one-to-one,
+in both directions, to every `rumoca-ir-*` crate through the exact vocabulary
+`ast`, `flat`, `dae`, `galec`, and `solve`. Architecture CI enumerates the
+crates and proves that equality mechanically. Adding an IR crate requires the
+corresponding spec/context change.
+Roots, views, output formats, target identities, packages, and products never
+become manifest contexts. Each admitted file may name one
+closed `view` inside that crate; absence is resolved once by construction to
+the crate's canonical root (`ClassTree`, Flat `Model`, `Dae`,
+`AlgorithmCodePackage`, or `SolveModel`), never by `Default`. The admitted
+noncanonical Solve views are the actual checked `FmiComponent` and
+`SolveAlgorithmBlock` types. Target construction derives one required product
+from the checked `(context, view)` file plans without a target-wide IR field,
+root selector, suffix inference, or target-name dispatch. A sole
+`SolveAlgorithmBlock` rejects; only its pairing with the same product's
+`AlgorithmCodePackage` files requires one `SolveAlgorithmProduct`. Mixed
+`SolveModel`/`FmiComponent` or otherwise independently provisioned roots
+reject. The compiler supplies only the file's typed, read-only semantic view
+to MiniJinja.
+Each file that observes target-issued artifact identities declares its exact
+required logical keys. Every logical file ID uses the exact ASCII grammar
+`[a-z_][a-z0-9_]*`; the sole template mapping is the injective top-level scalar
+`__rumoca_artifact_identity_v1_<key>`. The serialized `artifact` object contains
+no identity map. Target construction checks the IDs and dependencies against
+the complete target-issued logical file-ID catalog before constructing any
+renderer. Each exact snapshotted template must compile under the
+composition-free MiniJinja grammar before MiniJinja's own all-branch
+undeclared-variable AST analysis compares the exact flattened scalar names and
+declarations bidirectionally. The file context then contains only those
+declared identity scalars. Semantic context construction rejects the reserved
+identity namespace, and the production MiniJinja global set contains no State
+or context introspector. An identity reference hidden from MiniJinja analysis
+by local self-shadowing remains absent unless declared and therefore fails
+strictly if evaluated; it cannot recover an undeclared identity value.
+Independent text scanning, the removed `artifact.identities` map, defaults,
+and fallback identities are prohibited.
+Rendering MUST NOT resolve names, infer types or shapes, lower to another IR,
+mutate its input, or repair an invalid artifact.
 
 Code-generation architecture:
 
 ```text
 proven-valid IR -> typed semantic template view -> target.toml + MiniJinja -> artifacts
 ```
+
+The Algorithm Code cutover MUST satisfy every construction and evidence row in
+[SPEC_0040 §5](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#5-algorithm-code-cutover-catalog),
+normative by reference. SPEC_0042 GAL-041 and SPEC_0049 `MatrixMultiply` remain
+design sources, not promotion of their DRAFT parents. The catalog's completed
+slice does not establish eFMI Production Code conformance.
 
 This boundary applies uniformly to syntax, Flat, DAE, Solve, and checked export
 IRs. Adding a target for an already-supported IR requires only a target
@@ -74,36 +113,41 @@ capability vocabulary, never a target-language renderer in Rust. Export IRs
 remain projections, never canonical pipeline stages.
 
 The checked FMI component export is the single deployment projection for FMI 2
-and FMI 3. Its constructor binds DAE-owned variable identity, causality, type,
-shape, units, and provenance to the executable Solve kernel. FMI-version
-adapters may scalarize only the external value-reference view required by that
-version; they MUST NOT repeat equation lowering, initialization, event, or
-state-machine semantics. A raw derivative-only C kernel is not an FMI component
-and MUST NOT be advertised as an FMI deployment substitute.
+and FMI 3. The sole DAE-to-`SolveModel` construction atomically retains one
+sealed variable catalog beside the executable kernel. Every finalized DAE
+variable already carries a mandatory nonzero Flat-issued source occurrence;
+structural reconstruction preserves it, and Solve construction records an
+explicit occurrence-to-catalog mapping. One independent checker consumes that
+mapping and eagerly materialized, closed name-free projections of the exact
+prepared DAE and Solve root privately co-retained by the lowering product,
+issuing a non-serializable live refinement receipt. Projections contain only
+admitted facts: names, scalar labels, provenance, and spans are absent and cannot
+authorize correlation. Issued once by DAE reservation and Solve catalog
+construction, occurrence uniqueness survives closed projection; C60 consumes it
+without rechecking. Each dense Solve declaration has exactly one catalog entry
+carrying its source occurrence, shape, scalar names, value kind, causality, variability, tunability, units,
+description, provenance, storage run, and constructor-evaluated final runtime
+attributes. FMI construction consumes only that `SolveModel`; it never accepts
+or pairs a second DAE view, metadata vector, evaluated-value vector, or wire
+input. FMI-version adapters may scalarize only the external value-reference
+view required by that version; they MUST NOT repeat equation lowering,
+initialization, event, or state-machine semantics. A raw derivative-only C
+kernel is not an FMI component and MUST NOT be advertised as an FMI deployment
+substitute.
 
 ### Built-in Target Product Contract
 
-A built-in target is an executable or inspectable compiler product, not a
-roadmap marker. Every directory registered below
-`rumoca-phase-codegen/src/templates/` MUST satisfy all of these rules:
-
-| Rule | Required evidence |
-|---|---|
-| Public names describe artifacts or interface profiles | Target IDs remain meaningful without IR knowledge |
-| Consumed IR is a separate manifest dimension | `target.toml` declares `ir`; `rumoca targets` reports it |
-| The target has a concrete present-day user workflow | `README.md` names the intended user, input IR, produced artifact, invocation, and the decision or deployment task the artifact supports |
-| The target states its semantic boundary honestly | `README.md` and `target.toml` name non-goals, unsupported semantics, readiness, and whether the artifact is source, analysis output, a runtime component, or a standards container |
-| The target emits a non-empty artifact | At least one `[[files]]` entry renders through the checked target path; manifest-only future placeholders are prohibited |
-| Unsupported input fails closed | Focused negative tests prove that unsupported semantic operations cannot become comments, stubs, zero values, omitted sections, or successful-looking artifacts |
-| The artifact is checked at the strongest practical boundary | Unit tests always cover manifest parsing and real rendering; language targets parse or compile; executable targets run a numerical fixture; package/standard targets validate metadata, lifecycle, and execution against the exact claimed revision |
-| Documentation and tests are target-local and discoverable | The target `README.md` lists the exact focused tests and external gates that support its readiness claim |
-| Experimental status narrows claims, not evidence | A readiness-zero target may expose a pinned experimental interface, but still emits and validates a useful artifact; readiness zero cannot excuse a non-product |
-
-Proposed-future-use targets stay in specs or notes until an artifact and
-evidence exist. Templates MUST fail with a span-bearing error on an unsupported
-checked construct; lossy placeholder text is never acceptable.
-
----
+Registered built-in targets satisfy
+[SPEC_0040 §4](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#4-built-in-target-product-contract).
+Future targets remain specifications until they emit and validate a useful
+artifact. Unsupported checked semantics fail with a span-bearing error; a
+template cannot omit or repair them. External directory targets are
+user-authored extensions, but they still require the same closed per-file
+artifact/context/view declarations as built-ins. Standalone `.jinja` targets
+and invocation-selected template IRs are absent because neither can retain the
+construction proof authorizing emitted bytes. Exact Flat inspection uses
+`flat-json`; textual Flat/Base Modelica remains disabled until the catalogued
+atomic cutover is complete.
 
 ### Stage 1 — AST (`rumoca-ir-ast`)
 
@@ -120,8 +164,6 @@ checked construct; lossy placeholder text is never acceptable.
 **Do not:** Name lookup, class instantiation, type inference, equation
 manipulation.
 
----
-
 ### Stage 2 — Flat (`rumoca-ir-flat`)
 
 **What it is:** The instantiated class hierarchy with fully-qualified names.
@@ -130,8 +172,13 @@ manipulation.
 - No unresolved class references.
 - No modification chains; all modifications have been applied.
 - Virtual connection graphs satisfy MLS §9.4 forest and root invariants.
+- Typed connection and virtual-connection-graph inputs lower through one atomic
+  Flat transaction; malformed, unknown, or unsupported topology fails before
+  any Flat mutation.
 - Arrays remain symbolic (not scalarized).
 - Function bodies remain structured in `functions`.
+- Record-valued function slots remain aggregate through Flat and DAE; only a
+  final Solve or GALEC target boundary may project checked scalar leaves.
 - `pre()`, `der()`, `initial()`, and other Modelica built-ins are still present
   as expression nodes — semantic lowering has not occurred.
 
@@ -139,21 +186,13 @@ manipulation.
 flattening. **Do not:** solve equations, eliminate Modelica operators, or
 generate simulation code.
 
-**Cross-cutting rules (Flat through DAE):**
+The exact Flat-stage obligations are catalogued in
+[SPEC_0040 §0](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#0-flat-stage-contract-catalog-spec_0007-stage-2).
 
-| Rule | Why |
-|---|---|
-| Instantiation and flattening are separate logical phases | Instantiation applies modifications + builds `InstanceOverlay`/`InstancedTree`; production then runs `typecheck_instanced` before flattening traverses the overlay, expands connections, and produces `flat::Model`. |
-| Arrays stay symbolic through Flat and DAE | Backends requesting scalar form call scalarization in structural/solver layers with shape metadata, not via display-string parsing |
-| Function algorithms remain structured; conditional joins retain checked shared-branch correlation | Downstream projections preserve call cardinality without reconstructing control flow |
-| A function-algorithm `assert` is a flow action, not an ordinary call or a value expression | A value-proven function specialization may erase the statement only when its exact specialization environment proves the condition `true`. An unsettled condition may lower only through the call-specialized guarded root/action schedule in SOLVE-C25; a proven-false or otherwise unrepresentable schedule is typed-rejected. The action is never silently discarded or routed through multi-result-call lowering. |
-| Model algorithms lower to DAE only when they fit the declarative subset | Unsupported forms fail explicitly with `ED013` |
-| Initial sections use declarative owners: sequential scalar assignments and `if` conditionals in an `initial algorithm` determine a `parameter` declared `fixed = false` or a discrete coordinate; an explicit initial equation `m = value` or `pre(m) = value` determines the same typed discrete initial-value owner; and `assert` becomes an assertion owner carrying its enclosing branch conditions | A discrete initial value is a checked definition, not a numeric residual: its constructor proves exact scalar type, initialization-settled reads, and unique target ownership, and Solve initializes both current and `pre` storage from it. Replayed calculated-parameter values read only parameters and constants. Where each dependency is settled at parameter-set time, the parameter set computes exactly the initialization value; where one is a `fixed = false` parameter, Solve re-applies the binding after the initialization projection, so the parameter-set value is an iteration seed. Algebraic, state, output, and input algorithm targets and every loop, `when`, or non-`assert` call statement keep `ED013` because no checked initialization owner determines them |
-| Post-resolution declaration identity is keyed by `DefId`, not strings | Hashing rendered names, `VarName`, flat names, cached display strings, rendered `ComponentPath`, or rendered `ComponentReference` after resolution is a phase-boundary bug. Carry `DefId` for declarations and structured instance identity where one declaration has multiple instantiated meanings. |
-| Flat `TypeId` is the resolved effective type of that concrete instance | Two instances originating from one `DefId` may have different effective types after redeclare or modification. DAE type catalogs key by this identity and retain `DefId` only as declaration provenance. |
-| Semantic phases do not recover name hierarchy by tokenizing flattened strings | The AST, `QualifiedName`, `ComponentReference`, `DefId`, scope tree, and phase metadata carry name structure. Splitting `a.b.c` text inside compiler/evaluator/lowering logic means structure was lost too early. Textual path parsing is allowed only at source/protocol/config/display boundaries while structured IR replaces it. |
-
----
+**Cross-cutting rules (Flat through DAE):** every row in
+[SPEC_0040 §6](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#6-flat-through-dae-cross-cutting-catalog)
+is normative by reference. No phase may substitute a textual/default/partial
+owner for those typed contracts.
 
 ### Stage 3 — DAE (`rumoca-ir-dae`)
 
@@ -217,7 +256,23 @@ templates, or store backend artifacts in DAE.
 bytecode/layout, model-level `when_clauses`, and unlowered synchronous
 operators in solver equation partitions.
 
----
+### Callable Proof Plan (`rumoca-plan-callable`)
+
+The callable plan is the sole affine, non-wire, non-root proof aggregate over
+one transferred checked DAE function graph. It retains that exact DAE behind
+borrowed correlated views; no API returns/clones it, no consumer accepts a
+second DAE, and the plan owns no target, presentation, storage, ABI, wire,
+evaluation, or C authority. Numerical Solve refines the DAE-origin plan;
+Algorithm Code construction consumes/rebrands it and drops DAE ownership;
+package-rooted Solve refines only that retained package owner.
+
+Construction and consumption are governed by SOLVE-C52/SOLVE-C58 in
+[SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4)
+and by the callable rows in
+[SPEC_0043 §9](SPEC_0043_CONSTRUCTION_CATALOG.md#9-solve-algorithm-block-construction-catalog-pending-2026-08-08-plan-m3-4).
+Every linked row is normative by reference. The mandatory four-way
+GALEC/Solve/Production-C/OMC differential remains the proof relation; only the
+correlated prepared Solve block authorizes C/H.
 
 ### Stage 4 — Solve (`rumoca-ir-solve`)
 
@@ -233,7 +288,7 @@ Canonical terminology:
 | `TensorProgramNode` | `ComputeNode::{MatMul, LinSolve, AffineStencil, ...}` | A tensor-level kernel with explicit shape/layout metadata and scalar fallback |
 | `FunctionFoldProgram` | `FunctionFoldProgram` | A finite-domain loop with an explicit loop-carried tuple and compact typed body |
 | `ComputeBlock` | `ComputeBlock` | Ordered mix of scalar program blocks and tensor program nodes |
-| `SolveAlgorithmBlock` | (pending: 2026-08-08 plan, M3-4) | Checked Algorithm Code execution root |
+| `SolveAlgorithmBlock` | implemented for the current narrow Algorithm Code refinement slice | Checked Algorithm Code execution root; broader vocabulary remains fail-closed |
 
 New Solve-IR APIs use `ScalarProgram` / `ScalarProgramBlock` terminology, not
 `RowBlock` / `ScalarRows`.
@@ -267,11 +322,16 @@ scalar-program blocks) live in `SolveArtifacts`, materialized by
 `rumoca-phase-solve` only when a backend/template/runtime boundary asks.
 `lower_solve_problem` must not eagerly populate them.
 
-`SolveAlgorithmBlock` is constructed only from checked Algorithm Code under an
-explicit arithmetic profile (pending: 2026-08-08 plan, M3-4). It is not a mode
-of `SolveProblem`; rows SOLVE-C32–C38 define its complete obligations.
+`SolveAlgorithmBlock` is constructed only from checked Algorithm Code by
+consuming the complete numeric profile already retained in its package. The
+constructor and registered readiness-zero `efmu` path have landed for the
+current scalar-only experimental slice and accept no second arithmetic
+profile. Broader semantic coverage and the Production-C toolchain/refinement
+receipts remain pending; this is not an eFMI conformance claim. The block is
+not a mode of `SolveProblem`; rows SOLVE-C32–C38 and SOLVE-C58–C59 define its
+complete obligations.
 
-**Contract:** rows `SOLVE-C01`–`SOLVE-C57` in
+**Contract:** rows `SOLVE-C01`–`SOLVE-C61` in
 [SPEC_0040 §2](SPEC_0040_IR_STAGE_CONTRACT_CATALOG.md#2-solve-stage-contract-catalog-spec_0007-stage-4).
 
 Objectives, adjoints, sensitivities, and optimizer projections are derived
@@ -285,8 +345,6 @@ affine patterns originate from SPEC_0032 owners, never scalar-row recovery.
 
 **Do not:** work assigned to DAE/structural phases, concrete execution crates,
 or `rumoca-phase-codegen` by SPEC_0029.
-
----
 
 ### Structural Lowering Scope
 

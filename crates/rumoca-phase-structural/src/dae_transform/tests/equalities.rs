@@ -52,20 +52,30 @@ fn declare<'dae>(
     model.variables(|variables| {
         names
             .iter()
-            .map(|entry| {
+            .zip(1_u32..)
+            .map(|(entry, occurrence)| {
                 let (role, name) = entry.split_at(1);
                 let name = VarName::new(name);
+                let occurrence = InstanceId::new(occurrence);
                 let attributes = dae::VariableAttributes::default();
                 Ok(match role {
                     "p" => Declared::Parameter(variables.parameter(
                         name,
+                        occurrence,
                         real,
                         declaration,
                         attributes,
                     )?),
-                    "s" => Declared::State(variables.state(name, real, declaration, attributes)?),
+                    "s" => Declared::State(variables.state(
+                        name,
+                        occurrence,
+                        real,
+                        declaration,
+                        attributes,
+                    )?),
                     _ => Declared::Algebraic(variables.algebraic(
                         name,
+                        occurrence,
                         real,
                         declaration,
                         attributes,
@@ -917,16 +927,53 @@ fn projected_state_model(extent: u32, subscript: ProjectionSubscript) -> dae::Da
         })?;
         let (variables, i_reservation) = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default;
-            let (i, i_reservation) = variables.reserve_parameter(VarName::new("i"), integer, at)?;
+            let (i, i_reservation) =
+                variables.reserve_parameter(VarName::new("i"), InstanceId::new(1), integer, at)?;
             Ok((
                 ProjectedVariables {
-                    x: variables.state(VarName::new("x"), real, at, attributes())?,
-                    q: variables.state(VarName::new("q"), real_array, at, attributes())?,
+                    x: variables.state(
+                        VarName::new("x"),
+                        InstanceId::new(2),
+                        real,
+                        at,
+                        attributes(),
+                    )?,
+                    q: variables.state(
+                        VarName::new("q"),
+                        InstanceId::new(3),
+                        real_array,
+                        at,
+                        attributes(),
+                    )?,
                     i,
-                    a: variables.algebraic(VarName::new("a"), real, at, attributes())?,
-                    b: variables.algebraic(VarName::new("b"), real, at, attributes())?,
-                    u: variables.algebraic(VarName::new("u"), real, at, attributes())?,
-                    v: variables.algebraic(VarName::new("v"), real, at, attributes())?,
+                    a: variables.algebraic(
+                        VarName::new("a"),
+                        InstanceId::new(4),
+                        real,
+                        at,
+                        attributes(),
+                    )?,
+                    b: variables.algebraic(
+                        VarName::new("b"),
+                        InstanceId::new(5),
+                        real,
+                        at,
+                        attributes(),
+                    )?,
+                    u: variables.algebraic(
+                        VarName::new("u"),
+                        InstanceId::new(6),
+                        real,
+                        at,
+                        attributes(),
+                    )?,
+                    v: variables.algebraic(
+                        VarName::new("v"),
+                        InstanceId::new(7),
+                        real,
+                        at,
+                        attributes(),
+                    )?,
                 },
                 i_reservation,
             ))
@@ -1051,10 +1098,34 @@ fn projected_algebraic_definition_model() -> dae::Dae {
         let variables = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default;
             Ok(ProjectedAlgebraicVariables {
-                s: variables.state(VarName::new("s"), real, at, attributes())?,
-                x: variables.state(VarName::new("x"), real, at, attributes())?,
-                w: variables.algebraic(VarName::new("w"), singleton, at, attributes())?,
-                v: variables.algebraic(VarName::new("v"), real, at, attributes())?,
+                s: variables.state(
+                    VarName::new("s"),
+                    InstanceId::new(1),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                x: variables.state(
+                    VarName::new("x"),
+                    InstanceId::new(2),
+                    real,
+                    at,
+                    attributes(),
+                )?,
+                w: variables.algebraic(
+                    VarName::new("w"),
+                    InstanceId::new(3),
+                    singleton,
+                    at,
+                    attributes(),
+                )?,
+                v: variables.algebraic(
+                    VarName::new("v"),
+                    InstanceId::new(4),
+                    real,
+                    at,
+                    attributes(),
+                )?,
             })
         })?;
         let residuals = model
@@ -1080,8 +1151,20 @@ fn pinned_vector_state_model() -> dae::Dae {
         let (q, v) = model.variables(|variables| {
             let attributes = dae::VariableAttributes::default;
             Ok((
-                variables.state(VarName::new("q"), vector, at, attributes())?,
-                variables.algebraic(VarName::new("v"), vector, at, attributes())?,
+                variables.state(
+                    VarName::new("q"),
+                    InstanceId::new(1),
+                    vector,
+                    at,
+                    attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("v"),
+                    InstanceId::new(2),
+                    vector,
+                    at,
+                    attributes(),
+                )?,
             ))
         })?;
         let (position, velocity) = model.expressions(|expressions| {
@@ -1115,78 +1198,118 @@ fn function_defined_vector_state_model() -> dae::Dae {
     let source = sources.add("function_defined_vector_state.mo", TEXT);
     let at = source_provenance(source, TEXT, "equation");
     dae::Dae::construct(sources, |model| {
-        let (vector, scalar) = model.types(|types| {
-            Ok((
-                types.intern(
-                    TypeId::new(0),
-                    dae::ValueType::array(dae::ScalarType::Real, [3]),
-                    at,
-                )?,
-                types.intern(
-                    TypeId::new(1),
-                    dae::ValueType::scalar(dae::ScalarType::Real),
-                    at,
-                )?,
-            ))
-        })?;
-        let (spin, ()) = model.function(
-            dae::FunctionSignature::new(VarName::new("spin"), [vector, scalar], [vector], at),
-            |model, reservation| {
-                let axis = model.functions(|functions| {
-                    functions.parameter(&reservation, VarName::new("axis"), 0, at)
-                })?;
-                let rate = model.functions(|functions| {
-                    functions.parameter(&reservation, VarName::new("rate"), 1, at)
-                })?;
-                let output = model.functions(|functions| {
-                    functions.output(&reservation, VarName::new("result"), 0, at)
-                })?;
-                let value = model.expressions(|expressions| {
-                    let axis = expressions.at(at).function_parameter(axis)?;
-                    let rate = expressions.at(at).function_parameter(rate)?;
-                    expressions
-                        .at(at)
-                        .binary(dae::BinaryOperator::Multiply, axis, rate)
-                })?;
-                let mut body = model.functions(|functions| functions.begin(reservation, at))?;
-                model.functions(|functions| functions.assign(&mut body, output, value, at))?;
-                model.functions(|functions| functions.define(body, at))
-            },
-        )?;
-        let (axis, omega, w, alpha, a) = model.variables(|variables| {
-            let attributes = dae::VariableAttributes::default;
-            Ok((
-                variables.parameter(VarName::new("e"), vector, at, attributes())?,
-                variables.state(VarName::new("omega"), scalar, at, attributes())?,
-                variables.state(VarName::new("w"), vector, at, attributes())?,
-                variables.algebraic(VarName::new("alpha"), scalar, at, attributes())?,
-                variables.algebraic(VarName::new("a"), vector, at, attributes())?,
-            ))
-        })?;
-        let residuals = model.expressions(|expressions| {
-            let axis = coordinate(expressions, at, dae::CoordinateInput::Parameter(axis))?;
-            let omega_value = coordinate(expressions, at, dae::CoordinateInput::State(omega))?;
-            let w_value = coordinate(expressions, at, dae::CoordinateInput::State(w))?;
-            let alpha_value = coordinate(expressions, at, dae::CoordinateInput::Algebraic(alpha))?;
-            let a_value = coordinate(expressions, at, dae::CoordinateInput::Algebraic(a))?;
-            let w_derivative = coordinate(expressions, at, dae::CoordinateInput::Derivative(w))?;
-            let omega_derivative =
-                coordinate(expressions, at, dae::CoordinateInput::Derivative(omega))?;
-            let spin = expressions.at(at).call(spin, 0, [axis, omega_value])?;
-            let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
-            residuals(
-                expressions,
-                [
-                    (at, w_value, spin),
-                    (at, w_derivative, a_value),
-                    (at, omega_derivative, alpha_value),
-                    (at, alpha_value, one),
-                ],
-            )
-        })?;
-        register(model, &[at, at, at, at], residuals)
+        build_function_defined_vector_state(model, at)
     })
     .expect("function-defined vector state fixture is valid")
+}
+
+/// Declare the function-defined vector-state fixture into one construction.
+/// Split out of the fixture builder for length; every type, function,
+/// variable, expression and residual registration is unchanged.
+fn build_function_defined_vector_state<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let (vector, scalar) = model.types(|types| {
+        Ok((
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                at,
+            )?,
+            types.intern(
+                TypeId::new(1),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                at,
+            )?,
+        ))
+    })?;
+    let (spin, ()) = model.function(
+        dae::FunctionSignature::new(VarName::new("spin"), [vector, scalar], [vector], at),
+        |model, reservation| {
+            let axis = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("axis"), 0, at)
+            })?;
+            let rate = model.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("rate"), 1, at)
+            })?;
+            let output = model.functions(|functions| {
+                functions.output(&reservation, VarName::new("result"), 0, at)
+            })?;
+            let value = model.expressions(|expressions| {
+                let axis = expressions.at(at).function_parameter(axis)?;
+                let rate = expressions.at(at).function_parameter(rate)?;
+                expressions
+                    .at(at)
+                    .binary(dae::BinaryOperator::Multiply, axis, rate)
+            })?;
+            let mut body = model.functions(|functions| functions.begin(reservation, at))?;
+            model.functions(|functions| functions.assign(&mut body, output, value, at))?;
+            model.functions(|functions| functions.define(body, at))
+        },
+    )?;
+    let (axis, omega, w, alpha, a) = model.variables(|variables| {
+        let attributes = dae::VariableAttributes::default;
+        Ok((
+            variables.parameter(
+                VarName::new("e"),
+                InstanceId::new(1),
+                vector,
+                at,
+                attributes(),
+            )?,
+            variables.state(
+                VarName::new("omega"),
+                InstanceId::new(2),
+                scalar,
+                at,
+                attributes(),
+            )?,
+            variables.state(
+                VarName::new("w"),
+                InstanceId::new(3),
+                vector,
+                at,
+                attributes(),
+            )?,
+            variables.algebraic(
+                VarName::new("alpha"),
+                InstanceId::new(4),
+                scalar,
+                at,
+                attributes(),
+            )?,
+            variables.algebraic(
+                VarName::new("a"),
+                InstanceId::new(5),
+                vector,
+                at,
+                attributes(),
+            )?,
+        ))
+    })?;
+    let residuals = model.expressions(|expressions| {
+        let axis = coordinate(expressions, at, dae::CoordinateInput::Parameter(axis))?;
+        let omega_value = coordinate(expressions, at, dae::CoordinateInput::State(omega))?;
+        let w_value = coordinate(expressions, at, dae::CoordinateInput::State(w))?;
+        let alpha_value = coordinate(expressions, at, dae::CoordinateInput::Algebraic(alpha))?;
+        let a_value = coordinate(expressions, at, dae::CoordinateInput::Algebraic(a))?;
+        let w_derivative = coordinate(expressions, at, dae::CoordinateInput::Derivative(w))?;
+        let omega_derivative =
+            coordinate(expressions, at, dae::CoordinateInput::Derivative(omega))?;
+        let spin = expressions.at(at).call(spin, 0, [axis, omega_value])?;
+        let one = expressions.at(at).literal(dae::DaeLiteral::Real(1.0))?;
+        residuals(
+            expressions,
+            [
+                (at, w_value, spin),
+                (at, w_derivative, a_value),
+                (at, omega_derivative, alpha_value),
+                (at, alpha_value, one),
+            ],
+        )
+    })?;
+    register(model, &[at, at, at, at], residuals)
 }
 
 fn projected_algebraic_residuals<'dae>(

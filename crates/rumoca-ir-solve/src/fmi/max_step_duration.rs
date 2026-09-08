@@ -15,8 +15,9 @@
 
 use super::FmiComponentError;
 use super::metadata::{
-    FmiCausality, FmiInitial, FmiValueBacking, FmiVariability, FmiVariable, FmiVariableInput,
+    FmiCausality, FmiInitial, FmiValueBacking, FmiVariability, FmiVariable, FmiWritePolicy,
 };
+use crate::SolveVariableCatalogEntry;
 use crate::SolveVariableValueKind;
 
 /// The name this local carries in Rumoca's namespace.
@@ -46,6 +47,7 @@ pub const MAX_STEP_DURATION_UNCONSTRAINED: f64 = f64::MAX;
 /// this function.
 pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
     FmiVariable {
+        source_id: None,
         name: MAX_STEP_DURATION_NAME.to_string(),
         value_kind: SolveVariableValueKind::Real,
         dimensions: Vec::new(),
@@ -61,6 +63,7 @@ pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
         causality: FmiCausality::Local,
         variability: FmiVariability::Continuous,
         initial: Some(FmiInitial::Calculated),
+        write_policy: FmiWritePolicy::ReadOnly,
         tunable: false,
         declaration: None,
         value_reference_fmi3,
@@ -74,13 +77,13 @@ pub(super) fn derived_local(value_reference_fmi3: u32) -> FmiVariable {
 /// genuinely taken twice; the rejection carries the colliding Modelica
 /// declaration rather than restating it as text.
 pub(super) fn reject_reserved_name(
-    input: &FmiVariableInput,
+    input: &SolveVariableCatalogEntry,
     delay_bearing: bool,
 ) -> Result<(), FmiComponentError> {
-    if delay_bearing && input.name == MAX_STEP_DURATION_NAME {
+    if delay_bearing && input.name() == MAX_STEP_DURATION_NAME {
         return Err(FmiComponentError::ReservedMaxStepDurationName {
             name: MAX_STEP_DURATION_NAME,
-            declaration: input.declaration,
+            declaration: input.provenance(),
         });
     }
     Ok(())

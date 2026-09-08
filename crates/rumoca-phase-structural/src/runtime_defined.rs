@@ -204,7 +204,7 @@ fn define_test_discrete_value<'dae>(
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+    use rumoca_core::{InstanceId, SourceMap, Span, TypeId, VarName};
 
     use super::*;
 
@@ -233,12 +233,14 @@ mod tests {
                 Ok((
                     variables.algebraic(
                         VarName::new("a"),
+                        InstanceId::new(1),
                         real,
                         a_at,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.discrete_value(
                         VarName::new("enable"),
+                        InstanceId::new(2),
                         boolean,
                         enable_at,
                         dae::VariableAttributes::default(),

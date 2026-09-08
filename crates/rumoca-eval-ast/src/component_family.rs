@@ -200,19 +200,19 @@ impl FamilyReindex<'_> {
     pub fn connection_endpoint(
         &self,
         endpoint: &ast::InstanceConnectionEndpoint,
-    ) -> ast::InstanceConnectionEndpoint {
-        let mut result = endpoint.clone();
-        if !self.endpoint_ancestors_match(&result.parts) {
-            return result;
+    ) -> Result<ast::InstanceConnectionEndpoint, ast::InstanceConnectionConstructionError> {
+        let mut parts = endpoint.parts().to_vec();
+        if !self.endpoint_ancestors_match(&parts) {
+            return Ok(endpoint.clone());
         }
-        let Some((name, subscripts)) = result.parts.get_mut(self.depth) else {
-            return result;
+        let Some((name, subscripts)) = parts.get_mut(self.depth) else {
+            return Ok(endpoint.clone());
         };
         let Some(constants) = constant_subscripts(subscripts) else {
-            return result;
+            return Ok(endpoint.clone());
         };
         if !self.part_matches(name, &constants) {
-            return result;
+            return Ok(endpoint.clone());
         }
         let rank = subscripts.first().map_or(0, |form| form.coeffs.len());
         *subscripts = self
@@ -220,7 +220,7 @@ impl FamilyReindex<'_> {
             .iter()
             .map(|value| AffineForm::constant(*value, rank))
             .collect();
-        result
+        ast::InstanceConnectionEndpoint::new(parts)
     }
 }
 
@@ -236,7 +236,7 @@ fn render_segment(name: &str, subscripts: &[i64]) -> String {
         if position > 0 {
             rendered.push(',');
         }
-        let _ = write!(rendered, "{value}");
+        write!(rendered, "{value}").expect("writing to a String cannot fail");
     }
     rendered.push(']');
     rendered
@@ -284,10 +284,6 @@ pub fn family_member_component(
         .iter()
         .map(|(attribute, scope)| (attribute.clone(), reindex.qualified_name(scope)))
         .collect();
-    member.oc_record_path = template
-        .oc_record_path
-        .as_deref()
-        .map(|path| reindex.flat_path_or_same(path));
     member
 }
 
@@ -296,7 +292,7 @@ pub fn family_member_class(
     template: &ast::ClassInstanceData,
     instance_id: rumoca_core::InstanceId,
     reindex: &FamilyReindex<'_>,
-) -> ast::ClassInstanceData {
+) -> Result<ast::ClassInstanceData, ast::InstanceConnectionConstructionError> {
     let mut member = template.clone();
     member.instance_id = instance_id;
     member.qualified_name = reindex.qualified_name(&template.qualified_name);
@@ -305,9 +301,9 @@ pub fn family_member_class(
     reindex_algorithms(&mut member.algorithms, reindex);
     reindex_algorithms(&mut member.initial_algorithms, reindex);
     for connection in &mut member.connections {
-        reindex_connection(connection, reindex);
+        reindex_connection(connection, reindex)?;
     }
-    member
+    Ok(member)
 }
 
 fn reindex_equations(equations: &mut [ast::InstanceEquation], reindex: &FamilyReindex<'_>) {
@@ -324,14 +320,32 @@ fn reindex_algorithms(algorithms: &mut [Vec<ast::InstanceStatement>], reindex: &
     }
 }
 
-fn reindex_connection(connection: &mut ast::InstanceConnection, reindex: &FamilyReindex<'_>) {
-    connection.a = reindex.qualified_name(&connection.a);
-    connection.b = reindex.qualified_name(&connection.b);
-    connection.scope = reindex.flat_path_or_same(&connection.scope);
-    if let Some(family) = connection.family.as_mut() {
-        family.a = reindex.connection_endpoint(&family.a);
-        family.b = reindex.connection_endpoint(&family.b);
+fn reindex_connection(
+    connection: &mut ast::InstanceConnection,
+    reindex: &FamilyReindex<'_>,
+) -> Result<(), ast::InstanceConnectionConstructionError> {
+    match connection {
+        ast::InstanceConnection::Scalar(connection) => {
+            *connection = ast::InstanceScalarConnection::new(
+                reindex.qualified_name(connection.a()),
+                reindex.qualified_name(connection.b()),
+                connection.connector_type(),
+                connection.span(),
+                reindex.flat_path_or_same(connection.scope()),
+            )?;
+        }
+        ast::InstanceConnection::Family(family) => {
+            *connection = ast::InstanceConnection::family(
+                family.domain().clone(),
+                reindex.connection_endpoint(family.a())?,
+                reindex.connection_endpoint(family.b())?,
+                family.connector_type(),
+                family.span(),
+                reindex.flat_path_or_same(family.scope()),
+            )?;
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]

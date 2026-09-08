@@ -1,9 +1,9 @@
+use super::record_array_fields::FieldAccessDisposition;
 use super::*;
 
 #[derive(Clone, Copy)]
 struct ExpressionValidator<'a> {
     roles: &'a HashMap<VarName, PlannedRole>,
-    states: &'a HashSet<VarName>,
     binders: &'a HashSet<VarName>,
     record_array_fields: Option<&'a RecordArrayFieldPlans>,
     /// Exact literal-name and enumeration-declaration evidence for scopes that
@@ -54,9 +54,8 @@ impl PreContext {
 pub(super) fn validate_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
 ) -> Result<(), ToDaeError> {
-    validate_expression_in_context(expression, roles, states, PreContext::Continuous)
+    validate_expression_in_context(expression, roles, PreContext::Continuous)
 }
 
 /// Validate an expression a when-clause body evaluates.
@@ -75,14 +74,12 @@ pub(super) fn validate_expression(
 pub(super) fn validate_when_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     clocked: bool,
     enumeration_literals: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     validate_expression_in_context_with_literals(
         expression,
         roles,
-        states,
         when_body_context(clocked),
         Some(enumeration_literals),
     )
@@ -100,23 +97,20 @@ pub(super) const fn when_body_context(clocked: bool) -> PreContext {
 fn validate_expression_in_context(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     when_clause: PreContext,
 ) -> Result<(), ToDaeError> {
-    validate_expression_in_context_with_literals(expression, roles, states, when_clause, None)
+    validate_expression_in_context_with_literals(expression, roles, when_clause, None)
 }
 
 pub(super) fn validate_expression_in_context_with_literals(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     when_clause: PreContext,
     enumeration_literals: Option<&ShapeEnvironment>,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
         roles,
-        states,
         binders: &binders,
         record_array_fields: None,
         enumeration_literals,
@@ -137,12 +131,10 @@ pub(super) fn validate_specialized_expression(
     values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
-    let states = HashSet::new();
     ExpressionValidator {
         roles,
-        states: &states,
         binders: &binders,
-        record_array_fields: values.record_array_fields(),
+        record_array_fields: Some(values.record_array_fields()),
         enumeration_literals: Some(values),
         values: Some(values),
         when_clause: PreContext::Continuous,
@@ -160,13 +152,11 @@ pub(super) fn validate_specialized_expression(
 pub(super) fn validate_model_algorithm_range(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
         roles,
-        states,
         binders: &binders,
         record_array_fields: None,
         enumeration_literals: Some(model_values),
@@ -183,10 +173,8 @@ pub(super) fn validate_specialized_subscripts(
     values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
-    let states = HashSet::new();
     ExpressionValidator {
         roles,
-        states: &states,
         binders: &binders,
         record_array_fields: None,
         enumeration_literals: Some(values),
@@ -200,13 +188,11 @@ pub(super) fn validate_specialized_subscripts(
 pub(super) fn validate_expression_with_record_array_fields(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     fields: &RecordArrayFieldPlans,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
         roles,
-        states,
         binders: &binders,
         record_array_fields: Some(fields),
         enumeration_literals: None,
@@ -219,14 +205,12 @@ pub(super) fn validate_expression_with_record_array_fields(
 pub(super) fn validate_model_expression_with_record_array_fields(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     fields: &RecordArrayFieldPlans,
     model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     let binders = HashSet::new();
     ExpressionValidator {
         roles,
-        states,
         binders: &binders,
         record_array_fields: Some(fields),
         enumeration_literals: Some(model_values),
@@ -239,14 +223,12 @@ pub(super) fn validate_model_expression_with_record_array_fields(
 pub(super) fn validate_expression_scoped_with_record_array_fields(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     binders: &HashSet<VarName>,
     fields: &RecordArrayFieldPlans,
     model_values: &ShapeEnvironment,
 ) -> Result<(), ToDaeError> {
     ExpressionValidator {
         roles,
-        states,
         binders,
         record_array_fields: Some(fields),
         enumeration_literals: Some(model_values),
@@ -281,7 +263,25 @@ impl<'a> ExpressionValidator<'a> {
                 else_branch,
                 ..
             } => self.validate_conditional(branches, else_branch, span),
-            Expression::FunctionCall { args, .. } => self.validate_call_arguments(args),
+            Expression::FunctionCall {
+                name,
+                args,
+                call_kind,
+                ..
+            } => {
+                if *call_kind == rumoca_core::FunctionCallKind::PartialApplication {
+                    return Err(ToDaeError::unsupported_flat(
+                        "function partial application",
+                        format!(
+                            "MLS §12.4.2.1 partial application of `{}` denotes a function value, \
+                             which canonical DAE cannot lower as a value expression",
+                            name.as_str()
+                        ),
+                        span,
+                    ));
+                }
+                self.validate_call_arguments(args)
+            }
             Expression::StringConversion { value, format, .. } => {
                 self.validate(value)?;
                 for operand in format.operands() {
@@ -400,27 +400,19 @@ impl<'a> ExpressionValidator<'a> {
         let Some(fields) = self.record_array_fields else {
             return Err(unsupported_record_field(expression, span));
         };
-        if fields.function_result(expression).is_some() {
-            let Expression::FieldAccess { base, .. } = expression else {
-                unreachable!("function-result plans are keyed only by field access")
-            };
-            return self.validate(base);
-        }
-        if let Some(plan) = fields.get(expression) {
-            return match plan {
-                RecordArrayFieldPlan::MaterializedCoordinate { .. } => Ok(()),
+        match fields.classify_field_access(expression) {
+            FieldAccessDisposition::FunctionResult { base, .. }
+            | FieldAccessDisposition::Structural { base, .. } => self.validate(base),
+            FieldAccessDisposition::Materialized(_) => Ok(()),
+            FieldAccessDisposition::Projection(plan) => match plan {
                 RecordArrayFieldPlan::Projection { subscripts, .. } => {
                     self.validate_subscripts(subscripts)
                 }
-            };
-        }
-        if fields.structural(expression).is_some() {
-            let Expression::FieldAccess { base, .. } = expression else {
-                unreachable!("structural field plans are keyed only by field access")
-            };
-            self.validate(base)
-        } else {
-            Err(unsupported_record_field(expression, span))
+                RecordArrayFieldPlan::MaterializedCoordinate { .. } => {
+                    Err(unsupported_record_field(expression, span))
+                }
+            },
+            FieldAccessDisposition::Unsupported => Err(unsupported_record_field(expression, span)),
         }
     }
 }
@@ -544,7 +536,9 @@ impl ExpressionValidator<'_> {
         span: Span,
     ) -> Result<(), ToDaeError> {
         if function == BuiltinFunction::Der {
-            return self.validate_derivative(arguments, span);
+            return arguments
+                .iter()
+                .try_for_each(|argument| self.validate(argument));
         }
         if function == BuiltinFunction::Pre {
             return self.validate_pre(arguments, span);
@@ -654,23 +648,6 @@ impl ExpressionValidator<'_> {
             return self.validate_subscripts(subscripts);
         }
         self.validate(argument)
-    }
-
-    fn validate_derivative(self, arguments: &[Expression], span: Span) -> Result<(), ToDaeError> {
-        let [argument] = arguments else {
-            return Err(invalid_reference_builtin("derivative", "der", span));
-        };
-        let Some((name, subscripts)) = derivative_reference(argument) else {
-            return Err(invalid_reference_builtin("derivative", "der", span));
-        };
-        if !self.states.contains(name.var_name()) {
-            return Err(ToDaeError::unsupported_flat(
-                "derivative expression",
-                "der(...) target is not a state coordinate",
-                span,
-            ));
-        }
-        self.validate_subscripts(subscripts)
     }
 
     /// Validate the reference grammar shared by MLS §3.7.5 `edge`/`change`.
@@ -859,12 +836,10 @@ fn is_supported_builtin(function: BuiltinFunction) -> bool {
 pub(super) fn validate_subscripts_scoped(
     subscripts: &[Subscript],
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     binders: &HashSet<VarName>,
 ) -> Result<(), ToDaeError> {
     ExpressionValidator {
         roles,
-        states,
         binders,
         record_array_fields: None,
         enumeration_literals: None,
@@ -982,6 +957,30 @@ pub(super) fn require_integer_literal(
 mod tests {
     use super::*;
 
+    #[test]
+    fn expression_validation_rejects_explicit_partial_application_identity() {
+        let source = rumoca_core::SourceId::from_source_name("partial_validation.mo");
+        let span = Span::from_offsets(source, 4, 23);
+        let expression = Expression::FunctionCall {
+            name: rumoca_core::Reference::new("Pkg.f"),
+            args: Vec::new(),
+            is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::PartialApplication,
+            span,
+        };
+
+        let error = validate_expression(&expression, &HashMap::new())
+            .expect_err("a function value cannot enter canonical DAE expression lowering");
+        assert!(matches!(
+            error,
+            ToDaeError::UnsupportedFlatSemantics {
+                feature,
+                span: error_span,
+                ..
+            } if feature == "function partial application" && error_span == span
+        ));
+    }
+
     fn enumeration_reference(
         name: &str,
         declaration: rumoca_core::DefId,
@@ -1020,17 +1019,15 @@ mod tests {
         model
             .enum_literal_ordinals
             .insert(literal_name.to_string(), 1);
-        let shape_analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+        let shape_analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
             .expect("fixture model has an exact enumeration catalog");
         let roles = HashMap::from([(VarName::new(literal_name), PlannedRole::EnumerationLiteral)]);
-        let states = HashSet::new();
         let binders = HashSet::new();
         let fields = RecordArrayFieldPlans::default();
 
         validate_expression_scoped_with_record_array_fields(
             &enumeration_reference(literal_name, enum_declaration, span),
             &roles,
-            &states,
             &binders,
             &fields,
             shape_analysis.model_values(),
@@ -1040,7 +1037,6 @@ mod tests {
         let error = validate_expression_scoped_with_record_array_fields(
             &enumeration_reference(literal_name, other_declaration, span),
             &roles,
-            &states,
             &binders,
             &fields,
             shape_analysis.model_values(),
@@ -1061,19 +1057,53 @@ mod tests {
         let source = sources.add("model_range.mo", "1:n");
         let span = Span::from_offsets(source, 0, 3);
         let parameter = VarName::new("n");
+        let declaration = rumoca_core::DefId::new(83);
+        let instance_id = rumoca_core::InstanceId::new(83);
+        let component_ref = rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: "n".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: declaration,
+            }],
+        )
+        .expect("fixture parameter has exact identity");
         let mut model = flat::Model::new();
         model.add_variable(
             parameter.clone(),
             flat::Variable {
+                instance_id,
                 name: parameter.clone(),
+                component_ref: Some(component_ref.clone()),
                 variability: Variability::Parameter(Default::default()),
                 type_id: rumoca_core::TypeId::new(1),
                 is_primitive: true,
                 ..flat::Variable::empty_with_span(span)
             },
         );
-        let mut constants = EvalContext::new();
-        constants.add_parameter("n", EvalValue::Integer(3));
+        let identity = rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+            instance_id,
+            root_def_id: declaration,
+        };
+        let inventory = rumoca_eval_flat::constant::ResolvedIdentityInventory::try_from_bindings(
+            vec![rumoca_eval_flat::constant::ResolvedValueBinding {
+                identity,
+                value: EvalValue::Integer(3),
+            }],
+            vec![rumoca_eval_flat::constant::ResolvedShapeBinding {
+                identity,
+                dimensions: Vec::new(),
+            }],
+        )
+        .expect("fixture parameter identity is unique");
+        let constants = EvalContext::resolved(
+            1,
+            0,
+            inventory,
+            rumoca_eval_flat::constant::ResolvedEnumCatalog::empty(),
+        );
         let shapes = FunctionShapeAnalysis::analyze(&model, &constants)
             .expect("the model parameter has one settled scalar value");
         let range = Expression::Range {
@@ -1083,7 +1113,8 @@ mod tests {
             }),
             step: None,
             end: Box::new(Expression::VarRef {
-                name: rumoca_core::Reference::new("n"),
+                name: rumoca_core::Reference::from_component_reference(component_ref)
+                    .with_instance_id(instance_id),
                 subscripts: Vec::new(),
                 span,
             }),
@@ -1093,7 +1124,6 @@ mod tests {
         validate_model_expression_with_record_array_fields(
             &range,
             &HashMap::from([(parameter, PlannedRole::Parameter)]),
-            &HashSet::new(),
             &RecordArrayFieldPlans::default(),
             shapes.model_values(),
         )
@@ -1106,12 +1136,26 @@ mod tests {
         let source = sources.add("non_evaluable_model_range.mo", "1:n");
         let span = Span::from_offsets(source, 0, 3);
         let parameter = VarName::new("n");
+        let declaration = rumoca_core::DefId::new(84);
+        let instance_id = rumoca_core::InstanceId::new(84);
+        let component_ref = rumoca_core::ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: "n".to_string(),
+                span,
+                subs: Vec::new(),
+                def_id: declaration,
+            }],
+        )
+        .expect("fixture parameter has exact identity");
         let mut model = flat::Model::new();
         model.add_variable(
             parameter.clone(),
             flat::Variable {
-                instance_id: rumoca_core::InstanceId::new(1),
+                instance_id,
                 name: parameter.clone(),
+                component_ref: Some(component_ref.clone()),
                 variability: Variability::Parameter(Default::default()),
                 type_id: rumoca_core::TypeId::new(1),
                 fixed: Some(false),
@@ -1134,7 +1178,8 @@ mod tests {
             }),
             step: None,
             end: Box::new(Expression::VarRef {
-                name: rumoca_core::Reference::new("n"),
+                name: rumoca_core::Reference::from_component_reference(component_ref)
+                    .with_instance_id(instance_id),
                 subscripts: Vec::new(),
                 span,
             }),
@@ -1144,7 +1189,6 @@ mod tests {
         let error = validate_model_expression_with_record_array_fields(
             &range,
             &HashMap::from([(parameter, PlannedRole::Parameter)]),
-            &HashSet::new(),
             &RecordArrayFieldPlans::default(),
             shapes.model_values(),
         )

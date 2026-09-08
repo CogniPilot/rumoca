@@ -139,6 +139,7 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expr
         else {
@@ -146,17 +147,37 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
         };
         let args = self.rewrite_expressions(args);
         if reference_targets_function_local_def(name, self.ctx) {
-            return Some(function_call(name.clone(), args, *is_constructor, *span));
+            return Some(function_call(
+                name.clone(),
+                args,
+                *is_constructor,
+                *call_kind,
+                *span,
+            ));
         }
         let rewrite = match resolve_exact_function_rewrite(name, *is_constructor, self.ctx, *span) {
             Ok(Some(rewrite)) => rewrite,
-            Ok(None) => return Some(function_call(name.clone(), args, *is_constructor, *span)),
+            Ok(None) => {
+                return Some(function_call(
+                    name.clone(),
+                    args,
+                    *is_constructor,
+                    *call_kind,
+                    *span,
+                ));
+            }
             Err(error) => {
                 self.error.get_or_insert(error);
-                return Some(function_call(name.clone(), args, *is_constructor, *span));
+                return Some(function_call(
+                    name.clone(),
+                    args,
+                    *is_constructor,
+                    *call_kind,
+                    *span,
+                ));
             }
         };
-        Some(self.rewrite_selected_call(name, args, *is_constructor, *span, &rewrite))
+        Some(self.rewrite_selected_call(name, args, *is_constructor, *call_kind, *span, &rewrite))
     }
 
     fn rewrite_selected_call(
@@ -164,6 +185,7 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
         name: &rumoca_core::Reference,
         args: Vec<Expression>,
         is_constructor: bool,
+        call_kind: rumoca_core::FunctionCallKind,
         span: rumoca_core::Span,
         rewrite: &ResolvedFunctionRewrite,
     ) -> Expression {
@@ -188,6 +210,7 @@ impl<'a> FunctionOverrideExpressionRewriter<'a> {
             rewritten_selected_function_reference(name, rewrite, self.ctx.class_index),
             args,
             is_constructor,
+            call_kind,
             span,
         )
     }
@@ -238,12 +261,14 @@ fn function_call(
     name: rumoca_core::Reference,
     args: Vec<Expression>,
     is_constructor: bool,
+    call_kind: rumoca_core::FunctionCallKind,
     span: rumoca_core::Span,
 ) -> Expression {
     Expression::FunctionCall {
         name,
         args,
         is_constructor,
+        call_kind,
         span,
     }
 }

@@ -357,20 +357,33 @@ impl Session {
             .copied()
     }
 
-    pub fn reserve_source_root_load(&mut self, path_key: &str, expected_epoch: u64) -> bool {
-        if expected_epoch != self.source_root_state_epoch()
-            || self.is_source_root_path_loaded(path_key)
-            || self
-                .source_root_indexing
-                .loading_path_keys
-                .contains_key(path_key)
+    pub fn reserve_source_root_load(
+        &mut self,
+        path_key: &str,
+        expected_epoch: u64,
+    ) -> SourceRootLoadReservation {
+        if self.is_source_root_path_loaded(path_key) {
+            return SourceRootLoadReservation::AlreadyLoaded;
+        }
+        let current_epoch = self.source_root_state_epoch();
+        if expected_epoch != current_epoch {
+            return SourceRootLoadReservation::StaleEpoch {
+                expected_epoch,
+                current_epoch,
+            };
+        }
+        if let Some(reservation_epoch) = self
+            .source_root_indexing
+            .loading_path_keys
+            .get(path_key)
+            .copied()
         {
-            return false;
+            return SourceRootLoadReservation::InFlight { reservation_epoch };
         }
         self.source_root_indexing
             .loading_path_keys
             .insert(path_key.to_string(), expected_epoch);
-        true
+        SourceRootLoadReservation::Reserved
     }
 
     pub fn cancel_source_root_load(&mut self, path_key: &str, reservation_epoch: u64) {
@@ -388,7 +401,7 @@ impl Session {
         &mut self,
         source_root_key: &str,
         load: ParsedSourceRootLoad<'_>,
-    ) -> Option<(usize, Option<SourceRootStatusSnapshot>)> {
+    ) -> SourceRootApplyDisposition {
         let ParsedSourceRootLoad {
             source_root_kind,
             source_root_path,
@@ -399,9 +412,27 @@ impl Session {
             expected_epoch,
         } = load;
         let state_epoch_before_apply = self.source_root_state_epoch();
-        if expected_epoch != state_epoch_before_apply || self.is_source_root_path_loaded(path_key) {
+        if expected_epoch != state_epoch_before_apply {
             self.cancel_source_root_load(path_key, expected_epoch);
-            return None;
+            return SourceRootApplyDisposition::StaleEpoch {
+                expected_epoch,
+                current_epoch: state_epoch_before_apply,
+            };
+        }
+        if self.is_source_root_path_loaded(path_key) {
+            self.cancel_source_root_load(path_key, expected_epoch);
+            return SourceRootApplyDisposition::AlreadyLoaded;
+        }
+        let reservation_epoch = self
+            .source_root_indexing
+            .loading_path_keys
+            .get(path_key)
+            .copied();
+        if reservation_epoch != Some(expected_epoch) {
+            return SourceRootApplyDisposition::ReservationLost {
+                expected_epoch,
+                reservation_epoch,
+            };
         }
 
         self.begin_source_root_load(source_root_key, source_root_path, cache_status);
@@ -419,7 +450,10 @@ impl Session {
             self.mark_source_root_graph_changed();
         }
         self.cancel_source_root_load(path_key, expected_epoch);
-        Some((inserted, self.source_root_status(source_root_key)))
+        SourceRootApplyDisposition::Applied {
+            inserted_file_count: inserted,
+            status: self.source_root_status(source_root_key),
+        }
     }
 
     pub fn reset_to_open_documents(&mut self) {

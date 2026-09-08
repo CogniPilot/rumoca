@@ -108,14 +108,14 @@ scene = "my_scene.js"  # relative to this scenario
 # root_type = "your.namespace.MotorOutput"
 #
 # [receive.route]
-# "motors.m0" = { to = "model:omega_m1", scale = 1100.0 }
-# "armed"     = { to = "local:armed" }
+# "motors.m0" = { name = "model:omega_m1", scale = 1100.0 }
+# "armed"     = { name = "local:armed" }
 #
 # [send]
 # root_type = "your.namespace.SimInput"
 #
 # [send.route]
-# "gyro.x" = { key = "gyro_x" }
+# "gyro.x" = { name = "gyro_x" }
 
 # ── Locals: named persistent state ────────────────────────────────────────
 # Types: "bool" | "float" | "array" (with element="int"|"float" and len).

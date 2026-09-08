@@ -30,9 +30,9 @@ fn render_human_targets(
     let mut output = String::new();
     writeln!(
         output,
-        "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
+        "{:<target_width$} {:<24} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
         "target",
-        "ir",
+        "required-product",
         "mode",
         "deploy",
         "level",
@@ -51,9 +51,9 @@ fn render_human_targets(
     for entry in matrix {
         writeln!(
             output,
-            "{:<target_width$} {:<6} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
+            "{:<target_width$} {:<24} {:<16} {:<12} {:<5} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8} {:<8}",
             entry.id,
-            format!("{:?}", entry.ir).to_ascii_lowercase(),
+            format!("{:?}", entry.required_product).to_ascii_lowercase(),
             entry.execution_mode.as_deref().unwrap_or("unknown"),
             entry.deployment_class.as_deref().unwrap_or("unknown"),
             target_readiness_label(entry.readiness_level),
@@ -74,7 +74,7 @@ fn render_human_targets(
     writeln!(
         output,
         "\nLegend:\n  \
-         ir       compiler stage the target consumes (ast < flat < dae < solve)\n  \
+         required-product  checked root/product derived from per-file IR contexts\n  \
          mode     code-gen style (symbolic / compiled / source-transform / packaged)\n  \
          deploy   deployment class (cpu / symbolic / fmu / efmi / browser / modelica)\n  \
          level    readiness 0=experimental .. 2=validated (? = unrated)\n  \
@@ -89,7 +89,8 @@ fn render_human_targets(
     )?;
     for (id, stage) in [
         ("ast-json", "abstract syntax tree"),
-        ("flat-mo / flat-json", "flattened model"),
+        ("flat-json", "exact flattened model dump"),
+        ("flat-mo", "unsupported (named refusal)"),
         ("dae-mo / dae-json", "DAE system"),
         ("solve-json", "solver IR (no Modelica form)"),
     ] {
@@ -97,8 +98,8 @@ fn render_human_targets(
     }
     writeln!(
         output,
-        "\n--target also accepts a directory containing target.toml, or a raw \
-         <file>.jinja template (use --phase to pick the IR it receives)."
+        "\n--target also accepts a directory containing target.toml; standalone \
+         template files are not checked code-generation targets."
     )?;
     Ok(output)
 }

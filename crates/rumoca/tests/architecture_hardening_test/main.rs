@@ -3,6 +3,7 @@ mod aggregate_function_boundary;
 mod architecture_hardening_support;
 mod artifact_session_boundary;
 mod build_resource_budget;
+mod callable_identity_boundary;
 mod callable_plan_boundary;
 mod canonical_helper_ownership;
 mod codegen_presentation_boundary;
@@ -10,21 +11,33 @@ mod commit_messages;
 mod connection_transaction;
 mod construction_lints;
 mod crate_tier_edges;
+mod dae_construction_product_boundary;
 mod dae_ownership;
+mod der_callable_identity_boundary;
+mod derivative_certificate_boundary;
 mod diagnostic_codes;
 mod env_var_registry;
+mod fixed_totality_boundary;
 mod fmi_component_boundary;
 mod fmi_me_boundary;
+mod fmi_state_domain_boundary;
 mod galec_trace_origin;
+mod initialization_planner_boundary;
 mod instance_overlay_insertion;
 mod instantiate_value_fabrication;
+mod instantiation_identity_index;
 mod lint_suppression_ratchet;
+mod model_equation_sequence_boundary;
 mod no_internal_compatibility;
 mod parser_contract;
 mod parser_ownership;
 mod phase_diagnostics;
+mod production_panic_gate;
 mod public_api_surface;
+mod qualify_library_allowlist_tombstone;
 mod retired_target_surface;
+mod runtime_projection_route;
+mod scalar_constant_derivative_refinement_boundary;
 mod semantic_catalog_boundary;
 mod semantic_construction_boundary;
 mod semantic_default_boundary;
@@ -37,6 +50,8 @@ mod target_codegen_construction;
 mod target_semantic_context;
 mod tensor_graph_boundary;
 mod totality_debt;
+mod variable_catalog_refinement_boundary;
+mod vectorization_authority;
 mod websocket_failure_boundary;
 mod worker_wire_contract;
 
@@ -580,11 +595,11 @@ fn test_session_is_compile_only() {
 Author reminder: keep backend-specific packages below the session facade."
     );
 
-    let banned = "rumoca-phase-solve";
     assert!(
-        !manifest_declares_production_dependency(&content, banned),
-        "rumoca-compile must not depend directly on {banned} in any production scope; \
-Author reminder: keep evaluation/runtime internals out of rumoca-compile."
+        section_contains_dependency(&content, "dependencies", "rumoca-phase-solve"),
+        "rumoca-compile must depend directly on rumoca-phase-solve to orchestrate the sole \
+checked DAE/Algorithm-Code-to-Solve construction before rendering; Author reminder: do not \
+hide phase-Solve behind a compatibility facade or let codegen reconstruct Solve semantics."
     );
 }
 
@@ -908,7 +923,7 @@ fn non_test_module_source_lines(content: &str) -> impl Iterator<Item = (usize, &
             let trimmed = line.trim_start();
             let entering_test_module = pending_cfg_test
                 && (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod "));
-            pending_cfg_test = cfg_attribute_requires_test(trimmed);
+            pending_cfg_test = !attribute_text_visibility(trimmed).reaches_production();
 
             let in_test_module = test_module_depth.is_some() || entering_test_module;
             let open_count = line.matches('{').count();
@@ -931,54 +946,6 @@ fn non_test_module_source_lines(content: &str) -> impl Iterator<Item = (usize, &
         })
 }
 
-/// Whether this one-line `cfg` attribute can be true only in a test build.
-///
-/// A top-level `all` is test-only when one of its conjuncts is `test` (or a
-/// nested `all` with that property). `any(test, feature = ...)` deliberately
-/// remains production: the feature branch can be true when `test` is false.
-fn cfg_attribute_requires_test(attribute: &str) -> bool {
-    let compact = attribute
-        .chars()
-        .filter(|character| !character.is_whitespace())
-        .collect::<String>();
-    let Some(predicate) = compact
-        .strip_prefix("#[cfg(")
-        .and_then(|value| value.strip_suffix(")]"))
-    else {
-        return false;
-    };
-    cfg_predicate_requires_test(predicate)
-}
-
-fn cfg_predicate_requires_test(predicate: &str) -> bool {
-    if predicate == "test" {
-        return true;
-    }
-    let Some(conjuncts) = predicate
-        .strip_prefix("all(")
-        .and_then(|value| value.strip_suffix(')'))
-    else {
-        return false;
-    };
-    top_level_cfg_terms(conjuncts).any(cfg_predicate_requires_test)
-}
-
-fn top_level_cfg_terms(predicate: &str) -> impl Iterator<Item = &str> {
-    let mut depth = 0usize;
-    predicate.split(move |character| match character {
-        '(' => {
-            depth += 1;
-            false
-        }
-        ')' => {
-            depth = depth.saturating_sub(1);
-            false
-        }
-        ',' if depth == 0 => true,
-        _ => false,
-    })
-}
-
 #[test]
 fn production_scan_exempts_cfg_all_test_modules() {
     let source = r#"
@@ -993,13 +960,50 @@ mod tests {
     );
 }
 
+/// Verification modules carry `kani` beside `test`, and the scan must exempt
+/// them for the same reason it exempts `test`: neither flag is ever set in a
+/// production build. The string predicate this replaced recognised only bare
+/// `test` and a top-level `all`, so `any(test, kani)` was scanned as production.
+#[test]
+fn production_scan_exempts_cfg_verification_modules() {
+    for attribute in [
+        "#[cfg(kani)]",
+        "#[cfg(any(test, kani))]",
+        "#[cfg(all(feature = \"fmi\", any(test, kani)))]",
+        // A value carrying the punctuation the flattened-token split used as
+        // its own delimiters.
+        "#[cfg(all(feature = \"a,b\", test))]",
+        "#[cfg(all(feature = \"a(b\", kani))]",
+    ] {
+        let source = format!("{attribute}\nmod verification {{ panic!(\"visible\"); }}");
+        assert!(
+            non_test_module_source_lines(&source).all(|(_, line)| !line.contains("panic!(")),
+            "`{attribute}` cannot be compiled into a production build"
+        );
+    }
+}
+
+/// The direction that fails silently. Exempting any of these stops the scan
+/// reading real production code, and every gate built on it keeps passing while
+/// it does, so each spelling is pinned here rather than left to the evaluator's
+/// own unit tests.
 #[test]
 fn production_scan_keeps_cfg_any_and_not_test_modules() {
-    for attribute in ["#[cfg(any(test, feature = \"fmi\"))]", "#[cfg(not(test))]"] {
+    for attribute in [
+        "#[cfg(any(test, feature = \"fmi\"))]",
+        "#[cfg(not(test))]",
+        "#[cfg(any(kani, feature = \"fmi\"))]",
+        "#[cfg(not(kani))]",
+        "#[cfg(all(not(test), feature = \"fmi\"))]",
+        // Both verification flags together under a disjunction with a free
+        // feature: still shipped whenever the feature is on.
+        "#[cfg(any(all(test, kani), feature = \"fmi\"))]",
+        "#[cfg(feature = \"a,b\")]",
+    ] {
         let source = format!("{attribute}\nmod maybe_production {{ panic!(\"visible\"); }}");
         assert!(
             non_test_module_source_lines(&source).any(|(_, line)| line.contains("panic!(")),
-            "`{attribute}` does not imply a test build"
+            "`{attribute}` does not imply a verification-only build"
         );
     }
 }
@@ -1025,35 +1029,13 @@ fn production_scan_does_not_exempt_test_suffixed_source_modules() {
 }
 
 #[test]
+fn production_panic_gate_detects_guaranteed_failure_evasions() {
+    production_panic_gate::assert_guaranteed_failure_mutation_controls();
+}
+
+#[test]
 fn test_production_code_has_no_panic_todo_or_unimplemented() {
-    let root = workspace_root();
-    let mut rs_files = Vec::new();
-    collect_rs_files(&root.join("crates"), &mut rs_files);
-
-    let banned = ["panic!(", "todo!(", "unimplemented!("];
-    let mut offenders = Vec::new();
-    for path in rs_files {
-        let rel = path.strip_prefix(&root).unwrap_or(&path);
-        if is_test_or_example_path(rel) {
-            continue;
-        }
-        let content = fs::read_to_string(&path).expect("read Rust source");
-        offenders.extend(
-            non_test_module_source_lines(&content).filter_map(|(line_idx, line)| {
-                let token = banned.iter().find(|token| line.contains(**token))?;
-                Some(format!(
-                    "{}:{} contains {token}",
-                    path.display(),
-                    line_idx + 1
-                ))
-            }),
-        );
-    }
-
-    assert!(
-        offenders.is_empty(),
-        "production code must not use panic!/todo!/unimplemented!; return a typed error or document an invariant with expect instead: {offenders:#?}"
-    );
+    production_panic_gate::assert_production_has_no_guaranteed_panics();
 }
 
 #[test]

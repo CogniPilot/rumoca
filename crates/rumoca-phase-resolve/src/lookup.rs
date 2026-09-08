@@ -4,9 +4,28 @@
 //! looking up inherited members during extends resolution.
 
 use crate::Resolver;
-use rumoca_core::{ComponentPath, DefId, ScopeId};
+use rumoca_core::{ComponentPath, DefId, Diagnostic, PrimaryLabel, ScopeId, Span};
+use rumoca_ir_ast::LookupOutcome;
 
 impl Resolver {
+    pub(crate) fn emit_ambiguous_inherited_lookup(&mut self, name: &str, span: Span) {
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!("ambiguous inherited reference: '{name}'"),
+            PrimaryLabel::new(span).with_message("multiple inherited declarations match this name"),
+        ));
+    }
+
+    pub(crate) fn emit_ambiguous_unqualified_import(&mut self, name: &str, span: Span) {
+        self.diagnostics.emit(Diagnostic::error(
+            "ER112",
+            format!(
+                "'{name}' is provided by more than one unqualified import and is ambiguous (MLS §5.3.1)"
+            ),
+            PrimaryLabel::new(span).with_message("qualify the name or use a selective import"),
+        ));
+    }
+
     /// Resolve a qualified name (e.g., "Package.Model" or "Model").
     ///
     /// For simple names, uses scope lookup.
@@ -16,7 +35,7 @@ impl Resolver {
         &self,
         name: &rumoca_ir_ast::Name,
         scope: ScopeId,
-    ) -> Option<DefId> {
+    ) -> LookupOutcome {
         self.resolve_qualified_name_excluding(name, scope, None)
     }
 
@@ -36,9 +55,9 @@ impl Resolver {
         name: &rumoca_ir_ast::Name,
         scope: ScopeId,
         exclude: Option<DefId>,
-    ) -> Option<DefId> {
+    ) -> LookupOutcome {
         if name.name.is_empty() {
-            return None;
+            return LookupOutcome::Absent;
         }
 
         let first_part = &name.name[0].text;
@@ -51,22 +70,32 @@ impl Resolver {
 
         // Look up the first part in the scope chain
         let mut current_def_id =
-            self.scope_tree
-                .lookup_excluding(scope, &first_path, effective_exclude)?;
+            match self
+                .scope_tree
+                .lookup_excluding(scope, &first_path, effective_exclude)
+            {
+                LookupOutcome::Found(definition) => definition,
+                outcome => return outcome,
+            };
 
         // Once the head is a declaration, every tail segment is a member lookup
         // in that declaration's exact class scope. The scope owns both direct
         // and effective inherited members, including ambiguity.
         for part in name.name.iter().skip(1) {
-            current_def_id = self.lookup_class_member(current_def_id, &part.text)?;
+            current_def_id = match self.lookup_class_member(current_def_id, &part.text) {
+                LookupOutcome::Found(definition) => definition,
+                outcome => return outcome,
+            };
         }
 
-        Some(current_def_id)
+        LookupOutcome::Found(current_def_id)
     }
 
     /// Look up one member in a declaration's authoritative class scope.
-    pub(crate) fn lookup_class_member(&self, container: DefId, member_name: &str) -> Option<DefId> {
-        let scope = self.class_def_scopes.get(&container).copied()?;
+    pub(crate) fn lookup_class_member(&self, container: DefId, member_name: &str) -> LookupOutcome {
+        let Some(scope) = self.class_def_scopes.get(&container).copied() else {
+            return LookupOutcome::Absent;
+        };
         self.scope_tree
             .lookup_member(scope, &ComponentPath::from_parts([member_name]))
     }
@@ -80,14 +109,17 @@ impl Resolver {
         &self,
         container: DefId,
         member_name: &str,
-    ) -> Option<DefId> {
-        let scope = self.class_def_scopes.get(&container).copied()?;
+    ) -> LookupOutcome {
+        let Some(scope) = self.class_def_scopes.get(&container).copied() else {
+            return LookupOutcome::Absent;
+        };
         match self
             .scope_tree
-            .inherited_member(scope, &ComponentPath::from_parts([member_name]))?
+            .inherited_member(scope, &ComponentPath::from_parts([member_name]))
         {
-            rumoca_ir_ast::InheritedMember::Unique(def_id) => Some(def_id),
-            rumoca_ir_ast::InheritedMember::Ambiguous => None,
+            Some(rumoca_ir_ast::InheritedMember::Unique(def_id)) => LookupOutcome::Found(def_id),
+            Some(rumoca_ir_ast::InheritedMember::Ambiguous) => LookupOutcome::AmbiguousInherited,
+            None => LookupOutcome::Absent,
         }
     }
 }

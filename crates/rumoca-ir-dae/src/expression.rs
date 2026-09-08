@@ -14,7 +14,7 @@ mod subscript_nodes;
 mod type_rules;
 mod value_types;
 
-use rumoca_core::Span;
+use rumoca_core::{Span, checked_extent_product};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{FunctionReadSet, Storage, checked_u32, invalid_arity, unknown};
@@ -115,10 +115,7 @@ impl<'storage, 'dae> Expressions<'storage, 'dae> {
         extents: &[u32],
         provenance: DaeProvenance,
     ) -> Result<Option<ExprId<'dae>>, DaeConstructionError> {
-        let Some(scalar_count) = extents
-            .iter()
-            .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))
-        else {
+        let Some(scalar_count) = checked_extent_product(extents) else {
             return Ok(None);
         };
         if extents.is_empty() || scalars.len() != scalar_count {

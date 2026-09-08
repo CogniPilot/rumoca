@@ -35,7 +35,7 @@ pub fn handle_inlay_hints(
     // Also scan raw source lines for direct builtin calls not represented in AST sections.
     // This keeps hints useful even for partially parsed files during editing.
     collect_loose_builtin_call_hints(source, range, &mut collector.hints);
-    let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
+    let _visit_outcome = traversal_adapter::walk_stored_definition(&mut collector, ast);
     collector.hints
 }
 

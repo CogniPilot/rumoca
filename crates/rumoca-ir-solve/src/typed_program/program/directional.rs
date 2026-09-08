@@ -579,6 +579,7 @@ impl<'primal, 'program> DirectionalBuilder<'primal, 'program> {
                 destination,
                 lhs,
                 rhs,
+                plan: _,
             } => self.derive_matrix_multiply(*destination, *lhs, *rhs, provenance),
             SolveOperation::Cross {
                 destination,

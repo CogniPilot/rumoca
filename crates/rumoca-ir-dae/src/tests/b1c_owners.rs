@@ -15,6 +15,7 @@ fn every_local_b1c_target_requires_exactly_one_definition() {
         dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(1),
                 boolean,
                 declaration,
                 VariableAttributes::default(),
@@ -74,12 +75,14 @@ fn define_pair_variables<'dae>(
         Ok([
             variables.discrete_value(
                 VarName::new("a"),
+                rumoca_core::InstanceId::new(1),
                 boolean,
                 declarations[0],
                 VariableAttributes::default(),
             )?,
             variables.discrete_value(
                 VarName::new("b"),
+                rumoca_core::InstanceId::new(2),
                 boolean,
                 declarations[1],
                 VariableAttributes::default(),
@@ -383,12 +386,14 @@ fn b1c_current_value_dependencies_must_be_acyclic() {
             Ok((
                 variables.discrete_value(
                     VarName::new("a"),
+                    rumoca_core::InstanceId::new(1),
                     boolean,
                     a_declaration,
                     VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("b"),
+                    rumoca_core::InstanceId::new(2),
                     boolean,
                     b_declaration,
                     VariableAttributes::default(),
@@ -452,6 +457,7 @@ fn b1c_when_owner_preserves_source_priority_and_action_provenance() {
         let m = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(1),
                 boolean,
                 declaration,
                 VariableAttributes::default(),
@@ -517,6 +523,7 @@ fn construct_structured_b1c_dae() -> (Dae, DaeProvenance) {
         let target = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(1),
                 boolean_array,
                 declaration,
                 VariableAttributes::default(),
@@ -526,7 +533,7 @@ fn construct_structured_b1c_dae() -> (Dae, DaeProvenance) {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 2,
@@ -697,6 +704,7 @@ fn b1c_owner_error_rolls_back_direct_aggregate_insertion_before_retry() {
         let a = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("a"),
+                rumoca_core::InstanceId::new(1),
                 boolean,
                 declaration,
                 VariableAttributes::default(),
@@ -792,6 +800,7 @@ fn empty_b1c_topology_cannot_be_reopened_by_a_late_discrete_target() {
         let rejected = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("late"),
+                rumoca_core::InstanceId::new(1),
                 boolean,
                 declaration,
                 VariableAttributes::default(),

@@ -2,32 +2,31 @@
 //!
 //! This is a SEPARATE `cdylib` sibling of `rumoca-bind-wasm`: the core
 //! rumoca WASM binary (Modelica / template / simulation workflows) must NOT
-//! grow the GALEC → eFMI Algorithm Code + embedded-C projection, so this
+//! grow the GALEC → eFMI Algorithm Code projection, so this
 //! module carries it on its own and is loaded on demand only when a user
 //! selects a GALEC codegen target. It mirrors the repo's lazy-diffsol-addon
 //! (`rumoca-bind-wasm-diffsol`) and the layered core/rumoca/viz/live
 //! packaging direction.
 //!
-//! It is a thin wasm boundary: [`render_galec`] compiles Modelica in-memory to
-//! the canonical DAE + Flat model, then delegates to the shared
-//! the checked `rumoca-phase-galec` projection and the generic
-//! `rumoca-phase-codegen` Algorithm Code template surface used by the CLI and
-//! LSP.
+//! It is a thin wasm boundary: [`render_galec`] compiles Modelica in-memory and
+//! delegates the checked target to `StrictCompilation::render_target`. This
+//! crate neither lowers IR nor renders templates.
 
 use std::collections::BTreeMap;
 
 use lsp_types::{Position, Url};
-use rumoca_compile::codegen::targets::{TargetBundle, TargetTemplateSource};
+use rumoca_compile::codegen::targets::{
+    ArtifactGenerationInstant, ArtifactIdentitySeed, ArtifactSessionInput, TargetBundle,
+};
 use rumoca_compile::{Session, SessionConfig};
 use rumoca_core::{PhaseError, SourceMap};
-use rumoca_phase_parse_galec::parse as parse_galec;
+use rumoca_phase_codegen::CodegenError;
+use rumoca_phase_galec::GalecTargetErrors;
 use rumoca_tool_lsp_galec::{compute_diagnostics, navigation};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
 const GALEC_TARGET: &str = "galec";
-const GALEC_PRODUCTION_TARGET: &str = "galec-production";
-const EMBEDDED_C_GALEC_TARGET: &str = "embedded-c-galec";
 
 /// Initialize the panic hook for readable console errors (mirrors the core
 /// binding and the diffsol addon).
@@ -44,35 +43,29 @@ pub fn init() {
 /// Modelica text (`{ "<path>": "<content>", … }`) — the SAME map the core
 /// binding compiles with, so a model spanning several files (imports, a
 /// library, a non-active file) projects to GALEC exactly as it compiles for
-/// every other target. `target` is one of `galec`, `galec-production`,
-/// `embedded-c-galec`.
+/// every other target. `target` is exactly `galec`; GALEC never emits C.
 ///
 /// Success shape:
 /// ```json
-/// { "ok": true, "target": "<target>", "model_identifier": "<id>",
-///   "alg": "<.alg text>", "c_header": "<.h text or empty>",
-///   "c_source": "<.c text or empty>" }
+/// { "ok": true, "target": "<target>", "alg": "<.alg text>" }
 /// ```
-/// The `c_header`/`c_source` fields are empty strings for the `galec` target
-/// (Algorithm Code only). Failure shape: `{ "ok": false, "error": "<msg>" }`.
+/// Failure shape: `{ "ok": false, "error": "<msg>" }`.
 #[wasm_bindgen]
 pub fn render_galec(workspace_sources: &str, model_name: &str, target: &str) -> String {
     let value = match render_galec_impl(workspace_sources, model_name, target) {
         Ok(value) => value,
         Err(error) => json!({ "ok": false, "error": error }),
     };
-    // A `serde_json::Value` built from strings always serializes; fall back to
-    // a hand-built error string on the impossible failure so the contract
-    // (always a JSON string) still holds.
-    serde_json::to_string(&value).unwrap_or_else(|error| {
-        format!("{{\"ok\":false,\"error\":\"response serialization failed: {error}\"}}")
-    })
+    serde_json::to_string(&value).expect("a JSON value always serializes")
 }
 
 /// Compute GALEC `.alg` LSP diagnostics and return them as JSON.
 #[wasm_bindgen]
 pub fn galec_diagnostics(source: &str, file_name: &str) -> String {
-    serialize_language_response(&compute_diagnostics(source, file_name))
+    match compute_diagnostics(source, file_name) {
+        Ok(diagnostics) => serialize_language_response(&diagnostics),
+        Err(error) => serialize_language_response(&json!({ "error": error.to_string() })),
+    }
 }
 
 /// Return GALEC hover information for a UTF-16 LSP position, or `null`.
@@ -97,91 +90,8 @@ pub fn galec_definition(
     serialize_language_response(&definition)
 }
 
-/// Parse an edited GALEC `.alg` block and render GALEC-derived C files.
-///
-/// This is the editor-owned second step for the docs/playground flow:
-/// Modelica projection produces editable `.alg`; this function consumes the
-/// current `.alg` text and emits `.h`/`.c` without re-reading the Modelica
-/// source. It is intentionally source-only: the eFMI container and Production
-/// Code manifests remain the native CLI packaging step.
-#[wasm_bindgen]
-pub fn render_galec_c_from_alg(
-    alg_source: &str,
-    file_name: &str,
-    model_name: &str,
-    target: &str,
-) -> String {
-    let value = match render_galec_c_from_alg_impl(alg_source, file_name, model_name, target) {
-        Ok(value) => value,
-        Err(error) => json!({ "ok": false, "error": error }),
-    };
-    serde_json::to_string(&value).unwrap_or_else(|error| {
-        format!("{{\"ok\":false,\"error\":\"response serialization failed: {error}\"}}")
-    })
-}
-
 fn serialize_language_response<T: serde::Serialize>(value: &T) -> String {
-    serde_json::to_string(value)
-        .unwrap_or_else(|error| format!("{{\"error\":\"JSON serialization failed: {error}\"}}"))
-}
-
-fn render_galec_c_from_alg_impl(
-    alg_source: &str,
-    file_name: &str,
-    model_name: &str,
-    target: &str,
-) -> Result<Value, String> {
-    let checked = parse_galec(alg_source, file_name)
-        .map_err(|error| format!("GALEC parse error: {error}"))?;
-    // Attribute the two distinct refusals separately (SPEC_0008): a target
-    // that is not a GALEC target at all, versus the Algorithm-Code-only
-    // `galec` target, which is a GALEC target but emits no C.
-    if !is_galec_target(target) {
-        return Err(unknown_target_error(target));
-    }
-    if !matches!(target, EMBEDDED_C_GALEC_TARGET | GALEC_PRODUCTION_TARGET) {
-        return Err(format!("target `{target}` does not emit C files"));
-    }
-    let model_id = model_name.replace('.', "_");
-    // Render the REQUESTED target's C templates: each GALEC C target owns its
-    // conformance banner, so rendering `galec-production` through the
-    // `embedded-c-galec` bundle would stamp the "NOT an eFMI Production Code
-    // container" claim onto Production Code files.
-    let bundle = TargetBundle::builtin(target)
-        .ok_or_else(|| format!("missing built-in target `{target}`"))?;
-    let artifact = SourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca wasm edited Algorithm Code",
-        identities: BTreeMap::new(),
-        checksums: BTreeMap::new(),
-    };
-    let header = bundle
-        .template_source("model.h.jinja")
-        .map_err(|error| error.to_string())?;
-    let source = bundle
-        .template_source("model.c.jinja")
-        .map_err(|error| error.to_string())?;
-    let c_header = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &artifact,
-        header.as_ref(),
-        &model_id,
-    )
-    .map_err(|error| error.to_string())?;
-    let c_source = rumoca_phase_codegen::render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &artifact,
-        source.as_ref(),
-        &model_id,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(json!({
-        "ok": true,
-        "target": target,
-        "model_identifier": model_id,
-        "c_header": c_header,
-        "c_source": c_source,
-    }))
+    serde_json::to_string(value).expect("GALEC language responses are JSON-serializable")
 }
 
 fn render_galec_impl(
@@ -199,166 +109,113 @@ fn render_galec_impl(
         return Err("no Modelica sources were provided".to_owned());
     }
     let mut session = Session::new(SessionConfig::default());
-    let mut source_map = SourceMap::new();
     for (path, content) in &documents {
-        source_map.add(path, content);
         session
             .add_document(path, content)
             .map_err(|error| format!("failed to load `{path}`: {error}"))?;
     }
-    let result = session
-        .compile_model(model_name)
-        .map_err(|error| format!("compilation error: {error}"))?;
+    let compilation = session
+        .compile_model_strict(model_name)
+        .map_err(|report| format!("compilation error: {}", report.failure_summary(8)))?;
 
-    // 2. Delegate to the shared identity-free renderer (validates the target,
-    //    projects to GALEC, and renders the .alg + C with the target's
-    //    conformance header). GALEC identifiers/C names cannot contain dots.
-    let model_id = model_name.replace('.', "_");
-    let sources = render_checked_sources(&result.dae, &source_map, &model_id, target)?;
+    if !is_galec_target(target) {
+        return Err(unknown_target_error(target));
+    }
+    let checked = TargetBundle::builtin(target)
+        .ok_or_else(|| format!("missing built-in target `{target}`"))?
+        .check()
+        .map_err(|error| error.to_string())?;
+    let input = ArtifactSessionInput::construct(
+        "1970-01-01T00:00:00Z"
+            .parse::<ArtifactGenerationInstant>()
+            .expect("the pinned UTC instant is canonical"),
+        "00000000-0000-0000-0000-000000000001"
+            .parse::<ArtifactIdentitySeed>()
+            .expect("the pinned UUID seed is canonical"),
+    );
+    let artifact = compilation.render_target(checked, input).map_err(|error| {
+        galec_target_diagnostic_message(&error, compilation.result().dae.source_map())
+            .unwrap_or_else(|| format!("GALEC target rendering failed: {error:#}"))
+    })?;
+    let files = artifact.into_rendered_files();
+    let alg = files
+        .iter()
+        .find(|file| file.path() == "AlgorithmCode/model.alg")
+        .ok_or_else(|| {
+            "checked GALEC artifact lost its standard AlgorithmCode/model.alg member".to_owned()
+        })?
+        .content()
+        .to_owned();
 
     Ok(json!({
         "ok": true,
         "target": target,
-        // The file-system-safe identifier the projection and the C `#include`
-        // both use (dots -> underscores). The web layer names the .alg/.h/.c
-        // files with THIS so the generated `#include "<id>.h"` resolves; naming
-        // them by the bare model leaf breaks C compilation for a package-
-        // qualified model (e.g. `MyLib.Demo` -> include `MyLib_Demo.h`).
-        "model_identifier": model_id,
-        "alg": sources.alg,
-        "c_header": sources.c_header,
-        "c_source": sources.c_source,
+        "alg": alg,
     }))
 }
 
-#[derive(serde::Serialize)]
-struct SourceArtifactFacts {
-    generated_at: &'static str,
-    generation_tool: &'static str,
-    identities: BTreeMap<String, String>,
-    checksums: BTreeMap<String, String>,
+fn galec_target_diagnostic_message(
+    error: &anyhow::Error,
+    source_map: &SourceMap,
+) -> Option<String> {
+    let details = if let Some(errors) = error.downcast_ref::<GalecTargetErrors>() {
+        errors
+            .iter()
+            .map(|error| {
+                let diagnostic = error.to_diagnostic();
+                diagnostic_line(
+                    diagnostic.code.as_deref().unwrap_or("GALEC"),
+                    &diagnostic.message,
+                    diagnostic.labels.first().map(|label| label.span),
+                    source_map,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        let typed = error.downcast_ref::<CodegenError>()?;
+        let CodegenError::UnsupportedTargetFeature { span, .. } = typed else {
+            return None;
+        };
+        diagnostic_line("EC009", &typed.to_string(), *span, source_map)
+    };
+    Some(format!("GALEC target rendering failed:\n{details}"))
 }
 
-struct RenderedSources {
-    alg: String,
-    c_header: String,
-    c_source: String,
+fn diagnostic_line(
+    code: &str,
+    message: &str,
+    span: Option<rumoca_core::Span>,
+    source_map: &SourceMap,
+) -> String {
+    let location =
+        span.and_then(|span| rumoca_compile::compile::source_span_location(source_map, span));
+    match location {
+        Some(location) => format!(
+            "[{code}] {message} ({}:{}:{})",
+            location.file_name,
+            location.start.line + 1,
+            location.start.character + 1,
+        ),
+        None => format!("[{code}] {message}"),
+    }
 }
 
-/// Whether `target` is one of the GALEC codegen targets.
+/// Whether `target` is the one GALEC codegen target. GALEC never emits C.
 fn is_galec_target(target: &str) -> bool {
-    matches!(
-        target,
-        GALEC_TARGET | GALEC_PRODUCTION_TARGET | EMBEDDED_C_GALEC_TARGET
-    )
+    target == GALEC_TARGET
 }
 
 /// The SPEC_0008-shaped refusal for a target this addon does not project:
 /// name the rejected value AND the admissible set, so a caller can fix the
 /// request without reading the source.
 fn unknown_target_error(target: &str) -> String {
-    format!(
-        "'{target}' is not a GALEC codegen target \
-         (expected {GALEC_TARGET}, {GALEC_PRODUCTION_TARGET}, or {EMBEDDED_C_GALEC_TARGET})"
-    )
-}
-
-/// Render every projection diagnostic under one attributed heading, one per
-/// line, so the JSON `error` string states WHAT was refused (the projection)
-/// before listing the collected `EGT0xx` reasons.
-fn projection_rejected_error(
-    diagnostics: &[rumoca_phase_galec::GalecTargetError],
-    source_map: &SourceMap,
-) -> String {
-    let detail = diagnostics
-        .iter()
-        .map(|error| {
-            let diagnostic = error.to_diagnostic();
-            let code = diagnostic.code.as_deref().unwrap_or("EGT000");
-            let location = diagnostic
-                .labels
-                .iter()
-                .find(|label| label.primary)
-                .and_then(|label| {
-                    rumoca_compile::compile::source_span_location(source_map, label.span)
-                })
-                .map(|location| {
-                    format!(
-                        "{}:{}:{}: ",
-                        location.file_name,
-                        location.start.line.saturating_add(1),
-                        location.start.character.saturating_add(1)
-                    )
-                })
-                .unwrap_or_default();
-            format!("  - {location}[{code}] {}", diagnostic.message)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("GALEC projection rejected the model:\n{detail}")
-}
-
-fn render_checked_sources(
-    dae: &rumoca_compile::compile::Dae,
-    source_map: &SourceMap,
-    model_id: &str,
-    target: &str,
-) -> Result<RenderedSources, String> {
-    if !is_galec_target(target) {
-        return Err(unknown_target_error(target));
-    }
-    let bundle = TargetBundle::builtin(target)
-        .ok_or_else(|| format!("missing built-in target `{target}`"))?;
-    let manifest = bundle.parse_manifest().map_err(|error| error.to_string())?;
-    let package = rumoca_phase_galec::lower_to_algorithm_code(
-        &rumoca_phase_galec::GalecInput::new(dae, model_id),
-        &rumoca_phase_galec::GalecOptions::default(),
-    )
-    .map_err(|diagnostics| projection_rejected_error(&diagnostics, source_map))?;
-    let artifact = SourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca wasm source preview",
-        identities: BTreeMap::new(),
-        checksums: BTreeMap::new(),
-    };
-    let mut rendered = RenderedSources {
-        alg: String::new(),
-        c_header: String::new(),
-        c_source: String::new(),
-    };
-    for file in &manifest.files {
-        let extension = std::path::Path::new(&file.path)
-            .extension()
-            .and_then(|value| value.to_str());
-        if !matches!(extension, Some("alg" | "h" | "c")) {
-            continue;
-        }
-        let source = bundle
-            .template_source(&file.template)
-            .map_err(|error| error.to_string())?;
-        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            source.as_ref(),
-            model_id,
-        )
-        .map_err(|error| error.to_string())?;
-        match extension {
-            Some("alg") => rendered.alg = content,
-            Some("h") => rendered.c_header = content,
-            Some("c") => rendered.c_source = content,
-            _ => {}
-        }
-    }
-    Ok(rendered)
+    format!("'{target}' is not a GALEC codegen target (expected {GALEC_TARGET})")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const EMBEDDED_C_GALEC_CONFORMANCE_LINES: &[&str] = &["GALEC-derived embedded C export"];
-    const PRODUCTION_CONFORMANCE_LINES: &[&str] = &["eFMI Production Code export"];
-    const PRODUCTION_CONFORMANCE_SUMMARY: &str = "eFMI Production Code export";
 
     /// Fixed-sample discrete model admissible for GALEC projection (mirrors
     /// the `rumoca-compile` galec facade fixture).
@@ -411,50 +268,8 @@ end GalecWasmDemo;
                 .is_some_and(|alg| alg.contains("DoStep")),
             "alg should carry the DoStep method: {value}"
         );
-        assert_eq!(value["c_header"], "");
-        assert_eq!(value["c_source"], "");
-    }
-
-    #[test]
-    fn embedded_c_target_renders_c_with_not_a_container_header() {
-        let value = parse(&render_galec(
-            &workspace("input.mo", DISCRETE_SOURCE),
-            "GalecWasmDemo",
-            EMBEDDED_C_GALEC_TARGET,
-        ));
-        assert_eq!(value["ok"], true, "{value}");
-        let header = value["c_header"].as_str().expect("c_header string");
-        let source = value["c_source"].as_str().expect("c_source string");
-        assert!(header.contains("GalecWasmDemoState"), "{header}");
-        assert!(source.contains("_dostep("), "{source}");
-        assert!(
-            header.contains(EMBEDDED_C_GALEC_CONFORMANCE_LINES[0]),
-            "embedded-c header must self-describe as NOT a container: {header}"
-        );
-    }
-
-    #[test]
-    fn production_target_renders_c_with_production_conformance_header() {
-        let value = parse(&render_galec(
-            &workspace("input.mo", DISCRETE_SOURCE),
-            "GalecWasmDemo",
-            GALEC_PRODUCTION_TARGET,
-        ));
-        assert_eq!(value["ok"], true, "{value}");
-        let header = value["c_header"].as_str().expect("c_header string");
-        let source = value["c_source"].as_str().expect("c_source string");
-        assert!(
-            header.contains(PRODUCTION_CONFORMANCE_LINES[0]),
-            "production header must claim the PC representation: {header}"
-        );
-        assert!(
-            source.contains(PRODUCTION_CONFORMANCE_SUMMARY),
-            "production source must carry the PC summary: {source}"
-        );
-        assert!(
-            !header.contains("NOT an eFMI Production Code container"),
-            "the embedded-c NOT-a-container claim must not leak into production: {header}"
-        );
+        assert!(value.get("c_header").is_none(), "{value}");
+        assert!(value.get("c_source").is_none(), "{value}");
     }
 
     #[test]
@@ -522,35 +337,6 @@ end GalecWasmDemo;
         );
     }
 
-    #[test]
-    fn edited_alg_text_renders_c_without_modelica_source() {
-        let value = parse(&render_galec(
-            &workspace("input.mo", DISCRETE_SOURCE),
-            "GalecWasmDemo",
-            GALEC_TARGET,
-        ));
-        let alg = value["alg"].as_str().expect("alg string");
-        let c = parse(&render_galec_c_from_alg(
-            alg,
-            "GalecWasmDemo.alg",
-            "GalecWasmDemo",
-            EMBEDDED_C_GALEC_TARGET,
-        ));
-        assert_eq!(c["ok"], true, "{c}");
-        assert!(
-            c["c_header"]
-                .as_str()
-                .is_some_and(|header| header.contains("GalecWasmDemoState")),
-            "{c}"
-        );
-        assert!(
-            c["c_source"]
-                .as_str()
-                .is_some_and(|source| source.contains("_dostep(")),
-            "{c}"
-        );
-    }
-
     /// A model spanning several workspace files projects to GALEC exactly as it
     /// compiles for every other target — the addon loads all documents, not
     /// just one (regression for the single-active-document gap).
@@ -583,7 +369,7 @@ end Counter;
         .to_string();
         let value = parse(&render_galec(&sources, "Demo.Counter", GALEC_TARGET));
         assert_eq!(value["ok"], true, "multi-file model must project: {value}");
-        assert_eq!(value["model_identifier"], "Demo_Counter");
+        assert!(value.get("model_identifier").is_none(), "{value}");
         assert!(
             value["alg"]
                 .as_str()
@@ -605,7 +391,7 @@ end Counter;
     }
 
     #[test]
-    fn continuous_model_is_rejected_with_projection_diagnostics() {
+    fn continuous_model_is_rejected_at_the_target_capability_layer() {
         let source = r#"
 model ContinuousDemo
   Real x(start = 1.0);
@@ -621,9 +407,14 @@ end ContinuousDemo;
         ));
         assert_eq!(value["ok"], false);
         assert!(
-            value["error"]
-                .as_str()
-                .is_some_and(|error| error.contains("projection rejected")),
+            value["error"].as_str().is_some_and(|error| {
+                error.contains("[EC009]")
+                    && error.contains("unsupported-feature:continuous_states")
+                    && error.contains("Target 'galec'")
+                    && error.contains("input.mo:3:3")
+                    && !error.contains("[EGT001]")
+                    && !error.contains("[EGT005]")
+            }),
             "{value}"
         );
     }
@@ -633,13 +424,17 @@ end ContinuousDemo;
         let source = "model A\n  Real x;\nend A;\n";
         let mut source_map = SourceMap::new();
         let source_id = source_map.add("models/A.mo", source);
-        let error = rumoca_phase_galec::GalecTargetError::UnsupportedFeature {
-            feature: "test-feature".to_owned(),
-            detail: "test refusal".to_owned(),
-            span: Some(rumoca_core::Span::from_offsets(source_id, 10, 14)),
-        };
+        let errors = GalecTargetErrors::from(vec![
+            rumoca_phase_galec::GalecTargetError::UnsupportedFeature {
+                feature: "test-feature".to_owned(),
+                detail: "test refusal".to_owned(),
+                span: Some(rumoca_core::Span::from_offsets(source_id, 10, 14)),
+            },
+        ]);
 
-        let rendered = projection_rejected_error(&[error], &source_map);
+        let chained = anyhow::Error::new(errors).context("compile target rendering context");
+        let rendered = galec_target_diagnostic_message(&chained, &source_map)
+            .expect("typed GALEC target errors remain in the adapter chain");
         assert!(rendered.contains("[EGT017]"), "{rendered}");
         assert!(rendered.contains("models/A.mo:2:3"), "{rendered}");
     }

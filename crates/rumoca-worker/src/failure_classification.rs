@@ -249,6 +249,14 @@ impl ModelFailureBucket {
             SimError::Terminated { .. } => Self::ModelTermination,
             SimError::EmptySystem => Self::EmptySystem,
             SimError::RuntimeContract { .. } => Self::RuntimeContract,
+            SimError::NativeExecution {
+                execution_stage: rumoca_solver::NativeExecutionStage::Compile,
+                ..
+            } => Self::SimBackendBuild,
+            SimError::NativeExecution {
+                execution_stage: rumoca_solver::NativeExecutionStage::Call,
+                ..
+            } => Self::from_sim_stage(error.stage().unwrap_or(fallback)),
             SimError::ModelExchangeSession(session) if session.is_timeout() => Self::Timeout,
             SimError::ModelExchangeSession(session) if session.is_integrator_failure() => {
                 Self::SolverIntegration

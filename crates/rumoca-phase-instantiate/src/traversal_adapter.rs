@@ -10,16 +10,6 @@ pub(super) fn walk_nested_classes<'a>(
     }
 }
 
-/// Walk direct `extends` clauses declared in `class`.
-pub(super) fn walk_extends<'a>(
-    class: &'a ast::ClassDef,
-    mut callback: impl FnMut(&'a ast::Extend),
-) {
-    for extend in &class.extends {
-        callback(extend);
-    }
-}
-
 /// Walk all modifications in an `extends` clause.
 pub(super) fn walk_extend_modifications<'a>(
     extend: &'a ast::Extend,
@@ -28,16 +18,6 @@ pub(super) fn walk_extend_modifications<'a>(
     for modification in &extend.modifications {
         callback(modification);
     }
-}
-
-/// Walk all `extends` modifications in a class.
-pub(super) fn walk_class_extends_modifications<'a>(
-    class: &'a ast::ClassDef,
-    mut callback: impl FnMut(&'a ast::Extend, &'a ast::ExtendModification),
-) {
-    walk_extends(class, |extend| {
-        walk_extend_modifications(extend, |modification| callback(extend, modification));
-    });
 }
 
 /// Whether a modification expression contains a redeclaration at any depth
@@ -59,7 +39,9 @@ pub(super) fn expression_contains_redeclare(expr: &ast::Expression) -> bool {
             redeclare_flags.iter().any(|redeclare| *redeclare)
                 || modifications.iter().any(expression_contains_redeclare)
         }
-        ast::Expression::Modification { value, .. } => expression_contains_redeclare(value),
+        ast::Expression::Modification {
+            value: Some(value), ..
+        } => expression_contains_redeclare(value),
         _ => false,
     }
 }
@@ -68,13 +50,18 @@ pub(super) fn expression_contains_redeclare(expr: &ast::Expression) -> bool {
 /// `redeclare ... target = value`.
 pub(super) fn redeclare_target_value(
     modification: &ast::ExtendModification,
-) -> Option<(&str, &ast::Expression)> {
+) -> Option<(&str, &ast::ComponentReference, &ast::Expression)> {
     if !modification.redeclare {
         return None;
     }
-    let ast::Expression::Modification { target, value, .. } = &modification.expr else {
+    let ast::Expression::Modification {
+        target,
+        value: Some(value),
+        ..
+    } = &modification.expr
+    else {
         return None;
     };
     let first_target = target.parts.first()?;
-    Some((first_target.ident.text.as_ref(), value.as_ref()))
+    Some((first_target.ident.text.as_ref(), target, value.as_ref()))
 }

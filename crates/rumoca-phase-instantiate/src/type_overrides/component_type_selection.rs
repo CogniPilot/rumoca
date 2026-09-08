@@ -6,12 +6,19 @@
 //! redeclaration nor an extends relative of the resolved type is rejected so
 //! unrelated lexical collisions cannot masquerade as an override.
 
-use super::class_hierarchy::extends_base_classes;
 use super::override_map::TypeOverrideMap;
-use crate::InstantiateResult;
 use crate::type_lookup::find_member_type_in_class;
+use crate::{InstantiateError, InstantiateResult};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
+
+pub(super) fn is_predefined_identity(tree: &ast::ClassTree, def_id: DefId) -> bool {
+    rumoca_core::BUILTIN_TYPES.iter().any(|name| {
+        tree.scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+            == Some(def_id)
+    })
+}
 
 /// Apply type override for replaceable type redeclarations (MLS §7.3).
 pub(crate) fn apply_type_override<'a>(
@@ -26,20 +33,44 @@ pub(crate) fn apply_type_override<'a>(
     //
     // This must apply to package-member model types too (e.g.
     // `Medium.BaseProperties`), not only primitive/record members.
-    let exact_override = comp.type_def_id.and_then(|source_def_id| {
-        type_overrides
-            .target_for_alias_def_id(source_def_id)
-            .filter(|target_def_id| {
-                exact_type_override_preserves_declaration_slot(tree, source_def_id, *target_def_id)
-            })
-    });
-    let dynamic_root_override = (|| {
+    let exact_override = if let Some(source_def_id) = comp.type_def_id
+        && let Some(target_def_id) = type_overrides.checked_target_for_alias_def_id(
+            tree,
+            source_def_id,
+            comp.location.span(),
+        )?
+        && exact_type_override_preserves_declaration_slot(tree, source_def_id, target_def_id)?
+    {
+        Some(target_def_id)
+    } else {
+        None
+    };
+    let dynamic_root_override = (|| -> InstantiateResult<Option<DefId>> {
         if comp.type_def_id.is_some() || comp.type_name.name.len() < 2 {
-            return None;
+            return Ok(None);
         }
-        let dynamic_root_def_id = comp.type_name.def_id?;
-        let selected_class_def_id = type_overrides.target_for_alias_def_id(dynamic_root_def_id)?;
-        let selected_class = tree.get_class_by_def_id(selected_class_def_id)?;
+        let dynamic_root_def_id = comp.type_name.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("dynamic type root `{}`", comp.type_name),
+                comp.location.span(),
+            ))
+        })?;
+        let Some(selected_class_def_id) = type_overrides.checked_target_for_alias_def_id(
+            tree,
+            dynamic_root_def_id,
+            comp.location.span(),
+        )?
+        else {
+            return Ok(None);
+        };
+        let selected_class = tree
+            .get_class_by_def_id(selected_class_def_id)
+            .ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("selected class {selected_class_def_id:?}"),
+                    comp.location.span(),
+                ))
+            })?;
         let member_path = comp
             .type_name
             .name
@@ -47,8 +78,11 @@ pub(crate) fn apply_type_override<'a>(
             .skip(1)
             .map(|part| part.text.as_ref())
             .collect::<Vec<_>>();
-        find_member_type_path_segments(tree, selected_class, &member_path)?.def_id
-    })();
+        Ok(
+            find_member_type_path_segments(tree, selected_class, &member_path)?
+                .and_then(|member| member.def_id),
+        )
+    })()?;
 
     let override_def_id = dynamic_root_override.or(exact_override);
     if let Some(override_def_id) = override_def_id
@@ -69,67 +103,111 @@ fn exact_type_override_preserves_declaration_slot(
     tree: &ast::ClassTree,
     source_def_id: DefId,
     target_def_id: DefId,
-) -> bool {
+) -> InstantiateResult<bool> {
     if source_def_id == target_def_id {
-        return true;
+        if is_predefined_identity(tree, source_def_id) {
+            return Ok(true);
+        }
+        tree.get_class_by_def_id(source_def_id).ok_or_else(|| {
+            Box::new(InstantiateError::ModelNotFound(format!(
+                "type override source {source_def_id:?}"
+            )))
+        })?;
+        return Ok(true);
     }
-    let (Some(source), Some(target)) = (
-        tree.get_class_by_def_id(source_def_id),
-        tree.get_class_by_def_id(target_def_id),
-    ) else {
-        return false;
-    };
-
+    let source = tree.get_class_by_def_id(source_def_id).ok_or_else(|| {
+        Box::new(InstantiateError::ModelNotFound(format!(
+            "type override source {source_def_id:?}"
+        )))
+    })?;
+    if is_predefined_identity(tree, target_def_id) {
+        return Ok(true);
+    }
+    let target = tree.get_class_by_def_id(target_def_id).ok_or_else(|| {
+        Box::new(InstantiateError::ModelNotFound(format!(
+            "type override target {target_def_id:?}"
+        )))
+    })?;
     // Differently named targets are explicit class/package aliases. For
     // same-named declarations, require a structural redeclaration or extends
     // relationship so unrelated lexical collisions cannot masquerade as an
     // override.
-    source.name.text != target.name.text
-        || class_identity_reaches(tree, target, source_def_id)
-        || class_identity_reaches(tree, source, target_def_id)
+    Ok(source.name.text != target.name.text
+        || class_identity_reaches(tree, target, source_def_id)?
+        || class_identity_reaches(tree, source, target_def_id)?)
 }
 
 fn class_identity_reaches(
     tree: &ast::ClassTree,
     root: &ast::ClassDef,
     target_def_id: DefId,
-) -> bool {
-    const MAX_DEPTH: usize = 32;
+) -> InstantiateResult<bool> {
     let mut pending = vec![root];
-    let mut visited = std::collections::HashSet::new();
+    let mut complete = std::collections::HashSet::new();
+    let mut reaches = false;
 
-    for _ in 0..MAX_DEPTH {
-        let Some(class) = pending.pop() else {
-            return false;
-        };
-        let Some(def_id) = class.def_id else {
-            continue;
-        };
-        if def_id == target_def_id {
-            return true;
-        }
-        if !visited.insert(def_id) {
+    while let Some(class) = pending.pop() {
+        let def_id = class.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("type selection class `{}`", class.name.text),
+                class.location.span(),
+            ))
+        })?;
+        if !complete.insert(def_id) {
             continue;
         }
-        if let Some(redeclare_target) = class
-            .redeclare_target_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
-        {
+        reaches |= def_id == target_def_id;
+        if let Some(redeclare_target_def_id) = class.redeclare_target_def_id {
+            let redeclare_target = tree
+                .get_class_by_def_id(redeclare_target_def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!(
+                            "redeclare target {redeclare_target_def_id:?} from `{}`",
+                            class.name.text
+                        ),
+                        class.location.span(),
+                    ))
+                })?;
             pending.push(redeclare_target);
         }
-        pending.extend(extends_base_classes(tree, class));
+        for extend in class.extends.iter().rev() {
+            let base_name = extend.base_name.to_string();
+            if crate::inheritance::predefined_extend_name(tree, extend)?.is_some() {
+                continue;
+            }
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("type selection extends edge `{base_name}`"),
+                        extend.location.span(),
+                    ))
+                })?;
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("type selection extends edge `{base_name}` ({base_def_id:?})"),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push(base);
+        }
     }
-    false
+    Ok(reaches)
 }
 
 fn find_member_type_path_segments<'a>(
     tree: &'a ast::ClassTree,
     class: &'a ast::ClassDef,
     member_path: &[&str],
-) -> Option<&'a ast::ClassDef> {
+) -> InstantiateResult<Option<&'a ast::ClassDef>> {
     let mut current = class;
     for segment in member_path {
-        current = find_member_type_in_class(tree, current, segment)?;
+        let Some(member) = find_member_type_in_class(tree, current, segment)? else {
+            return Ok(None);
+        };
+        current = member;
     }
-    Some(current)
+    Ok(Some(current))
 }

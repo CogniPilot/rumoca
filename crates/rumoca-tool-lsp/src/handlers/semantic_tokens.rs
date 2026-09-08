@@ -74,7 +74,7 @@ pub fn handle_semantic_tokens(
     source: &str,
 ) -> Option<SemanticTokensResult> {
     let mut collector = SemanticTokenCollector::new(source);
-    let _ = traversal_adapter::walk_stored_definition(&mut collector, ast);
+    let _visit_outcome = traversal_adapter::walk_stored_definition(&mut collector, ast);
 
     // Sort by line then column
     collector

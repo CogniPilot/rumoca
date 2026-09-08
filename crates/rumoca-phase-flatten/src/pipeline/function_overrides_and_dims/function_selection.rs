@@ -256,20 +256,14 @@ fn exact_redeclared_function_rewrite(
     ctx: &FunctionOverrideRewriteContext<'_>,
     span: rumoca_core::Span,
 ) -> Result<Option<ResolvedFunctionRewrite>, FlattenError> {
-    let mut matches = ctx.override_functions.values().filter(|target| {
-        target.class_type == rumoca_core::ClassType::Function
-            && target.function_slot == FunctionSlot::Exact(selection.exposure)
-    });
-    let target = matches.next();
-    if matches.next().is_some() {
-        return Err(FlattenError::missing_function_selection_identity(
-            reference.as_str(),
-            "replaceable function slot has multiple exact redeclare selections",
-            span,
-        ));
-    }
+    let target = ctx
+        .override_functions
+        .get(&selection.exposure)
+        .filter(|target| {
+            target.class_type == rumoca_core::ClassType::Function
+                && target.function_slot == FunctionSlot::Exact(selection.exposure)
+        });
     let Some(target) = target else {
-        refuse_unresolved_function_redeclare(reference, ctx, span)?;
         return Ok(None);
     };
     let target_class = ctx.class_index.get(target.def_id).ok_or_else(|| {
@@ -310,37 +304,6 @@ fn exact_redeclared_function_rewrite(
     )?;
     rewrite.spell_exact_target = true;
     Ok(Some(rewrite))
-}
-
-/// Fail closed when a visible function redeclare could govern this call but
-/// carries no exact slot identity: the occurrence's leaf name is the alias
-/// the redeclare fills, so honoring or ignoring it cannot be decided.
-fn refuse_unresolved_function_redeclare(
-    reference: &rumoca_core::Reference,
-    ctx: &FunctionOverrideRewriteContext<'_>,
-    span: rumoca_core::Span,
-) -> Result<(), FlattenError> {
-    let Some(leaf) = reference
-        .component_ref()
-        .and_then(|component_ref| component_ref.parts().last())
-        .map(|part| part.ident.as_str())
-    else {
-        return Ok(());
-    };
-    let governs = ctx.override_functions.get(leaf).is_some_and(|target| {
-        target.class_type == rumoca_core::ClassType::Function
-            && target.function_slot == FunctionSlot::Unresolved
-    });
-    if governs {
-        return Err(FlattenError::unhonored_function_redeclare(
-            reference.as_str(),
-            format!(
-                "a redeclare selects `{leaf}` but its replaceable declaration slot has no exact resolved identity, so the call cannot be retargeted"
-            ),
-            span,
-        ));
-    }
-    Ok(())
 }
 
 fn exact_package_function_rewrite(

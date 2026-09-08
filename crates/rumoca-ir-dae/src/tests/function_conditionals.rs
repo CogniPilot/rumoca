@@ -110,7 +110,7 @@ fn empty_loop_domain<'dae>(
         domains.structured(
             StructuredIndexDomain {
                 binders: vec![StructuredIndexBinder {
-                    id: 0,
+                    id: rumoca_core::StructuredIndexBinderId::new(0),
                     display_name: "k".to_string(),
                     lower: 1,
                     upper: 0,
@@ -187,7 +187,13 @@ fn correlated_function_conditional_round_trips_and_rejects_duplicate_targets() {
         "function choose input Boolean c; output Real x; output Real y; end choose;",
     );
     let at = source.source("function choose", 0);
-    let dae = Dae::construct(source.map, |dae| {
+    let dae = correlated_conditional_fixture(source, at);
+
+    assert_correlated_conditional_roundtrip(&dae);
+}
+
+fn correlated_conditional_fixture(source: TestSource, at: DaeProvenance) -> Dae {
+    Dae::construct(source.map, |dae| {
         let boolean =
             dae.types(|types| types.derived(ValueType::scalar(ScalarType::Boolean), at))?;
         let real = dae.types(|types| types.derived(ValueType::scalar(ScalarType::Real), at))?;
@@ -245,39 +251,54 @@ fn correlated_function_conditional_round_trips_and_rejects_duplicate_targets() {
         )?;
         Ok(())
     })
-    .expect("checked conditional correlation constructs atomically");
+    .expect("checked conditional correlation constructs atomically")
+}
 
-    let assert_correlation = |view: DaeView<'_>| {
-        let function = view.function(view.function_id(0).unwrap()).unwrap();
-        let statements = function.statements().collect::<Vec<_>>();
-        let [
-            FunctionStatementView::AssignmentGroup {
-                definitions,
-                conditional: Some(conditional),
-            },
-        ] = statements.as_slice()
-        else {
-            panic!("function must retain one correlated assignment group")
-        };
-        assert_eq!(definitions.len(), 2);
+fn assert_correlated_conditional(view: DaeView<'_>) {
+    view.with_callable_source_inventory(|inventory| {
+        let conditional = inventory
+            .conditionals()
+            .next()
+            .expect("one exact callable conditional occurrence");
+        assert_eq!(inventory.conditionals().len(), 1);
+        assert_eq!(conditional.definitions().len(), 2);
         assert_eq!(conditional.conditions().len(), 1);
         assert_eq!(conditional.branch_count(), 1);
         assert_eq!(conditional.branch(0).unwrap().len(), 2);
         assert_eq!(conditional.fallback().len(), 2);
-        for definition in definitions.iter() {
-            assert!(matches!(
-                view.expression(definition.rhs()).unwrap().operation(),
-                ExpressionOperation::Conditional(operands) if operands.len() == 3
-            ));
-        }
+    });
+    let function = view.function(view.function_id(0).unwrap()).unwrap();
+    let statements = function.statements().collect::<Vec<_>>();
+    let [
+        FunctionStatementView::AssignmentGroup {
+            definitions,
+            conditional: Some(conditional),
+        },
+    ] = statements.as_slice()
+    else {
+        panic!("function must retain one correlated assignment group")
     };
-    dae.inspect(assert_correlation);
-    let json = serde_json::to_string(&dae).unwrap();
+    assert_eq!(definitions.len(), 2);
+    assert_eq!(conditional.conditions().len(), 1);
+    assert_eq!(conditional.branch_count(), 1);
+    assert_eq!(conditional.branch(0).unwrap().len(), 2);
+    assert_eq!(conditional.fallback().len(), 2);
+    for definition in definitions.iter() {
+        assert!(matches!(
+            view.expression(definition.rhs()).unwrap().operation(),
+            ExpressionOperation::Conditional(operands) if operands.len() == 3
+        ));
+    }
+}
+
+fn assert_correlated_conditional_roundtrip(dae: &Dae) {
+    dae.inspect(assert_correlated_conditional);
+    let json = serde_json::to_string(dae).unwrap();
     serde_json::from_str::<Dae>(&json)
         .unwrap()
-        .inspect(assert_correlation);
-    let binary = bincode::serialize(&dae).unwrap();
+        .inspect(assert_correlated_conditional);
+    let binary = bincode::serialize(dae).unwrap();
     bincode::deserialize::<Dae>(&binary)
         .unwrap()
-        .inspect(assert_correlation);
+        .inspect(assert_correlated_conditional);
 }

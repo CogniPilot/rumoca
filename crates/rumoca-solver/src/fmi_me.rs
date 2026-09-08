@@ -8,9 +8,8 @@
 //!
 //! # Operation map
 //!
-//! The standard operations below map to FMI 3.0 ME entry points. Remaining
-//! non-standard operations are concrete host/kernel composition points rather
-//! than a one-implementation public trait.
+//! The operations below map exactly to FMI 3.0 ME entry points. Host policy is
+//! composed outside this component surface.
 //!
 //! | Kernel operation | FMI 3.0 ME |
 //! |---|---|
@@ -30,37 +29,20 @@
 //! | `SolveMeKernel::get_continuous_state_derivatives` | `fmi3GetContinuousStateDerivatives` |
 //! | `SolveMeKernel::get_directional_derivative` | `fmi3GetDirectionalDerivative` |
 //! | `SolveMeKernel::get_event_indicators` | `fmi3GetEventIndicators` |
-//! | `SolveMeKernel::get_outputs` | batched `fmi3GetFloat64` |
+//! | `SolveMeKernel::get_float64` | batched `fmi3GetFloat64` |
 //! | `SolveMeKernel::value_reference` / `SolveMeKernel::set_float64` | model description + batched `fmi3SetFloat64` |
 //! | `SolveMeKernel::fmu_state` / `SolveMeKernel::reset_to_fmu_state` | `fmi3GetFMUState` / `fmi3Reset` + `fmi3SetFMUState` |
 //! | `SolveMeKernel::terminate` | `fmi3Terminate` |
 //!
-//! ## Non-standard operations scheduled for removal from this surface
-//!
-//! - `SolveMeKernel::project_continuous_states`: FMI 3.0 forbids the
-//!   FMU from changing continuous states in Continuous-Time Mode. Rumoca's
-//!   index-reduced DAEs carry a constraint manifold the accepted point must be
-//!   projected onto. The operation is separate from
-//!   `completed_integrator_step` so the host sees the state change explicitly.
-//! - [`MeTime::event_boundary`]: FMI 3.0 §3 (Model Exchange) requires the
-//!   integrator not to step across a known event instant; rumoca additionally
-//!   needs the FMU to evaluate the *left limit* of that instant, so the
-//!   boundary travels with `fmi3SetTime`.
-//! - [`MeEventEntry`]: `fmi3EnterEventMode` takes no arguments in FMI 3.0.
-//!   Rumoca's component needs the event `cause` (state event versus its own
-//!   scheduled instant), the `event_time` the host located, and the `horizon`
-//!   it will not integrate past before its next output point, because the
-//!   component clamps its right-limit evaluation to that horizon.
-//! - `SolveMeKernel::observe`: a refresh of the component's observable
-//!   (algebraic) vector at the current time, returning that observation point.
-//!   It is *not* `fmi3GetFMUState`: it snapshots no discrete state and cannot
-//!   be restored. Only `SolveMeKernel::fmu_state` and
-//!   `SolveMeKernel::reset_to_fmu_state` map to the FMU-state calls.
-//! - [`MeStage`]: FMI 3.0 reports one undifferentiated `fmi3Error`. rumoca's
-//!   MSL harness buckets every failure by the sub-stage that raised it, so the
-//!   component mints that stage where the failure happens rather than letting a
-//!   host re-derive it from rendered text.
+//! [`MeStage`] is diagnostic provenance, not an FMI operation: FMI reports one
+//! undifferentiated error status, while the component retains the internal
+//! stage that first produced it.
 
+/// A feature-gated harness for driving a real numerical plugin through the
+/// checked retained-handle and activation contract. Compiled only under test or
+/// the `test-support` feature, so no production build carries it.
+#[cfg(any(test, feature = "test-support"))]
+pub mod backend_test_support;
 pub mod driver;
 pub mod integrator;
 mod kernel;
@@ -77,7 +59,6 @@ mod tests;
 /// the public allocation and host-contract categories
 /// (SPEC_0044 §6).
 mod trace;
-mod validation;
 
 pub use integrator::{
     MeAcceptedStep, MeAdvanceRequest, MeContinuousPoint, MeDerivativeHandle, MeDerivativeRefused,
@@ -86,13 +67,112 @@ pub use integrator::{
 };
 pub use kernel::SolveMeKernel;
 pub use session::{
-    MeAdvanceOutcome, MeComponentHost, MeOutputCursor, MePluginArity, MeRetainedComponent,
-    MeSessionError, MeSessionLoss, MeSessionOptions, MeSessionOptionsInput, MeSimulationSession,
+    MeAdvanceOutcome, MeComponentHost, MePluginArity, MeRetainedComponent, MeSessionError,
+    MeSessionLoss, MeSessionOptions, MeSessionOptionsInput, MeSimulationSession,
 };
 
 use std::rc::Rc;
 
 use crate::solver::{SimTermination, SimVariableMeta};
+
+/// The linked FMI component's continuous-state domain.
+///
+/// This is a role capability, not a caller-supplied count. Production values
+/// come only from checked linked-runtime facts; host/root construction carries
+/// the capability and projects its length only at allocation or public-report
+/// boundaries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MeContinuousStateDomain(MeContinuousStateDomainSource);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MeContinuousStateDomainSource {
+    Linked(rumoca_ir_solve::fmi::FmiContinuousStateWidth),
+    #[cfg(any(test, feature = "test-support"))]
+    Verification(MeVerificationStateWidth),
+}
+
+/// State width issued by an explicitly non-production verification source.
+///
+/// This is intentionally distinct from the linked FMI width: backend
+/// conformance tests may derive a domain from their complete derivative
+/// vector, but they cannot pretend that vector was checked FMI metadata.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MeVerificationStateWidth(usize);
+
+impl MeContinuousStateDomain {
+    fn from_linked(width: rumoca_ir_solve::fmi::FmiContinuousStateWidth) -> Self {
+        Self(MeContinuousStateDomainSource::Linked(width))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn from_verification_rates(rates: &[f64]) -> Self {
+        Self(MeContinuousStateDomainSource::Verification(
+            MeVerificationStateWidth(rates.len()),
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn verification_fixture(len: usize) -> Self {
+        Self(MeContinuousStateDomainSource::Verification(
+            MeVerificationStateWidth(len),
+        ))
+    }
+
+    #[must_use]
+    pub(crate) const fn len(self) -> usize {
+        match self.0 {
+            MeContinuousStateDomainSource::Linked(width) => width.len(),
+            #[cfg(any(test, feature = "test-support"))]
+            MeContinuousStateDomainSource::Verification(width) => width.0,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Positive finite relative/absolute tolerances admitted as one solver policy.
+///
+/// Session options and the explicit backend-verification boundary both use
+/// this sole checker. Downstream root policy and numerical setup construction
+/// retain the result and never revalidate or accept the two scalars
+/// independently.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MeSolverTolerances {
+    relative: f64,
+    absolute: f64,
+}
+
+impl MeSolverTolerances {
+    fn check(relative: f64, absolute: f64) -> Result<Self, MeToleranceError> {
+        for (role, value) in [("relative", relative), ("absolute", absolute)] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(MeToleranceError { role, value });
+            }
+        }
+        Ok(Self { relative, absolute })
+    }
+
+    #[must_use]
+    pub(crate) const fn relative(self) -> f64 {
+        self.relative
+    }
+
+    #[must_use]
+    pub(crate) const fn absolute(self) -> f64 {
+        self.absolute
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the solver {role} tolerance must be finite and positive, got {value}")]
+pub(crate) struct MeToleranceError {
+    role: &'static str,
+    value: f64,
+}
 
 /// The correlated FMI source an ME component is instantiated from.
 ///
@@ -100,80 +180,58 @@ use crate::solver::{SimTermination, SimVariableMeta};
 /// [`rumoca_ir_solve::fmi::FmiComponent`]. Hosts receive an opaque handle and
 /// can only hand it to `SolveMeKernel::instantiate`, so a bare Solve root can
 /// no longer bypass FMI construction or be paired with foreign metadata.
-pub struct MeModelSource<'a>(MeModelSourceInner<'a>);
+pub struct MeModelSource(MeModelSourceInner);
 
-enum MeModelSourceInner<'a> {
-    Correlated(rumoca_ir_solve::fmi::FmiRuntimeView<'a>),
+enum MeModelSourceInner {
+    Correlated(rumoca_ir_solve::fmi::FmiRuntimeView),
     #[cfg(test)]
     Fixture {
-        model: &'a rumoca_ir_solve::SolveModel,
-        max_step_duration_value_reference: Option<u32>,
+        runtime: rumoca_ir_solve::fmi::FmiRuntimeView,
         configuration: lifecycle::MeConfigurationCapability,
     },
 }
 
-/// The checked pieces an [`MeModelSource`] resolves to: the Solve model, the
-/// ordered event-indicator inventory, the optional max-step value reference,
-/// and the structural-configuration capability.
-type MeModelParts<'a> = (
-    &'a rumoca_ir_solve::SolveModel,
-    Vec<rumoca_ir_solve::fmi::FmiEventIndicatorSource>,
-    Option<u32>,
+/// The checked pieces an [`MeModelSource`] resolves to: the correlated
+/// component, the opaque linked-runtime facts construction issued, and
+/// structural configuration.
+type MeModelParts = (
+    rumoca_ir_solve::fmi::FmiRuntimeView,
     lifecycle::MeConfigurationCapability,
 );
 
-impl<'a> MeModelSource<'a> {
+impl MeModelSource {
     #[must_use]
-    pub fn new(component: &'a rumoca_ir_solve::fmi::FmiComponent) -> Self {
-        Self(MeModelSourceInner::Correlated(component.runtime_view()))
+    pub fn new(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
+        Self(MeModelSourceInner::Correlated(
+            component.into_runtime_view(),
+        ))
     }
 
     #[cfg(test)]
-    pub(crate) fn fixture(model: &'a rumoca_ir_solve::SolveModel) -> Self {
-        let max_step_duration_value_reference =
-            (!model.problem.events.delays.delay_time_rhs.is_empty()).then_some(1);
+    pub(crate) fn fixture(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
         Self(MeModelSourceInner::Fixture {
-            model,
-            max_step_duration_value_reference,
-            configuration: lifecycle::MeConfigurationCapability::Absent,
-        })
-    }
-
-    /// Test-only constructor ablation for the checked FMI annotation/kernel
-    /// correlation. Production has no constructor capable of making this
-    /// mismatch.
-    #[cfg(test)]
-    pub(crate) fn ablated_max_step_duration_fixture(
-        model: &'a rumoca_ir_solve::SolveModel,
-        max_step_duration_declared: bool,
-    ) -> Self {
-        Self(MeModelSourceInner::Fixture {
-            model,
-            max_step_duration_value_reference: max_step_duration_declared.then_some(1),
+            runtime: component.into_runtime_view(),
             configuration: lifecycle::MeConfigurationCapability::Absent,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn configuration_fixture(
-        model: &'a rumoca_ir_solve::SolveModel,
+        component: rumoca_ir_solve::fmi::FmiComponent,
         configuration: lifecycle::MeConfigurationCapability,
     ) -> Self {
-        let max_step_duration_value_reference =
-            (!model.problem.events.delays.delay_time_rhs.is_empty()).then_some(1);
         Self(MeModelSourceInner::Fixture {
-            model,
-            max_step_duration_value_reference,
+            runtime: component.into_runtime_view(),
             configuration,
         })
     }
 
     pub(crate) fn into_parts(
         self,
-    ) -> Result<MeModelParts<'a>, rumoca_ir_solve::fmi::FmiComponentError> {
+    ) -> Result<MeModelParts, rumoca_ir_solve::fmi::FmiComponentError> {
         match self.0 {
-            MeModelSourceInner::Correlated(view) => {
-                let configuration = match view.configuration_capability() {
+            MeModelSourceInner::Correlated(runtime) => {
+                let configuration = match runtime.configuration_capability() {
                     rumoca_ir_solve::fmi::FmiConfigurationCapability::Absent => {
                         lifecycle::MeConfigurationCapability::Absent
                     }
@@ -184,35 +242,19 @@ impl<'a> MeModelSource<'a> {
                         lifecycle::MeConfigurationCapability::TunableStructuralParameter
                     }
                 };
-                let (model, metadata, inventory) = view.into_parts();
-                Ok((
-                    model,
-                    inventory.sources().to_vec(),
-                    metadata
-                        .max_step_duration()
-                        .map(rumoca_ir_solve::fmi::FmiVariable::value_reference_fmi3),
-                    configuration,
-                ))
+                Ok((runtime, configuration))
             }
             #[cfg(test)]
             MeModelSourceInner::Fixture {
-                model,
-                max_step_duration_value_reference,
+                runtime,
                 configuration,
-            } => Ok((
-                model,
-                rumoca_ir_solve::fmi::FmiEventIndicatorInventory::derive(model)?
-                    .sources()
-                    .to_vec(),
-                max_step_duration_value_reference,
-                configuration,
-            )),
+            } => Ok((runtime, configuration)),
         }
     }
 }
 
-impl<'a> From<&'a rumoca_ir_solve::fmi::FmiComponent> for MeModelSource<'a> {
-    fn from(component: &'a rumoca_ir_solve::fmi::FmiComponent) -> Self {
+impl From<rumoca_ir_solve::fmi::FmiComponent> for MeModelSource {
+    fn from(component: rumoca_ir_solve::fmi::FmiComponent) -> Self {
         Self::new(component)
     }
 }
@@ -226,7 +268,7 @@ impl<'a> From<&'a rumoca_ir_solve::fmi::FmiComponent> for MeModelSource<'a> {
 /// continuous refresh owners, event-transaction programs — so naming that
 /// trait from a host crate would put Solve IR back on the host's own public
 /// API. Hosts name this handle instead, and can only hand it to
-/// `SolveMeKernel::instantiate_with_execution_backend`.
+/// `SolveMeKernel::instantiate_with_execution`.
 #[derive(Clone)]
 pub struct MeExecutionBackend(Rc<dyn crate::SolveExecutionBackend>);
 
@@ -245,6 +287,13 @@ impl From<Rc<dyn crate::SolveExecutionBackend>> for MeExecutionBackend {
     fn from(backend: Rc<dyn crate::SolveExecutionBackend>) -> Self {
         Self::new(backend)
     }
+}
+
+/// Closed execution alternative handed to one FMI component at construction.
+#[derive(Clone)]
+pub enum MeExecutionSelection {
+    Interpreter,
+    Native(MeExecutionBackend),
 }
 
 /// Typed rejection for a contradictory execution request: the request's
@@ -267,8 +316,7 @@ pub struct MeExecutionPolicyContradiction {
     pub policy: &'static str,
 }
 
-/// Admit a host-supplied opaque execution backend handle against the request's
-/// execution policy.
+/// Select one closed execution alternative against the request's policy.
 ///
 /// This rule is owned ONCE, here at the ME contract boundary where the handle
 /// meets [`crate::SimExecutionPolicy`], so every concrete integrator backend
@@ -276,16 +324,17 @@ pub struct MeExecutionPolicyContradiction {
 /// request must not have backend-dependent semantics. Concrete crates call
 /// this from their entry points and surface the typed contradiction through
 /// their own error enums without rewording it.
-pub fn admit_execution_backend(
+pub fn select_execution(
     policy: crate::SimExecutionPolicy,
     execution_backend: Option<MeExecutionBackend>,
-) -> Result<Option<MeExecutionBackend>, MeExecutionPolicyContradiction> {
-    if execution_backend.is_some() && !policy.allows_native() {
-        return Err(MeExecutionPolicyContradiction {
+) -> Result<MeExecutionSelection, MeExecutionPolicyContradiction> {
+    match (policy.allows_native(), execution_backend) {
+        (false, Some(_)) => Err(MeExecutionPolicyContradiction {
             policy: policy.label(),
-        });
+        }),
+        (true, Some(backend)) => Ok(MeExecutionSelection::Native(backend)),
+        (_, None) => Ok(MeExecutionSelection::Interpreter),
     }
-    Ok(execution_backend)
 }
 
 /// Owned checked model artifact that numerical solver plugins can retain
@@ -303,13 +352,8 @@ impl MeModelArtifact {
     }
 
     #[must_use]
-    pub fn source(&self) -> MeModelSource<'_> {
-        MeModelSource::new(&self.0)
-    }
-
-    #[must_use]
-    pub fn continuous_state_count(&self) -> usize {
-        self.0.problem().solve_layout.state_scalar_count()
+    pub fn into_source(self) -> MeModelSource {
+        MeModelSource::new(self.0)
     }
 }
 
@@ -368,6 +412,14 @@ pub fn resolve_me_stage(recorded: Option<MeStage>, incoming: MeStage) -> MeStage
 /// them onto its own error type without inspecting runtime internals.
 #[derive(Debug, thiserror::Error)]
 pub enum MeError {
+    /// The selected native execution arm failed to compile or execute.
+    #[error("native {execution_stage} failed for {owner}: {reason}")]
+    NativeExecution {
+        execution_stage: crate::NativeExecutionStage,
+        owner: crate::NativeExecutionOwner,
+        reason: String,
+    },
+
     /// The model declares no continuous states, so no Model Exchange
     /// component with an integrator can be instantiated for it. Hosts route
     /// this to their zero-state execution path rather than treating it as a
@@ -386,6 +438,10 @@ pub enum MeError {
     /// A state derivative evaluated to a non-finite value.
     #[error("non-finite derivative evaluation for state '{state_name}'")]
     NonFiniteDerivative { state_name: String },
+
+    /// An evaluator returned an invalid timestamp for a semantic event action.
+    #[error("non-finite timestamp {time} for Modelica {action} action")]
+    NonFiniteEventActionTime { action: &'static str, time: f64 },
 
     /// The value path is valid, but the local directional derivative required
     /// by a derivative-based importer does not exist.
@@ -469,6 +525,15 @@ impl From<crate::runtime::solve_ops::RuntimeSolveError> for MeError {
     fn from(value: crate::runtime::solve_ops::RuntimeSolveError) -> Self {
         use crate::runtime::solve_ops::RuntimeSolveError as Runtime;
         match value {
+            Runtime::NativeExecution {
+                stage: execution_stage,
+                owner,
+                reason,
+            } => Self::NativeExecution {
+                execution_stage,
+                owner,
+                reason,
+            },
             Runtime::SolveIr { message, span } => Self::Evaluation {
                 message: match span {
                     Some(span) => format!("{message} @ {span:?}"),
@@ -575,75 +640,84 @@ pub struct MeModelDescription<'a> {
 /// A resolved FMI value reference. Opaque: only the component interprets it.
 #[derive(Debug, Clone)]
 pub struct MeValueRef {
+    pub(crate) value_reference: u32,
     pub(crate) backing: MeFloat64Backing,
+    pub(crate) access: MeFloat64AccessEvidence,
     pub(crate) instance_brand: Rc<()>,
+}
+
+/// One construction-issued value reference usable in an FMI 3 directional
+/// derivative reference list.
+///
+/// The backing and instance brand are opaque. A host may only collect these
+/// references into a list and ask the component to validate that list as the
+/// `knowns` or `unknowns` argument of `fmi3GetDirectionalDerivative`.
+#[derive(Debug, Clone)]
+pub(crate) struct MeDirectionalValueRef {
+    value_reference: u32,
+    backing: MeDirectionalBacking,
+    instance_brand: Rc<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MeDirectionalBacking {
+    ContinuousState { base: usize, width: usize },
+    ContinuousStateDerivative { base: usize, width: usize },
+}
+
+/// A component-validated FMI `knowns[]` batch.
+///
+/// Construction is private to the component, so the serialized seed width and
+/// every state-storage segment are correlated with one instance exactly once.
+#[derive(Debug)]
+pub(crate) struct MeDirectionalKnownBatch {
+    references: Vec<MeDirectionalValueRef>,
+    serialized_width: usize,
+    instance_brand: Rc<()>,
+}
+
+/// A component-validated FMI `unknowns[]` batch.
+///
+/// Construction is private to the component, so the serialized sensitivity
+/// width and every derivative-storage segment are correlated with one instance
+/// exactly once.
+#[derive(Debug)]
+pub(crate) struct MeDirectionalUnknownBatch {
+    references: Vec<MeDirectionalValueRef>,
+    serialized_width: usize,
+    instance_brand: Rc<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MeFloat64Backing {
-    InputParameter(usize),
-    MaxStepDuration(u32),
+    SolverVariable { base: usize, width: usize },
+    Parameter { base: usize, width: usize },
+    MaxStepDuration,
 }
 
-/// Transitional `fmi3SetTime` representation carrying the event instant the
-/// integrator is stepping toward. FMI itself carries only `time`; the boundary
-/// field remains phase-2 migration debt documented above.
+/// Construction-issued FMI variable facts carried by every value reference.
+///
+/// The dynamic setter consumes these facts directly. It never rebuilds
+/// causality or write permission from a caller-supplied name. The write
+/// permission is the decided FMI 3 mask, so admission and generated C read one
+/// table; the causality is retained only to name the component's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MeFloat64AccessEvidence {
+    pub(crate) causality: rumoca_ir_solve::fmi::FmiCausality,
+    pub(crate) write_modes: rumoca_ir_solve::fmi::Fmi3WriteModes,
+}
+
+/// Exact `fmi3SetTime` argument.
 #[derive(Debug, Clone, Copy)]
 pub struct MeTime {
     pub time: f64,
-    /// An upcoming event instant the integrator will not step across. When
-    /// `time` reaches or passes it, the component evaluates the left limit of
-    /// the boundary instead.
-    pub event_boundary: Option<f64>,
 }
 
 impl MeTime {
     #[must_use]
     pub fn at(time: f64) -> Self {
-        Self {
-            time,
-            event_boundary: None,
-        }
+        Self { time }
     }
-
-    #[must_use]
-    pub fn new(time: f64, event_boundary: Option<f64>) -> Self {
-        Self {
-            time,
-            event_boundary,
-        }
-    }
-}
-
-/// An event-indicator sign change the component classified.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MeIndicatorCrossing {
-    /// Index into the event-indicator vector.
-    pub index: usize,
-    /// The value the component's relation buffer takes after the crossing.
-    /// Hosts only report it in traces.
-    pub post_indicator_value: f64,
-}
-
-/// Why the host is entering Event Mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeEventCause {
-    /// The integrator located an event-indicator sign change.
-    StateEvent,
-    /// The instant the component itself scheduled through
-    /// `SolveMeKernel::next_event_stop`.
-    TimeEvent,
-}
-
-/// `fmi3EnterEventMode` arguments.
-#[derive(Debug, Clone, Copy)]
-pub struct MeEventEntry {
-    pub cause: MeEventCause,
-    /// The instant the event is applied at.
-    pub event_time: f64,
-    /// The upper bound the integrator will not pass before its next output
-    /// point; the component clamps its right-limit evaluation to it.
-    pub horizon: f64,
 }
 
 /// `fmi3UpdateDiscreteStates` outputs.
@@ -666,41 +740,13 @@ pub struct MeDiscreteStates {
     pub next_event_time: Option<f64>,
 }
 
-/// The next instant the component wants the integrator to stop at.
-#[derive(Debug, Clone, Copy)]
-pub struct MeEventStop {
-    pub time: f64,
-    /// `false` when `time` is just the requested horizon.
-    pub is_event: bool,
-}
-
 /// `fmi3CompletedIntegratorStep` outputs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeCompletedIntegratorStep {
     /// FMI `enterEventMode`: the component requests a step event.
     pub enter_event_mode: bool,
     /// FMI `terminateSimulation`: the component requests termination.
     pub terminate_simulation: bool,
-}
-
-/// An observation point: the component's refreshed observable state.
-///
-/// Produced by `SolveMeKernel::observe` and by the initial-event
-/// iteration; consumed by the batched output getters. Opaque to hosts, which
-/// is what makes `fmi3GetFloat64` a batched read rather than a row query.
-#[derive(Debug, Clone)]
-pub struct MeObservation {
-    pub(crate) time: f64,
-    pub(crate) solver_y: Vec<f64>,
-    pub(crate) parameters: Vec<f64>,
-    pub(crate) instance_brand: Rc<()>,
-}
-
-impl MeObservation {
-    #[must_use]
-    pub fn time(&self) -> f64 {
-        self.time
-    }
 }
 
 /// An opaque saved component state (`fmi3GetFMUState`).
@@ -713,51 +759,6 @@ pub struct MeFmuState {
 impl std::fmt::Debug for MeFmuState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("MeFmuState").finish_non_exhaustive()
-    }
-}
-
-/// Column-major output buffer a host accumulates batched reads into.
-///
-/// One column per model output, one row per recorded sample. Kept on the host
-/// side of the boundary so the component never owns result storage.
-#[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct MeOutputSeries {
-    columns: Vec<Vec<f64>>,
-}
-
-#[cfg(test)]
-impl MeOutputSeries {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.columns.is_empty()
-    }
-
-    /// Reserve `outputs` columns of `samples` rows without ever aborting on a
-    /// failed reservation.
-    pub(crate) fn with_capacity(outputs: usize, samples: usize) -> Result<Self, MeError> {
-        let mut columns: Vec<Vec<f64>> = Vec::new();
-        columns
-            .try_reserve(outputs)
-            .map_err(|_| MeError::Allocation {
-                context: "output series",
-                entries: outputs,
-            })?;
-        for _ in 0..outputs {
-            let mut column = Vec::new();
-            column
-                .try_reserve(samples)
-                .map_err(|_| MeError::Allocation {
-                    context: "output samples",
-                    entries: samples,
-                })?;
-            columns.push(column);
-        }
-        Ok(Self { columns })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn columns_mut(&mut self) -> &mut [Vec<f64>] {
-        &mut self.columns
     }
 }
 

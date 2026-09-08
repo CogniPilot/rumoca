@@ -81,7 +81,7 @@ fn rename_edits_use_utf16_columns_after_astral_character() {
             );
         }
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn document_symbols_use_utf16_columns_after_non_ascii() {
         );
         assert_eq!(signal.selection_range.start, expected);
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn document_symbol_group_range_has_nonzero_span() {
             parameters.range
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -193,7 +193,7 @@ fn workspace_symbols_use_target_file_utf16_columns() {
         );
         assert_eq!(gain.location.range.start, expected);
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 fn find_symbol<'a>(symbols: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {

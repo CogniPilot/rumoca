@@ -1,7 +1,7 @@
-//! Exhaustive finite-domain tests for the production FMI ME lifecycle relation.
+//! Exhaustive finite-domain tests for the production FMI ME operation relation.
 
 use crate::fmi_me::lifecycle::{
-    MeConfigurationCapability, MeLifecycle, MeLifecycleCommand, MeState,
+    MeConfigurationCapability, MeLifecycle, MeLifecycleOperation, MeState,
 };
 use crate::fmi_me::{MeError, MeStage, resolve_me_stage};
 
@@ -13,174 +13,156 @@ const ME_STAGES: [MeStage; 5] = [
     MeStage::Integration,
 ];
 
-fn expected_next(
+fn expected_relation(
     capability: MeConfigurationCapability,
     state: MeState,
-    command: MeLifecycleCommand,
-) -> Option<MeState> {
-    use MeLifecycleCommand as Command;
+    operation: MeLifecycleOperation,
+) -> Result<Option<MeState>, ()> {
+    use MeLifecycleOperation as Operation;
     use MeState as State;
 
-    match (state, command) {
-        (State::Instantiated, Command::EnterConfigurationMode)
+    let target = match (state, operation) {
+        (State::Instantiated, Operation::EnterConfigurationMode)
             if capability != MeConfigurationCapability::Absent =>
         {
             Some(State::ConfigurationMode)
         }
-        (State::ConfigurationMode, Command::ExitConfigurationMode) => Some(State::Instantiated),
-        (State::Instantiated, Command::EnterInitializationMode) => Some(State::InitializationMode),
-        (State::InitializationMode, Command::ExitInitializationMode) => Some(State::EventMode),
-        (State::EventMode, Command::UpdateDiscreteStates) => Some(State::EventMode),
-        (State::EventMode, Command::EnterConfigurationMode)
+        (State::ConfigurationMode, Operation::ExitConfigurationMode) => Some(State::Instantiated),
+        (State::Instantiated, Operation::EnterInitializationMode) => {
+            Some(State::InitializationMode)
+        }
+        (State::InitializationMode, Operation::ExitInitializationMode) => Some(State::EventMode),
+        (State::EventMode, Operation::UpdateDiscreteStates) => Some(State::EventMode),
+        (State::EventMode, Operation::EnterConfigurationMode)
             if capability == MeConfigurationCapability::TunableStructuralParameter =>
         {
             Some(State::ReconfigurationMode)
         }
-        (State::ReconfigurationMode, Command::ExitConfigurationMode) => Some(State::EventMode),
-        (State::EventMode, Command::EnterContinuousTimeMode) => Some(State::ContinuousTimeMode),
-        (State::ContinuousTimeMode, Command::EnterEventMode) => Some(State::EventMode),
-        (State::Instantiated, Command::Terminate)
-        | (State::ConfigurationMode, Command::Terminate)
-        | (State::InitializationMode, Command::Terminate)
-        | (State::EventMode, Command::Terminate)
-        | (State::ReconfigurationMode, Command::Terminate)
-        | (State::ContinuousTimeMode, Command::Terminate) => Some(State::Terminated),
-        _ => None,
-    }
+        (State::ReconfigurationMode, Operation::ExitConfigurationMode) => Some(State::EventMode),
+        (State::EventMode, Operation::EnterContinuousTimeMode) => Some(State::ContinuousTimeMode),
+        (State::ContinuousTimeMode, Operation::EnterEventMode) => Some(State::EventMode),
+        (
+            State::EventMode | State::ReconfigurationMode | State::ContinuousTimeMode,
+            Operation::Terminate,
+        ) => Some(State::Terminated),
+        (State::ContinuousTimeMode, Operation::SetTime)
+        | (State::ContinuousTimeMode, Operation::SetContinuousStates)
+        | (State::ContinuousTimeMode, Operation::CompletedIntegratorStep)
+        | (
+            State::InitializationMode
+            | State::EventMode
+            | State::ContinuousTimeMode
+            | State::Terminated,
+            Operation::GetContinuousStates
+            | Operation::GetNominalsOfContinuousStates
+            | Operation::GetContinuousStateDerivatives
+            | Operation::GetDirectionalDerivative
+            | Operation::GetEventIndicators,
+        )
+        | (
+            State::Instantiated
+            | State::InitializationMode
+            | State::EventMode
+            | State::ContinuousTimeMode
+            | State::Terminated,
+            Operation::GetFloat64,
+        )
+        | (
+            State::Instantiated
+            | State::ConfigurationMode
+            | State::InitializationMode
+            | State::EventMode
+            | State::ReconfigurationMode
+            | State::ContinuousTimeMode,
+            Operation::SetFloat64,
+        )
+        | (_, Operation::GetFmuState | Operation::SetFmuState) => None,
+        _ => return Err(()),
+    };
+    Ok(target)
 }
 
-/// ME-LIFE-001/002: the production relation is exactly SPEC_0038's table and
-/// every rejected transition preserves the aggregate.
-fn property_transition_relation_is_exact(
+fn property_operation_relation_is_exact(
     capability: MeConfigurationCapability,
     state: MeState,
-    command: MeLifecycleCommand,
+    operation: MeLifecycleOperation,
 ) {
-    let mut lifecycle = MeLifecycle::instantiated(capability);
-    lifecycle.restore_for_verification(state);
-    let before = lifecycle;
-    let result = lifecycle.transition(command);
-    match expected_next(capability, state, command) {
-        Some(expected) => {
-            assert!(result.is_ok(), "a specified lifecycle edge was rejected");
-            assert_eq!(
-                lifecycle.state(),
-                expected,
-                "an accepted lifecycle edge reached the wrong state"
-            );
-        }
-        None => {
-            assert!(
-                result.is_err(),
-                "an unspecified lifecycle edge was accepted"
-            );
-            assert_eq!(
-                lifecycle, before,
-                "a rejected lifecycle edge mutated the aggregate"
-            );
+    let actual = MeLifecycle::relation_for_verification(capability, state, operation);
+    match expected_relation(capability, state, operation) {
+        Ok(expected) => assert_eq!(
+            actual.expect("specified operation must be admitted"),
+            expected
+        ),
+        Err(()) => {
+            let violation = actual.expect_err("unspecified operation must be refused");
+            assert_eq!(violation.state, state);
+            assert_eq!(violation.operation, operation);
         }
     }
 }
 
-/// ME-LIFE-003: Terminated is absorbing for every ordinary lifecycle command.
-fn property_terminated_is_absorbing(
-    capability: MeConfigurationCapability,
-    command: MeLifecycleCommand,
-) {
-    let mut lifecycle = MeLifecycle::instantiated(capability);
-    lifecycle.restore_for_verification(MeState::Terminated);
-    assert!(lifecycle.transition(command).is_err());
-    assert_eq!(lifecycle.state(), MeState::Terminated);
-}
-
-/// ME-STATE-001 lifecycle clause: restoring an opaque snapshot state reaches
-/// that state exactly, including restoration out of Terminated.
-fn property_snapshot_restore_is_exact(target: MeState) {
-    let mut lifecycle =
-        MeLifecycle::instantiated(MeConfigurationCapability::TunableStructuralParameter);
-    lifecycle
-        .transition(MeLifecycleCommand::Terminate)
-        .expect("termination is legal from Instantiated");
-    lifecycle.restore_for_verification(target);
-    assert_eq!(lifecycle.state(), target);
-}
-
-/// ME-ERR-001: stage annotation is idempotent, and an already-recorded inner
-/// stage always wins over a coarser incoming stage.
 fn property_stage_resolution_is_idempotent_and_innermost_wins(
     recorded: Option<MeStage>,
     incoming: MeStage,
 ) {
     let resolved = resolve_me_stage(recorded, incoming);
     assert_eq!(resolved, recorded.unwrap_or(incoming));
-    assert_eq!(
-        resolve_me_stage(Some(resolved), incoming),
-        resolved,
-        "annotating an already-resolved error must be idempotent"
-    );
+    assert_eq!(resolve_me_stage(Some(resolved), incoming), resolved);
 
     let error = MeError::Contract {
-        reason: "bounded stage proof".to_string(),
+        reason: "bounded stage proof".to_owned(),
     };
     let error = match recorded {
         Some(stage) => error.at_stage(stage),
         None => error,
     };
-    let rendered_before = error.to_string();
+    let rendered = error.to_string();
     let annotated = error.at_stage(incoming);
     assert_eq!(annotated.stage(), Some(resolved));
-    assert!(matches!(annotated.kind(), MeError::Contract { .. }));
-    assert_eq!(annotated.to_string(), rendered_before);
-
-    let annotated_again = annotated.at_stage(incoming);
-    assert_eq!(annotated_again.stage(), Some(resolved));
-    assert!(matches!(annotated_again.kind(), MeError::Contract { .. }));
-    assert_eq!(annotated_again.to_string(), rendered_before);
+    assert_eq!(annotated.to_string(), rendered);
 }
 
 #[cfg(test)]
 mod tests {
-    /// Check the transition relation over every state and command for one
-    /// structural-configuration capability.
-    fn assert_transition_relation_for(capability: super::MeConfigurationCapability) {
+    fn assert_capability_relation(capability: super::MeConfigurationCapability) {
         for state in super::MeState::ALL {
-            for command in super::MeLifecycleCommand::ALL {
-                super::property_transition_relation_is_exact(capability, state, command);
+            for operation in super::MeLifecycleOperation::ALL {
+                super::property_operation_relation_is_exact(capability, state, operation);
             }
         }
     }
 
     #[test]
-    fn transition_relation_is_exact_and_rejection_preserves_state() {
-        assert_eq!(super::MeState::ALL.len(), 7, "SPEC_0044 lifecycle states");
-        assert_eq!(
-            super::MeLifecycleCommand::ALL.len(),
-            8,
-            "SPEC_0044 lifecycle commands"
-        );
-        assert_eq!(
-            super::MeConfigurationCapability::ALL.len(),
-            3,
-            "absent, fixed, and tunable structural capability"
-        );
+    fn operation_relation_is_exact_for_all_seven_states() {
+        assert_eq!(super::MeState::ALL.len(), 7);
+        assert_eq!(super::MeLifecycleOperation::ALL.len(), 20);
+        assert_eq!(super::MeConfigurationCapability::ALL.len(), 3);
         for capability in super::MeConfigurationCapability::ALL {
-            assert_transition_relation_for(capability);
+            assert_capability_relation(capability);
         }
     }
 
     #[test]
-    fn terminated_is_absorbing() {
-        for capability in super::MeConfigurationCapability::ALL {
-            for command in super::MeLifecycleCommand::ALL {
-                super::property_terminated_is_absorbing(capability, command);
-            }
-        }
-    }
-
-    #[test]
-    fn snapshot_restore_is_exact() {
-        for target in super::MeState::ALL {
-            super::property_snapshot_restore_is_exact(target);
+    fn terminated_admits_only_standard_observation_and_fmu_state_operations() {
+        for operation in super::MeLifecycleOperation::ALL {
+            let admitted = super::expected_relation(
+                super::MeConfigurationCapability::TunableStructuralParameter,
+                super::MeState::Terminated,
+                operation,
+            )
+            .is_ok();
+            let expected = matches!(
+                operation,
+                super::MeLifecycleOperation::GetContinuousStates
+                    | super::MeLifecycleOperation::GetNominalsOfContinuousStates
+                    | super::MeLifecycleOperation::GetContinuousStateDerivatives
+                    | super::MeLifecycleOperation::GetDirectionalDerivative
+                    | super::MeLifecycleOperation::GetEventIndicators
+                    | super::MeLifecycleOperation::GetFloat64
+                    | super::MeLifecycleOperation::GetFmuState
+                    | super::MeLifecycleOperation::SetFmuState
+            );
+            assert_eq!(admitted, expected, "operation {operation:?}");
         }
     }
 

@@ -101,6 +101,12 @@ compaction leaves no owner for them to point at. It does apply to the scalar
 view of a compact `InstanceConnectionFamily` (`rumoca-eval-ast::connection`),
 which is a derived view of a structured owner.
 
+One compact `InstanceConnectionFamily` remains one Flat connection-plan owner;
+its scalar projections are views identified by domain ordinal. A zero domain is
+consumed vacuously. A partially active domain must retain a compact checked
+subdomain or fail before plan construction; lowering may not silently discard
+inactive coordinates or enumerate active ones into independent semantic owners.
+
 A scalar view of a structured B.1c owner additionally retains its parent B.1c
 owner id, domain index tuple, body ordinal, derived target scalar, value
 expression, and exact provenance. Ordering is domain lexicographic order and
@@ -189,3 +195,23 @@ from these owners; it must not materialize scalar rows and then rediscover a
 pattern. Pattern soundness, coloring, storage-policy separation, and complex
 block expansion are specified by
 [SPEC_0039](SPEC_0039_PROOF_CARRYING_SPARSITY.md).
+
+### 7. Compile-Time Materialization Budgets
+
+Compact owners are preferred; when a compiler path must materialize a finite
+semantic view, its budget is named here rather than introduced as an untracked
+local policy. The unit is part of the contract: callers MUST NOT compare a
+different quantity to the same limit, and a refusal MUST identify the named
+bound and preserve the unmodified input IR.
+
+| Named code constant | Value | Unit and transaction scope | Typed refusal |
+|---|---:|---|---|
+| `DEFAULT_EVAL_BUDGET` | 100,000 | Retained `Value` nodes and default interpreter/comprehension work units in one Flat constant-evaluation request | `EvalError::UnsupportedExpression`; an optional fold defers, while a phase that requires the value maps the typed error at its own boundary (for example `EF034`) |
+| `DEFAULT_MATERIALIZED_RANK_BUDGET` | 256 | Axes in one Flat constant value or materializing builtin request | `EvalError::UnsupportedExpression`, with the same optional-versus-required ownership rule as `DEFAULT_EVAL_BUDGET` |
+| `MAX_EAGER_RANGE_ELEMENTS` | 100,000 | Scalar elements retained by one eager Flat structural range/connection scalar-view transaction | spanful `EF037` before Flat or connection-set mutation |
+| `MAX_MATERIALIZED_CONNECTION_ITERATIONS` | 1,000,000 | Total fallback loop iterations reserved across one Instance connection-extraction transaction | spanful `EI004`; the diagnostic names both this limit and the remaining transaction budget |
+
+These are compile-time semantic materialization budgets. Target-language text
+emission and runtime numerical iteration limits are separate policies and MUST
+NOT reuse these constants or units. Adding another semantic materialization
+limit requires adding a row here in the same change.

@@ -1,9 +1,9 @@
 //! Shared policy for template-runtime checks that need external programs.
 //!
-//! Ordinary local verification runs every self-contained check and may skip a
-//! check whose external toolchain is absent. The dedicated CI lanes pass
-//! `--require-external-tools`, which creates the marker below and turns the
-//! same absence into a hard failure.
+//! A direct, focused Cargo test may skip a check whose external toolchain is
+//! absent. `cargo xtask verify template-runtimes` always creates the marker
+//! below, so an official verification gate can never report success after an
+//! external check was skipped.
 
 use std::path::Path;
 

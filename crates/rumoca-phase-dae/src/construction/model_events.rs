@@ -34,7 +34,7 @@ pub(super) struct WhenChainsRequest<'input, 'shape, 'dae> {
     clocks: &'input LoweredClocks<'dae>,
     chains: &'input [flat::WhenChain],
     topology: &'input DiscreteValueTopologyPlan,
-    when_owners: &'input HashMap<Span, ClockPlan>,
+    when_owners: &'input HashMap<WhenOccurrenceId, ClockPlan>,
 }
 
 impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
@@ -45,7 +45,7 @@ impl<'input, 'shape, 'dae> WhenChainsRequest<'input, 'shape, 'dae> {
         clocks: &'input LoweredClocks<'dae>,
         chains: &'input [flat::WhenChain],
         topology: &'input DiscreteValueTopologyPlan,
-        when_owners: &'input HashMap<Span, ClockPlan>,
+        when_owners: &'input HashMap<WhenOccurrenceId, ClockPlan>,
     ) -> Self {
         Self {
             coordinates,
@@ -153,9 +153,13 @@ pub(super) fn lower_when_chains<'dae>(
         target_owners: WhenTargetOwners::default(),
     };
     for (index, chain) in chains.iter().enumerate() {
-        let source_owner =
-            WhenSourceOwner(u32::try_from(index).expect("Flat when-owner count fits in u32"));
-        lowering.lower_chain(source_owner, chain)?;
+        let chain_id =
+            u32::try_from(index).map_err(|_| dae::DaeConstructionError::CapacityExceeded {
+                arena: "when chain",
+                attempted_index: index,
+                span: chain.span(),
+            })?;
+        lowering.lower_chain(WhenSourceOwner(chain_id), chain_id, chain)?;
     }
     Ok(())
 }
@@ -215,6 +219,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn lower_chain(
         &mut self,
         source_owner: WhenSourceOwner,
+        chain_id: u32,
         chain: &flat::WhenChain,
     ) -> Result<(), dae::DaeConstructionError> {
         let owner_provenance = dae::DaeProvenance::source(chain.span())?;
@@ -224,7 +229,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
             self.request.coordinates,
             self.request.topology,
         )?;
-        let guards = self.lower_chain_guards(chain)?;
+        let guards = self.lower_chain_guards(chain_id, chain)?;
         self.own_chain_clocks(chain, &guards)?;
         let owners = WhenSemanticOwners {
             source: source_owner,
@@ -263,11 +268,22 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     /// y = 2;` held `y = 1` where OpenModelica reaches `y = 2` at `t = 0.7`.
     fn lower_chain_guards(
         &mut self,
+        chain_id: u32,
         chain: &flat::WhenChain,
     ) -> Result<Vec<EventGuard<'dae>>, dae::DaeConstructionError> {
         let mut guards = Vec::with_capacity(chain.branch_count());
-        for branch in chain.branches() {
-            let (condition, owner_clock) = self.lower_condition(branch)?;
+        for (branch_index, branch) in chain.branches().enumerate() {
+            let occurrence = WhenOccurrenceId {
+                chain: chain_id,
+                branch: u32::try_from(branch_index).map_err(|_| {
+                    dae::DaeConstructionError::CapacityExceeded {
+                        arena: "when branch",
+                        attempted_index: branch_index,
+                        span: branch.span,
+                    }
+                })?,
+            };
+            let (condition, owner_clock) = self.lower_condition(branch, occurrence)?;
             guards.push(EventGuard {
                 trigger: condition,
                 condition,
@@ -348,12 +364,13 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn lower_condition(
         &mut self,
         branch: &flat::WhenBranch,
+        occurrence: WhenOccurrenceId,
     ) -> Result<
         (dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>),
         dae::DaeConstructionError,
     > {
         let expression = &branch.condition;
-        let Some((clock, span)) = self.branch_clock(branch)? else {
+        let Some((clock, span)) = self.branch_clock(branch, occurrence)? else {
             return lower_condition(
                 self.construction,
                 self.request.coordinates,
@@ -384,6 +401,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
     fn branch_clock(
         &self,
         branch: &flat::WhenBranch,
+        occurrence: WhenOccurrenceId,
     ) -> Result<Option<(dae::PeriodicClockId<'dae>, Span)>, dae::DaeConstructionError> {
         if let Expression::VarRef {
             name,
@@ -409,7 +427,7 @@ impl<'shape, 'dae> WhenLowering<'_, '_, 'shape, 'dae> {
         let plan = self
             .request
             .when_owners
-            .get(&branch.span)
+            .get(&occurrence)
             .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span: branch.span })?;
         let clock = self.request.clocks.id(plan, branch.span)?;
         Ok(Some((clock, branch.span)))

@@ -121,7 +121,10 @@ fn harness_flat() -> flat::Model {
 /// The proven shapes of the declaration table, as the production path supplies
 /// them for a function whose formals all have literal extents.
 fn harness_shapes(function: &rumoca_core::Function) -> ShapeEnvironment {
-    let mut shapes = ShapeEnvironment::default();
+    let mut shapes = ShapeEnvironment::with_capacity(
+        function.inputs.len() + function.locals.len() + function.outputs.len(),
+        std::sync::Arc::new(RecordArrayFieldPlans::default()),
+    );
     for value in function
         .inputs
         .iter()

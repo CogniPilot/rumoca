@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ast::{
-    Block, BlockMethod, BlockMethodKind, Dimension, FunctionKind, Name, Parameter,
+    Block, BlockMethod, BlockMethodKind, Dimension, FunctionCall, FunctionKind, Name, Parameter,
     PredefinedSignal, RefPart, Reference, ScalarType, Spanned, StateCompartment, Statement,
     TypeRef, UserFunction, VariableDeclaration,
 };
@@ -171,7 +171,7 @@ pub(super) struct BodyView<'a> {
 enum LocalBinding<'a> {
     Parameter(&'a Parameter),
     Local(&'a VariableDeclaration),
-    Iterator,
+    Iterator(&'a Name),
 }
 
 /// Lexical scope of one body: parameters, locals, and (dynamically pushed)
@@ -179,10 +179,18 @@ enum LocalBinding<'a> {
 pub(super) struct FunctionScope<'a> {
     parameters: BTreeMap<String, &'a Parameter>,
     locals: BTreeMap<String, &'a VariableDeclaration>,
-    iterators: Vec<String>,
+    iterators: Vec<Option<&'a Name>>,
 }
 
 impl<'a> FunctionScope<'a> {
+    pub(super) fn empty() -> Self {
+        Self {
+            parameters: BTreeMap::new(),
+            locals: BTreeMap::new(),
+            iterators: Vec::new(),
+        }
+    }
+
     pub(super) fn new(body: &BodyView<'a>) -> Self {
         let mut parameters = BTreeMap::new();
         for parameter in body.parameters {
@@ -203,8 +211,8 @@ impl<'a> FunctionScope<'a> {
 
     /// Enter a for-loop scope. Anonymous iterators push an unnameable marker
     /// so that push/pop always pair.
-    pub(super) fn push_iterator(&mut self, iterator: Option<&Name>) {
-        self.iterators.push(iterator.map_or(String::new(), lexeme));
+    pub(super) fn push_iterator(&mut self, iterator: Option<&'a Name>) {
+        self.iterators.push(iterator);
     }
 
     pub(super) fn pop_iterator(&mut self) {
@@ -212,12 +220,23 @@ impl<'a> FunctionScope<'a> {
     }
 
     pub(super) fn is_iterator(&self, name: &str) -> bool {
-        !name.is_empty() && self.iterators.iter().any(|i| i == name)
+        !name.is_empty()
+            && self
+                .iterators
+                .iter()
+                .flatten()
+                .any(|iterator| lexeme(iterator) == name)
     }
 
     fn lookup(&self, name: &str) -> Option<LocalBinding<'a>> {
-        if self.is_iterator(name) {
-            return Some(LocalBinding::Iterator);
+        if let Some(iterator) = self
+            .iterators
+            .iter()
+            .rev()
+            .flatten()
+            .find(|iterator| lexeme(iterator) == name)
+        {
+            return Some(LocalBinding::Iterator(iterator));
         }
         if let Some(parameter) = self.parameters.get(name) {
             return Some(LocalBinding::Parameter(parameter));
@@ -240,7 +259,7 @@ pub(super) enum Resolved<'a> {
     },
     Parameter(&'a Parameter),
     Local(&'a VariableDeclaration),
-    Iterator,
+    Iterator(&'a Name),
 }
 
 /// Declared dimensions of each reference part, for subscript-arity and
@@ -300,7 +319,7 @@ fn resolve_local<'a>(
         return Err(name);
     };
     let (target, dimensions): (_, &[Dimension]) = match binding {
-        LocalBinding::Iterator => (Resolved::Iterator, &[]),
+        LocalBinding::Iterator(iterator) => (Resolved::Iterator(iterator), &[]),
         LocalBinding::Parameter(parameter) => {
             (Resolved::Parameter(parameter), &parameter.decl.dimensions)
         }
@@ -453,6 +472,26 @@ pub(super) enum Callee<'a> {
     },
 }
 
+/// Sole-resolution capability for one exact call occurrence.
+///
+/// Its fields are private to this module, so a validator consumer can inspect
+/// the resolved callee but cannot attach a different catalog/function target
+/// to the occurrence that issued it.
+pub(super) struct ResolvedCall<'a> {
+    occurrence: &'a FunctionCall,
+    callee: Callee<'a>,
+}
+
+impl<'a> ResolvedCall<'a> {
+    pub(super) const fn occurrence(&self) -> &'a FunctionCall {
+        self.occurrence
+    }
+
+    pub(super) const fn callee(&self) -> &Callee<'a> {
+        &self.callee
+    }
+}
+
 impl Callee<'_> {
     pub(super) fn display_name(&self) -> String {
         match self {
@@ -510,27 +549,6 @@ impl Callee<'_> {
             Self::Builtin(_) | Self::Lifted { .. } => false,
         }
     }
-
-    /// The callee's declared signal-set (§3.2.5 §1.5: the signal-set of a
-    /// call is the referred function's DECLARED signal-set; each function's
-    /// own declared-equals-computed check makes this sound).
-    pub(super) fn signal_set(&self, table: &SignalTable) -> SignalSet {
-        let mut set = SignalSet::default();
-        match self {
-            Self::User(function) => {
-                let bits = function.signals.iter().filter_map(|id| table.bit(&id.0));
-                for bit in bits {
-                    set.insert(bit);
-                }
-            }
-            Self::Builtin(builtin) | Self::Lifted { base: builtin, .. } => {
-                for signal in builtin.signals {
-                    set.insert(SignalTable::predefined_bit(*signal));
-                }
-            }
-        }
-        set
-    }
 }
 
 fn lift(ty: Ty, rank: usize) -> Ty {
@@ -544,21 +562,30 @@ fn lift(ty: Ty, rank: usize) -> Ty {
 /// user/builtin collisions — the name analysis enforces that), then the
 /// builtin catalog including lifted variants. Builtins are only reachable
 /// through plain identifiers (quoted names are lexically different, S-1.3).
-pub(super) fn resolve_call<'a>(ctx: &BlockContext<'a>, name: &Name) -> Option<Callee<'a>> {
-    if let Some(function) = ctx.functions.get(&lexeme(name)) {
-        return Some(Callee::User(function));
-    }
-    let Name::Ident(id, _) = name else {
-        return None;
+pub(super) fn resolve_call<'a>(
+    ctx: &BlockContext<'a>,
+    call: &'a FunctionCall,
+) -> Option<ResolvedCall<'a>> {
+    let name = &call.function;
+    let callee = if let Some(function) = ctx.functions.get(&lexeme(name)) {
+        Callee::User(function)
+    } else {
+        let Name::Ident(id, _) = name else {
+            return None;
+        };
+        if let Some(builtin) = find_builtin(&id.0) {
+            Callee::Builtin(builtin)
+        } else if let Some(base) = find_lifted_base(&id.0) {
+            let rank = if id.0.ends_with("1D") { 1 } else { 2 };
+            Callee::Lifted { base, rank }
+        } else {
+            return None;
+        }
     };
-    if let Some(builtin) = find_builtin(&id.0) {
-        return Some(Callee::Builtin(builtin));
-    }
-    if let Some(base) = find_lifted_base(&id.0) {
-        let rank = if id.0.ends_with("1D") { 1 } else { 2 };
-        return Some(Callee::Lifted { base, rank });
-    }
-    None
+    Some(ResolvedCall {
+        occurrence: call,
+        callee,
+    })
 }
 
 /// Interns block signal names: bits 0–5 are the predefined signals in their

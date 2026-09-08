@@ -24,7 +24,7 @@ fn duplicate_package_context_is_one_exact_selection() {
         override_target_with_active("P", package_def, ClassType::Package, false),
     ];
     let functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &packages, &functions)
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &packages, &functions)
         .with_lexical_package_def_id(Some(package_def));
     let reference = rumoca_core::Reference::with_component_reference(
         "P.f",
@@ -53,14 +53,15 @@ fn modifier_rewrite_rejects_missing_selection_with_call_site_provenance() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "gravity".to_string(),
+        implementation,
         override_target("Standard", implementation, ClassType::Function),
     );
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
     let mut expression = Expression::FunctionCall {
         name: rumoca_core::Reference::new("gravity"),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -76,12 +77,12 @@ fn modifier_rewrite_rejects_missing_selection_with_call_site_provenance() {
 fn generated_unstructured_builtin_does_not_require_callable_selection() {
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "sin".to_string(),
+        DefId::new(190),
         override_target("Unrelated.sin", DefId::new(190), ClassType::Function),
     );
     let tree = ClassTree::new();
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
     let mut expression = Expression::FunctionCall {
         name: rumoca_core::Reference::generated("sin"),
         args: vec![Expression::Literal {
@@ -89,6 +90,7 @@ fn generated_unstructured_builtin_does_not_require_callable_selection() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -117,7 +119,7 @@ fn predefined_operator_call_does_not_require_callable_selection() {
         .add_predefined_member(ComponentPath::from_flat_path("inStream"), stream_operator);
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let overrides = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
     let mut expression = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "inStream",
@@ -132,6 +134,7 @@ fn predefined_operator_call_does_not_require_callable_selection() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -168,7 +171,7 @@ fn enumeration_conversion_call_does_not_require_callable_selection() {
     tree.name_map.insert("E".to_string(), enumeration_def);
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let overrides = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
     let mut expression = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "E",
@@ -179,6 +182,7 @@ fn enumeration_conversion_call_does_not_require_callable_selection() {
             span: test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 

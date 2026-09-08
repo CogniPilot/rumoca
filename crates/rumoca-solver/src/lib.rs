@@ -13,6 +13,8 @@ pub mod runtime;
 mod runtime;
 #[cfg(not(kani))]
 pub mod solver;
+#[cfg(test)]
+mod test_support;
 #[cfg(not(kani))]
 pub mod timeline;
 mod verification;
@@ -51,18 +53,18 @@ pub use runtime::schedule::{
 };
 #[cfg(not(kani))]
 pub use runtime::solve_events::{
-    apply_discrete_slot_values, current_dynamic_time_event_stop, eval_event_actions_with_context,
-    next_runtime_event_stop, visible_values_with_context,
+    apply_discrete_slot_values, eval_event_actions_with_context, visible_values_with_context,
 };
 #[cfg(not(kani))]
 pub use runtime::solve_ops::{
-    EventActionOutcome, EventPreMode, EventPreSources, RootCrossing, RuntimeSolveError,
-    apply_discrete_slot_value, convert_variable_meta, discrete_row_active_at,
-    discrete_row_pre_mode, event_eval_params_for_pre_mode, event_eval_params_for_row_pre_mode,
-    first_root_crossing, orient_typed_root_zeros, push_visible_values,
-    relation_memory_value_from_root, replace_last_visible_values, root_crossed, root_crossings,
-    root_crossings_with_relation_memory, root_value_crossed, row_reads_solver_or_time,
-    runtime_value_changed, runtime_values_changed, update_relation_memory_slots,
+    EventActionOutcome, EventPreMode, EventPreSources, NativeExecutionOwner, NativeExecutionStage,
+    RootCrossing, RuntimeSolveError, apply_discrete_slot_value, convert_variable_meta,
+    discrete_row_active_at, discrete_row_pre_mode, event_eval_params_for_pre_mode,
+    event_eval_params_for_row_pre_mode, first_root_crossing, orient_typed_root_zeros,
+    push_visible_values, relation_memory_value_from_root, replace_last_visible_values,
+    root_crossed, root_crossings, root_crossings_with_relation_memory, root_value_crossed,
+    row_reads_solver_or_time, runtime_value_changed, runtime_values_changed,
+    update_relation_memory_slots,
 };
 #[cfg(not(kani))]
 pub use runtime::solve_runtime::{

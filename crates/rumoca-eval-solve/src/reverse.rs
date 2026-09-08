@@ -10,9 +10,9 @@
 //! `λᵀ(J v) = (Jᵀλ)ᵀ v` must hold against the forward JVP for random `v`, `λ`.
 //!
 //! Scope: scalar ops plus `LinearSolveComponent` (the linear-solve VJP — adjoint
-//! `Aᵀμ = λ·e_c`). Table lookups, random generators, and runtime-indexed loads
-//! are still deferred and raise an explicit error here rather than silently
-//! returning a wrong gradient.
+//! `Aᵀμ = λ·e_c`). Random generators and runtime-indexed loads are still
+//! deferred and raise an explicit error here rather than silently returning a
+//! wrong gradient.
 //!
 //! The reverse-sweep types are `pub` only so that
 //! `rumoca_solver::runtime::solve_runtime` (the runtime state machine that owns
@@ -173,7 +173,6 @@ pub fn reverse_row_op_supported(op: &LinearOp) -> bool {
             | LinearOp::LoadTime { .. }
             | LinearOp::LoadY { .. }
             | LinearOp::LoadP { .. }
-            | LinearOp::LoadIndexedP { .. }
             | LinearOp::Move { .. }
             | LinearOp::LinearSolveComponent { .. }
             | LinearOp::Unary { .. }
@@ -221,15 +220,6 @@ fn forward_row_tape(
             LinearOp::LoadTime { dst } => set(regs, dst, inputs.t),
             LinearOp::LoadY { dst, index } => set(regs, dst, load(inputs.y, "y", index)?),
             LinearOp::LoadP { dst, index } => set(regs, dst, load(inputs.p, "p", index)?),
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
-                set(regs, dst, load(inputs.p, "p", slot)?);
-            }
             LinearOp::LoadSeed { dst, index } => {
                 let seed = inputs
                     .context
@@ -309,15 +299,6 @@ fn reverse_row_adjoints(
             }
             LinearOp::LoadY { dst, index } => accumulate(cot.y, index, take_adj(adj, dst)),
             LinearOp::LoadP { dst, index } => accumulate(cot.p, index, take_adj(adj, dst)),
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => {
-                let slot = rumoca_ir_solve::resolve_indexed_slot(reg(regs, index), base, count);
-                accumulate(cot.p, slot, take_adj(adj, dst));
-            }
             LinearOp::LoadSeed { dst, index } => accumulate(cot.seed, index, take_adj(adj, dst)),
             LinearOp::Move { dst, src } => {
                 let dst_adj = take_adj(adj, dst);
@@ -607,25 +588,23 @@ mod tests {
         rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(file!()), 0, 1)
     }
 
-    /// Reverse over a program that *reuses and self-references* register 0:
-    ///   r0 = y0; r1 = 3; r0 = r0 * r1; output = r0   (so f = 3·y0, df/dy0 = 3).
-    /// A sweep that did not zero `adj[dst]` after consuming it would leak the
-    /// post-multiply adjoint back into the `LoadY` and report 4 instead of 3. The
-    /// lowering only emits SSA, so this non-SSA program can only arise by hand —
-    /// the unit test is what guards the robustness of [`take_adj`].
+    /// Reverse over the checked SSA program
+    /// `r0 = y0; r1 = 3; r2 = r0 * r1; output = r2`.
+    /// Non-SSA register reuse is rejected by `ScalarProgramBlock` construction
+    /// and therefore is not an executable case for this consumer.
     #[test]
-    fn reverse_handles_register_reuse_and_self_reference() {
+    fn reverse_handles_chained_fresh_definitions() {
         let block = ScalarProgramBlock::with_output_indices(
             vec![vec![
                 LinearOp::LoadY { dst: 0, index: 0 },
                 LinearOp::Const { dst: 1, value: 3.0 },
                 LinearOp::Binary {
-                    dst: 0,
+                    dst: 2,
                     op: BinaryOp::Mul,
                     lhs: 0,
                     rhs: 1,
                 },
-                LinearOp::StoreOutput { src: 0 },
+                LinearOp::StoreOutput { src: 2 },
             ]],
             vec![fixture_span()],
             vec![0],
@@ -653,7 +632,6 @@ mod tests {
                 t: 0.0,
                 context: RowEvalContext {
                     seed: None,
-                    external_tables: None,
                     pure_calls: None,
                     runtime_state: None,
                 },
@@ -670,68 +648,9 @@ mod tests {
 
         assert!(
             (cot_y[0] - 3.0).abs() < 1.0e-12,
-            "df/dy0 should be 3 (register reuse handled), got {}",
+            "df/dy0 should be 3 for the checked SSA chain, got {}",
             cot_y[0]
         );
-    }
-
-    #[test]
-    fn reverse_indexed_parameter_load_accumulates_selected_slot() {
-        let block = ScalarProgramBlock::with_output_indices(
-            vec![vec![
-                LinearOp::LoadY { dst: 0, index: 0 },
-                LinearOp::LoadIndexedP {
-                    dst: 1,
-                    base: 1,
-                    count: 3,
-                    index: 0,
-                },
-                LinearOp::StoreOutput { src: 1 },
-            ]],
-            vec![fixture_span()],
-            vec![0],
-        )
-        .expect("valid indexed-parameter block");
-        let row_registers =
-            [crate::required_registers(&block.programs()[0]).expect("register count")];
-        let requirements =
-            crate::scalar_program_block_input_requirements(&block).expect("requirements");
-        let mut cot_y = [0.0];
-        let mut cot_p = [0.0; 4];
-        let mut scratch = ReverseScratch::default();
-
-        reverse_scalar_block_vjp(
-            &ScalarVjpProgram {
-                block: &block,
-                row_registers: &row_registers,
-                requirements,
-            },
-            &ReverseInputs {
-                y: &[1.0],
-                p: &[10.0, 20.0, 30.0, 40.0],
-                t: 0.0,
-                context: RowEvalContext::default(),
-            },
-            &[2.5],
-            &mut ReverseCotangents {
-                y: &mut cot_y,
-                p: &mut cot_p,
-                seed: &mut [],
-            },
-            &mut scratch,
-        )
-        .expect("reverse sweep");
-
-        assert_eq!(cot_y, [0.0]);
-        assert_eq!(cot_p, [0.0, 0.0, 2.5, 0.0]);
-        let parameter_direction = [1.0, -2.0, 3.0, -4.0];
-        let forward_contraction = 2.5 * parameter_direction[2];
-        let reverse_contraction: f64 = cot_p
-            .iter()
-            .zip(parameter_direction)
-            .map(|(cotangent, direction)| cotangent * direction)
-            .sum();
-        assert_eq!(forward_contraction, reverse_contraction);
     }
 
     /// Reverse VJP through a `LinearSolveComponent` (`x = A⁻¹ b`). The 2x2 system's
@@ -786,7 +705,6 @@ mod tests {
                     t: 0.0,
                     context: RowEvalContext {
                         seed: None,
-                        external_tables: None,
                         pure_calls: None,
                         runtime_state: None,
                     },
@@ -809,7 +727,6 @@ mod tests {
                 t: 0.0,
                 context: RowEvalContext {
                     seed: None,
-                    external_tables: None,
                     pure_calls: None,
                     runtime_state: None,
                 },

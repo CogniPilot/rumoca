@@ -26,7 +26,7 @@ fn test_typecheck_instanced_checks_compound_equation_types_and_builtin_arguments
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let model = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -40,7 +40,7 @@ fn test_typecheck_instanced_checks_compound_equation_types_and_builtin_arguments
         );
     }
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("compound type errors must fail instanced typecheck");
     let mismatches = diagnostics
         .iter()
@@ -65,7 +65,7 @@ fn test_typecheck_instanced_checks_algorithms_and_bindings() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let model = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -79,7 +79,7 @@ fn test_typecheck_instanced_checks_algorithms_and_bindings() {
         );
     }
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("algorithm and binding mismatches must fail instanced typecheck");
     let mismatches = diagnostics
         .iter()
@@ -106,7 +106,7 @@ fn test_typecheck_instanced_checks_reachable_component_class_equations() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -129,7 +129,7 @@ fn test_typecheck_instanced_checks_reachable_component_class_equations() {
         );
     }
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("reachable component-class equations must be checked");
     assert!(
         diagnostics
@@ -159,7 +159,7 @@ fn test_typecheck_instanced_checks_each_concrete_component_scope() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Test")
         .expect("Test class");
@@ -203,7 +203,7 @@ fn test_typecheck_instanced_checks_each_concrete_component_scope() {
         .expect("second worker parameter")
         .binding = Some(modified_n);
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("the second concrete Worker scope has a shape mismatch");
     let mismatches: Vec<_> = diagnostics
         .iter()
@@ -231,10 +231,10 @@ fn test_typecheck_instanced_reports_unknown_builtin_modifier() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("instanced typecheck should reject unknown builtin modifiers");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET001")
@@ -258,10 +258,10 @@ fn test_typecheck_instanced_reports_unknown_class_component_modifier() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("instanced typecheck should reject unknown class modifiers");
     assert!(
         err.iter()
@@ -286,10 +286,10 @@ fn test_typecheck_instanced_reports_unknown_class_component_start_modifier() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Main")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Main")
         .expect_err("instanced typecheck should reject unknown class start modifiers");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET001")
@@ -315,10 +315,10 @@ fn test_typecheck_instanced_reports_unknown_nested_builtin_modifier() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("instanced typecheck should reject unknown nested builtin modifiers");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET001")
@@ -345,10 +345,10 @@ fn test_typecheck_instanced_reports_builtin_modifier_type_mismatch() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let mut overlay = rumoca_ir_ast::InstanceOverlay::new();
 
-    let err = typecheck_instanced(&tree, &mut overlay, "Test")
+    let err = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("instanced typecheck should reject incompatible modifier types");
     assert!(
         err.iter().any(|d| d.code.as_deref() == Some("ET002")

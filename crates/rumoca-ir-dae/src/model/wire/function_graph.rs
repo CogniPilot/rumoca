@@ -194,13 +194,17 @@ fn function_dependencies(
     children: &ExpressionChildren,
 ) -> Result<(Vec<usize>, usize), DaeConstructionError> {
     let mut pending = Vec::new();
-    push_statement_roots(&function.statements, &mut pending);
-    // An external interface roots its own argument expressions, so they are
-    // replayed inside the owning component exactly like body assignments.
-    if let Some(external) = &function.external {
-        for argument in &external.arguments {
-            if let ExternalArgumentEntry::Input(expression) = argument {
-                pending.push(*expression);
+    match &function.body {
+        FunctionBodyInput::Modelica { statements } => {
+            push_statement_roots(statements, &mut pending);
+        }
+        FunctionBodyInput::External { body } => {
+            // An external interface roots its own argument expressions, so they
+            // are replayed inside the owning component exactly like body assignments.
+            for argument in &body.arguments {
+                if let ExternalArgumentEntry::Input(expression) = argument {
+                    pending.push(*expression);
+                }
             }
         }
     }

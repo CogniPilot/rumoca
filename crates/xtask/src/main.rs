@@ -3,6 +3,8 @@ mod coverage_analysis;
 mod coverage_gate;
 mod crate_dag_cmd;
 mod docs_cmd;
+mod golden_coverage;
+mod golden_transition_coverage;
 mod lsp_benchmark_cmd;
 #[cfg(test)]
 mod main_tests;
@@ -260,6 +262,12 @@ enum CoverageCommand {
     Report(CoverageReportArgs),
     /// Enforce coverage-trim regression thresholds against committed baseline
     Gate(CoverageGateArgs),
+    /// Capture the exact production lines exercised by one registered golden-model candidate
+    Golden(golden_coverage::GoldenCoverageArgs),
+    /// Rerun every admitted golden model and report their production-line coverage union
+    GoldenAll(golden_coverage::GoldenCoverageAllArgs),
+    /// Capture one exact golden-model compiler transition as candidate review evidence
+    GoldenTransition(golden_transition_coverage::GoldenTransitionCoverageArgs),
 }
 
 #[derive(Debug, Args, Clone)]
@@ -534,6 +542,11 @@ fn cmd_coverage(args: CoverageArgs) -> Result<()> {
         CoverageCommand::Run(args) => cmd_coverage_run(args),
         CoverageCommand::Report(args) => cmd_coverage_report(args),
         CoverageCommand::Gate(args) => cmd_coverage_gate(args),
+        CoverageCommand::Golden(args) => golden_coverage::run_model(&repo_root(), &args),
+        CoverageCommand::GoldenAll(args) => golden_coverage::run_all(&repo_root(), &args),
+        CoverageCommand::GoldenTransition(args) => {
+            golden_transition_coverage::run(&repo_root(), &args)
+        }
     }
 }
 

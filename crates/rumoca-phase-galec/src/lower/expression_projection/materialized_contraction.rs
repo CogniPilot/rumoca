@@ -4,7 +4,8 @@
 //! its extents, its operands, whether an intermediate tensor is worth
 //! materializing ([`composed_left_contraction`]), and, once its operands are
 //! projected, whether the loop it issues is a whole row of a matrix product
-//! that a target may accumulate at once ([`attest_row_contraction`]). Every
+//! that a target may accumulate at once
+//! ([`issue_real_matrix_multiply_occurrence`]). Every
 //! one of those answers is written into the IR here, so no later stage has to
 //! recover it from the statements.
 
@@ -13,43 +14,44 @@ use super::*;
 /// The loop one materialized contraction runs over its contracted index.
 struct ContractionLoop<'a> {
     iterator: &'a gast::Name,
+    start: i64,
     extent: u32,
     span: Span,
 }
 
-/// The loop over one contracted index, carrying the row contraction it
-/// legalizes when the contraction that filled it attested one.
+/// The loop over one contracted index, carrying the exact matrix-product
+/// occurrence it legalizes when the contraction that filled it issued one.
 fn contraction_loop(
     body: Vec<gast::Spanned<gast::Statement>>,
     shape: &ContractionLoop<'_>,
-    row: Option<gast::RowContraction>,
+    occurrence: Option<gast::RealMatrixMultiplyOccurrenceContract>,
 ) -> gast::Spanned<gast::Statement> {
     let loop_ = gast::ForLoop::new(
         Some(shape.iterator.clone()),
-        gast::Expression::Integer(1),
+        gast::Expression::Integer(shape.start),
         None,
         gast::Expression::Integer(i64::from(shape.extent)),
         body,
     );
-    let loop_ = match row {
-        Some(row) => loop_.with_row_contraction(row),
+    let loop_ = match occurrence {
+        Some(occurrence) => loop_.with_real_matrix_multiply_occurrence(occurrence),
         None => loop_,
     };
     gast::Spanned::new(gast::Statement::for_loop(loop_), shape.span)
 }
 
 /// The loop body that fills one composed contraction's intermediate tensor,
-/// with the row contraction it legalizes.
+/// with the matrix-product occurrence it legalizes.
 struct IntermediateFill {
     statements: Vec<gast::Spanned<gast::Statement>>,
-    row: Option<gast::RowContraction>,
+    occurrence: Option<gast::RealMatrixMultiplyOccurrenceContract>,
 }
 
-/// One lowered materialized contraction: its value, and the row contraction it
-/// can attest to whichever node owns the loop that fills its intermediate.
+/// One lowered materialized contraction: its value and the matrix-product
+/// occurrence issued for whichever node owns its legalization loop.
 struct MaterializedContraction {
     value: TypedExpression,
-    row: Option<gast::RowContraction>,
+    occurrence: Option<gast::RealMatrixMultiplyOccurrenceContract>,
 }
 
 fn additive_identity(scalar_type: gast::ScalarType) -> gast::Expression {
@@ -102,8 +104,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 span,
             )?);
         }
-        let expression = sum_terms(
+        let expression = self.finish_contraction_terms(
             terms,
+            scalar_type,
             "zero-dot-product",
             "zero-length dot product requires an explicit additive identity",
             span,
@@ -145,8 +148,9 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 span,
             )?);
         }
-        let expression = sum_terms(
+        let expression = self.finish_contraction_terms(
             terms,
+            scalar_type,
             "zero-contraction",
             "zero-length tensor contraction needs an additive identity",
             span,
@@ -198,25 +202,16 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         scalar_type: gast::ScalarType,
         span: Span,
     ) -> Result<MaterializedContraction, GalecTargetError> {
-        let (accumulator, element) = match accumulator {
-            ContractionAccumulator::Fresh => (
-                gast::Reference::local(self.declare_contraction_accumulator(scalar_type, span)),
-                None,
-            ),
-            ContractionAccumulator::Element(element) => (element.reference.clone(), Some(element)),
-        };
+        if scalar_type == gast::ScalarType::Real && contraction.extent == 0 {
+            return self.lower_empty_materialized_contraction(accumulator, scalar_type, span);
+        }
+        let (first_product, accumulator, element) =
+            self.initialize_contraction_accumulator(accumulator, scalar_type, span);
         let iterator = gast::Name::ident(format!(
             "rumoca_{}_contracted_{}",
             self.temporary_namespace, self.temporary_counter
         ));
         self.temporary_counter += 1;
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: accumulator.clone(),
-                value: additive_identity(scalar_type),
-            },
-            span,
-        ));
 
         let contracted = gast::Expression::Ref(gast::Reference::local(iterator.clone()));
         let (lhs_indices, rhs_indices) = contraction_indices(&contraction, contracted.clone());
@@ -236,17 +231,6 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         let rhs = self.lower_at(rhs, &rhs_indices);
         self.loop_index_bounds.pop();
         let (lhs, rhs) = (lhs?, rhs?);
-        // The row-contraction witness this node can attest, for the composing
-        // node that owns the loop filling the intermediate to carry.
-        let row = element.as_ref().and_then(|element| {
-            attest_row_contraction(
-                element,
-                &iterator,
-                contraction.extent,
-                &lhs.expression,
-                &rhs.expression,
-            )
-        });
         let product = lower_binary(dae::BinaryOperator::Multiply, lhs, rhs, scalar_type, span)?;
         let prefixes = self.pending_prefix_statements.split_off(body_start);
         let mut before = Vec::new();
@@ -258,39 +242,58 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             before.extend(hoisted);
             IntermediateFill {
                 statements: body,
-                row: fill.row,
+                occurrence: fill.occurrence,
             }
         });
         let (hoisted, body) =
             user_functions::partition_tensor_prefixes(prefixes, std::slice::from_ref(&iterator));
         before.extend(hoisted);
         self.pending_prefix_statements.extend(before);
+        let first_iteration =
+            first_product.then(|| instantiate_iteration(&body, &product, &iterator, 1));
+        // Only an exact single-product loop is eligible for the retained row
+        // plan. Any prefix statement would need its own evaluation-order plan;
+        // keeping that legalization is safer than silently changing it.
+        let occurrence = element.as_ref().and_then(|element| {
+            (body.is_empty() && intermediate.is_none()).then_some(())?;
+            let seed = match &first_iteration {
+                Some((_, value)) => gast::RealMatrixMultiplySeed::FirstProduct {
+                    value: value.clone(),
+                },
+                None => gast::RealMatrixMultiplySeed::PositiveZero,
+            };
+            issue_real_matrix_multiply_occurrence(
+                self.arithmetic.source_real(),
+                element,
+                &iterator,
+                contraction.extent,
+                &product_lhs(&product)?,
+                &product_rhs(&product)?,
+                seed,
+            )
+        });
         let shape = ContractionLoop {
             iterator: &iterator,
+            start: if first_product { 2 } else { 1 },
             extent: contraction.extent,
             span,
         };
-        // The retirement assertion for the loop-fission pass this node
-        // replaced: with the intermediate carried from the checked DAE, no
-        // emitted body may still hold a split the recognizer can find.
-        #[cfg(debug_assertions)]
-        {
-            let split = fission_contraction_body(&body, &contraction.rhs_outer, &product);
-            assert!(
-                split.is_none(),
-                "contraction body still fissions after the composed contraction \
-                 carried its intermediate: {}",
-                split
-                    .as_ref()
-                    .map_or_else(String::new, ContractionFission::describe)
-            );
-        }
         if let Some(fill) = intermediate {
             self.pending_prefix_statements.push(contraction_loop(
                 fill.statements,
-                &shape,
-                fill.row,
+                &ContractionLoop { start: 1, ..shape },
+                fill.occurrence,
             ));
+        }
+        if let Some((mut seed_body, seed_product)) = first_iteration {
+            seed_body.push(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: accumulator.clone(),
+                    value: seed_product,
+                },
+                span,
+            ));
+            self.pending_prefix_statements.extend(seed_body);
         }
         self.emit_contraction_loop(body, &accumulator, product, &shape);
         Ok(MaterializedContraction {
@@ -298,8 +301,65 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
                 expression: gast::Expression::Ref(accumulator),
                 scalar_type,
             },
-            row,
+            occurrence,
         })
+    }
+
+    fn lower_empty_materialized_contraction(
+        &mut self,
+        accumulator: ContractionAccumulator,
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> Result<MaterializedContraction, GalecTargetError> {
+        let identity = self.empty_real_contraction(span)?;
+        let expression = match accumulator {
+            ContractionAccumulator::Fresh => identity,
+            ContractionAccumulator::Element(element) => {
+                self.pending_prefix_statements.push(gast::Spanned::new(
+                    gast::Statement::Assignment {
+                        target: element.reference.clone(),
+                        value: identity,
+                    },
+                    span,
+                ));
+                gast::Expression::Ref(element.reference)
+            }
+        };
+        Ok(MaterializedContraction {
+            value: TypedExpression {
+                expression,
+                scalar_type,
+            },
+            occurrence: None,
+        })
+    }
+
+    fn initialize_contraction_accumulator(
+        &mut self,
+        accumulator: ContractionAccumulator,
+        scalar_type: gast::ScalarType,
+        span: Span,
+    ) -> (bool, gast::Reference, Option<Box<IntermediateElement>>) {
+        let first_product = scalar_type == gast::ScalarType::Real
+            && self.arithmetic.real_matrix_multiply()
+                == rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct;
+        let (accumulator, element) = match accumulator {
+            ContractionAccumulator::Fresh => (
+                gast::Reference::local(self.declare_contraction_accumulator(scalar_type, span)),
+                None,
+            ),
+            ContractionAccumulator::Element(element) => (element.reference.clone(), Some(element)),
+        };
+        if !first_product {
+            self.pending_prefix_statements.push(gast::Spanned::new(
+                gast::Statement::Assignment {
+                    target: accumulator.clone(),
+                    value: additive_identity(scalar_type),
+                },
+                span,
+            ));
+        }
+        (first_product, accumulator, element)
     }
 
     /// The composed left contraction of this node, refused whenever its
@@ -360,11 +420,17 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
             span,
         );
         let statements = self.pending_prefix_statements.split_off(start);
-        let (row, value) = match lowered {
-            Ok(lowered) => (lowered.row, Ok(lowered.value)),
+        let (occurrence, value) = match lowered {
+            Ok(lowered) => (lowered.occurrence, Ok(lowered.value)),
             Err(error) => (None, Err(error)),
         };
-        (Some(IntermediateFill { statements, row }), value)
+        (
+            Some(IntermediateFill {
+                statements,
+                occurrence,
+            }),
+            value,
+        )
     }
 
     /// Declare the intermediate tensor of a composed contraction: one element
@@ -431,4 +497,70 @@ impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
         self.pending_prefix_statements
             .push(contraction_loop(body, shape, None));
     }
+
+    fn finish_contraction_terms(
+        &self,
+        terms: Vec<gast::Expression>,
+        scalar_type: gast::ScalarType,
+        feature: &str,
+        detail: &str,
+        span: Span,
+    ) -> Result<gast::Expression, GalecTargetError> {
+        if scalar_type != gast::ScalarType::Real {
+            return sum_terms(terms, feature, detail, span);
+        }
+        if terms.is_empty() {
+            return self.empty_real_contraction(span);
+        }
+        if self.arithmetic.real_matrix_multiply()
+            == rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct
+        {
+            return sum_terms(terms, feature, detail, span);
+        }
+        Ok(terms
+            .into_iter()
+            .fold(gast::Expression::Real(0.0), |accumulator, product| {
+                gast::Expression::binary(gast::BinaryOp::Add, accumulator, product)
+            }))
+    }
+
+    fn empty_real_contraction(&self, span: Span) -> Result<gast::Expression, GalecTargetError> {
+        match self.arithmetic.real_matrix_multiply() {
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct => {
+                Err(unsupported(
+                    "empty-first-product-matrix-multiply",
+                    "a FirstProduct Real matrix product requires a non-empty inner domain"
+                        .to_owned(),
+                    span,
+                ))
+            }
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero => {
+                Ok(gast::Expression::Real(0.0))
+            }
+        }
+    }
+}
+
+fn product_lhs(product: &gast::Expression) -> Option<gast::Expression> {
+    let gast::Expression::Binary {
+        op: gast::BinaryOp::Mul,
+        lhs,
+        ..
+    } = product
+    else {
+        return None;
+    };
+    Some(lhs.as_ref().clone())
+}
+
+fn product_rhs(product: &gast::Expression) -> Option<gast::Expression> {
+    let gast::Expression::Binary {
+        op: gast::BinaryOp::Mul,
+        rhs,
+        ..
+    } = product
+    else {
+        return None;
+    };
+    Some(rhs.as_ref().clone())
 }

@@ -1,5 +1,25 @@
 use super::*;
 
+struct ResolvedSourceRootConfiguration {
+    scenario_config: Option<ScenarioConfig>,
+    source_root_paths: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct SourceRootLoadRequest<'a> {
+    lib_path: &'a str,
+    path_key: &'a str,
+    source_set_id: &'a str,
+    current_document_path: Option<&'a str>,
+    expected_epoch: u64,
+    reason: SourceRootIndexingReason,
+}
+
+enum SourceRootLoadStart {
+    Reserved,
+    AlreadyLoaded,
+}
+
 impl ModelicaLanguageServer {
     async fn parse_source_root_on_indexing_lane(
         &self,
@@ -298,14 +318,20 @@ impl ModelicaLanguageServer {
         current_document_path: Option<&str>,
         expected_epoch: u64,
         reason: SourceRootIndexingReason,
-    ) -> std::result::Result<Option<SourceRootLoadOutcome>, String> {
-        if !self
-            .session
-            .write()
-            .await
-            .reserve_source_root_load(path_key, expected_epoch)
-        {
-            return Ok(None);
+    ) -> std::result::Result<SourceRootLoadDisposition, SourceRootPreparationError> {
+        let request = SourceRootLoadRequest {
+            lib_path,
+            path_key,
+            source_set_id,
+            current_document_path,
+            expected_epoch,
+            reason,
+        };
+        if matches!(
+            self.reserve_source_root_load(request).await?,
+            SourceRootLoadStart::AlreadyLoaded
+        ) {
+            return Ok(SourceRootLoadDisposition::AlreadyLoaded);
         }
         self.notify_source_root_indexing(
             reason,
@@ -317,20 +343,45 @@ impl ModelicaLanguageServer {
         let parsed = match self.parse_source_root_on_indexing_lane(lib_path).await {
             Ok(parsed) => parsed,
             Err(err) => {
-                return Err(self
+                let error = self
                     .source_root_load_failure(lib_path, path_key, expected_epoch, reason, err)
-                    .await);
+                    .await;
+                return Err(SourceRootPreparationError::Load(vec![error]));
             }
         };
-        self.replace_source_root_load_diagnostics(lib_path, HashMap::new())
-            .await;
+        self.apply_parsed_source_root(request, parsed).await
+    }
 
+    async fn reserve_source_root_load(
+        &self,
+        request: SourceRootLoadRequest<'_>,
+    ) -> std::result::Result<SourceRootLoadStart, SourceRootPreparationError> {
+        match self
+            .session
+            .write()
+            .await
+            .reserve_source_root_load(request.path_key, request.expected_epoch)
+        {
+            SourceRootLoadReservation::Reserved => Ok(SourceRootLoadStart::Reserved),
+            SourceRootLoadReservation::AlreadyLoaded => Ok(SourceRootLoadStart::AlreadyLoaded),
+            disposition => Err(SourceRootPreparationError::Reservation {
+                source_root_path: request.lib_path.to_string(),
+                disposition,
+            }),
+        }
+    }
+
+    async fn apply_parsed_source_root(
+        &self,
+        request: SourceRootLoadRequest<'_>,
+        parsed: rumoca_compile::source_roots::ParsedSourceRoot,
+    ) -> std::result::Result<SourceRootLoadDisposition, SourceRootPreparationError> {
         let cache_status = parsed.cache_status;
         let cache_key = parsed.cache_key.clone();
         let cache_timing = parsed.timing;
         let initial_source_root_paths = self.initial_source_root_paths.read().await.clone();
         let source_root_kind =
-            classify_configured_source_root_kind(lib_path, &initial_source_root_paths);
+            classify_configured_source_root_kind(request.lib_path, &initial_source_root_paths);
         let cache_path = parsed
             .cache_file
             .as_deref()
@@ -338,72 +389,105 @@ impl ModelicaLanguageServer {
             .unwrap_or_else(|| "<none>".to_string());
         let parsed_file_count = parsed.file_count;
         let apply_started = Instant::now();
-        let Some((inserted_file_count, status)) = ({
+        let apply_disposition = {
             self.session
                 .write()
                 .await
                 .apply_parsed_source_root_if_current(
-                    source_set_id,
+                    request.source_set_id,
                     ParsedSourceRootLoad {
                         source_root_kind,
-                        source_root_path: Path::new(lib_path),
+                        source_root_path: Path::new(request.lib_path),
                         cache_status,
-                        path_key,
-                        current_document_path,
+                        path_key: request.path_key,
+                        current_document_path: request.current_document_path,
                         documents: parsed.documents,
-                        expected_epoch,
+                        expected_epoch: request.expected_epoch,
                     },
                 )
-        }) else {
-            let finished_message = render_source_root_indexing_finished_message(
-                lib_path,
-                &reason.stale_label(),
-                parsed_file_count,
-                0,
-                cache_status,
-            );
-            self.notify_source_root_indexing(reason, MessageType::INFO, finished_message)
-                .await;
-            return Ok(None);
         };
+        let (inserted_file_count, status) = match apply_disposition {
+            SourceRootApplyDisposition::Applied {
+                inserted_file_count,
+                status,
+            } => (inserted_file_count, status),
+            SourceRootApplyDisposition::AlreadyLoaded => {
+                return Ok(SourceRootLoadDisposition::AlreadyLoaded);
+            }
+            disposition => {
+                let message = render_source_root_indexing_failed_message(
+                    request.lib_path,
+                    &request.reason.stale_label(),
+                    &format!("source-root apply rejected: {disposition:?}"),
+                );
+                self.notify_source_root_indexing(request.reason, MessageType::WARNING, message)
+                    .await;
+                return Err(SourceRootPreparationError::Apply {
+                    source_root_path: request.lib_path.to_string(),
+                    disposition,
+                });
+            }
+        };
+        self.finalize_source_root_application(
+            request,
+            parsed_file_count,
+            inserted_file_count,
+            cache_status,
+            status.as_ref(),
+        )
+        .await;
+
+        Ok(SourceRootLoadDisposition::Loaded(Box::new(
+            SourceRootLoadOutcome {
+                cache_status,
+                parsed_file_count,
+                inserted_file_count,
+                cache_key,
+                cache_path,
+                timing: DurableSourceRootLoadTiming {
+                    cache: cache_timing,
+                    apply_ms: apply_started.elapsed().as_millis() as u64,
+                },
+                status,
+            },
+        )))
+    }
+
+    async fn finalize_source_root_application(
+        &self,
+        request: SourceRootLoadRequest<'_>,
+        parsed_file_count: usize,
+        inserted_file_count: usize,
+        cache_status: SourceRootCacheStatus,
+        status: Option<&rumoca_compile::compile::SourceRootStatusSnapshot>,
+    ) {
+        self.replace_source_root_load_diagnostics(request.lib_path, HashMap::new())
+            .await;
         self.source_root_read_prewarm_finished.notify_waiters();
         self.clear_simulation_compile_cache().await;
 
-        if let Some(status) = status.as_ref() {
-            self.notify_source_root_indexing(
-                reason,
-                MessageType::INFO,
-                render_source_root_status_message(status),
-            )
-            .await;
-        } else {
-            let finished_message = render_source_root_indexing_finished_message(
-                lib_path,
-                reason.label(),
-                parsed_file_count,
-                inserted_file_count,
-                cache_status,
-            );
-            self.notify_source_root_indexing(reason, MessageType::INFO, finished_message)
-                .await;
-        }
-
-        Ok(Some(SourceRootLoadOutcome {
-            cache_status,
-            parsed_file_count,
-            inserted_file_count,
-            cache_key,
-            cache_path,
-            timing: DurableSourceRootLoadTiming {
-                cache: cache_timing,
-                apply_ms: apply_started.elapsed().as_millis() as u64,
+        let message = status.map_or_else(
+            || {
+                render_source_root_indexing_finished_message(
+                    request.lib_path,
+                    request.reason.label(),
+                    parsed_file_count,
+                    inserted_file_count,
+                    cache_status,
+                )
             },
-            status,
-        }))
+            render_source_root_status_message,
+        );
+        self.notify_source_root_indexing(request.reason, MessageType::INFO, message)
+            .await;
     }
 
     pub(super) async fn reload_scenario_config(&self) {
-        let _ = self.reload_scenario_config_with_timing().await;
+        if let Err(error) = self.reload_scenario_config_with_timing().await {
+            self.client
+                .log_message(MessageType::ERROR, error.to_string())
+                .await;
+        }
     }
 
     async fn workspace_config_focus_paths(&self, workspace_root: &Path) -> Vec<PathBuf> {
@@ -424,124 +508,134 @@ impl ModelicaLanguageServer {
         paths
     }
 
-    pub(super) async fn reload_scenario_config_with_timing(&self) -> ScenarioReloadTiming {
+    pub(super) async fn reload_scenario_config_with_timing(
+        &self,
+    ) -> std::result::Result<ScenarioReloadTiming, SourceRootPreparationError> {
         let reload_started = Instant::now();
         let previous_paths = self.source_root_paths.read().await.clone();
         let initial_source_root_paths = self.initial_source_root_paths.read().await.clone();
         let mut timing = ScenarioReloadTiming::default();
-        let next_paths = self
+        let resolved = self
             .resolve_reload_source_root_paths(&initial_source_root_paths, &mut timing)
-            .await;
+            .await?;
 
-        let should_reset = source_root_paths_changed(&previous_paths, &next_paths);
+        let should_reset = source_root_paths_changed(&previous_paths, &resolved.source_root_paths);
         timing.source_root_paths_changed = should_reset;
-        *self.source_root_paths.write().await = next_paths;
-        if should_reset {
-            self.apply_source_root_reload(&previous_paths, &mut timing)
-                .await;
+        let durable_load_plan = if should_reset {
+            Some(self.plan_durable_source_root_loads().await?)
+        } else {
+            None
+        };
+        if let Some(load_plan) = durable_load_plan {
+            self.apply_source_root_reload(&previous_paths, &mut timing, load_plan)
+                .await?;
         }
+        self.log_scenario_diagnostics(
+            resolved
+                .scenario_config
+                .as_ref()
+                .map_or(&[], |config| config.diagnostics.as_slice()),
+        )
+        .await;
+        *self.scenario_config.write().await = resolved.scenario_config;
+        *self.source_root_paths.write().await = resolved.source_root_paths;
         timing.total_ms = reload_started.elapsed().as_millis() as u64;
-        timing
+        Ok(timing)
     }
 
     async fn resolve_reload_source_root_paths(
         &self,
         initial_source_root_paths: &[String],
         timing: &mut ScenarioReloadTiming,
-    ) -> Vec<String> {
+    ) -> std::result::Result<ResolvedSourceRootConfiguration, SourceRootPreparationError> {
         let Some(workspace_root) = self.workspace_root.read().await.clone() else {
-            *self.scenario_config.write().await = None;
             let resolve_started = Instant::now();
-            let next_paths = merge_source_root_paths(&[], initial_source_root_paths);
+            let source_root_paths = merge_source_root_paths(&[], initial_source_root_paths);
             timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
-            return next_paths;
+            return Ok(ResolvedSourceRootConfiguration {
+                scenario_config: None,
+                source_root_paths,
+            });
         };
 
-        let scenario_paths = self
+        let (scenario_config, scenario_paths) = self
             .discover_scenario_source_root_paths(&workspace_root, timing)
-            .await;
+            .await?;
         let resolve_started = Instant::now();
         let workspace_paths = self
             .discover_workspace_source_root_paths(&workspace_root)
-            .await;
+            .await?;
         let workspace_and_scenario_paths =
             merge_source_root_paths(&workspace_paths, &scenario_paths);
-        let next_paths =
+        let source_root_paths =
             merge_source_root_paths(&workspace_and_scenario_paths, initial_source_root_paths);
         timing.resolve_source_root_paths_ms = resolve_started.elapsed().as_millis() as u64;
-        next_paths
+        Ok(ResolvedSourceRootConfiguration {
+            scenario_config,
+            source_root_paths,
+        })
     }
 
     async fn discover_scenario_source_root_paths(
         &self,
         workspace_root: &Path,
         timing: &mut ScenarioReloadTiming,
-    ) -> Vec<String> {
+    ) -> std::result::Result<(Option<ScenarioConfig>, Vec<String>), SourceRootPreparationError>
+    {
         let discover_started = Instant::now();
-        let config = self.discover_scenario_config(workspace_root).await;
-        *self.scenario_config.write().await = config;
+        let config = self.discover_scenario_config(workspace_root).await?;
         timing.scenario_discover_ms = discover_started.elapsed().as_millis() as u64;
-        self.scenario_config
-            .read()
-            .await
-            .as_ref()
-            .map(|cfg| cfg.resolve_all_source_root_paths())
-            .unwrap_or_default()
+        let paths = match config.as_ref() {
+            Some(config) => config.resolve_all_source_root_paths(),
+            None => Vec::new(),
+        };
+        Ok((config, paths))
     }
 
-    async fn discover_scenario_config(&self, workspace_root: &Path) -> Option<ScenarioConfig> {
-        match ScenarioConfig::discover(workspace_root) {
-            Ok(config) => {
-                self.log_scenario_diagnostics(
-                    config
-                        .as_ref()
-                        .map_or(&[], |cfg| cfg.diagnostics.as_slice()),
-                )
-                .await;
-                config
+    async fn discover_scenario_config(
+        &self,
+        workspace_root: &Path,
+    ) -> std::result::Result<Option<ScenarioConfig>, SourceRootPreparationError> {
+        let config = ScenarioConfig::discover(workspace_root).map_err(|source| {
+            SourceRootPreparationError::Configuration {
+                operation: "discover colocated model configs",
+                path: workspace_root.to_path_buf(),
+                source,
             }
-            Err(error) => {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("[rumoca] failed to load colocated model configs: {error}"),
-                    )
-                    .await;
-                None
-            }
-        }
+        })?;
+        Ok(config)
     }
 
-    async fn discover_workspace_source_root_paths(&self, workspace_root: &Path) -> Vec<String> {
+    async fn discover_workspace_source_root_paths(
+        &self,
+        workspace_root: &Path,
+    ) -> std::result::Result<Vec<String>, SourceRootPreparationError> {
         let mut workspace_paths = Vec::new();
         for workspace_focus_path in self.workspace_config_focus_paths(workspace_root).await {
             let focus_paths = self
                 .workspace_source_roots_for_focus(workspace_root, &workspace_focus_path)
-                .await;
+                .await?;
             workspace_paths = merge_source_root_paths(&workspace_paths, &focus_paths);
         }
-        workspace_paths
+        Ok(workspace_paths)
     }
 
     async fn workspace_source_roots_for_focus(
         &self,
         workspace_root: &Path,
         workspace_focus_path: &Path,
-    ) -> Vec<String> {
-        let config = match WorkspaceConfig::discover(workspace_root, workspace_focus_path) {
-            Ok(config) => config,
-            Err(error) => {
-                self.client
-                    .log_message(
-                        MessageType::ERROR,
-                        format!("[rumoca] failed to load workspace config: {error}"),
-                    )
-                    .await;
-                return Vec::new();
-            }
-        };
-        config.map_or_else(Vec::new, |cfg| {
-            cfg.effective_source_roots_for(workspace_focus_path)
+    ) -> std::result::Result<Vec<String>, SourceRootPreparationError> {
+        let config =
+            WorkspaceConfig::discover(workspace_root, workspace_focus_path).map_err(|source| {
+                SourceRootPreparationError::Configuration {
+                    operation: "discover workspace config",
+                    path: workspace_focus_path.to_path_buf(),
+                    source,
+                }
+            })?;
+        Ok(match config {
+            Some(config) => config.effective_source_roots_for(workspace_focus_path),
+            None => Vec::new(),
         })
     }
 
@@ -549,14 +643,30 @@ impl ModelicaLanguageServer {
         &self,
         previous_paths: &[String],
         timing: &mut ScenarioReloadTiming,
-    ) {
+        durable_load_plan: SourceRootLoadPlan,
+    ) -> std::result::Result<(), SourceRootPreparationError> {
+        let previous_session = self.session.read().await.clone();
+        let previous_simulation_cache = self.simulation_compile_cache.read().await.clone();
+        let previous_load_diagnostics = self.source_root_load_diagnostics.read().await.clone();
+        let previous_load_diagnostic_uris =
+            self.source_root_load_diagnostic_uris.read().await.clone();
         let reset_started = Instant::now();
         self.reset_session_and_loaded_source_roots().await;
         timing.reset_session_ms = reset_started.elapsed().as_millis() as u64;
         let initial_startup =
             previous_paths.is_empty() && self.session.read().await.document_uris().is_empty();
 
-        self.prewarm_durable_source_roots_with_timing(timing).await;
+        if let Err(error) = self
+            .prewarm_durable_source_roots_with_timing(timing, durable_load_plan)
+            .await
+        {
+            *self.session.write().await = previous_session;
+            *self.simulation_compile_cache.write().await = previous_simulation_cache;
+            *self.source_root_load_diagnostics.write().await = previous_load_diagnostics;
+            *self.source_root_load_diagnostic_uris.write().await = previous_load_diagnostic_uris;
+            self.source_root_read_prewarm_finished.notify_waiters();
+            return Err(error);
+        }
         if !initial_startup {
             let workspace_symbol_started = Instant::now();
             self.session
@@ -571,11 +681,16 @@ impl ModelicaLanguageServer {
         let namespace_started = Instant::now();
         self.spawn_background_source_root_read_prewarm().await;
         timing.source_root_read_prewarm_spawn_ms = namespace_started.elapsed().as_millis() as u64;
+        Ok(())
     }
 
-    async fn prewarm_durable_source_roots_with_timing(&self, timing: &mut ScenarioReloadTiming) {
+    async fn prewarm_durable_source_roots_with_timing(
+        &self,
+        timing: &mut ScenarioReloadTiming,
+        load_plan: SourceRootLoadPlan,
+    ) -> std::result::Result<(), SourceRootPreparationError> {
         let durable_started = Instant::now();
-        let durable_timing = self.prewarm_durable_source_roots().await;
+        let durable_timing = self.prewarm_durable_source_roots(load_plan).await?;
         timing.durable_prewarm_ms = durable_started.elapsed().as_millis() as u64;
         timing.durable_collect_files_ms = durable_timing.durable_collect_files_ms;
         timing.durable_hash_inputs_ms = durable_timing.durable_hash_inputs_ms;
@@ -585,24 +700,30 @@ impl ModelicaLanguageServer {
         timing.durable_validate_layout_ms = durable_timing.durable_validate_layout_ms;
         timing.durable_cache_write_ms = durable_timing.durable_cache_write_ms;
         timing.durable_apply_ms = durable_timing.durable_apply_ms;
+        Ok(())
     }
 
-    pub(super) async fn prewarm_durable_source_roots(&self) -> ScenarioReloadTiming {
+    async fn plan_durable_source_root_loads(
+        &self,
+    ) -> std::result::Result<
+        SourceRootLoadPlan,
+        rumoca_compile::source_roots::SourceRootDiscoveryError,
+    > {
         let durable_source_root_paths = self.initial_source_root_paths.read().await.clone();
-        let (already_loaded, mut source_root_state_epoch) = {
-            let session = self.session.read().await;
-            (
-                session.loaded_source_root_path_keys(),
-                session.source_root_state_epoch(),
-            )
-        };
-        let load_plan = plan_source_root_loads(&durable_source_root_paths, &already_loaded);
+        plan_source_root_loads(&durable_source_root_paths, &HashSet::new())
+    }
+
+    pub(super) async fn prewarm_durable_source_roots(
+        &self,
+        load_plan: SourceRootLoadPlan,
+    ) -> std::result::Result<ScenarioReloadTiming, SourceRootPreparationError> {
+        let mut source_root_state_epoch = self.session.read().await.source_root_state_epoch();
         let mut timing = ScenarioReloadTiming::default();
 
         for source_root_path in load_plan.load_paths {
             let path_key = canonical_path_key(&source_root_path);
             let source_set_id = source_root_source_set_key(&source_root_path);
-            let Ok(Some(outcome)) = self
+            match self
                 .load_source_root_if_current(
                     &source_root_path,
                     &path_key,
@@ -611,14 +732,16 @@ impl ModelicaLanguageServer {
                     source_root_state_epoch,
                     SourceRootIndexingReason::StartupDurablePrewarm,
                 )
-                .await
-            else {
-                continue;
-            };
-            outcome.timing.accumulate_into(&mut timing);
-            source_root_state_epoch = self.session.read().await.source_root_state_epoch();
+                .await?
+            {
+                SourceRootLoadDisposition::Loaded(outcome) => {
+                    outcome.timing.accumulate_into(&mut timing);
+                    source_root_state_epoch = self.session.read().await.source_root_state_epoch();
+                }
+                SourceRootLoadDisposition::AlreadyLoaded => {}
+            }
         }
-        timing
+        Ok(timing)
     }
 
     pub(super) async fn spawn_background_source_root_read_prewarm(&self) {

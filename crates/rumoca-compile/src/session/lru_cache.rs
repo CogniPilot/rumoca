@@ -48,6 +48,7 @@ where
         self.entries.remove(key).map(|entry| entry.value)
     }
 
+    #[cfg(test)]
     pub(super) fn get<Q>(&self, key: &Q) -> Option<&T>
     where
         K: Borrow<Q>,

@@ -1,7 +1,8 @@
 //! Conversion for equations and statements.
 
-use crate::errors::{semantic_error_from_expression, semantic_error_from_token};
+use crate::errors::semantic_error_from_expression;
 use crate::generated::modelica_grammar_trait;
+use crate::helpers::convert_for_indices;
 
 impl TryFrom<&modelica_grammar_trait::Ident> for rumoca_core::Token {
     type Error = anyhow::Error;
@@ -162,47 +163,6 @@ impl TryFrom<&modelica_grammar_trait::SomeEquation> for rumoca_ir_ast::Equation 
             }
         }
     }
-}
-
-/// Convert grammar ForIndices to AST ForIndex vector.
-fn convert_for_indices(
-    for_indices: &modelica_grammar_trait::ForIndices,
-) -> anyhow::Result<Vec<rumoca_ir_ast::ForIndex>> {
-    let mut indices = Vec::new();
-
-    // First index
-    let first_idx = &for_indices.for_index;
-    let range = required_for_index_range(first_idx)?;
-    indices.push(rumoca_ir_ast::ForIndex {
-        ident: first_idx.ident.clone(),
-        range,
-    });
-
-    // Additional indices
-    for idx_item in &for_indices.for_indices_list {
-        let idx = &idx_item.for_index;
-        let range = required_for_index_range(idx)?;
-        indices.push(rumoca_ir_ast::ForIndex {
-            ident: idx.ident.clone(),
-            range,
-        });
-    }
-
-    Ok(indices)
-}
-
-fn required_for_index_range(
-    index: &modelica_grammar_trait::ForIndex,
-) -> anyhow::Result<rumoca_ir_ast::Expression> {
-    if let Some(opt) = &index.for_index_opt {
-        return Ok(opt.expression.clone());
-    }
-
-    let token = index.ident.clone();
-    Err(semantic_error_from_token(
-        "Modelica for-equation and for-statement indices require an explicit range",
-        &token,
-    ))
 }
 
 impl TryFrom<&modelica_grammar_trait::Statement> for rumoca_ir_ast::Statement {

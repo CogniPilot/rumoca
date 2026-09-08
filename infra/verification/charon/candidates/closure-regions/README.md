@@ -74,14 +74,17 @@ signature/capture regions introduce universals beyond its parent's parameters.
 
 Use the pinned rustc-dev toolchain, nightly 2026-08-18
 (`8fa1c96cfd489e4c27654c144ae871ce2c4db6c6`), with its matching linker/runtime
-libraries. From the repository root, where `OUTPUT` is a fresh build directory:
+libraries. From the repository root, where `OUTPUT` is a fresh build directory,
+build the existing drivers through their shared Cargo package. Cargo supplies
+the serde and rustc-private dependency search paths; no hand-maintained list of
+transitive rlibs is required:
 
 ```console
-rustc --edition=2024 --crate-type=rlib --crate-name=closure_region_facts infra/verification/charon/candidates/closure-regions/src/lib.rs --out-dir "$OUTPUT" -Dwarnings
-rustc --edition=2024 --extern closure_region_facts="$OUTPUT/libclosure_region_facts.rlib" infra/verification/charon/fixtures/closure-lifetimes/consumer-probe.rs -o "$OUTPUT/consumer-probe" -Dwarnings
+cargo build --locked --manifest-path infra/verification/charon/candidates/closure-regions/diagnostics/Cargo.toml --target-dir "$OUTPUT"
+cargo clippy --locked --manifest-path infra/verification/charon/candidates/closure-regions/diagnostics/Cargo.toml --target-dir "$OUTPUT" --all-targets -- -Dwarnings -Dclippy::all -Dclippy::too_many_lines -Dclippy::excessive_nesting
 ```
 
-Run the probe as a rustc driver with `--sysroot` naming that same toolchain,
+Run `"$OUTPUT/debug/consumer-probe"` as a rustc driver with `--sysroot` naming that same toolchain,
 `--edition=2021 --crate-type=rlib --emit=metadata --out-dir "$OUTPUT"`, an
 explicit underscore-spelled `--crate-name`, and each of these input files:
 

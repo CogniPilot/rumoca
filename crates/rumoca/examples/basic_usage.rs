@@ -18,7 +18,7 @@ end Integrator;
         .model("Integrator")
         .compile_str(modelica_code, "Integrator.mo")?;
 
-    let (states, algebraics, equations) = result.dae.inspect(|view| {
+    let (states, algebraics, equations) = result.dae().inspect(|view| {
         (
             view.variables()
                 .filter(|(_, variable)| {

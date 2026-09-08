@@ -1,5 +1,5 @@
 use rumoca_core::ScopeId;
-use rumoca_ir_ast::{ClassDefIndex, ClassTree, ScopeImport};
+use rumoca_ir_ast::{ClassDefIndex, ClassTree, EffectiveImport, ImportBinding};
 
 use crate::{TypeCheckError, TypeCheckResult, TypeChecker};
 
@@ -59,14 +59,23 @@ impl TypeChecker {
 
         for idx in 0..tree.scope_tree.len() {
             let scope_id = ScopeId::new(idx as u32);
-            let Some(scope) = tree.scope_tree.get(scope_id) else {
-                continue;
-            };
-            for import in &scope.imports {
-                Self::collect_enum_from_import(&class_index, import, &mut self.eval_ctx);
-            }
+            Self::collect_scope_enum_imports(&class_index, tree, scope_id, &mut self.eval_ctx);
         }
         Ok(())
+    }
+
+    /// Register enumeration sizes for every bound import effective in one scope.
+    fn collect_scope_enum_imports(
+        class_index: &ClassDefIndex<'_>,
+        tree: &ClassTree,
+        scope_id: ScopeId,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for (_name, verdict) in tree.effective_imports(scope_id).iter() {
+            if let EffectiveImport::Bound(binding) = verdict {
+                Self::collect_enum_from_binding(class_index, binding, ctx);
+            }
+        }
     }
 
     fn enum_literal_count(
@@ -98,27 +107,28 @@ impl TypeChecker {
         }
     }
 
-    fn collect_enum_from_import(
+    /// Register enumeration sizes and ordinals for one effective import binding.
+    ///
+    /// The binding's proven target identity is queried directly for enum
+    /// literals: a non-enum target (an imported package constant or an ordinary
+    /// class) yields no count and is skipped, so enum and constant imports share
+    /// one binding source while each collector keeps only what it understands.
+    fn collect_enum_from_binding(
         class_index: &ClassDefIndex<'_>,
-        import: &ScopeImport,
+        binding: &ImportBinding,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        let pairs: Vec<(String, rumoca_core::DefId)> = match import {
-            ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
-                Self::import_constant_prefixes(import)
-            }
-            ScopeImport::Unqualified { names, .. } => names
-                .iter()
-                .map(|(name, &def_id)| (name.as_str().to_string(), def_id))
-                .collect(),
+        let target = binding.target();
+        let Some(size) = Self::enum_literal_count(class_index, target) else {
+            return;
         };
-        for (name, def_id) in pairs {
-            if let Some(size) = Self::enum_literal_count(class_index, def_id)
-                && size > 0
-            {
-                ctx.enum_sizes.entry(name.clone()).or_insert(size);
-                Self::collect_enum_ordinals(class_index, def_id, &name, ctx);
-            }
+        if size == 0 {
+            return;
         }
+        let Some(alias) = Self::binding_canonical_prefix(class_index, target) else {
+            return;
+        };
+        ctx.enum_sizes.entry(alias.to_string()).or_insert(size);
+        Self::collect_enum_ordinals(class_index, target, alias, ctx);
     }
 }

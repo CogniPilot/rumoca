@@ -42,6 +42,61 @@ fn scalar_program_construction_accepts_one_program_with_several_outputs() {
 }
 
 #[test]
+fn scalar_program_construction_and_wire_replay_refuse_duplicate_output_identity() {
+    let span = source_span("DuplicateOutput.mo", 12, 27);
+    let programs = vec![
+        vec![
+            LinearOp::Const { dst: 0, value: 2.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        vec![
+            LinearOp::Const { dst: 0, value: 3.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    ];
+    let error =
+        ScalarProgramBlock::with_output_indices(programs.clone(), vec![span, span], vec![0, 0])
+            .expect_err("one logical output cannot have two scalar owners");
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::DuplicateIndex {
+            context: "ScalarProgramBlock.output_indices",
+            index: 0,
+            ..
+        }
+    ));
+
+    let wire = serde_json::json!({
+        "programs": programs,
+        "program_spans": [span, span],
+        "output_indices": [0, 0]
+    });
+    let replay = serde_json::from_value::<ScalarProgramBlock>(wire)
+        .expect_err("wire replay cannot mint duplicate output identity");
+    assert!(replay.to_string().contains("duplicate index 0"));
+}
+
+#[test]
+fn scalar_program_construction_refuses_stored_output_count_overflow() {
+    let span = source_span("OutputOverflow.mo", 12, 27);
+    let program = vec![
+        LinearOp::StoreOutputRange {
+            start: 0,
+            count: usize::MAX,
+            stride: 0,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ];
+    let error = ScalarProgramBlock::with_output_indices(vec![program], vec![span], Vec::new())
+        .expect_err("stored-output cardinality must use checked arithmetic");
+    assert!(matches!(
+        error,
+        SolveProblemShapeContractError::OutputIndexOverflow { .. }
+    ));
+}
+
+#[test]
 fn scalar_program_construction_accepts_one_compact_strided_output_range() {
     let span = source_span("StridedOutput.mo", 12, 27);
     let program = vec![
@@ -293,6 +348,33 @@ fn scalar_program_register_proof_returns_exact_register_count() {
     .expect("checked block retains its construction-owned execution capacity");
     assert_eq!(block.program_register_count(0), Some(5));
     assert_eq!(block.program_register_count(1), None);
+}
+
+#[test]
+fn scalar_program_execution_iterator_keeps_each_programs_issued_evidence_correlated() {
+    let span = source_span("ExecutionCertificate.mo", 0, 18);
+    let block = ScalarProgramBlock::with_program_spans(
+        vec![
+            vec![
+                LinearOp::Const { dst: 1, value: 2.0 },
+                LinearOp::StoreOutput { src: 1 },
+            ],
+            vec![
+                LinearOp::Const { dst: 3, value: 4.0 },
+                LinearOp::StoreOutput { src: 3 },
+            ],
+        ],
+        vec![span, span],
+    )
+    .expect("checked programs retain their own execution evidence");
+
+    let executions = block.execution_programs().collect::<Vec<_>>();
+
+    assert_eq!(executions.len(), 2);
+    assert_eq!(executions[0].register_count(), 2);
+    assert_eq!(executions[0].output_sources(), [1]);
+    assert_eq!(executions[1].register_count(), 4);
+    assert_eq!(executions[1].output_sources(), [3]);
 }
 
 #[test]

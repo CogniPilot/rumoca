@@ -6,7 +6,7 @@
 //! |----------|--------|-------|
 //! | Structural closure | `structure` | EG001, EG004–EG009 |
 //! | Name | `names` | EG002/EG003, EG010–EG013 |
-//! | Type | `types` | EG014–EG021 |
+//! | Type | `types` | EG014–EG021, EG042 |
 //! | Dimensionality | `dims` | EG022–EG025, EG040 |
 //! | Termination | `termination` | EG026–EG028 |
 //! | Side-effect | `effects` | EG029–EG033 |
@@ -30,7 +30,6 @@
 
 use crate::ast::Block;
 use crate::diagnostic::GalecError;
-use std::collections::{HashMap, HashSet};
 
 mod context;
 mod dims;
@@ -38,6 +37,7 @@ mod effects;
 mod locate;
 mod names;
 mod navigate;
+mod retained;
 mod signals;
 mod spans;
 mod structure;
@@ -46,28 +46,109 @@ mod types;
 
 pub use locate::span_of;
 pub use navigate::{SymbolInfo, symbol_at};
+pub(crate) use retained::{
+    BinderLoc, BlockDeclarationStartLiteral, BuiltinResultLoc, CallLoc, CallResultProjectionLoc,
+    CallResultReceiverLoc, CalleeResultLoc, ChildRole, DeclarationClass, DeclarationLoc,
+    EvaluatedLiteral, EvaluatedScalar, ExpressionKind, ExpressionLoc, FixedValueShape, FunctionLoc,
+    GeneratedOrigin, MethodLoc, MethodOwner, RealMatrixMultiplyOccurrenceLoc, ReferenceLoc,
+    ResolvedTarget, RetainedValidation, RetainedValidationError, StatementKind, StatementLoc,
+    SubjectLoc, SubjectParent, SubjectProvenance,
+};
 
-/// Run all six analyses over `block`, collecting every finding.
+pub(crate) enum ValidationFailure {
+    Diagnostics(Vec<GalecError>),
+    Index(retained::RetainedValidationError),
+}
+
+pub(crate) enum SignalClausePolicy {
+    RetainAuthored,
+    DeriveGenerated,
+}
+
+/// Declaration-start authority at this construction boundary.
 ///
-/// Returns `Ok(())` for a valid block, or ALL diagnostics found (analysis
-/// order: name, type, dimensionality, termination, side-effect, signals;
-/// deterministic within each analysis).
-///
-/// # Errors
-///
-/// Returns the non-empty list of [`GalecError`] findings (codes EG001–EG040)
-/// when the block violates structural closure or any semantic analysis.
-pub fn validate(block: &Block) -> Result<(), Vec<GalecError>> {
+/// Algorithm Code concrete syntax does not encode the manifest-bound start
+/// relation (SPEC_0034 GAL-014/GAL-020), so parsed syntax closes that relation
+/// with an explicit syntax-only disposition. Compiler-generated packages must
+/// instead supply and prove every mandated start before construction can
+/// succeed (SPEC_0042 §6, declaration/start relation).
+#[derive(Clone, Copy)]
+pub(super) enum DeclarationStartContract {
+    ParsedSyntax,
+    GeneratedPackage,
+}
+
+pub(crate) fn close(
+    block: &mut Block,
+    signal_clauses: SignalClausePolicy,
+) -> Result<retained::RetainedValidation, ValidationFailure> {
+    close_with_arithmetic_profile(
+        block,
+        signal_clauses,
+        DeclarationStartContract::ParsedSyntax,
+        None,
+    )
+}
+
+pub(crate) fn close_profiled(
+    block: &mut Block,
+    signal_clauses: SignalClausePolicy,
+    arithmetic: crate::package::AlgorithmCodeArithmeticProfile,
+) -> Result<retained::RetainedValidation, ValidationFailure> {
+    close_with_arithmetic_profile(
+        block,
+        signal_clauses,
+        DeclarationStartContract::GeneratedPackage,
+        Some(arithmetic),
+    )
+}
+
+fn close_with_arithmetic_profile(
+    block: &mut Block,
+    signal_clauses: SignalClausePolicy,
+    declaration_starts: DeclarationStartContract,
+    arithmetic: Option<crate::package::AlgorithmCodeArithmeticProfile>,
+) -> Result<retained::RetainedValidation, ValidationFailure> {
+    let mut retained =
+        retained::RetainedValidationBuilder::install(block, declaration_starts, arithmetic)
+            .map_err(ValidationFailure::Index)?;
+    let mut diagnostics = Vec::new();
+    check_without_signals(block, declaration_starts, &mut retained, &mut diagnostics)
+        .map_err(ValidationFailure::Index)?;
+    if matches!(signal_clauses, SignalClausePolicy::DeriveGenerated) {
+        let [startup, recalibrate, do_step] =
+            derive_generated_signal_clauses(block, &retained).map_err(ValidationFailure::Index)?;
+        block.startup.signals = startup;
+        block.recalibrate.signals = recalibrate;
+        block.do_step.signals = do_step;
+    }
+    signals::check(
+        &context::BlockContext::new(block),
+        &retained,
+        &mut diagnostics,
+    )
+    .map_err(ValidationFailure::Index)?;
+    if diagnostics.is_empty() {
+        retained.finish().map_err(ValidationFailure::Index)
+    } else {
+        Err(ValidationFailure::Diagnostics(diagnostics))
+    }
+}
+
+fn check_without_signals(
+    block: &Block,
+    declaration_starts: DeclarationStartContract,
+    retained: &mut retained::RetainedValidationBuilder,
+    diagnostics: &mut Vec<GalecError>,
+) -> Result<(), retained::RetainedValidationError> {
     let ctx = context::BlockContext::new(block);
-    let mut diags = Vec::new();
-    structure::check(&ctx, &mut diags);
-    names::check(&ctx, &mut diags);
-    let expression_types = types::check(&ctx, &mut diags);
-    dims::check(&ctx, &mut diags);
-    termination::check(&ctx, &mut diags);
-    effects::check(&ctx, &mut diags);
-    signals::check(&ctx, &expression_types, &mut diags);
-    if diags.is_empty() { Ok(()) } else { Err(diags) }
+    structure::check(&ctx, diagnostics);
+    names::check(&ctx, diagnostics);
+    types::check(&ctx, declaration_starts, retained, diagnostics)?;
+    dims::check(&ctx, retained, diagnostics)?;
+    termination::check(&ctx, retained, diagnostics)?;
+    effects::check(&ctx, retained, diagnostics)?;
+    Ok(())
 }
 
 /// Close every generated signal clause before whole-block validation.
@@ -76,82 +157,71 @@ pub fn validate(block: &Block) -> Result<(), Vec<GalecError>> {
 /// language requires an acyclic call graph, so visiting functions callee-first
 /// closes every clause exactly once. Expression types are invariant while only
 /// those clauses change; proving them once avoids a quadratic sequence of
-/// identical whole-block checks. Parsed source still goes through [`validate`]
-/// unchanged, so an authored incorrect clause remains a diagnostic.
-pub(crate) fn derive_generated_signal_clauses(
+/// identical whole-block checks. Parsed source retains its authored clauses,
+/// so an incorrect clause remains a construction diagnostic.
+fn derive_generated_signal_clauses(
     block: &mut Block,
-) -> [Vec<crate::ast::PredefinedSignal>; 3] {
-    let expression_types = {
-        let ctx = context::BlockContext::new(block);
-        let mut diagnostics = Vec::new();
-        types::check(&ctx, &mut diagnostics)
-    };
-    let order = generated_function_callee_first(block);
+    retained: &retained::RetainedValidationBuilder,
+) -> Result<[Vec<crate::ast::PredefinedSignal>; 3], retained::RetainedValidationError> {
+    let order = generated_function_callee_first(retained)?;
     for function_index in order {
         let clause = {
             let ctx = context::BlockContext::new(block);
-            signals::user_signal_clause(&ctx, &expression_types, function_index)
+            signals::user_signal_clause(&ctx, retained, function_index)?
         };
-        block
+        let Some(function) = block
             .protected_functions
             .iter_mut()
             .chain(&mut block.public_functions)
             .nth(function_index)
-            .expect("generated function order resolves")
-            .signals = clause;
+        else {
+            return Err(retained::RetainedValidationError::MissingResolvedSubject);
+        };
+        function.signals = clause;
     }
     let ctx = context::BlockContext::new(block);
-    signals::method_signal_clauses(&ctx, &expression_types)
+    signals::method_signal_clauses(&ctx, retained)
 }
 
-fn generated_function_callee_first(block: &Block) -> Vec<usize> {
-    let ctx = context::BlockContext::new(block);
-    let graph = termination::user_call_graph(&ctx);
-    let names = block
-        .protected_functions
-        .iter()
-        .chain(&block.public_functions)
-        .map(|function| context::lexeme(&function.name))
-        .collect::<Vec<_>>();
-    let mut traversal = SignalOrder {
-        names: &names,
-        graph: &graph,
-        visiting: HashSet::new(),
-        visited: HashSet::new(),
-        order: Vec::with_capacity(names.len()),
-    };
-    for index in 0..names.len() {
-        traversal.append(index);
-    }
-    traversal.order
-}
-
-struct SignalOrder<'a> {
-    names: &'a [String],
-    graph: &'a HashMap<String, Vec<String>>,
-    visiting: HashSet<usize>,
-    visited: HashSet<usize>,
-    order: Vec<usize>,
-}
-
-impl SignalOrder<'_> {
-    fn append(&mut self, index: usize) {
-        if self.visited.contains(&index) || !self.visiting.insert(index) {
-            return;
+fn generated_function_callee_first(
+    retained: &retained::RetainedValidationBuilder,
+) -> Result<Vec<usize>, retained::RetainedValidationError> {
+    let graph = retained.user_call_graph()?;
+    let mut colors = vec![0_u8; graph.functions.len()];
+    let mut order = Vec::with_capacity(graph.functions.len());
+    for start in 0..graph.functions.len() {
+        if colors[start] != 0 {
+            continue;
         }
-        let callee_indices = self
-            .graph
-            .get(&self.names[index])
-            .into_iter()
-            .flatten()
-            .filter_map(|callee| self.names.iter().position(|name| name == callee))
-            .collect::<Vec<_>>();
-        for callee_index in callee_indices {
-            self.append(callee_index);
-        }
-        self.visiting.remove(&index);
-        if self.visited.insert(index) {
-            self.order.push(index);
+        colors[start] = 1;
+        let mut frames = vec![(start, 0_usize)];
+        while let Some((node, next_edge)) = frames.last_mut() {
+            let Some(edge) = graph.functions[*node].get(*next_edge) else {
+                colors[*node] = 2;
+                order.push(*node);
+                frames.pop();
+                continue;
+            };
+            *next_edge += 1;
+            let callee = edge.callee.index();
+            match colors[callee] {
+                0 => {
+                    colors[callee] = 1;
+                    frames.push((callee, 0));
+                }
+                // Termination analysis owns the one recursion diagnostic.
+                // Skipping a gray edge here only makes clause derivation
+                // terminate while that diagnostic-bearing root is rejected.
+                1 | 2 => {}
+                _ => {
+                    return Err(retained::RetainedValidationError::InconsistentFact {
+                        family: "user-call-order-color",
+                        index: u32::try_from(callee)
+                            .map_err(|_| retained::RetainedValidationError::LocatorOverflow)?,
+                    });
+                }
+            }
         }
     }
+    Ok(order)
 }

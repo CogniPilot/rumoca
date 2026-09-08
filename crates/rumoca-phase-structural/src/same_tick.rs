@@ -1054,7 +1054,7 @@ pub fn collect_condition_same_instant_reads<'dae>(
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+    use rumoca_core::{InstanceId, SourceMap, Span, TypeId, VarName};
 
     use super::*;
 
@@ -1113,36 +1113,42 @@ mod tests {
             Ok(FixtureVariables {
                 a: variables.discrete_real(
                     VarName::new("a"),
+                    InstanceId::new(1),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 b: variables.discrete_real(
                     VarName::new("b"),
+                    InstanceId::new(2),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 n: variables.discrete_value(
                     VarName::new("n"),
+                    InstanceId::new(3),
                     integer,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 a_alias: variables.algebraic(
                     VarName::new("aAlias"),
+                    InstanceId::new(4),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 n_alias: variables.discrete_value(
                     VarName::new("nAlias"),
+                    InstanceId::new(5),
                     integer,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 ambiguous: variables.algebraic(
                     VarName::new("ambiguous"),
+                    InstanceId::new(6),
                     real,
                     at,
                     dae::VariableAttributes::default(),

@@ -70,14 +70,14 @@ fn collect_y_input_ranges(program: &[LinearOp], ranges: &mut Vec<Range<usize>>) 
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_y_input_ranges(&program.update, ranges);
+                collect_y_input_ranges(program.update(), ranges);
             }
             LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_y_input_ranges(&arm.condition, ranges);
-                    collect_y_input_ranges(&arm.result, ranges);
+                for arm in program.arms() {
+                    collect_y_input_ranges(arm.condition(), ranges);
+                    collect_y_input_ranges(arm.result(), ranges);
                 }
-                collect_y_input_ranges(&program.fallback, ranges);
+                collect_y_input_ranges(program.fallback(), ranges);
             }
             _ => {}
         }
@@ -129,9 +129,6 @@ fn collect_parameter_indices(row: &[LinearOp], indices: &mut BTreeSet<usize>) {
             LinearOp::LoadP { index, .. } => {
                 indices.insert(*index);
             }
-            LinearOp::LoadIndexedP { base, count, .. } => {
-                indices.extend(*base..base.saturating_add(*count));
-            }
             LinearOp::TensorLoad {
                 input: rumoca_ir_solve::TensorInputKind::P,
                 input_start,
@@ -143,14 +140,14 @@ fn collect_parameter_indices(row: &[LinearOp], indices: &mut BTreeSet<usize>) {
             LinearOp::FunctionFold { program, .. }
             | LinearOp::GuardedFunctionFold { program, .. }
             | LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_parameter_indices(&program.update, indices);
+                collect_parameter_indices(program.update(), indices);
             }
             LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_parameter_indices(&arm.condition, indices);
-                    collect_parameter_indices(&arm.result, indices);
+                for arm in program.arms() {
+                    collect_parameter_indices(arm.condition(), indices);
+                    collect_parameter_indices(arm.result(), indices);
                 }
-                collect_parameter_indices(&program.fallback, indices);
+                collect_parameter_indices(program.fallback(), indices);
             }
             _ => {}
         }
@@ -168,7 +165,6 @@ fn parameter_static_y_gradient_inner(row: &[LinearOp]) -> Option<bool> {
             }
             LinearOp::LoadTime { dst } => Some((dst, GradientDependency::TIME_VALUE)),
             LinearOp::LoadY { dst, .. } => Some((dst, GradientDependency::Y_VALUE)),
-            LinearOp::LoadIndexedP { .. } => return Some(false),
             LinearOp::Move { dst, src } => Some((dst, dependency_at(&registers, src)?)),
             LinearOp::Unary { dst, op, arg } => {
                 let arg = dependency_at(&registers, arg)?;

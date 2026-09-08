@@ -3,20 +3,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetBundle, TargetManifest, TargetTemplateIr, TargetTemplateSource,
-    builtin_target_descriptors_for_ir, ensure_target_has_rendered_files, render_dae_target_files,
-    validate_solve_target_capabilities,
+    ArtifactGenerationInstant, ArtifactIdentitySeed, ArtifactSessionInput, TargetBundle,
+    builtin_target_descriptors,
 };
-use rumoca_compile::codegen::{SolveTemplateRenderer, render_dae_template_with_name};
 
-fn builtin_template_descriptors() -> Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>
-{
-    let mut descriptors = builtin_target_descriptors_for_ir(TargetTemplateIr::Dae);
-    descriptors.extend(builtin_target_descriptors_for_ir(TargetTemplateIr::Solve));
-    descriptors.extend(builtin_target_descriptors_for_ir(
-        TargetTemplateIr::AlgorithmCode,
-    ));
-    descriptors
+fn builtin_template_descriptors()
+-> anyhow::Result<Vec<rumoca_compile::codegen::targets::BuiltinTargetDescriptor>> {
+    builtin_target_descriptors()
 }
 
 impl ModelicaLanguageServer {
@@ -88,7 +81,12 @@ impl ModelicaLanguageServer {
     }
 
     pub(super) async fn execute_get_builtin_targets(&self) -> Option<Value> {
-        serde_json::to_value(builtin_template_descriptors()).ok()
+        match builtin_template_descriptors().and_then(|descriptors| {
+            serde_json::to_value(descriptors).context("Serialize built-in target descriptors")
+        }) {
+            Ok(value) => Some(value),
+            Err(error) => Some(Self::simulation_error_value(error.to_string())),
+        }
     }
 
     pub(super) async fn execute_get_scenario_config(&self, params: Option<Value>) -> Option<Value> {
@@ -228,9 +226,13 @@ impl ModelicaLanguageServer {
         }
 
         let source_root_paths = self.source_root_paths.read().await.clone();
-        let loaded_source_roots = self
+        let loaded_source_roots = match self
             .ensure_source_roots_loaded_with_paths(&source, &uri_path, &source_root_paths)
-            .await;
+            .await
+        {
+            Ok(loaded_source_roots) => loaded_source_roots,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
         if loaded_source_roots {
             request_token = self.refresh_analysis_request_revision(request_token).await;
         }
@@ -238,8 +240,16 @@ impl ModelicaLanguageServer {
             return Some(response);
         }
 
+        let target_path = resolve_scenario_codegen_target(&target_base_path, &target_name);
+        let checked_target = match load_codegen_target_bundle(&target_name, &target_path)
+            .and_then(TargetBundle::check)
+        {
+            Ok(target) => target,
+            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
+        };
+
         let _strict_lane = self.work_lanes.strict.lock().await;
-        let compiled = match self.compile_model_for_simulation(&model, &uri_path).await {
+        let compiled = match self.compile_model_for_target(&model, &uri_path).await {
             Ok(result) => result,
             Err(error) => {
                 return Some(Self::simulation_error_value(format!(
@@ -251,51 +261,25 @@ impl ModelicaLanguageServer {
             return Some(response);
         }
 
-        let target_path = resolve_scenario_codegen_target(&target_base_path, &target_name);
-        if raw_jinja_target(&target_path) {
-            return match render_raw_jinja_target(compiled.dae.as_ref(), &model, &target_path) {
-                Ok(files) => Some(json!({
-                    "ok": true,
-                    "target": target_name,
-                    "files": files,
-                })),
-                Err(error) => Some(Self::simulation_error_value(format!(
-                    "target render failed: {error}",
-                ))),
-            };
-        }
-
-        let bundle = match load_codegen_target_bundle(&target_name, &target_path) {
-            Ok(bundle) => bundle,
-            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
-        };
-        let manifest = match bundle.parse_manifest() {
-            Ok(manifest) => manifest,
-            Err(error) => return Some(Self::simulation_error_value(error.to_string())),
-        };
-        let rendered = match manifest.ir {
-            TargetTemplateIr::Dae => {
-                render_dae_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
-            }
-            TargetTemplateIr::Solve => {
-                render_solve_target_files(&bundle, &manifest, compiled.dae.as_ref(), &model)
-            }
-            TargetTemplateIr::AlgorithmCode => {
-                render_algorithm_code_source_files(&bundle, &manifest, &compiled, &model)
-            }
-            TargetTemplateIr::Fmi | TargetTemplateIr::Flat | TargetTemplateIr::Ast => {
-                return Some(Self::simulation_error_value(format!(
-                    "target '{}' uses {:?} IR; editor target rendering supports DAE, Solve, or Algorithm Code IR",
-                    target_name, manifest.ir
-                )));
-            }
-        };
-        match rendered {
-            Ok(files) => Some(json!({
+        match compiled.render_target(checked_target, editor_artifact_session_input()) {
+            Ok(artifact) => {
+                let files = artifact
+                    .into_rendered_files()
+                    .into_iter()
+                    .map(|file| {
+                        json!({
+                            "path": file.path(),
+                            "content": file.content(),
+                            "mode": file.mode(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Some(json!({
                 "ok": true,
                 "target": target_name,
                 "files": files,
-            })),
+                }))
+            }
             Err(error) => Some(Self::simulation_error_value(format!(
                 "target render failed: {error}",
             ))),
@@ -506,42 +490,6 @@ impl ModelicaLanguageServer {
     }
 }
 
-fn render_solve_target_files(
-    source: &impl TargetTemplateSource,
-    manifest: &TargetManifest,
-    dae: &rumoca_compile::compile::Dae,
-    model_name: &str,
-) -> anyhow::Result<Vec<RenderedTargetFile>> {
-    ensure_target_has_rendered_files(manifest)?;
-    let capabilities = manifest
-        .capabilities
-        .as_ref()
-        .context("Solve target manifest must declare a [capabilities] table")?;
-    let problem = rumoca_sim::lower_solve_problem(dae).context("Lower checked DAE to Solve IR")?;
-    validate_solve_target_capabilities(&problem, manifest, capabilities)?;
-    let artifacts =
-        rumoca_sim::lower_solve_artifacts(&problem).context("Lower checked Solve artifacts")?;
-    let renderer = SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae)?;
-
-    manifest
-        .files
-        .iter()
-        .map(|file| {
-            let path = renderer
-                .render_with_name(&file.path, model_name)
-                .with_context(|| format!("Render target output path '{}'", file.path))?;
-            let template = source.template_source(&file.template)?;
-            let content = renderer
-                .render_with_name(template.as_ref(), model_name)
-                .with_context(|| format!("Render target template '{}'", file.template))?;
-            Ok(RenderedTargetFile {
-                path: path.trim().to_string(),
-                content,
-            })
-        })
-        .collect()
-}
-
 fn scenario_task_from_json(value: Option<&Value>) -> Option<ScenarioTask> {
     match value.and_then(Value::as_str) {
         Some("simulate") => Some(ScenarioTask::Simulate),
@@ -575,69 +523,15 @@ fn resolve_scenario_codegen_target(uri_path: &Path, target: &str) -> PathBuf {
         .join(target_path)
 }
 
-/// Render a GALEC codegen target's inspectable sources for the scenario
-/// "Generate Code" flow: the `.alg` plus, for the C tracks, the `.h`/`.c`.
-/// Uses the shared identity-free renderer (the same one the WASM addon uses)
-/// over the checked DAE.
-#[derive(serde::Serialize)]
-struct SourceArtifactFacts {
-    generated_at: &'static str,
-    generation_tool: &'static str,
-    identities: std::collections::BTreeMap<String, String>,
-    checksums: std::collections::BTreeMap<String, String>,
-}
-
-fn render_algorithm_code_source_files(
-    bundle: &TargetBundle,
-    manifest: &TargetManifest,
-    compiled: &rumoca_compile::compile::DaeCompilationResult,
-    model: &str,
-) -> anyhow::Result<Vec<RenderedTargetFile>> {
-    let model_id = model.replace('.', "_");
-    let package = rumoca_phase_galec::lower_to_algorithm_code(
-        &rumoca_phase_galec::GalecInput::new(compiled.dae.as_ref(), &model_id),
-        &rumoca_phase_galec::GalecOptions::default(),
+fn editor_artifact_session_input() -> ArtifactSessionInput {
+    ArtifactSessionInput::construct(
+        "1970-01-01T00:00:00Z"
+            .parse::<ArtifactGenerationInstant>()
+            .expect("the editor preview instant is canonical"),
+        "00000000-0000-0000-0000-000000000001"
+            .parse::<ArtifactIdentitySeed>()
+            .expect("the editor preview identity seed is canonical"),
     )
-    .map_err(|diagnostics| {
-        anyhow::anyhow!(
-            "GALEC projection failed: {}",
-            diagnostics
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    })?;
-    let artifact = SourceArtifactFacts {
-        generated_at: "1970-01-01T00:00:00Z",
-        generation_tool: "rumoca editor source preview",
-        identities: std::collections::BTreeMap::new(),
-        checksums: std::collections::BTreeMap::new(),
-    };
-    let mut rendered = Vec::new();
-    for file in &manifest.files {
-        let extension = Path::new(&file.path)
-            .extension()
-            .and_then(|value| value.to_str());
-        if !matches!(extension, Some("alg" | "h" | "c")) {
-            continue;
-        }
-        let path = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package, &artifact, &file.path, &model_id,
-        )?;
-        let source = bundle.template_source(&file.template)?;
-        let content = rumoca_phase_codegen::render_algorithm_code_template_with_artifact(
-            &package,
-            &artifact,
-            source.as_ref(),
-            &model_id,
-        )?;
-        rendered.push(RenderedTargetFile {
-            path: path.trim().to_owned(),
-            content,
-        });
-    }
-    Ok(rendered)
 }
 
 fn render_target_base_path(request_uri: &Url, focus_path: &Path) -> PathBuf {
@@ -649,34 +543,28 @@ fn render_target_base_path(request_uri: &Url, focus_path: &Path) -> PathBuf {
     focus_path.to_path_buf()
 }
 
-fn raw_jinja_target(target_path: &Path) -> bool {
-    target_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension == "jinja")
-}
+#[cfg(test)]
+mod target_schema_tests {
+    use super::*;
 
-fn render_raw_jinja_target(
-    dae: &rumoca_compile::compile::Dae,
-    model: &str,
-    target_path: &Path,
-) -> anyhow::Result<Vec<RenderedTargetFile>> {
-    let template = std::fs::read_to_string(target_path)
-        .with_context(|| format!("Read template: {}", target_path.display()))?;
-    let model_identifier = model.replace('.', "_");
-    let content = render_dae_template_with_name(dae, &template, &model_identifier)
-        .with_context(|| format!("Render raw template: {}", target_path.display()))?;
-    Ok(vec![RenderedTargetFile {
-        path: raw_jinja_output_path(target_path),
-        content,
-    }])
-}
-
-fn raw_jinja_output_path(target_path: &Path) -> String {
-    target_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("rendered")
-        .to_string()
+    #[test]
+    fn editor_discovery_lists_every_checked_builtin_target() {
+        let descriptors = builtin_template_descriptors()
+            .expect("all built-in manifests must construct during editor discovery");
+        let mut ids = std::collections::BTreeSet::new();
+        for descriptor in descriptors {
+            assert!(
+                ids.insert(descriptor.id.clone()),
+                "duplicate target descriptor"
+            );
+            assert!(
+                !descriptor.file_plans.is_empty(),
+                "a published target descriptor must retain a nonempty passive file plan"
+            );
+        }
+        assert!(ids.contains("dae-modelica"));
+        assert!(ids.contains("rust-ode"));
+        assert!(ids.contains("galec"));
+        assert!(ids.contains("fmi3"));
+    }
 }

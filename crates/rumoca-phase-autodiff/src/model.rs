@@ -9,6 +9,7 @@ use rumoca_core::{Causality, ClassType, Variability};
 use rumoca_ir_ast as ast;
 
 use crate::refusal::{Refusable, Refusal, Rule, Site};
+use crate::scope::FunctionScope;
 
 /// Suffix that names the tangent companion of a declared variable.
 pub(crate) const TANGENT_SUFFIX: &str = "_ad";
@@ -150,7 +151,12 @@ impl FunctionModel {
     }
 
     /// Read a parsed function class into the differentiable view.
-    pub(crate) fn read(class: &ast::ClassDef, site: &Site) -> Refusable<Self> {
+    pub(crate) fn read(
+        class: &ast::ClassDef,
+        scope: &FunctionScope<'_>,
+        owner: &[String],
+        site: &Site,
+    ) -> Refusable<Self> {
         let name = class.name.text.to_string();
         if class.class_type != ClassType::Function {
             return Err(Refusal::new(
@@ -190,7 +196,7 @@ impl FunctionModel {
                 format!("`{name}` extends another class"),
             ));
         }
-        let ports = read_ports(class, site)?;
+        let ports = read_ports(class, scope, owner, site)?;
         check_tangent_name_collisions(&ports, &name, site)?;
         Ok(Self {
             name,
@@ -200,30 +206,63 @@ impl FunctionModel {
     }
 }
 
-fn read_ports(class: &ast::ClassDef, site: &Site) -> Refusable<Vec<Port>> {
+fn read_ports(
+    class: &ast::ClassDef,
+    scope: &FunctionScope<'_>,
+    owner: &[String],
+    site: &Site,
+) -> Refusable<Vec<Port>> {
     let mut ports = Vec::new();
     for component in class.components.values() {
-        ports.push(read_port(component, site)?);
+        ports.push(read_port(class, component, scope, owner, site)?);
     }
     Ok(ports)
 }
 
-fn read_port(component: &ast::Component, site: &Site) -> Refusable<Port> {
+fn read_port(
+    class: &ast::ClassDef,
+    component: &ast::Component,
+    scope: &FunctionScope<'_>,
+    owner: &[String],
+    site: &Site,
+) -> Refusable<Port> {
     let type_text = component.type_name.to_string();
-    let declared = match type_text.as_str() {
+    let [type_part] = component.type_name.name.as_slice() else {
+        return Err(Refusal::new(
+            Rule::DifferentiableType,
+            site.clone(),
+            format!(
+                "`{}` is declared `{type_text}`; only simple predefined `Real`, `Integer`, \
+                 `Boolean`, and `String` port types are admitted",
+                component.name
+            ),
+        ));
+    };
+    let spelling = type_part.text.as_ref();
+    let declared = match spelling {
         "Real" => ValueKind::Differentiable,
         "Integer" | "Boolean" | "String" => ValueKind::Constant,
-        other => {
+        _ => {
             return Err(Refusal::new(
                 Rule::DifferentiableType,
                 site.clone(),
                 format!(
-                    "`{}` is declared `{other}`; only Real, Integer, Boolean and String are \
-                     admitted",
+                    "`{}` is declared `{type_text}`; only predefined `Real`, `Integer`, \
+                     `Boolean`, and `String` port types are admitted",
                     component.name
                 ),
             ));
         }
+    };
+    if let Some(reason) = scope.predefined_type_shadow_reason(class, owner, spelling) {
+        return Err(Refusal::new(
+            Rule::CalleeLookup,
+            site.clone(),
+            format!(
+                "cannot prove that `{}`'s `{spelling}` denotes the predefined type: {reason}",
+                component.name
+            ),
+        ));
     };
     let role = match component.causality {
         Causality::Input(_) => PortRole::Input,
@@ -242,7 +281,11 @@ fn read_port(component: &ast::Component, site: &Site) -> Refusable<Port> {
         name: component.name.clone(),
         type_text: format!("{type_text} "),
         variability_text: variability_text(&component.variability),
-        dims: component.shape_expr.iter().map(read_dimension).collect(),
+        dims: component
+            .shape_expr
+            .iter()
+            .map(|subscript| read_dimension(subscript, component, site))
+            .collect::<Refusable<Vec<_>>>()?,
         role,
         kind,
         binding: component.binding.clone(),
@@ -269,10 +312,30 @@ fn variability_text(variability: &Variability) -> String {
     }
 }
 
-fn read_dimension(subscript: &ast::Subscript) -> Dimension {
+fn read_dimension(
+    subscript: &ast::Subscript,
+    component: &ast::Component,
+    site: &Site,
+) -> Refusable<Dimension> {
+    if let Some(violation) = ast::declaration_subscript_required_value_violation(subscript) {
+        let owner = Site::at(&site.file, Some(&component.location));
+        let exact = violation
+            .span
+            .map(|span| Site::with_span(&site.file, Some(&component.location), span));
+        return Err(Refusal::new(
+            Rule::ExpressionForm,
+            exact.unwrap_or(owner),
+            format!(
+                "the declared shape of `{}` contains {}",
+                component.name,
+                violation.kind.description()
+            ),
+        ));
+    }
     match subscript {
-        ast::Subscript::Expression(expression) => Dimension::Stated(expression.to_string()),
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => Dimension::Deferred,
+        ast::Subscript::Expression(expression) => Ok(Dimension::Stated(expression.to_string())),
+        ast::Subscript::Range { .. } => Ok(Dimension::Deferred),
+        ast::Subscript::Empty => unreachable!("recovery shape rejected above"),
     }
 }
 

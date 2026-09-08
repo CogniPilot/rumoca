@@ -1,5 +1,4 @@
 version = 1
-ir = "solve"
 name = "cuda-ode"
 description = "Batched CUDA C explicit-ODE right-hand-side evaluator from checked Solve IR"
 execution_mode = "compiled"
@@ -13,7 +12,6 @@ continuous_states = true
 residual_equations = false
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -38,5 +36,7 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+artifact_kind = "cuda-source"
+semantic_context = "solve"
 path = "{{ model_name }}_ode.cu"
 template = "model_ode.cu.jinja"

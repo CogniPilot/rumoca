@@ -215,7 +215,7 @@ fn classify_modelica_test_case(model_name: &str) -> &'static str {
         return "initialization_events";
     }
     if lower.contains("function") || lower.contains("external") || lower.contains("table") {
-        return "functions_external_tables";
+        return "functions_external_calls";
     }
     if lower.contains("clock") || lower.contains("stategraph") || lower.contains("statemachine") {
         return "clocks_state_machines";

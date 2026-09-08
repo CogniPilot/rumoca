@@ -4,7 +4,6 @@
 
 use crate::path_utils::{segments as path_segments_of, strip_array_index};
 use rumoca_ir_flat as flat;
-use std::cmp::Ordering;
 
 pub(super) fn normalized_base_key_from_segments(segments: &[&str]) -> String {
     segments
@@ -132,14 +131,50 @@ pub(super) fn extract_array_index(s: &str) -> Option<String> {
     (!suffix.is_empty() && balanced_index_groups(suffix).is_some()).then(|| suffix.to_string())
 }
 
-pub(super) fn first_array_index_group(path: &str) -> Option<String> {
-    path_segments_of(path)
-        .into_iter()
-        .filter_map(extract_array_index)
-        .find_map(|indices| {
-            balanced_index_groups(&indices)
-                .and_then(|groups| groups.first().map(|group| (*group).to_string()))
-        })
+/// Collect every concrete array coordinate introduced by expanding `pattern`.
+///
+/// Indices already written in `pattern` are fixed selections and therefore do
+/// not contribute axes to the expanded value. Every index added by `full_name`
+/// does, including comma-separated coordinates and indices on more than one
+/// path segment.
+pub(super) fn expanded_coordinates_for_pattern(
+    full_name: &str,
+    pattern: &str,
+) -> Result<Vec<i64>, &'static str> {
+    let full_segments = path_segments_of(full_name);
+    let pattern_segments = path_segments_of(pattern);
+    if full_segments.len() != pattern_segments.len() {
+        return Err("expanded member and endpoint pattern have different path ranks");
+    }
+
+    let mut coordinates = Vec::new();
+    for (full, pattern) in full_segments.iter().zip(pattern_segments) {
+        if strip_array_index(full) != strip_array_index(pattern) {
+            return Err("expanded member does not match its endpoint pattern");
+        }
+        let pattern_indices = extract_array_index(pattern).unwrap_or_default();
+        let pattern_coordinates = literal_coordinates(&pattern_indices)
+            .ok_or("endpoint pattern indices are not concrete scalar Integers")?;
+        let full_indices = extract_array_index(full).unwrap_or_default();
+        let full_coordinates = literal_coordinates(&full_indices)
+            .ok_or("expanded member indices are not concrete scalar Integers")?;
+        if !full_coordinates.starts_with(&pattern_coordinates) {
+            return Err("expanded member does not preserve fixed endpoint indices");
+        }
+        coordinates.extend_from_slice(&full_coordinates[pattern_coordinates.len()..]);
+    }
+    Ok(coordinates)
+}
+
+pub(super) fn literal_coordinates(indices: &str) -> Option<Vec<i64>> {
+    if indices.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut coordinates = Vec::new();
+    for group in balanced_index_groups(indices)? {
+        coordinates.extend(parse_literal_index_group_values(group)?);
+    }
+    Some(coordinates)
 }
 
 pub(super) fn split_trailing_index_groups(path: &str) -> Option<(String, Vec<String>)> {
@@ -294,65 +329,6 @@ pub(super) fn strip_explicit_index_count(indices: &str, explicit_count: usize) -
     }
 }
 
-/// True if `full_name` carries an index on the last segment of `prefix` where
-/// `prefix` itself has no index on that segment.
-///
-/// Example:
-/// - full=`plug_p.pin[2].i`, prefix=`plug_p.pin` => true
-/// - full=`resistor[1].p.i`, prefix=`resistor.p` => false (missing index is not on last segment)
-pub(super) fn missing_index_on_last_prefix_segment(full_name: &str, prefix: &str) -> bool {
-    let prefix_segments = path_segments_of(prefix);
-    let name_parts = path_segments_of(full_name);
-    if name_parts.len() <= prefix_segments.len() || prefix_segments.is_empty() {
-        return false;
-    }
-
-    let last = prefix_segments.len() - 1;
-    for (i, segment) in prefix_segments.iter().enumerate() {
-        if strip_array_index(name_parts[i]) != strip_array_index(segment) {
-            return false;
-        }
-        let seg_idx = extract_array_index(segment);
-        let name_idx = extract_array_index(name_parts[i]);
-        if seg_idx.is_none() && name_idx.is_some() && i != last {
-            return false;
-        }
-    }
-
-    extract_array_index(prefix_segments[last]).is_none()
-        && extract_array_index(name_parts[last]).is_some()
-}
-
-/// Select the trailing index groups that map to an array variable's dimensions.
-///
-/// If `indices` has more groups than `dims_len`, keep the right-most groups.
-/// This preserves outer component indices while selecting only element indices
-/// for collapsed connector-array member variables.
-pub(super) fn select_indices_for_dims(indices: &str, dims_len: usize) -> Option<String> {
-    if dims_len == 0 {
-        return None;
-    }
-    let groups = extract_index_groups(indices);
-    if groups.is_empty() {
-        return None;
-    }
-    let take = dims_len.min(groups.len());
-    Some(groups[groups.len() - take..].concat())
-}
-
-/// Parse an index group like `"[2]"` into its integer value.
-fn parse_index_group_value(group: &str) -> Option<i64> {
-    let values = parse_literal_index_group_values(group)?;
-    let [value] = values.as_slice() else {
-        return None;
-    };
-    Some(*value)
-}
-
-pub(super) fn parse_single_index_group_value(group: &str) -> Option<i64> {
-    parse_index_group_value(group)
-}
-
 /// Parse one bracket group containing scalar literal coordinates.
 ///
 /// Modelica permits both `a[1,2]` and nested array indexing such as
@@ -369,95 +345,6 @@ pub(super) fn parse_literal_index_group_values(group: &str) -> Option<Vec<i64>> 
         .map(|value| value.trim().parse().ok())
         .collect();
     values.filter(|values| !values.is_empty())
-}
-
-pub(super) fn compare_path_index_order(left: &str, right: &str) -> Ordering {
-    let mut left_tail = left;
-    let mut right_tail = right;
-
-    loop {
-        let left_part = pop_order_segment(&mut left_tail);
-        let right_part = pop_order_segment(&mut right_tail);
-        let (Some(left_part), Some(right_part)) = (left_part, right_part) else {
-            return left_part.is_some().cmp(&right_part.is_some());
-        };
-        let base_order = strip_array_index(left_part).cmp(strip_array_index(right_part));
-        if base_order != Ordering::Equal {
-            return base_order;
-        }
-
-        let index_order = compare_index_groups(
-            extract_array_index(left_part).as_deref(),
-            extract_array_index(right_part).as_deref(),
-        );
-        if index_order != Ordering::Equal {
-            return index_order;
-        }
-    }
-}
-
-fn pop_order_segment<'a>(tail: &mut &'a str) -> Option<&'a str> {
-    if tail.is_empty() {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (offset, ch) in tail.char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            '.' if depth == 0 => {
-                let segment = &tail[..offset];
-                *tail = &tail[offset + ch.len_utf8()..];
-                return Some(segment);
-            }
-            _ => {}
-        }
-    }
-    let segment = *tail;
-    *tail = "";
-    Some(segment)
-}
-
-fn compare_index_groups(left: Option<&str>, right: Option<&str>) -> Ordering {
-    let left_groups = left.and_then(balanced_index_groups).unwrap_or_default();
-    let right_groups = right.and_then(balanced_index_groups).unwrap_or_default();
-
-    for (left_group, right_group) in left_groups.iter().zip(right_groups.iter()) {
-        let left_value = parse_index_group_value(left_group);
-        let right_value = parse_index_group_value(right_group);
-        let group_order = match (left_value, right_value) {
-            (Some(left_value), Some(right_value)) => left_value.cmp(&right_value),
-            _ => left_group.cmp(right_group),
-        };
-        if group_order != Ordering::Equal {
-            return group_order;
-        }
-    }
-
-    left_groups.len().cmp(&right_groups.len())
-}
-
-/// True if projected bracket indices are valid for the corresponding dimensions.
-pub(super) fn projected_indices_within_dims(indices: &str, dims: &[i64]) -> bool {
-    let groups = extract_index_groups(indices);
-    if groups.len() != dims.len() {
-        return false;
-    }
-    groups.iter().zip(dims.iter()).all(|(group, dim)| {
-        let Some(idx) = parse_index_group_value(group) else {
-            return false;
-        };
-        *dim >= 1 && idx >= 1 && idx <= *dim
-    })
-}
-
-/// Scalar size of an array shape, clamping non-positive dims to 1.
-pub(super) fn scalar_size_from_dims(dims: &[i64]) -> usize {
-    if dims.is_empty() {
-        1
-    } else {
-        dims.iter().copied().map(|d| d.max(1) as usize).product()
-    }
 }
 
 pub(super) fn extract_suffix_and_indices_for_path(
@@ -504,22 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_index_on_last_prefix_segment() {
-        assert!(missing_index_on_last_prefix_segment(
-            "plug_p.pin[2].i",
-            "plug_p.pin"
-        ));
-        assert!(!missing_index_on_last_prefix_segment(
-            "resistor[1].p.i",
-            "resistor.p"
-        ));
-        assert!(missing_index_on_last_prefix_segment(
-            "bus[data.medium].pin[2].i",
-            "bus[data.medium].pin"
-        ));
-    }
-
-    #[test]
     fn test_extract_suffix_preserves_connector_element_indices() {
         assert_eq!(
             extract_suffix("resistor[1].p.v", "resistor.p"),
@@ -563,36 +434,18 @@ mod tests {
     }
 
     #[test]
-    fn first_array_index_group_uses_balanced_path_segments() {
+    fn expanded_coordinates_preserve_every_unfixed_axis() {
         assert_eq!(
-            first_array_index_group("voltageSensor[1].v"),
-            Some("[1]".to_string())
+            expanded_coordinates_for_pattern(
+                "bank[1].sensor[2,3].channel[4][5].v",
+                "bank.sensor.channel.v"
+            ),
+            Ok(vec![1, 2, 3, 4, 5])
         );
         assert_eq!(
-            first_array_index_group("cell[index.with.dot][2].v"),
-            Some("[index.with.dot]".to_string())
+            expanded_coordinates_for_pattern("bank[9,8].sensor[2].v", "bank[9].sensor.v"),
+            Ok(vec![8, 2])
         );
-        assert_eq!(first_array_index_group("cell[1]tail.v"), None);
-        assert_eq!(first_array_index_group("r1.n.v"), None);
-    }
-
-    #[test]
-    fn compare_path_index_order_sorts_numeric_indices_numerically() {
-        let mut names = [
-            "comp[10].pin[1].v",
-            "comp[2].pin[1].v",
-            "comp[1].pin[12].v",
-            "comp[1].pin[2].v",
-        ];
-        names.sort_by(|left, right| compare_path_index_order(left, right));
-        assert_eq!(
-            names,
-            [
-                "comp[1].pin[2].v",
-                "comp[1].pin[12].v",
-                "comp[2].pin[1].v",
-                "comp[10].pin[1].v",
-            ]
-        );
+        assert!(expanded_coordinates_for_pattern("bank[i].sensor.v", "bank.sensor.v").is_err());
     }
 }

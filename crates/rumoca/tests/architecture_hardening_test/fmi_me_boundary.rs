@@ -378,7 +378,7 @@ impl PlantedCrate {
             std::process::id(),
             std::thread::current().id()
         ));
-        let _ = fs::remove_dir_all(&root);
+        let _stale_fixture_removal_error = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("create planted crate");
         fs::write(root.join("Cargo.toml"), manifest).expect("write planted manifest");
         for (relative, contents) in sources {
@@ -394,7 +394,7 @@ impl PlantedCrate {
 
 impl Drop for PlantedCrate {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        let _fixture_removal_error = fs::remove_dir_all(&self.root);
     }
 }
 

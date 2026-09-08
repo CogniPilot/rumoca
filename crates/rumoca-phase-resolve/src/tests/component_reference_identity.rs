@@ -36,7 +36,7 @@ model Top
   Real from_b = B.Constants.eps;
 end Top;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let from_a = binding_reference(&tree, "from_a");
     let from_b = binding_reference(&tree, "from_b");
 
@@ -111,7 +111,7 @@ record Container
   Leaf member;
 end Container;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let reference = binding_reference(&tree, "value");
     let root = reference
         .root_def_id()
@@ -150,7 +150,7 @@ end Top;
         "replaceable fixture should resolve: {:?}",
         result.as_ref().err()
     );
-    let tree = result.expect("result was checked above").into_inner();
+    let tree = result.expect("result was checked above").inner().clone();
     let reference = binding_reference(&tree, "value");
 
     assert_eq!(
@@ -184,7 +184,7 @@ model Holder
   Medium.State state;
 end Holder;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let holder = &tree.definitions.classes["Holder"];
     let medium = &holder.classes["Medium"];
     let state = &holder.components["state"];
@@ -263,7 +263,7 @@ equation
   connect(a, b);
 end Top;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let operator_targets: Vec<String> = tree.definitions.classes["Top"]
         .equations
         .iter()
@@ -312,7 +312,7 @@ end Top;
             diagnostic.code.as_deref() == Some("ER002")
                 && diagnostic
                     .message
-                    .contains("unresolved component reference: 'Connections.notAnOperator'")
+                    .contains("unresolved function call: 'Connections.notAnOperator'")
         }),
         "an operator outside MLS §9.4 must be rejected at Resolve: {diagnostics:?}"
     );
@@ -329,7 +329,7 @@ model Top
   Real value = b.sig;
 end Top;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let reference = binding_reference(&tree, "value");
     let target = reference
         .target_def_id()
@@ -352,7 +352,7 @@ equation
   connect(b1.sig, b2.sig);
 end Top;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let rumoca_ir_ast::Equation::Connect { lhs, rhs } =
         &tree.definitions.classes["Top"].equations[0]
     else {
@@ -419,10 +419,13 @@ model Top
   Inner part(state = Medium.setState_p(p));
 end Top;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let component = &tree.definitions.classes["Top"].components["part"];
-    let [rumoca_ir_ast::Expression::Modification { value, .. }] =
-        component.source_modifications.as_slice()
+    let [
+        rumoca_ir_ast::Expression::Modification {
+            value: Some(value), ..
+        },
+    ] = component.source_modifications.as_slice()
     else {
         panic!("fixture declares exactly one source-ordered modifier");
     };
@@ -445,10 +448,11 @@ end Top;
 
 #[test]
 fn source_ordered_redeclare_function_values_carry_exact_identities() {
-    // A component modifier's outer target is instance-owned, but the function
-    // substituted on its RHS is looked up where the modifier is written (MLS
-    // §7.2). Strict reachability walks this source-ordered copy, so the RHS
-    // must retain the exact function identity rather than only its spelling.
+    // A direct redeclare LHS names an exact slot in the component's declared
+    // receiver, while the substituted function on its RHS is looked up where
+    // the modifier is written (MLS §7.2). Strict reachability walks this
+    // source-ordered copy, so both identities must be structural rather than
+    // inferred from equal spelling.
     let source = r#"
 package Shapes
   partial function Characteristic
@@ -479,22 +483,24 @@ package Shapes
   end Top;
 end Shapes;
     "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let component = &tree.definitions.classes["Shapes"].classes["Top"].components["surface"];
     let [
         rumoca_ir_ast::Expression::Modification {
             target: slot,
-            value,
+            value: Some(value),
             ..
         },
     ] = component.source_modifications.as_slice()
     else {
         panic!("fixture declares exactly one source-ordered modifier");
     };
+    let slot_def_id = slot
+        .target_def_id()
+        .expect("the direct redeclare LHS names an exact receiver slot");
     assert_eq!(
-        slot.target_def_id(),
-        None,
-        "the modified slot remains instance-owned"
+        tree.def_map[&slot_def_id],
+        "Shapes.Surface.surfaceCharacteristic"
     );
     let rumoca_ir_ast::Expression::ClassModification { target, .. } = value.as_ref() else {
         panic!("redeclare function RHS is a class modification");

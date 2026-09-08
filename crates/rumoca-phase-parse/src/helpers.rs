@@ -131,37 +131,37 @@ pub(crate) fn collect_array_elements(
     }
 }
 
-/// Convert grammar ForIndices to AST ForIndex vec
+/// Convert grammar `for_indices` to AST iterators.
+///
+/// This is the parser's only `ForIndex` issuer. For-equations, for-statements,
+/// array comprehensions, and reduction arguments all reach the AST through it,
+/// so the disposition of an omitted range is decided in exactly one place.
 pub(crate) fn convert_for_indices(
     indices: &modelica_grammar_trait::ForIndices,
 ) -> anyhow::Result<Vec<rumoca_ir_ast::ForIndex>> {
-    let mut result = Vec::new();
-
-    // First index
-    result.push(convert_for_index(&indices.for_index)?);
-
-    // Additional indices
-    for item in &indices.for_indices_list {
-        result.push(convert_for_index(&item.for_index)?);
-    }
-
-    Ok(result)
+    std::iter::once(&indices.for_index)
+        .chain(indices.for_indices_list.iter().map(|item| &item.for_index))
+        .map(convert_for_index)
+        .collect()
 }
 
-/// Convert a single grammar ForIndex to AST ForIndex
+/// Issue one iterator, or refuse an omitted range.
+///
+/// A `ForIndex` built from recognized source always carries a real source range
+/// expression: there is no range-shaped hole for a later phase to interpret.
+/// MLS 3.7 §11.2.2.1 would deduce the omitted range from the dimensions the
+/// iterator subscripts, and that inference does not exist here, so the omission
+/// is refused rather than represented.
 fn convert_for_index(
     index: &modelica_grammar_trait::ForIndex,
 ) -> anyhow::Result<rumoca_ir_ast::ForIndex> {
-    let range = match &index.for_index_opt {
-        Some(opt) => opt.expression.clone(),
-        None => rumoca_ir_ast::Expression::Empty {
-            span: token_span(&index.ident)?,
-        },
+    let Some(opt) = &index.for_index_opt else {
+        return Err(crate::errors::omitted_iteration_range_error(&index.ident));
     };
 
     Ok(rumoca_ir_ast::ForIndex {
         ident: index.ident.clone(),
-        range,
+        range: opt.expression.clone(),
     })
 }
 

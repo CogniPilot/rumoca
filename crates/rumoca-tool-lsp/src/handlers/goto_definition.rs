@@ -32,25 +32,24 @@ pub fn handle_goto_definition(
     character: u32,
 ) -> Option<GotoDefinitionResponse> {
     let position = Position { line, character };
-    if let Some(tree) = tree
-        && let Some(response) = qualified_path_lookup(tree, source, position, uri)
-    {
-        return Some(response);
-    }
     let word = get_word_at_position(source, position)?;
 
-    // Try resolved tree first for def_id-based lookup
     if let Some(tree) = tree {
+        if let Some(response) = qualified_path_lookup(tree, source, position, uri) {
+            return Some(response);
+        }
         if let Some(response) = def_id_lookup(ast, tree, &word, uri) {
             return Some(response);
         }
         if let Some(response) = import_lookup(ast, tree, &word, uri) {
             return Some(response);
         }
+        return None;
     }
 
-    // Fallback: scan AST for matching declarations. These all live in `ast`,
-    // which was parsed from `source`, so UTF-16 columns are measurable here.
+    // Syntax-only recovery is admissible only when no semantic tree exists.
+    // These declarations all live in `ast`, which was parsed from `source`, so
+    // UTF-16 columns are measurable here.
     ast_lookup(ast, &word, source, uri)
 }
 
@@ -58,11 +57,11 @@ fn qualified_path_lookup(
     tree: &ast::ClassTree,
     source: &str,
     position: Position,
-    fallback_uri: &Url,
+    request_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     let qualified_name = get_qualified_class_name_at_position(source, position)?;
     let def_id = tree.get_def_id_by_name(&qualified_name)?;
-    goto_response_for_def_id(tree, def_id, fallback_uri)
+    goto_response_for_def_id(tree, def_id, request_uri)
 }
 
 fn def_id_lookup(
@@ -81,10 +80,10 @@ fn import_lookup(
     ast: &ast::StoredDefinition,
     tree: &ast::ClassTree,
     name: &str,
-    fallback_uri: &Url,
+    request_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     for class in ast.classes.values() {
-        if let Some(response) = import_lookup_in_class(class, tree, name, fallback_uri) {
+        if let Some(response) = import_lookup_in_class(class, tree, name, request_uri) {
             return Some(response);
         }
     }
@@ -95,17 +94,17 @@ fn import_lookup_in_class(
     class: &ast::ClassDef,
     tree: &ast::ClassTree,
     name: &str,
-    fallback_uri: &Url,
+    request_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     for import in &class.imports {
         if let Some(def_id) = imported_def_id(import, tree, name)
-            && let Some(response) = goto_response_for_def_id(tree, def_id, fallback_uri)
+            && let Some(response) = goto_response_for_def_id(tree, def_id, request_uri)
         {
             return Some(response);
         }
     }
     for nested in class.classes.values() {
-        if let Some(response) = import_lookup_in_class(nested, tree, name, fallback_uri) {
+        if let Some(response) = import_lookup_in_class(nested, tree, name, request_uri) {
             return Some(response);
         }
     }
@@ -115,7 +114,7 @@ fn import_lookup_in_class(
 fn goto_response_for_def_id(
     tree: &ast::ClassTree,
     def_id: DefId,
-    fallback_uri: &Url,
+    request_uri: &Url,
 ) -> Option<GotoDefinitionResponse> {
     let class = tree.get_class_by_def_id(def_id)?;
     let loc = &class.name.location;
@@ -123,32 +122,25 @@ fn goto_response_for_def_id(
     // file resolves to both its path (for the URI) and its text (for UTF-16
     // columns) without the handler layer touching the filesystem.
     let target = tree.source_map.get_source(loc.source);
-    let target_uri = target_uri_for_location(target.map(|(name, _)| name), fallback_uri);
+    let target_uri = target_uri_for_location(target.map(|(name, _)| name), request_uri)?;
     Some(GotoDefinitionResponse::Scalar(Location {
         uri: target_uri,
         range: definition_range(loc, target.map(|(_, content)| content)),
     }))
 }
 
-fn target_uri_for_location(target_file_name: Option<&str>, fallback_uri: &Url) -> Url {
-    let Some(file_name) = target_file_name.filter(|name| !name.is_empty()) else {
-        return fallback_uri.clone();
-    };
+fn target_uri_for_location(target_file_name: Option<&str>, request_uri: &Url) -> Option<Url> {
+    let file_name = target_file_name.filter(|name| !name.is_empty())?;
     let path = Path::new(file_name);
-    if path.is_absolute()
-        && let Some(uri) = url_from_file_path(path)
-    {
-        return uri;
+    if path.is_absolute() {
+        return url_from_file_path(path);
     }
-    if let Some(base_path) = file_path_from_url(fallback_uri)
+    if let Some(base_path) = file_path_from_url(request_uri)
         && let Some(parent) = base_path.parent()
     {
-        let candidate = parent.join(path);
-        if let Some(uri) = url_from_file_path(candidate) {
-            return uri;
-        }
+        return url_from_file_path(parent.join(path));
     }
-    fallback_uri.clone()
+    None
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -387,26 +379,25 @@ end Modelica;
     #[test]
     fn target_uri_for_location_covers_absolute_relative_and_missing_sources() {
         let base = std::env::temp_dir().join("rumoca_lsp_target_uri_test");
-        let fallback_path = base.join("main.mo");
-        let fallback = Url::from_file_path(&fallback_path).expect("fallback uri");
+        let request_path = base.join("main.mo");
+        let request_uri = Url::from_file_path(&request_path).expect("request uri");
 
         // (a) an absolute path resolves to its own file uri.
         let absolute = base.join("Other.mo");
         let absolute_name = absolute.to_string_lossy().to_string();
         assert_eq!(
-            target_uri_for_location(Some(absolute_name.as_str()), &fallback),
-            Url::from_file_path(&absolute).expect("absolute uri")
+            target_uri_for_location(Some(absolute_name.as_str()), &request_uri),
+            Some(Url::from_file_path(&absolute).expect("absolute uri"))
         );
 
-        // (b) a relative path resolves against the fallback uri directory.
+        // (b) a relative path resolves against the request URI directory.
         assert_eq!(
-            target_uri_for_location(Some("Sibling.mo"), &fallback),
-            Url::from_file_path(base.join("Sibling.mo")).expect("sibling uri")
+            target_uri_for_location(Some("Sibling.mo"), &request_uri),
+            Some(Url::from_file_path(base.join("Sibling.mo")).expect("sibling uri"))
         );
 
-        // (c) a SourceId absent from the source map yields `None` here; fall
-        // back instead of panicking.
-        assert_eq!(target_uri_for_location(None, &fallback), fallback);
-        assert_eq!(target_uri_for_location(Some(""), &fallback), fallback);
+        // (c) missing source identity cannot be relabeled as the request file.
+        assert_eq!(target_uri_for_location(None, &request_uri), None);
+        assert_eq!(target_uri_for_location(Some(""), &request_uri), None);
     }
 }

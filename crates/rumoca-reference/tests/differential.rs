@@ -30,7 +30,7 @@ use rumoca_reference::schedule::static_instants;
 use rumoca_reference::simulate::{Options, Trace, simulate};
 use rumoca_reference::trajectory::{NoContinuousState, Ramps};
 use rumoca_reference::value::Value;
-use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_with_diagnostics};
+use rumoca_sim::{SimOptions, SimResult, SimSolverMode, simulate_dae};
 
 const T_START: f64 = 0.0;
 const T_STOP: f64 = 1.0;
@@ -77,7 +77,7 @@ fn pipeline_trace(case: &Case, mode: SimSolverMode) -> SimResult {
     let compiled = session
         .compile_model(case.name)
         .unwrap_or_else(|error| panic!("{}: should compile: {error}", case.name));
-    simulate_with_diagnostics(
+    simulate_dae(
         &compiled.dae,
         &SimOptions {
             t_start: T_START,
@@ -240,7 +240,7 @@ fn generated_pipeline(spec: &Spec, mode: SimSolverMode) -> SimResult {
     let compiled = session
         .compile_model("Generated")
         .unwrap_or_else(|error| panic!("generated model should compile: {error}\n{source}"));
-    simulate_with_diagnostics(
+    simulate_dae(
         &compiled.dae,
         &SimOptions {
             t_start: T_START,

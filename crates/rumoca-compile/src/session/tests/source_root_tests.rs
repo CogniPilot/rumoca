@@ -317,14 +317,20 @@ fn source_root_indexing_coordinator_tracks_reservations_loaded_paths_and_epoch()
     let parsed = parse_definition("package Lib\n  model A\n  end A;\nend Lib;\n", uri);
 
     assert_eq!(session.source_root_state_epoch(), 0);
-    assert!(session.reserve_source_root_load(path_key, 0));
+    assert_eq!(
+        session.reserve_source_root_load(path_key, 0),
+        SourceRootLoadReservation::Reserved
+    );
     assert_eq!(
         session.source_root_load_reservation_epoch(path_key),
         Some(0)
     );
-    assert!(
-        !session.reserve_source_root_load(path_key, 0),
-        "duplicate in-flight reservations should be rejected"
+    assert_eq!(
+        session.reserve_source_root_load(path_key, 0),
+        SourceRootLoadReservation::InFlight {
+            reservation_epoch: 0
+        },
+        "duplicate in-flight reservations must remain distinguishable from loaded roots"
     );
 
     session.cancel_source_root_load(path_key, 1);
@@ -346,10 +352,15 @@ fn source_root_indexing_coordinator_tracks_reservations_loaded_paths_and_epoch()
             expected_epoch: 0,
         },
     );
-    assert_eq!(
-        applied.map(|(inserted, _)| inserted),
-        Some(1),
-        "current reservations should apply and report inserted files"
+    assert!(
+        matches!(
+            &applied,
+            SourceRootApplyDisposition::Applied {
+                inserted_file_count: 1,
+                ..
+            }
+        ),
+        "current reservations should apply and report inserted files: {applied:?}"
     );
     assert!(session.is_source_root_path_loaded(path_key));
     assert_eq!(session.source_root_load_reservation_epoch(path_key), None);
@@ -357,6 +368,75 @@ fn source_root_indexing_coordinator_tracks_reservations_loaded_paths_and_epoch()
         session.source_root_state_epoch(),
         1,
         "successful source-root apply should advance the coordinator epoch"
+    );
+}
+
+#[test]
+fn source_root_indexing_coordinator_distinguishes_stale_and_loaded_no_ops() {
+    let mut session = Session::default();
+    let path_key = "external::modelica";
+
+    assert_eq!(
+        session.reserve_source_root_load(path_key, 0),
+        SourceRootLoadReservation::Reserved
+    );
+    session.reset_to_open_documents();
+    assert_eq!(
+        session.reserve_source_root_load(path_key, 0),
+        SourceRootLoadReservation::StaleEpoch {
+            expected_epoch: 0,
+            current_epoch: 1,
+        }
+    );
+    assert_eq!(
+        session.reserve_source_root_load(path_key, 1),
+        SourceRootLoadReservation::Reserved
+    );
+
+    let stale_apply = session.apply_parsed_source_root_if_current(
+        "external",
+        ParsedSourceRootLoad {
+            source_root_kind: SourceRootKind::External,
+            source_root_path: Path::new("/tmp/Modelica"),
+            cache_status: SourceRootCacheStatus::Disabled,
+            path_key,
+            current_document_path: None,
+            documents: Vec::new(),
+            expected_epoch: 0,
+        },
+    );
+    assert_eq!(
+        stale_apply,
+        SourceRootApplyDisposition::StaleEpoch {
+            expected_epoch: 0,
+            current_epoch: 1,
+        }
+    );
+    assert_eq!(
+        session.source_root_load_reservation_epoch(path_key),
+        Some(1),
+        "a stale apply must not cancel a current reservation"
+    );
+
+    let applied = session.apply_parsed_source_root_if_current(
+        "external",
+        ParsedSourceRootLoad {
+            source_root_kind: SourceRootKind::External,
+            source_root_path: Path::new("/tmp/Modelica"),
+            cache_status: SourceRootCacheStatus::Disabled,
+            path_key,
+            current_document_path: None,
+            documents: Vec::new(),
+            expected_epoch: 1,
+        },
+    );
+    assert!(matches!(
+        applied,
+        SourceRootApplyDisposition::Applied { .. }
+    ));
+    assert_eq!(
+        session.reserve_source_root_load(path_key, session.source_root_state_epoch()),
+        SourceRootLoadReservation::AlreadyLoaded
     );
 }
 

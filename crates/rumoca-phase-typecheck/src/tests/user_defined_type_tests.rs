@@ -22,7 +22,7 @@ fn test_user_defined_type_resolution() {
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let typed = typecheck(resolved).expect("typecheck should succeed");
-    let tree = typed.into_inner();
+    let tree = typed;
 
     let test = tree
         .definitions
@@ -80,7 +80,7 @@ fn test_typecheck_instanced_populates_user_defined_type_ids() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .definitions
         .classes
@@ -92,29 +92,34 @@ fn test_typecheck_instanced_populates_user_defined_type_ids() {
 
     let mut overlay = InstanceOverlay::new();
     let v_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: v_id,
-        qualified_name: rumoca_ir_ast::QualifiedName::from_ident("v"),
-        // Seed with builtin Real id to verify instanced typecheck rewrites
-        // to declared alias identity (Voltage), not just UNKNOWN placeholders.
-        type_id: tree.type_table.real(),
-        type_name: "Voltage".to_string(),
-        type_def_id: v_decl.type_def_id,
-        is_primitive: true,
-        ..Default::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: v_id,
+            qualified_name: rumoca_ir_ast::QualifiedName::from_ident("v"),
+            // Seed with builtin Real id to verify instanced typecheck rewrites
+            // to declared alias identity (Voltage), not just UNKNOWN placeholders.
+            type_id: tree.type_table.real(),
+            type_name: "Voltage".to_string(),
+            type_def_id: v_decl.type_def_id,
+            is_primitive: true,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
     let m_id = overlay.alloc_id();
-    overlay.add_component(rumoca_ir_ast::InstanceData {
-        instance_id: m_id,
-        qualified_name: rumoca_ir_ast::QualifiedName::from_ident("m"),
-        type_id: TypeId::UNKNOWN,
-        type_name: "Mode".to_string(),
-        type_def_id: m_decl.type_def_id,
-        is_primitive: true,
-        ..Default::default()
-    });
+    overlay
+        .add_component(rumoca_ir_ast::InstanceData {
+            instance_id: m_id,
+            qualified_name: rumoca_ir_ast::QualifiedName::from_ident("m"),
+            type_id: TypeId::UNKNOWN,
+            type_name: "Mode".to_string(),
+            type_def_id: m_decl.type_def_id,
+            is_primitive: true,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 
-    typecheck_instanced(&tree, &mut overlay, "Test").expect("typecheck_instanced should pass");
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
+        .expect("typecheck_instanced should pass");
 
     let v_inst = overlay
         .components

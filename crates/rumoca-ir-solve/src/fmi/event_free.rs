@@ -21,10 +21,10 @@
 //! exactly when its kernel carries no semantic event class. Only that narrowed
 //! view has a whole-inventory encoding.
 //!
-//! The event domain is read through [`crate::solve_event_class`], the single
-//! owner `rumoca-compile`'s target-capability gate also calls, so this
-//! narrowing cannot recognise a different set of event classes than the public
-//! manifest validation does.
+//! Component construction reads the event domain once through
+//! [`crate::solve_event_class`] and retains that closed fact beside the kernel.
+//! Narrowing consumes the retained fact rather than traversing the kernel
+//! again, so it cannot recognize a different event domain than construction.
 //!
 //! What is *not* proved here is stated exactly, because the type's name is a
 //! claim: this narrowing says nothing about initialization owners, residual
@@ -39,17 +39,20 @@
 //! event-capable renderer under ME-EVENT-002's later gate.
 
 use super::metadata::{FmiVariable, SerializedFmiVariables};
-use super::{FmiCodegenView, FmiMetadata};
-use crate::{SolveEventClass, SolveModel, solve_event_class};
+use super::projection::FmiVersionProjections;
+use super::{Fmi2Projection, Fmi3Projection, FmiCodegenView, FmiMetadata, FmiProjectionError};
+use crate::{SolveEventClass, SolveModel};
 use serde::Serialize;
 use serde::ser::{SerializeMap, Serializer};
 use std::sync::Arc;
 
 /// Why one correlated view has no event-free type-state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum FmiEventFreeError {
     #[error("FMI component kernel owns {class:?} semantic events")]
     EventBearingKernel { class: SolveEventClass },
+    #[error("FMI component has no supported event-free Float64 projection: {0}")]
+    Projection(#[from] FmiProjectionError),
 }
 
 /// One correlated codegen view whose kernel is proved event-free.
@@ -93,6 +96,7 @@ pub enum FmiEventFreeError {
 #[derive(Debug)]
 pub struct FmiEventFreeCodegenView {
     metadata: FmiMetadata,
+    projections: FmiVersionProjections,
     model: Arc<SolveModel>,
 }
 
@@ -106,11 +110,13 @@ impl FmiCodegenView {
     /// a target ever forgets, and it is the whole refusal for a caller that
     /// reaches the typed API directly.
     pub fn try_event_free(self) -> Result<FmiEventFreeCodegenView, FmiEventFreeError> {
-        if let Some(class) = solve_event_class(&self.model.problem) {
+        if let Some(class) = self.event_class {
             return Err(FmiEventFreeError::EventBearingKernel { class });
         }
+        let projections = FmiVersionProjections::construct(&self.metadata, &self.model)?;
         Ok(FmiEventFreeCodegenView {
             metadata: self.metadata,
+            projections,
             model: self.model,
         })
     }
@@ -123,6 +129,33 @@ impl FmiEventFreeCodegenView {
         self.metadata.variables()
     }
 
+    /// The whole checked inventory, borrowed for sibling FMI projections.
+    #[must_use]
+    pub(super) const fn metadata(&self) -> &FmiMetadata {
+        &self.metadata
+    }
+
+    /// The retained kernel, borrowed for sibling FMI fact projections. The
+    /// owned root stays sealed inside this view.
+    #[must_use]
+    pub(super) fn solve_model(&self) -> &SolveModel {
+        self.model.as_ref()
+    }
+
+    /// Checked FMI 2 scalar interface, including final value references,
+    /// storage slots, derivative links, and model-structure indices.
+    #[must_use]
+    pub const fn fmi2(&self) -> &Fmi2Projection {
+        &self.projections.fmi2
+    }
+
+    /// Checked FMI 3 tensor interface, including final value references,
+    /// storage runs, derivative links, and model-structure value references.
+    #[must_use]
+    pub const fn fmi3(&self) -> &Fmi3Projection {
+        &self.projections.fmi3
+    }
+
     #[must_use]
     pub const fn derivative_value_reference_base_fmi3(&self) -> u32 {
         self.metadata.derivative_value_reference_base_fmi3()
@@ -130,12 +163,12 @@ impl FmiEventFreeCodegenView {
 
     #[must_use]
     pub fn problem(&self) -> &crate::SolveProblem {
-        &self.model.problem
+        self.model.problem()
     }
 
     #[must_use]
     pub fn artifacts(&self) -> &crate::SolveArtifacts {
-        &self.model.artifacts
+        self.model.artifacts()
     }
 }
 
@@ -146,7 +179,7 @@ impl FmiEventFreeCodegenView {
 /// cloned, re-indexed, or stored a second time.
 impl Serialize for FmiEventFreeCodegenView {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_map(Some(3))?;
+        let mut entries = serializer.serialize_map(Some(5))?;
         entries.serialize_entry(
             "variables",
             &SerializedFmiVariables::borrowing(self.metadata.variables()),
@@ -159,6 +192,8 @@ impl Serialize for FmiEventFreeCodegenView {
             "derivative_value_reference_base_fmi3",
             &self.metadata.derivative_value_reference_base_fmi3(),
         )?;
+        entries.serialize_entry("fmi2", &self.projections.fmi2)?;
+        entries.serialize_entry("fmi3", &self.projections.fmi3)?;
         entries.end()
     }
 }

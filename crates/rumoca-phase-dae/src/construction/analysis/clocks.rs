@@ -1,9 +1,261 @@
 use super::*;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+mod clock_syntax;
+
+#[cfg(test)]
+pub(in crate::construction) use clock_syntax::expression_preorder_ordinal;
+use clock_syntax::*;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::construction) enum ClockOwnerId {
+    Coordinate(InstanceId),
+    Definition {
+        coordinate: InstanceId,
+        occurrence: u32,
+    },
+    TransferSource(u32),
+    TransferTarget(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClockLineage {
+    Periodic,
+    Conversion {
+        source: ClockOwnerId,
+        kind: dae::ClockTransferKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(in crate::construction) struct ClockPlan {
+    pub(in crate::construction) owner: ClockOwnerId,
     pub(in crate::construction) lattice: ClockLattice,
     pub(in crate::construction) constructor_span: Span,
+    lineage: ClockLineage,
+}
+
+impl ClockPlan {
+    pub(in crate::construction) fn periodic(
+        owner: ClockOwnerId,
+        lattice: ClockLattice,
+        constructor_span: Span,
+    ) -> Self {
+        Self {
+            owner,
+            lattice,
+            constructor_span,
+            lineage: ClockLineage::Periodic,
+        }
+    }
+
+    pub(in crate::construction) fn order_key(self) -> (u8, u32, u32) {
+        match self.owner {
+            ClockOwnerId::Coordinate(instance) => (0, instance.index(), 0),
+            ClockOwnerId::Definition {
+                coordinate,
+                occurrence,
+            } => (1, coordinate.index(), occurrence),
+            ClockOwnerId::TransferSource(identity) => (2, identity, 0),
+            ClockOwnerId::TransferTarget(identity) => (3, identity, 0),
+        }
+    }
+
+    pub(in crate::construction) fn matches_exactly(self, other: Self) -> bool {
+        self.owner == other.owner
+            && self.lattice == other.lattice
+            && self.constructor_span == other.constructor_span
+            && self.lineage == other.lineage
+    }
+}
+
+/// Analysis-issued source and target clocks for one value-clock conversion.
+///
+/// Lowering consumes this exact relationship instead of rediscovering clock
+/// semantics from an expression tree after domain analysis has completed.
+#[derive(Clone, Copy)]
+pub(in crate::construction) struct ClockTransferPlan {
+    pub(in crate::construction) source: ClockPlan,
+    pub(in crate::construction) target: ClockPlan,
+    pub(in crate::construction) kind: dae::ClockTransferKind,
+}
+
+impl ClockTransferPlan {
+    fn matches_exactly(self, other: Self) -> bool {
+        self.source.matches_exactly(other.source)
+            && self.target.matches_exactly(other.target)
+            && self.kind == other.kind
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::construction) enum ClockExpressionRoot {
+    Equation(u32),
+    Binding(InstanceId),
+    When {
+        chain: u32,
+        branch: u32,
+        expression: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::construction) struct WhenOccurrenceId {
+    pub(in crate::construction) chain: u32,
+    pub(in crate::construction) branch: u32,
+}
+
+pub(in crate::construction) struct WhenExpressionRoots<'expression> {
+    roots: Vec<(&'expression Expression, ClockExpressionRoot)>,
+}
+
+impl<'expression> WhenExpressionRoots<'expression> {
+    pub(in crate::construction) fn collect(
+        occurrence: WhenOccurrenceId,
+        equations: &'expression [flat::WhenEquation],
+    ) -> Result<Self, ToDaeError> {
+        let mut roots = Vec::new();
+        collect_when_expression_roots(occurrence, equations, &mut roots)?;
+        Ok(Self { roots })
+    }
+
+    pub(in crate::construction) fn iter(
+        &self,
+    ) -> impl Iterator<Item = (&'expression Expression, ClockExpressionRoot)> + '_ {
+        self.roots.iter().copied()
+    }
+}
+
+fn collect_when_expression_roots<'expression>(
+    occurrence: WhenOccurrenceId,
+    equations: &'expression [flat::WhenEquation],
+    roots: &mut Vec<(&'expression Expression, ClockExpressionRoot)>,
+) -> Result<(), ToDaeError> {
+    for equation in equations {
+        match equation {
+            flat::WhenEquation::Assign { value, .. } | flat::WhenEquation::Reinit { value, .. } => {
+                push_when_expression_root(occurrence, value, roots)?;
+            }
+            flat::WhenEquation::Assert {
+                condition,
+                message,
+                level,
+                ..
+            } => {
+                push_when_expression_root(occurrence, condition, roots)?;
+                push_when_expression_root(occurrence, message, roots)?;
+                if let Some(level) = level {
+                    push_when_expression_root(occurrence, level, roots)?;
+                }
+            }
+            flat::WhenEquation::Terminate { message, .. } => {
+                push_when_expression_root(occurrence, message, roots)?;
+            }
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                for (condition, equations) in branches {
+                    push_when_expression_root(occurrence, condition, roots)?;
+                    collect_when_expression_roots(occurrence, equations, roots)?;
+                }
+                if let Some(equations) = else_branch {
+                    collect_when_expression_roots(occurrence, equations, roots)?;
+                }
+            }
+            flat::WhenEquation::FunctionCallOutputs { function, .. } => {
+                push_when_expression_root(occurrence, function, roots)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn push_when_expression_root<'expression>(
+    occurrence: WhenOccurrenceId,
+    expression: &'expression Expression,
+    roots: &mut Vec<(&'expression Expression, ClockExpressionRoot)>,
+) -> Result<(), ToDaeError> {
+    let expression_id = u32::try_from(roots.len())
+        .map_err(|_| ToDaeError::internal("when expression identity exceeds u32"))?;
+    roots.push((
+        expression,
+        ClockExpressionRoot::When {
+            chain: occurrence.chain,
+            branch: occurrence.branch,
+            expression: expression_id,
+        },
+    ));
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ExpressionOccurrenceId {
+    root: ClockExpressionRoot,
+    path: Vec<u32>,
+}
+
+#[derive(Default)]
+pub(in crate::construction) struct ClockTransferPlans {
+    by_occurrence: HashMap<ExpressionOccurrenceId, ClockTransferPlan>,
+    /// Ephemeral address index into the immutable Flat model borrowed for one
+    /// construction. The value, not the address, is the semantic identity:
+    /// lowering uses this only to recover the exact analysis-issued occurrence
+    /// in O(1), and never derives ownership from pointer order or equality.
+    occurrence_by_expression: HashMap<usize, ExpressionOccurrenceId>,
+}
+
+impl ClockTransferPlans {
+    pub(in crate::construction) fn plan(
+        &self,
+        expression: &Expression,
+    ) -> Option<ClockTransferPlan> {
+        let occurrence = self
+            .occurrence_by_expression
+            .get(&expression_address(expression))?;
+        self.by_occurrence.get(occurrence).copied()
+    }
+
+    pub(in crate::construction) fn values(&self) -> impl Iterator<Item = &ClockTransferPlan> {
+        self.by_occurrence.values()
+    }
+
+    fn insert(
+        &mut self,
+        expression_address: usize,
+        occurrence: ExpressionOccurrenceId,
+        plan: ClockTransferPlan,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        if self
+            .by_occurrence
+            .get(&occurrence)
+            .is_some_and(|established| !established.matches_exactly(plan))
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "clocked value conversion ownership proof",
+                "one expression occurrence has conflicting clock-transfer plans",
+                span,
+            ));
+        }
+        if self
+            .occurrence_by_expression
+            .get(&expression_address)
+            .is_some_and(|established| established != &occurrence)
+        {
+            return Err(ToDaeError::internal(
+                "one Flat expression address names multiple clock-transfer occurrences",
+            ));
+        }
+        self.by_occurrence.insert(occurrence.clone(), plan);
+        self.occurrence_by_expression
+            .insert(expression_address, occurrence);
+        Ok(())
+    }
+}
+
+fn expression_address(expression: &Expression) -> usize {
+    std::ptr::from_ref(expression).addr()
 }
 
 #[derive(Clone, Copy)]
@@ -33,13 +285,38 @@ pub(super) struct ClockAnalysis {
 pub(super) struct ClockDomainAnalysis {
     pub(super) equation_owners: HashMap<usize, ClockPlan>,
     pub(super) value_owners: HashMap<InstanceId, ClockedValuePlan>,
-    /// Owning clock of every `when Clock()` branch, keyed by the branch span.
-    pub(super) when_owners: HashMap<Span, ClockPlan>,
+    /// Owning clock of every `when Clock()` branch, keyed by its exact Flat
+    /// container occurrence. Source spans remain provenance only.
+    pub(super) when_owners: HashMap<WhenOccurrenceId, ClockPlan>,
     /// Owning clock of every runtime coordinate that belongs to a clocked
     /// partition, whatever role the coordinate was planned with. Declaration
     /// bindings resolve their clock through this map, since a binding is not an
     /// equation row and therefore has no `equation_owners` entry.
     pub(super) coordinate_owners: HashMap<InstanceId, ClockPlan>,
+    /// Exact source/target relationship of every value-clock conversion.
+    pub(super) transfers: ClockTransferPlans,
+}
+
+#[derive(Clone, Copy)]
+enum ContinuousClockConflict {
+    State,
+    Input,
+}
+
+impl ContinuousClockConflict {
+    const fn description(self) -> &'static str {
+        match self {
+            Self::State => "continuous state",
+            Self::Input => "continuous input",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContinuousClockOccurrence {
+    member: usize,
+    span: Span,
+    conflict: ContinuousClockConflict,
 }
 
 /// The exact `Clock` coordinates of one Flat model.
@@ -88,7 +365,13 @@ pub(super) fn analyze_clocks(
         };
         let lhs_clock = whole_clock_reference(lhs, &clocks);
         let rhs_clock = whole_clock_reference(rhs, &clocks);
-        match (lhs_clock, rhs_clock, periodic_constructor(rhs, constants)?) {
+        let constructor = lhs_clock
+            .map(|target| {
+                periodic_constructor(rhs, constants, ClockOwnerId::Coordinate(target.instance_id))
+            })
+            .transpose()?
+            .flatten();
+        match (lhs_clock, rhs_clock, constructor) {
             (Some(target), None, Some(plan)) => {
                 insert_plan(&mut plans, target, plan, equation.span)?;
                 equation_rows.insert(row);
@@ -174,7 +457,9 @@ fn derive_bound_clock_plans(
             let Some(binding) = variable.binding.as_ref() else {
                 continue;
             };
-            let Some(plan) = bound_clock_plan(binding, constants, clocks, plans)? else {
+            let Some(plan) =
+                bound_clock_plan(binding, constants, clocks, plans, variable.instance_id)?
+            else {
                 continue;
             };
             insert_plan(plans, variable, plan, expression_span(binding)?)?;
@@ -185,138 +470,6 @@ fn derive_bound_clock_plans(
         }
     }
     Ok(())
-}
-
-fn bound_clock_plan(
-    expression: &Expression,
-    constants: &EvalContext,
-    clocks: &ClockCoordinates<'_>,
-    plans: &HashMap<InstanceId, ClockPlan>,
-) -> Result<Option<ClockPlan>, ToDaeError> {
-    if let Some(plan) = periodic_constructor(expression, constants)? {
-        return Ok(Some(plan));
-    }
-    if let Some(source) = whole_clock_reference(expression, clocks) {
-        return Ok(plans.get(&source.instance_id).copied());
-    }
-    let Expression::BuiltinCall {
-        function,
-        args,
-        span,
-    } = expression
-    else {
-        return Err(ToDaeError::unresolved_clock_schedule(
-            "Clock binding",
-            "a Clock binding must be a constructor, alias, or exact derived clock",
-            expression_span(expression)?,
-        ));
-    };
-    let operator = function.name();
-    let Some(source) = args.first() else {
-        return Err(invalid_clock_operator(
-            operator,
-            "requires a source clock",
-            *span,
-        ));
-    };
-    let Some(source_plan) = bound_clock_plan(source, constants, clocks, plans)? else {
-        return Ok(None);
-    };
-    let lattice = match (function, args.as_slice()) {
-        (BuiltinFunction::SubSample, [_, factor]) => source_plan
-            .lattice
-            .sub_sample(clock_integer(factor, constants, operator, *span)?),
-        (BuiltinFunction::SuperSample, [_, factor]) => source_plan
-            .lattice
-            .super_sample(clock_integer(factor, constants, operator, *span)?),
-        (BuiltinFunction::ShiftSample, [_, counter]) => source_plan
-            .lattice
-            .shift_sample(clock_integer(counter, constants, operator, *span)?, 1),
-        (BuiltinFunction::ShiftSample, [_, counter, resolution]) => {
-            source_plan.lattice.shift_sample(
-                clock_integer(counter, constants, operator, *span)?,
-                clock_integer(resolution, constants, operator, *span)?,
-            )
-        }
-        (BuiltinFunction::BackSample, [_, counter]) => source_plan
-            .lattice
-            .back_sample(clock_integer(counter, constants, operator, *span)?, 1),
-        (BuiltinFunction::BackSample, [_, counter, resolution]) => source_plan.lattice.back_sample(
-            clock_integer(counter, constants, operator, *span)?,
-            clock_integer(resolution, constants, operator, *span)?,
-        ),
-        (BuiltinFunction::NoClock, [_]) => {
-            return Err(invalid_clock_operator(
-                operator,
-                "has no exact periodic lattice for checked clock ownership",
-                *span,
-            ));
-        }
-        (
-            BuiltinFunction::SubSample
-            | BuiltinFunction::SuperSample
-            | BuiltinFunction::ShiftSample
-            | BuiltinFunction::BackSample
-            | BuiltinFunction::NoClock,
-            _,
-        ) => {
-            return Err(invalid_clock_operator(
-                operator,
-                "has invalid clock conversion arity",
-                *span,
-            ));
-        }
-        _ => {
-            return Err(ToDaeError::unresolved_clock_schedule(
-                "Clock binding",
-                "a Clock binding must use an exact predefined clock conversion",
-                *span,
-            ));
-        }
-    }
-    .map_err(|error| {
-        ToDaeError::unsupported_runtime_operator(operator, error.to_string(), *span)
-    })?;
-    Ok(Some(ClockPlan {
-        lattice,
-        constructor_span: *span,
-    }))
-}
-
-fn clock_integer(
-    expression: &Expression,
-    constants: &EvalContext,
-    operator: &str,
-    span: Span,
-) -> Result<i64, ToDaeError> {
-    eval_expr(expression, constants)
-        .ok()
-        .and_then(|value| value.as_integer())
-        .ok_or_else(|| {
-            invalid_clock_operator(
-                operator,
-                "requires parameter-evaluable Integer conversion arguments",
-                span,
-            )
-        })
-}
-
-fn invalid_clock_operator(operator: &str, detail: &str, span: Span) -> ToDaeError {
-    ToDaeError::unsupported_runtime_operator(operator, detail, span)
-}
-
-fn named_sample_clock_plan(
-    clock: &flat::Variable,
-    plans: &HashMap<InstanceId, ClockPlan>,
-    span: Span,
-) -> Result<ClockPlan, ToDaeError> {
-    plans.get(&clock.instance_id).copied().ok_or_else(|| {
-        ToDaeError::unresolved_clock_schedule(
-            clock.name.as_str(),
-            "the clock operand of a value sample must resolve to a static schedule",
-            span,
-        )
-    })
 }
 
 fn analyze_sampled_targets(
@@ -374,59 +527,59 @@ pub(super) fn analyze_clock_domains(
     sampled_targets: &HashMap<InstanceId, SampledTarget>,
     constants: &EvalContext,
 ) -> Result<ClockDomainAnalysis, ToDaeError> {
-    let no_sampled_targets = HashMap::new();
-    for equation in &flat.initial_equations {
-        if let Some(span) = required_clock_owner_span(&equation.residual, flat, &no_sampled_targets)
-        {
-            return Err(ToDaeError::unsupported_flat(
-                "initial clocked equation ownership",
-                "clock-owned sample/previous semantics are not valid in an initial equation",
-                span,
-            ));
-        }
-    }
-    let ordinals = flat
-        .variables
-        .iter()
-        .filter(|(name, _)| {
-            roles
-                .get(*name)
-                .is_some_and(|role| is_clock_runtime_role(*role))
-        })
-        .enumerate()
-        .map(|(ordinal, (_, variable))| (variable.instance_id, ordinal))
-        .collect::<HashMap<_, _>>();
-    let mut domains = DisjointDomains::new(ordinals.len());
-    let mut occurrences = vec![None; ordinals.len()];
+    reject_initial_clock_semantics(flat)?;
+    let ordinals = runtime_clock_ordinals(flat, roles);
+    let mut domains = ClockDomainArena::new(ordinals.len());
     let mut equation_members = vec![Vec::new(); flat.equations.len()];
-    let mut conversion_edges = Vec::new();
-    for (row, equation) in flat.equations.iter().enumerate() {
-        if clock_equation_rows.contains(&row) {
-            continue;
+    let mut conversion_drafts = Vec::new();
+    let mut continuous_occurrences = Vec::new();
+    {
+        let mut graph = ClockDomainGraph {
+            flat,
+            roles,
+            ordinals: &ordinals,
+            domains: &mut domains,
+            constants,
+            conversion_edges: &mut conversion_drafts,
+            continuous_occurrences: &mut continuous_occurrences,
+        };
+        for (row, equation) in flat.equations.iter().enumerate() {
+            if clock_equation_rows.contains(&row) {
+                continue;
+            }
+            let row_id = u32::try_from(row)
+                .map_err(|_| ToDaeError::internal("equation occurrence identity exceeds u32"))?;
+            equation_members[row] =
+                graph.collect_root(&equation.residual, ClockExpressionRoot::Equation(row_id))?;
         }
-        let incidence = expression_clock_incidence(&equation.residual, flat, roles);
-        equation_members[row] =
-            register_incidence(&incidence, &ordinals, &mut occurrences, &mut domains);
-        if let Some(conversion) = value_clock_conversion_equation(equation, constants)? {
-            let source_incidence = expression_clock_incidence(conversion.source, flat, roles);
-            let source_members =
-                register_incidence(&source_incidence, &ordinals, &mut occurrences, &mut domains);
-            conversion_edges.push(ClockConversionEdge::new(
-                &equation_members[row],
-                &source_members,
-                conversion.kind,
-                conversion.span,
-            )?);
+        for (name, variable) in &flat.variables {
+            let Some(binding) = variable.binding.as_ref() else {
+                continue;
+            };
+            let binding_span = expression_span(binding)?;
+            let mut members = graph.coordinate_member(name, binding_span)?;
+            if members.is_empty() {
+                continue;
+            }
+            members.extend(
+                graph.collect_root(binding, ClockExpressionRoot::Binding(variable.instance_id))?,
+            );
+            join_domain_members(graph.domains, members);
         }
     }
     let WhenClockSeeds { seeds, inferred } = clocked_when_seeds(
-        flat,
-        roles,
+        ClockDomainGraph {
+            flat,
+            roles,
+            ordinals: &ordinals,
+            domains: &mut domains,
+            constants,
+            conversion_edges: &mut conversion_drafts,
+            continuous_occurrences: &mut continuous_occurrences,
+        },
         plans,
-        &ordinals,
-        &mut occurrences,
-        &mut domains,
-    );
+    )?;
+    let conversion_edges = issue_clock_conversion_edges(conversion_drafts)?;
     let mut owners = assign_domain_owners(&mut domains, seeds)?;
     own_named_sample_clocks(flat, sampled_targets, &ordinals, &mut domains, &mut owners)?;
     infer_sampled_clock_owners(
@@ -438,6 +591,8 @@ pub(super) fn analyze_clock_domains(
         &mut owners,
     )?;
     propagate_clock_conversion_owners(&conversion_edges, &mut domains, &mut owners)?;
+    reject_clocked_continuous_occurrences(&continuous_occurrences, &mut domains, &owners)?;
+    let transfers = resolve_clock_transfer_plans(&conversion_edges, &mut domains, &owners)?;
     let equation_owners = assign_equation_owners(
         flat,
         &equation_members,
@@ -460,7 +615,6 @@ pub(super) fn analyze_clock_domains(
         &ordinals,
         &mut domains,
         &owners,
-        &occurrences,
         sampled_targets,
     )?;
     Ok(ClockDomainAnalysis {
@@ -468,7 +622,39 @@ pub(super) fn analyze_clock_domains(
         value_owners,
         when_owners,
         coordinate_owners,
+        transfers,
     })
+}
+
+fn reject_initial_clock_semantics(flat: &flat::Model) -> Result<(), ToDaeError> {
+    let no_sampled_targets = HashMap::new();
+    for equation in &flat.initial_equations {
+        if let Some(span) = required_clock_owner_span(&equation.residual, flat, &no_sampled_targets)
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "initial clocked equation ownership",
+                "clock-owned sample/previous semantics are not valid in an initial equation",
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn runtime_clock_ordinals(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> HashMap<InstanceId, usize> {
+    flat.variables
+        .iter()
+        .filter(|(name, _)| {
+            roles
+                .get(*name)
+                .is_some_and(|role| is_clock_runtime_role(*role))
+        })
+        .enumerate()
+        .map(|(ordinal, (_, variable))| (variable.instance_id, ordinal))
+        .collect()
 }
 
 /// MLS §16.5.1 `when Clock() then`: the branch declares that its equations form
@@ -477,9 +663,9 @@ pub(super) fn analyze_clock_domains(
 /// owner has no schedule and is reported rather than defaulted.
 fn resolve_inferred_when_owners(
     inferred: &[InferredWhenBranch],
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &HashMap<usize, (ClockPlan, Span)>,
-) -> Result<HashMap<Span, ClockPlan>, ToDaeError> {
+) -> Result<HashMap<WhenOccurrenceId, ClockPlan>, ToDaeError> {
     let mut when_owners = HashMap::with_capacity(inferred.len());
     for branch in inferred {
         let owner = branch
@@ -494,7 +680,7 @@ fn resolve_inferred_when_owners(
                     branch.span,
                 )
             })?;
-        when_owners.insert(branch.span, owner);
+        when_owners.insert(branch.occurrence, owner);
     }
     Ok(when_owners)
 }
@@ -511,97 +697,318 @@ fn is_clock_runtime_role(role: PlannedRole) -> bool {
     )
 }
 
-#[derive(Default)]
-struct ClockIncidence {
-    variables: Vec<(InstanceId, Span)>,
-    seen: HashSet<InstanceId>,
+/// Build the exact clock-domain graph for one expression occurrence.
+///
+/// Ordinary expression structure joins its clocked operands. A clock transfer
+/// instead creates a fresh domain member and a directed source-to-target edge;
+/// its source is deliberately not joined to its result. This recursive graph is
+/// the single owner used later by lowering, including when a transfer is nested
+/// below another expression.
+struct ClockDomainGraph<'analysis> {
+    flat: &'analysis flat::Model,
+    roles: &'analysis HashMap<VarName, PlannedRole>,
+    ordinals: &'analysis HashMap<InstanceId, usize>,
+    domains: &'analysis mut ClockDomainArena,
+    constants: &'analysis EvalContext,
+    conversion_edges: &'analysis mut Vec<ClockConversionDraft>,
+    continuous_occurrences: &'analysis mut Vec<ContinuousClockOccurrence>,
 }
 
-impl ClockIncidence {
-    fn insert(&mut self, instance: InstanceId, span: Span) {
-        if self.seen.insert(instance) {
-            self.variables.push((instance, span));
-        }
+impl ClockDomainGraph<'_> {
+    fn collect_root(
+        &mut self,
+        expression: &Expression,
+        root: ClockExpressionRoot,
+    ) -> Result<Vec<usize>, ToDaeError> {
+        self.collect_at(expression, root, &mut Vec::new(), false)
     }
-}
 
-fn expression_clock_incidence(
-    expression: &Expression,
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> ClockIncidence {
-    let mut incidence = ClockIncidence::default();
-    collect_expression_clock_incidence(expression, flat, roles, &mut incidence);
-    incidence
-}
-
-fn collect_expression_clock_incidence(
-    expression: &Expression,
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    incidence: &mut ClockIncidence,
-) {
-    if let Expression::VarRef {
-        name,
-        subscripts,
-        span,
-    } = expression
-    {
-        register_runtime_coordinate(flat, name.var_name(), *span, roles, incidence);
-        for subscript in subscripts {
-            if let Subscript::Expr { expr, .. } = subscript {
-                collect_expression_clock_incidence(expr, flat, roles, incidence);
+    fn collect_at(
+        &mut self,
+        expression: &Expression,
+        root: ClockExpressionRoot,
+        path: &mut Vec<u32>,
+        transfer_source: bool,
+    ) -> Result<Vec<usize>, ToDaeError> {
+        if let Expression::VarRef { name, span, .. } = expression {
+            let mut members = Vec::new();
+            if let Some(role) = self.roles.get(name.var_name()).copied()
+                && is_clock_runtime_role(role)
+                && let Some(variable) = self.flat.variables.get(name.var_name())
+                && let Some(&ordinal) = self.ordinals.get(&variable.instance_id)
+            {
+                self.record_continuous_occurrence(role, ordinal, *span, transfer_source)?;
+                self.domains.record_provenance(ordinal, *span)?;
+                members.push(ordinal);
             }
+            members.extend(self.collect_children(expression, root, path, transfer_source)?);
+            return Ok(join_domain_members(self.domains, members));
         }
-        return;
-    }
-    match expression {
-        Expression::BuiltinCall {
+
+        if let Expression::BuiltinCall {
             function:
-                BuiltinFunction::Sample
-                | BuiltinFunction::Clock
-                | BuiltinFunction::Hold
-                | BuiltinFunction::SubSample
+                BuiltinFunction::SubSample
                 | BuiltinFunction::SuperSample
                 | BuiltinFunction::ShiftSample
-                | BuiltinFunction::BackSample
-                | BuiltinFunction::NoClock,
-            args,
+                | BuiltinFunction::BackSample,
             ..
-        } => {
-            for argument in args.iter().skip(1) {
-                collect_expression_clock_incidence(argument, flat, roles, incidence);
-            }
+        } = expression
+        {
+            return self.collect_transfer(expression, root, path);
         }
-        _ => {
-            for child in expression_children(expression) {
-                collect_expression_clock_incidence(child, flat, roles, incidence);
-            }
+
+        let children = match expression {
+            Expression::BuiltinCall {
+                function:
+                    BuiltinFunction::Sample
+                    | BuiltinFunction::Clock
+                    | BuiltinFunction::Hold
+                    | BuiltinFunction::NoClock,
+                args,
+                ..
+            } => args.iter().enumerate().skip(1).collect::<Vec<_>>(),
+            _ => expression_children(expression)
+                .into_iter()
+                .enumerate()
+                .collect(),
+        };
+        let mut members = Vec::new();
+        for (index, child) in children {
+            push_expression_child(path, index)?;
+            let child_members = self.collect_at(child, root, path, transfer_source);
+            path.pop();
+            members.extend(child_members?);
         }
+        Ok(join_domain_members(self.domains, members))
+    }
+
+    fn collect_children(
+        &mut self,
+        expression: &Expression,
+        root: ClockExpressionRoot,
+        path: &mut Vec<u32>,
+        transfer_source: bool,
+    ) -> Result<Vec<usize>, ToDaeError> {
+        let mut members = Vec::new();
+        for (index, child) in expression_children(expression).into_iter().enumerate() {
+            push_expression_child(path, index)?;
+            let child_members = self.collect_at(child, root, path, transfer_source);
+            path.pop();
+            members.extend(child_members?);
+        }
+        Ok(members)
+    }
+
+    fn collect_transfer(
+        &mut self,
+        expression: &Expression,
+        root: ClockExpressionRoot,
+        path: &mut Vec<u32>,
+    ) -> Result<Vec<usize>, ToDaeError> {
+        let conversion = value_clock_conversion(expression, self.constants)?.ok_or_else(|| {
+            ToDaeError::internal("clock-transfer recognizer lost a selected transfer expression")
+        })?;
+        push_expression_child(path, 0)?;
+        let source_members = self.collect_at(conversion.source, root, path, true);
+        path.pop();
+        let source_members = source_members?;
+        let [source] = source_members.as_slice() else {
+            return Err(ToDaeError::unsupported_flat(
+                "clocked value conversion ownership proof",
+                "a clock conversion source must belong to one proven clock partition",
+                conversion.span,
+            ));
+        };
+        let target = self.domains.push(Some(conversion.span));
+        self.conversion_edges.push(ClockConversionDraft {
+            source: *source,
+            target,
+            kind: conversion.kind,
+            span: conversion.span,
+            occurrence: ExpressionOccurrenceId {
+                root,
+                path: path.clone(),
+            },
+            expression_address: expression_address(expression),
+        });
+        Ok(vec![target])
+    }
+
+    fn collect_when_equations(
+        &mut self,
+        occurrence: WhenOccurrenceId,
+        equations: &[flat::WhenEquation],
+    ) -> Result<Vec<usize>, ToDaeError> {
+        let mut members = Vec::new();
+        let roots = WhenExpressionRoots::collect(occurrence, equations)?;
+        for (expression, root) in roots.iter() {
+            members.extend(self.collect_root(expression, root)?);
+        }
+        members.extend(self.collect_when_targets(equations)?);
+        Ok(join_domain_members(self.domains, members))
+    }
+
+    fn collect_when_targets(
+        &mut self,
+        equations: &[flat::WhenEquation],
+    ) -> Result<Vec<usize>, ToDaeError> {
+        let mut members = Vec::new();
+        for equation in equations {
+            self.collect_when_target(equation, &mut members)?;
+        }
+        Ok(members)
+    }
+
+    fn collect_when_target(
+        &mut self,
+        equation: &flat::WhenEquation,
+        members: &mut Vec<usize>,
+    ) -> Result<(), ToDaeError> {
+        match equation {
+            flat::WhenEquation::Assign { target, span, .. }
+            | flat::WhenEquation::Reinit {
+                state: target,
+                span,
+                ..
+            } => members.extend(self.coordinate_member(target, *span)?),
+            flat::WhenEquation::Conditional {
+                branches,
+                else_branch,
+                ..
+            } => {
+                self.collect_conditional_when_targets(branches, else_branch.as_deref(), members)?
+            }
+            flat::WhenEquation::FunctionCallOutputs { outputs, span, .. } => {
+                self.collect_function_output_targets(outputs, *span, members)?;
+            }
+            flat::WhenEquation::Assert { .. } | flat::WhenEquation::Terminate { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn collect_conditional_when_targets(
+        &mut self,
+        branches: &[(Expression, Vec<flat::WhenEquation>)],
+        else_branch: Option<&[flat::WhenEquation]>,
+        members: &mut Vec<usize>,
+    ) -> Result<(), ToDaeError> {
+        for (_, equations) in branches {
+            members.extend(self.collect_when_targets(equations)?);
+        }
+        if let Some(equations) = else_branch {
+            members.extend(self.collect_when_targets(equations)?);
+        }
+        Ok(())
+    }
+
+    fn collect_function_output_targets(
+        &mut self,
+        outputs: &[VarName],
+        span: Span,
+        members: &mut Vec<usize>,
+    ) -> Result<(), ToDaeError> {
+        for output in outputs {
+            members.extend(self.coordinate_member(output, span)?);
+        }
+        Ok(())
+    }
+
+    fn coordinate_member(&mut self, name: &VarName, span: Span) -> Result<Vec<usize>, ToDaeError> {
+        let variable = self
+            .flat
+            .variables
+            .get(name)
+            .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
+        let Some(role) = self.roles.get(name).copied() else {
+            return Ok(Vec::new());
+        };
+        if !is_clock_runtime_role(role) {
+            return Ok(Vec::new());
+        }
+        let ordinal = self
+            .ordinals
+            .get(&variable.instance_id)
+            .copied()
+            .ok_or_else(|| {
+                ToDaeError::internal(format!(
+                    "runtime coordinate `{name}` has no clock-domain ordinal"
+                ))
+            })?;
+        self.record_continuous_occurrence(role, ordinal, span, false)?;
+        self.domains.record_provenance(ordinal, span)?;
+        Ok(vec![ordinal])
+    }
+
+    fn record_continuous_occurrence(
+        &mut self,
+        role: PlannedRole,
+        member: usize,
+        span: Span,
+        transfer_source: bool,
+    ) -> Result<(), ToDaeError> {
+        let Some(conflict) = continuous_clock_conflict(role) else {
+            return Ok(());
+        };
+        if transfer_source {
+            return Err(continuous_clock_error(conflict, span));
+        }
+        self.continuous_occurrences.push(ContinuousClockOccurrence {
+            member,
+            span,
+            conflict,
+        });
+        Ok(())
     }
 }
 
-fn register_incidence(
-    incidence: &ClockIncidence,
-    ordinals: &HashMap<InstanceId, usize>,
-    occurrences: &mut [Option<Span>],
-    domains: &mut DisjointDomains,
-) -> Vec<usize> {
-    let members = incidence
-        .variables
-        .iter()
-        .filter_map(|(instance, span)| {
-            let ordinal = ordinals.get(instance).copied()?;
-            occurrences[ordinal].get_or_insert(*span);
-            Some(ordinal)
-        })
-        .collect::<Vec<_>>();
-    if let Some((&first, rest)) = members.split_first() {
-        for &member in rest {
-            domains.union(first, member);
+const fn continuous_clock_conflict(role: PlannedRole) -> Option<ContinuousClockConflict> {
+    match role {
+        PlannedRole::State => Some(ContinuousClockConflict::State),
+        PlannedRole::Input => Some(ContinuousClockConflict::Input),
+        _ => None,
+    }
+}
+
+fn continuous_clock_error(conflict: ContinuousClockConflict, span: Span) -> ToDaeError {
+    ToDaeError::unsupported_flat(
+        "clocked continuous coordinate",
+        format!(
+            "a {} cannot participate directly in a clocked partition; sample it at the clock boundary",
+            conflict.description()
+        ),
+        span,
+    )
+}
+
+fn reject_clocked_continuous_occurrences(
+    occurrences: &[ContinuousClockOccurrence],
+    domains: &mut ClockDomainArena,
+    owners: &HashMap<usize, (ClockPlan, Span)>,
+) -> Result<(), ToDaeError> {
+    for occurrence in occurrences {
+        if owners.contains_key(&domains.find(occurrence.member)) {
+            return Err(continuous_clock_error(occurrence.conflict, occurrence.span));
         }
     }
-    members
+    Ok(())
+}
+
+fn push_expression_child(path: &mut Vec<u32>, index: usize) -> Result<(), ToDaeError> {
+    path.push(
+        u32::try_from(index)
+            .map_err(|_| ToDaeError::internal("expression child identity exceeds u32"))?,
+    );
+    Ok(())
+}
+
+fn join_domain_members(domains: &mut ClockDomainArena, members: Vec<usize>) -> Vec<usize> {
+    let Some((&first, rest)) = members.split_first() else {
+        return Vec::new();
+    };
+    for &member in rest {
+        domains.union(first, member);
+    }
+    vec![first]
 }
 
 #[derive(Clone, Copy)]
@@ -611,41 +1018,91 @@ struct ClockDomainSeed {
     span: Span,
 }
 
-#[derive(Clone, Copy)]
+struct ClockConversionDraft {
+    source: usize,
+    target: usize,
+    kind: dae::ClockTransferKind,
+    span: Span,
+    occurrence: ExpressionOccurrenceId,
+    expression_address: usize,
+}
+
+#[derive(Clone)]
 struct ClockConversionEdge {
     source: usize,
     target: usize,
     kind: dae::ClockTransferKind,
     span: Span,
+    occurrence: ExpressionOccurrenceId,
+    expression_address: usize,
+    identity: u32,
 }
 
 impl ClockConversionEdge {
-    fn new(
-        target_members: &[usize],
-        source_members: &[usize],
-        kind: dae::ClockTransferKind,
-        span: Span,
-    ) -> Result<Self, ToDaeError> {
-        let [target] = target_members else {
-            return Err(ToDaeError::unsupported_flat(
-                "clocked value conversion ownership proof",
-                "a clock conversion must define exactly one target clock partition",
-                span,
-            ));
-        };
-        let Some(&source) = source_members.first() else {
-            return Err(ToDaeError::unsupported_flat(
-                "clocked value conversion ownership proof",
-                "a clock conversion source must belong to a proven clock partition",
-                span,
-            ));
-        };
-        Ok(Self {
-            source,
-            target: *target,
-            kind,
-            span,
+    fn source_owner(&self) -> ClockOwnerId {
+        ClockOwnerId::TransferSource(self.identity)
+    }
+
+    fn target_owner(&self) -> ClockOwnerId {
+        ClockOwnerId::TransferTarget(self.identity)
+    }
+}
+
+fn issue_clock_conversion_edges(
+    drafts: Vec<ClockConversionDraft>,
+) -> Result<Vec<ClockConversionEdge>, ToDaeError> {
+    let mut occurrences = drafts
+        .iter()
+        .map(|draft| draft.occurrence.clone())
+        .collect::<Vec<_>>();
+    occurrences.sort_by(compare_expression_occurrences);
+    occurrences.dedup();
+    let identities = occurrences
+        .into_iter()
+        .enumerate()
+        .map(|(index, occurrence)| {
+            let identity = u32::try_from(index)
+                .map_err(|_| ToDaeError::internal("clock transfer identity exceeds u32"))?;
+            Ok((occurrence, identity))
         })
+        .collect::<Result<HashMap<_, _>, ToDaeError>>()?;
+    drafts
+        .into_iter()
+        .map(|draft| {
+            let identity = identities.get(&draft.occurrence).copied().ok_or_else(|| {
+                ToDaeError::internal("issued clock-transfer occurrence lost its identity")
+            })?;
+            Ok(ClockConversionEdge {
+                source: draft.source,
+                target: draft.target,
+                kind: draft.kind,
+                span: draft.span,
+                occurrence: draft.occurrence,
+                expression_address: draft.expression_address,
+                identity,
+            })
+        })
+        .collect()
+}
+
+fn compare_expression_occurrences(
+    left: &ExpressionOccurrenceId,
+    right: &ExpressionOccurrenceId,
+) -> std::cmp::Ordering {
+    clock_expression_root_key(left.root)
+        .cmp(&clock_expression_root_key(right.root))
+        .then_with(|| left.path.cmp(&right.path))
+}
+
+fn clock_expression_root_key(root: ClockExpressionRoot) -> (u8, u32, u32, u32) {
+    match root {
+        ClockExpressionRoot::Equation(row) => (0, row, 0, 0),
+        ClockExpressionRoot::Binding(instance) => (1, instance.index(), 0, 0),
+        ClockExpressionRoot::When {
+            chain,
+            branch,
+            expression,
+        } => (2, chain, branch, expression),
     }
 }
 
@@ -653,27 +1110,6 @@ struct ClockConversionExpression<'expression> {
     source: &'expression Expression,
     kind: dae::ClockTransferKind,
     span: Span,
-}
-
-fn value_clock_conversion_equation<'expression>(
-    equation: &'expression flat::Equation,
-    constants: &EvalContext,
-) -> Result<Option<ClockConversionExpression<'expression>>, ToDaeError> {
-    let Some((lhs, rhs)) = subtraction_operands(&equation.residual) else {
-        return Ok(None);
-    };
-    match (
-        value_clock_conversion(lhs, constants)?,
-        value_clock_conversion(rhs, constants)?,
-    ) {
-        (None, Some(conversion)) | (Some(conversion), None) => Ok(Some(conversion)),
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err(ToDaeError::unsupported_flat(
-            "clocked value conversion ownership proof",
-            "one equation cannot define two cross-clock value transfers",
-            equation.span,
-        )),
-    }
 }
 
 fn value_clock_conversion<'expression>(
@@ -691,29 +1127,29 @@ fn value_clock_conversion<'expression>(
     };
     let kind = match (function, args.as_slice()) {
         (BuiltinFunction::SubSample, [_, factor]) => dae::ClockTransferKind::SubSample {
-            factor: clock_integer(factor, constants, function.name(), *span)?,
+            factor: clock_positive(factor, constants, function.name())?,
         },
         (BuiltinFunction::SuperSample, [_, factor]) => dae::ClockTransferKind::SuperSample {
-            factor: clock_integer(factor, constants, function.name(), *span)?,
+            factor: clock_positive(factor, constants, function.name())?,
         },
         (BuiltinFunction::ShiftSample, [_, counter]) => dae::ClockTransferKind::ShiftSample {
-            counter: clock_integer(counter, constants, function.name(), *span)?,
+            counter: clock_nonnegative(counter, constants, function.name())?,
             resolution: 1,
         },
         (BuiltinFunction::ShiftSample, [_, counter, resolution]) => {
             dae::ClockTransferKind::ShiftSample {
-                counter: clock_integer(counter, constants, function.name(), *span)?,
-                resolution: clock_integer(resolution, constants, function.name(), *span)?,
+                counter: clock_nonnegative(counter, constants, function.name())?,
+                resolution: clock_positive(resolution, constants, function.name())?,
             }
         }
         (BuiltinFunction::BackSample, [_, counter]) => dae::ClockTransferKind::BackSample {
-            counter: clock_integer(counter, constants, function.name(), *span)?,
+            counter: clock_nonnegative(counter, constants, function.name())?,
             resolution: 1,
         },
         (BuiltinFunction::BackSample, [_, counter, resolution]) => {
             dae::ClockTransferKind::BackSample {
-                counter: clock_integer(counter, constants, function.name(), *span)?,
-                resolution: clock_integer(resolution, constants, function.name(), *span)?,
+                counter: clock_nonnegative(counter, constants, function.name())?,
+                resolution: clock_positive(resolution, constants, function.name())?,
             }
         }
         (BuiltinFunction::NoClock, [_]) => {
@@ -748,7 +1184,7 @@ fn value_clock_conversion<'expression>(
 
 fn propagate_clock_conversion_owners(
     edges: &[ClockConversionEdge],
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &mut HashMap<usize, (ClockPlan, Span)>,
 ) -> Result<(), ToDaeError> {
     loop {
@@ -760,7 +1196,7 @@ fn propagate_clock_conversion_owners(
             let target = owners.get(&target_root).copied();
             match (source, target) {
                 (Some((source, _)), Some((target, _))) => {
-                    require_conversion_lattice(edge, source.lattice, target.lattice)?;
+                    require_conversion_relationship(edge, source, target)?;
                 }
                 (Some((source, _)), None) => {
                     let lattice = conversion_target_lattice(edge, source.lattice)?;
@@ -768,8 +1204,13 @@ fn propagate_clock_conversion_owners(
                         target_root,
                         (
                             ClockPlan {
+                                owner: edge.target_owner(),
                                 lattice,
                                 constructor_span: edge.span,
+                                lineage: ClockLineage::Conversion {
+                                    source: source.owner,
+                                    kind: edge.kind,
+                                },
                             },
                             edge.span,
                         ),
@@ -782,8 +1223,13 @@ fn propagate_clock_conversion_owners(
                         source_root,
                         (
                             ClockPlan {
+                                owner: edge.source_owner(),
                                 lattice,
                                 constructor_span: edge.span,
+                                lineage: ClockLineage::Conversion {
+                                    source: target.owner,
+                                    kind: inverse_transfer_kind(edge.kind),
+                                },
                             },
                             edge.span,
                         ),
@@ -797,6 +1243,49 @@ fn propagate_clock_conversion_owners(
             return Ok(());
         }
     }
+}
+
+fn resolve_clock_transfer_plans(
+    edges: &[ClockConversionEdge],
+    domains: &mut ClockDomainArena,
+    owners: &HashMap<usize, (ClockPlan, Span)>,
+) -> Result<ClockTransferPlans, ToDaeError> {
+    let mut transfers = ClockTransferPlans::default();
+    for edge in edges {
+        let source = owners
+            .get(&domains.find(edge.source))
+            .map(|(plan, _)| *plan)
+            .ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "clocked value conversion ownership proof",
+                    "a clock conversion source has no exact issued clock owner",
+                    edge.span,
+                )
+            })?;
+        let target = owners
+            .get(&domains.find(edge.target))
+            .map(|(plan, _)| *plan)
+            .ok_or_else(|| {
+                ToDaeError::unsupported_flat(
+                    "clocked value conversion ownership proof",
+                    "a clock conversion target has no exact issued clock owner",
+                    edge.span,
+                )
+            })?;
+        require_conversion_relationship(edge, source, target)?;
+        let plan = ClockTransferPlan {
+            source,
+            target,
+            kind: edge.kind,
+        };
+        transfers.insert(
+            edge.expression_address,
+            edge.occurrence.clone(),
+            plan,
+            edge.span,
+        )?;
+    }
+    Ok(transfers)
 }
 
 fn require_conversion_lattice(
@@ -815,11 +1304,79 @@ fn require_conversion_lattice(
     }
 }
 
+fn require_conversion_relationship(
+    edge: &ClockConversionEdge,
+    source: ClockPlan,
+    target: ClockPlan,
+) -> Result<(), ToDaeError> {
+    require_conversion_lattice(edge, source.lattice, target.lattice)?;
+    let target_matches = matches!(
+        target.lineage,
+        ClockLineage::Conversion {
+            source: owner,
+            kind,
+        } if owner == source.owner && kind == edge.kind
+    );
+    let inverse = inverse_transfer_kind(edge.kind);
+    let source_matches = matches!(
+        source.lineage,
+        ClockLineage::Conversion {
+            source: owner,
+            kind,
+        } if owner == target.owner && kind == inverse
+    );
+    if target_matches || source_matches {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "clocked value conversion ownership proof",
+        "the source and target partitions have compatible schedules but no exact clock lineage",
+        edge.span,
+    ))
+}
+
+fn inverse_transfer_kind(kind: dae::ClockTransferKind) -> dae::ClockTransferKind {
+    match kind {
+        dae::ClockTransferKind::SubSample { factor } => {
+            dae::ClockTransferKind::SuperSample { factor }
+        }
+        dae::ClockTransferKind::SuperSample { factor } => {
+            dae::ClockTransferKind::SubSample { factor }
+        }
+        dae::ClockTransferKind::ShiftSample {
+            counter,
+            resolution,
+        } => dae::ClockTransferKind::BackSample {
+            counter,
+            resolution,
+        },
+        dae::ClockTransferKind::BackSample {
+            counter,
+            resolution,
+        } => dae::ClockTransferKind::ShiftSample {
+            counter,
+            resolution,
+        },
+    }
+}
+
 fn conversion_target_lattice(
     edge: &ClockConversionEdge,
     source: ClockLattice,
 ) -> Result<ClockLattice, ToDaeError> {
-    let result = match edge.kind {
+    transfer_target_lattice(edge.kind, source).map_err(|source| {
+        ToDaeError::from(dae::DaeConstructionError::InvalidClockLattice {
+            source,
+            span: edge.span,
+        })
+    })
+}
+
+fn transfer_target_lattice(
+    kind: dae::ClockTransferKind,
+    source: ClockLattice,
+) -> Result<ClockLattice, rumoca_core::ClockLatticeErrorKind> {
+    match kind {
         dae::ClockTransferKind::SubSample { factor } => source.sub_sample(factor),
         dae::ClockTransferKind::SuperSample { factor } => source.super_sample(factor),
         dae::ClockTransferKind::ShiftSample {
@@ -830,14 +1387,7 @@ fn conversion_target_lattice(
             counter,
             resolution,
         } => source.back_sample(counter, resolution),
-    };
-    result.map_err(|error| {
-        ToDaeError::unsupported_runtime_operator(
-            "clocked value conversion",
-            error.to_string(),
-            edge.span,
-        )
-    })
+    }
 }
 
 fn conversion_source_lattice(
@@ -856,12 +1406,11 @@ fn conversion_source_lattice(
             resolution,
         } => target.shift_sample(counter, resolution),
     };
-    result.map_err(|error| {
-        ToDaeError::unsupported_runtime_operator(
-            "clocked value conversion",
-            error.to_string(),
-            edge.span,
-        )
+    result.map_err(|source| {
+        ToDaeError::from(dae::DaeConstructionError::InvalidClockLattice {
+            source,
+            span: edge.span,
+        })
     })
 }
 
@@ -870,6 +1419,7 @@ fn conversion_source_lattice(
 struct InferredWhenBranch {
     member: Option<usize>,
     span: Span,
+    occurrence: WhenOccurrenceId,
 }
 
 struct WhenClockSeeds {
@@ -878,24 +1428,25 @@ struct WhenClockSeeds {
 }
 
 fn clocked_when_seeds(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
+    mut graph: ClockDomainGraph<'_>,
     plans: &HashMap<InstanceId, ClockPlan>,
-    ordinals: &HashMap<InstanceId, usize>,
-    occurrences: &mut [Option<Span>],
-    domains: &mut DisjointDomains,
-) -> WhenClockSeeds {
+) -> Result<WhenClockSeeds, ToDaeError> {
     let mut seeds = Vec::new();
     let mut inferred = Vec::new();
-    for chain in &flat.when_chains {
-        for branch in chain.branches() {
-            let clock = clock_condition_plan(&branch.condition, flat, plans);
+    for (chain_index, chain) in graph.flat.when_chains.iter().enumerate() {
+        let chain_id = u32::try_from(chain_index)
+            .map_err(|_| ToDaeError::internal("when-chain identity exceeds u32"))?;
+        for (branch_index, branch) in chain.branches().enumerate() {
+            let occurrence = WhenOccurrenceId {
+                chain: chain_id,
+                branch: u32::try_from(branch_index)
+                    .map_err(|_| ToDaeError::internal("when-branch identity exceeds u32"))?,
+            };
+            let clock = clock_condition_plan(&branch.condition, graph.flat, plans);
             if clock.is_none() && !is_inferred_clock_condition(&branch.condition) {
                 continue;
             }
-            let mut incidence = ClockIncidence::default();
-            collect_when_clock_incidence(flat, &branch.equations, roles, &mut incidence);
-            let members = register_incidence(&incidence, ordinals, occurrences, domains);
+            let members = graph.collect_when_equations(occurrence, &branch.equations)?;
             let member = members.first().copied();
             match (clock, member) {
                 (Some(clock), Some(member)) => seeds.push(ClockDomainSeed {
@@ -907,11 +1458,12 @@ fn clocked_when_seeds(
                 (None, member) => inferred.push(InferredWhenBranch {
                     member,
                     span: branch.span,
+                    occurrence,
                 }),
             }
         }
     }
-    WhenClockSeeds { seeds, inferred }
+    Ok(WhenClockSeeds { seeds, inferred })
 }
 
 /// MLS §16.3 Operator 16.2 `Clock()`: the inferred-clock constructor, which in
@@ -946,101 +1498,24 @@ fn clock_condition_plan(
     plans.get(&variable.instance_id).copied()
 }
 
-fn collect_when_clock_incidence(
-    flat: &flat::Model,
-    equations: &[flat::WhenEquation],
-    roles: &HashMap<VarName, PlannedRole>,
-    incidence: &mut ClockIncidence,
-) {
-    for equation in equations {
-        match equation {
-            flat::WhenEquation::Assign {
-                target,
-                value,
-                span,
-                ..
-            }
-            | flat::WhenEquation::Reinit {
-                state: target,
-                value,
-                span,
-                ..
-            } => {
-                register_runtime_coordinate(flat, target, *span, roles, incidence);
-                collect_expression_clock_incidence(value, flat, roles, incidence);
-            }
-            flat::WhenEquation::Assert {
-                condition,
-                message,
-                level,
-                ..
-            } => {
-                collect_expression_clock_incidence(condition, flat, roles, incidence);
-                collect_expression_clock_incidence(message, flat, roles, incidence);
-                if let Some(level) = level {
-                    collect_expression_clock_incidence(level, flat, roles, incidence);
-                }
-            }
-            flat::WhenEquation::Terminate { message, .. } => {
-                collect_expression_clock_incidence(message, flat, roles, incidence);
-            }
-            flat::WhenEquation::Conditional {
-                branches,
-                else_branch,
-                ..
-            } => {
-                for (condition, equations) in branches {
-                    collect_expression_clock_incidence(condition, flat, roles, incidence);
-                    collect_when_clock_incidence(flat, equations, roles, incidence);
-                }
-                if let Some(equations) = else_branch {
-                    collect_when_clock_incidence(flat, equations, roles, incidence);
-                }
-            }
-            flat::WhenEquation::FunctionCallOutputs {
-                outputs,
-                function,
-                span,
-                ..
-            } => {
-                for output in outputs {
-                    register_runtime_coordinate(flat, output, *span, roles, incidence);
-                }
-                collect_expression_clock_incidence(function, flat, roles, incidence);
-            }
-        }
-    }
-}
-
-fn register_runtime_coordinate(
-    flat: &flat::Model,
-    name: &VarName,
-    span: Span,
-    roles: &HashMap<VarName, PlannedRole>,
-    incidence: &mut ClockIncidence,
-) {
-    if roles
-        .get(name)
-        .is_some_and(|role| is_clock_runtime_role(*role))
-        && let Some(variable) = flat.variables.get(name)
-    {
-        incidence.insert(variable.instance_id, span);
-    }
-}
-
 fn assign_domain_owners(
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     seeds: Vec<ClockDomainSeed>,
 ) -> Result<HashMap<usize, (ClockPlan, Span)>, ToDaeError> {
-    let mut owners = HashMap::new();
+    let mut owners: HashMap<usize, (ClockPlan, Span)> = HashMap::new();
     for seed in seeds {
         let root = domains.find(seed.member);
         match owners.get(&root) {
-            Some((clock, _)) if *clock != seed.clock => {
+            Some((clock, _)) if !clock.matches_exactly(seed.clock) => {
+                let attempted = domains.provenance(seed.member)?.ok_or_else(|| {
+                    ToDaeError::MissingProvenance {
+                        owner: "conflicting clock-domain operand occurrence".to_string(),
+                    }
+                })?;
                 return Err(ToDaeError::unsupported_flat(
                     "clocked equation ownership proof",
                     "one equation component is connected to distinct clock owners",
-                    seed.span,
+                    attempted,
                 ));
             }
             Some(_) => {}
@@ -1061,7 +1536,7 @@ fn own_named_sample_clocks(
     flat: &flat::Model,
     sampled_targets: &HashMap<InstanceId, SampledTarget>,
     ordinals: &HashMap<InstanceId, usize>,
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &mut HashMap<usize, (ClockPlan, Span)>,
 ) -> Result<(), ToDaeError> {
     let mut seeds = Vec::new();
@@ -1085,7 +1560,7 @@ fn own_named_sample_clocks(
     for seed in seeds {
         let root = domains.find(seed.member);
         match owners.get(&root) {
-            Some((clock, _)) if *clock != seed.clock => {
+            Some((clock, _)) if !clock.matches_exactly(seed.clock) => {
                 return Err(ToDaeError::unsupported_flat(
                     "clocked sample ownership proof",
                     "sample(value, clock) names a clock that conflicts with its partition owner",
@@ -1113,7 +1588,7 @@ fn infer_sampled_clock_owners(
     plans: &HashMap<InstanceId, ClockPlan>,
     sampled_targets: &HashMap<InstanceId, SampledTarget>,
     ordinals: &HashMap<InstanceId, usize>,
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &mut HashMap<usize, (ClockPlan, Span)>,
 ) -> Result<(), ToDaeError> {
     for variable in flat.variables.values() {
@@ -1143,7 +1618,7 @@ fn unique_clock_plan(
     let mut unique: Option<ClockPlan> = None;
     for plan in plans.values() {
         match unique {
-            Some(existing) if existing == *plan => {}
+            Some(existing) if existing.matches_exactly(*plan) => {}
             Some(_) => {
                 return Err(ToDaeError::unsupported_flat(
                     "clocked sample ownership proof",
@@ -1209,7 +1684,7 @@ fn validate_value_sample_operands(
         && let [value, clock] = args.as_slice()
         && let Some(named) = clock_condition_plan(clock, flat, plans)
     {
-        if owner != Some(named) {
+        if !owner.is_some_and(|owner| owner.matches_exactly(named)) {
             return Err(ToDaeError::unsupported_flat(
                 "clocked sample ownership proof",
                 "sample(value, clock) must name the clock that owns its partition",
@@ -1286,7 +1761,7 @@ pub(in crate::construction) fn is_whole_clock_coordinate(
 fn assign_equation_owners(
     flat: &flat::Model,
     equation_members: &[Vec<usize>],
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &HashMap<usize, (ClockPlan, Span)>,
     sampled_targets: &HashMap<InstanceId, SampledTarget>,
 ) -> Result<HashMap<usize, ClockPlan>, ToDaeError> {
@@ -1348,9 +1823,8 @@ fn assign_value_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
     ordinals: &HashMap<InstanceId, usize>,
-    domains: &mut DisjointDomains,
+    domains: &mut ClockDomainArena,
     owners: &HashMap<usize, (ClockPlan, Span)>,
-    occurrences: &[Option<Span>],
     sampled_targets: &HashMap<InstanceId, SampledTarget>,
 ) -> Result<HashMap<InstanceId, ClockedValuePlan>, ToDaeError> {
     let mut value_owners = HashMap::new();
@@ -1370,7 +1844,7 @@ fn assign_value_owners(
         let ownership_span = sampled_targets
             .get(&instance)
             .map(|target| target.span)
-            .or(occurrences[ordinal])
+            .or(domains.provenance(ordinal)?)
             .ok_or_else(|| {
                 ToDaeError::unsupported_flat(
                     "clocked value ownership proof",
@@ -1408,6 +1882,54 @@ fn assign_value_owners(
     Ok(value_owners)
 }
 
+/// Union-find members and their exact source provenance share one arena.
+/// A member cannot be allocated without its matching provenance slot, which
+/// makes the parallel-length drift that used to panic on transfer targets
+/// unrepresentable.
+struct ClockDomainArena {
+    domains: DisjointDomains,
+    provenance: Vec<Option<Span>>,
+}
+
+impl ClockDomainArena {
+    fn new(len: usize) -> Self {
+        Self {
+            domains: DisjointDomains::new(len),
+            provenance: vec![None; len],
+        }
+    }
+
+    fn find(&mut self, member: usize) -> usize {
+        self.domains.find(member)
+    }
+
+    fn union(&mut self, lhs: usize, rhs: usize) {
+        self.domains.union(lhs, rhs);
+    }
+
+    fn push(&mut self, provenance: Option<Span>) -> usize {
+        let member = self.domains.push();
+        self.provenance.push(provenance);
+        member
+    }
+
+    fn record_provenance(&mut self, member: usize, span: Span) -> Result<(), ToDaeError> {
+        let provenance = self
+            .provenance
+            .get_mut(member)
+            .ok_or_else(|| ToDaeError::internal("clock-domain member has no provenance storage"))?;
+        provenance.get_or_insert(span);
+        Ok(())
+    }
+
+    fn provenance(&self, member: usize) -> Result<Option<Span>, ToDaeError> {
+        self.provenance
+            .get(member)
+            .copied()
+            .ok_or_else(|| ToDaeError::internal("clock-domain member is outside its owner arena"))
+    }
+}
+
 struct DisjointDomains {
     parent: Vec<usize>,
 }
@@ -1433,6 +1955,12 @@ impl DisjointDomains {
         root
     }
 
+    fn push(&mut self) -> usize {
+        let member = self.parent.len();
+        self.parent.push(member);
+        member
+    }
+
     fn union(&mut self, lhs: usize, rhs: usize) {
         let lhs = self.find(lhs);
         let rhs = self.find(rhs);
@@ -1440,281 +1968,4 @@ impl DisjointDomains {
             self.parent[rhs] = lhs;
         }
     }
-}
-
-type SampledValueTarget<'flat> = (&'flat flat::Variable, Span, Option<&'flat flat::Variable>);
-
-fn sampled_value_target<'flat>(
-    expression: &Expression,
-    flat: &'flat flat::Model,
-    clocks: &ClockCoordinates<'flat>,
-) -> Option<SampledValueTarget<'flat>> {
-    let (lhs, rhs) = subtraction_operands(expression)?;
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = lhs
-    else {
-        return None;
-    };
-    if !subscripts.is_empty() {
-        return None;
-    }
-    let (_, clock) = value_sample_operands(rhs, clocks)?;
-    let span = rhs.span()?;
-    flat.variables
-        .get(name.var_name())
-        .map(|variable| (variable, span, clock))
-}
-
-fn expression_mentions_value_sample(
-    expression: &Expression,
-    clocks: &ClockCoordinates<'_>,
-) -> bool {
-    value_sample_operands(expression, clocks).is_some()
-        || expression_children(expression)
-            .into_iter()
-            .any(|child| expression_mentions_value_sample(child, clocks))
-}
-
-fn subtraction_operands(expression: &Expression) -> Option<(&Expression, &Expression)> {
-    let Expression::Binary {
-        op: OpBinary::Sub,
-        lhs,
-        rhs,
-        ..
-    } = expression
-    else {
-        return None;
-    };
-    Some((lhs, rhs))
-}
-
-fn whole_clock_reference<'flat>(
-    expression: &Expression,
-    clocks: &ClockCoordinates<'flat>,
-) -> Option<&'flat flat::Variable> {
-    let Expression::VarRef {
-        name, subscripts, ..
-    } = expression
-    else {
-        return None;
-    };
-    subscripts
-        .is_empty()
-        .then(|| clocks.resolve(name.var_name()))
-        .flatten()
-}
-
-fn periodic_constructor(
-    expression: &Expression,
-    constants: &EvalContext,
-) -> Result<Option<ClockPlan>, ToDaeError> {
-    let Expression::BuiltinCall {
-        function: BuiltinFunction::Clock,
-        args,
-        span,
-    } = expression
-    else {
-        return Ok(None);
-    };
-    let lattice = match args.as_slice() {
-        // MLS §16.3 `Clock(interval)`: a period given in seconds.
-        [interval] => {
-            let seconds = evaluate_clock_seconds(interval, constants, "Clock interval", *span)?;
-            ClockRational::from_seconds(seconds)
-                .and_then(|period| ClockLattice::new(period, ClockRational::ZERO))
-        }
-        // MLS §16.3 `Clock(intervalCounter, resolution)`: the exact rational
-        // period `intervalCounter / resolution` seconds, which is the only form
-        // that keeps sub-millisecond periods free of binary rounding.
-        [interval_counter, resolution] => ClockLattice::from_interval_counter(
-            clock_integer(interval_counter, constants, "Clock", *span)?,
-            clock_integer(resolution, constants, "Clock", *span)?,
-        ),
-        _ => {
-            return Err(ToDaeError::unsupported_runtime_operator(
-                "Clock",
-                "the canonical clock proof requires `Clock(interval)` or `Clock(intervalCounter, resolution)`",
-                *span,
-            ));
-        }
-    }
-    .map_err(|error| ToDaeError::unsupported_runtime_operator("Clock", error.to_string(), *span))?;
-    Ok(Some(ClockPlan {
-        lattice,
-        constructor_span: *span,
-    }))
-}
-
-/// MLS §16.7: clock partitioning is a static property of the model, so an
-/// `if`-equation that defines a `Clock` coordinate must be decided by the
-/// model's parameter values. Fold such an equation to the branch those values
-/// select; a condition that is not parameter-evaluable has no static schedule.
-fn static_clock_branch<'expression>(
-    residual: &'expression Expression,
-    constants: &EvalContext,
-    clocks: &ClockCoordinates<'_>,
-) -> Result<&'expression Expression, ToDaeError> {
-    let mut current = residual;
-    while let Expression::If {
-        branches,
-        else_branch,
-        span,
-    } = current
-    {
-        if !expression_mentions_clock(current, clocks) {
-            return Ok(current);
-        }
-        current = statically_selected_branch(branches, else_branch, constants).ok_or_else(|| {
-            ToDaeError::unresolved_clock_schedule(
-                "clock equation",
-                "an `if` equation that defines a Clock coordinate needs parameter-evaluable Boolean conditions",
-                *span,
-            )
-        })?;
-    }
-    Ok(current)
-}
-
-fn insert_plan(
-    plans: &mut HashMap<InstanceId, ClockPlan>,
-    target: &flat::Variable,
-    plan: ClockPlan,
-    span: Span,
-) -> Result<(), ToDaeError> {
-    if let Some(existing) = plans.get(&target.instance_id)
-        && existing.lattice != plan.lattice
-    {
-        return Err(ToDaeError::unresolved_clock_schedule(
-            target.name.as_str(),
-            "conflicting constructors bind this clock coordinate",
-            span,
-        ));
-    }
-    plans.insert(target.instance_id, plan);
-    Ok(())
-}
-
-/// Close the clock-coordinate plans over the model's own definitions.
-///
-/// Equation order carries no meaning, so a derived clock (`c = subSample(base,
-/// 2)`) and an alias (`c = y`) both have to wait for their source to acquire a
-/// plan. Both are replayed until nothing new resolves; a coordinate that never
-/// acquires a plan is reported by the caller against its own declaration.
-fn resolve_clock_definitions(
-    plans: &mut HashMap<InstanceId, ClockPlan>,
-    derived: &[(&flat::Variable, &Expression, Span)],
-    aliases: &[(&flat::Variable, &flat::Variable, Span)],
-    constants: &EvalContext,
-    clocks: &ClockCoordinates<'_>,
-) -> Result<(), ToDaeError> {
-    loop {
-        let mut progress = false;
-        for (target, expression, span) in derived {
-            if plans.contains_key(&target.instance_id) {
-                continue;
-            }
-            let Some(plan) = bound_clock_plan(expression, constants, clocks, plans)? else {
-                continue;
-            };
-            insert_plan(plans, target, plan, *span)?;
-            progress = true;
-        }
-        progress |= propagate_aliases(plans, aliases)?;
-        if !progress {
-            return Ok(());
-        }
-    }
-}
-
-fn propagate_aliases(
-    plans: &mut HashMap<InstanceId, ClockPlan>,
-    aliases: &[(&flat::Variable, &flat::Variable, Span)],
-) -> Result<bool, ToDaeError> {
-    let mut resolved = false;
-    loop {
-        let mut progress = false;
-        for (lhs, rhs, span) in aliases {
-            match (
-                plans.get(&lhs.instance_id).copied(),
-                plans.get(&rhs.instance_id).copied(),
-            ) {
-                (Some(lhs_plan), Some(rhs_plan)) if lhs_plan.lattice != rhs_plan.lattice => {
-                    return Err(ToDaeError::unresolved_clock_schedule(
-                        format!("{} = {}", lhs.name, rhs.name),
-                        "this clock alias joins conflicting constructors",
-                        *span,
-                    ));
-                }
-                (Some(plan), None) => {
-                    plans.insert(rhs.instance_id, plan);
-                    progress = true;
-                }
-                (None, Some(plan)) => {
-                    plans.insert(lhs.instance_id, plan);
-                    progress = true;
-                }
-                (Some(_), Some(_)) | (None, None) => {}
-            }
-        }
-        if !progress {
-            return Ok(resolved);
-        }
-        resolved = true;
-    }
-}
-
-fn expression_mentions_clock(expression: &Expression, clocks: &ClockCoordinates<'_>) -> bool {
-    // MLS §16.3 `sample(u, c)` names its clock as an operand of a *value*
-    // sample, not as a clock definition. That occurrence is proven separately by
-    // `validate_clocked_value_samples`, so it must not make the surrounding
-    // equation a clock equation.
-    if let Some((value, _)) = value_sample_operands(expression, clocks) {
-        return expression_mentions_clock(value, clocks);
-    }
-    matches!(
-        expression,
-        Expression::VarRef { name, .. } if clocks.contains(name.var_name())
-    ) || matches!(
-        expression,
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Clock,
-            ..
-        }
-    ) || expression_children(expression)
-        .into_iter()
-        .any(|child| expression_mentions_clock(child, clocks))
-}
-
-/// Split an MLS §16.3 value sample into `(sampled value, named clock)`.
-///
-/// The one-operand form leaves the clock to §16.5.1 inference; the two-operand
-/// form names it, and only a whole `Clock` coordinate can be that operand —
-/// `sample(start, interval)` (MLS §3.7.5) keeps its Real second operand and is
-/// deliberately not matched here.
-fn value_sample_operands<'expression, 'flat>(
-    expression: &'expression Expression,
-    clocks: &ClockCoordinates<'flat>,
-) -> Option<(&'expression Expression, Option<&'flat flat::Variable>)> {
-    let Expression::BuiltinCall {
-        function: BuiltinFunction::Sample,
-        args,
-        ..
-    } = expression
-    else {
-        return None;
-    };
-    match args.as_slice() {
-        [value] => Some((value, None)),
-        [value, clock] => whole_clock_reference(clock, clocks).map(|clock| (value, Some(clock))),
-        _ => None,
-    }
-}
-
-fn unsupported_clock_equation(equation: &flat::Equation) -> ToDaeError {
-    ToDaeError::unresolved_clock_schedule(
-        "clock equation",
-        "a clock equation must be an exact whole-coordinate constructor or alias",
-        equation.span,
-    )
 }

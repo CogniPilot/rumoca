@@ -442,7 +442,7 @@ impl Session {
 
     fn body_semantic_diagnostics_query(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         model_name: &str,
         mode: SemanticDiagnosticsMode,
         fingerprint: Fingerprint,
@@ -454,8 +454,8 @@ impl Session {
 
         record_body_semantic_diagnostics_cache_miss();
         record_body_semantic_diagnostics_build();
-        let typed = self.typed_model_query(tree, mode.resolve_build_mode(), model_name);
-        let outcome = build_model_diagnostics_for_typed_model(tree, model_name, typed);
+        let typed = self.typed_model_record_query(resolved, mode.resolve_build_mode(), model_name);
+        let outcome = build_model_diagnostics_for_typed_model(resolved.inner(), model_name, typed);
         self.insert_body_semantic_diagnostics(
             model_name.to_string(),
             mode,
@@ -468,7 +468,7 @@ impl Session {
 
     fn model_stage_semantic_diagnostics_query(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         model_name: &str,
         mode: SemanticDiagnosticsMode,
         fingerprint: Fingerprint,
@@ -482,8 +482,8 @@ impl Session {
 
         record_model_stage_semantic_diagnostics_cache_miss();
         record_model_stage_semantic_diagnostics_build();
-        let dae = self.dae_model_query(tree, mode.resolve_build_mode(), model_name);
-        let diagnostics = build_model_diagnostics_for_dae_model(tree, model_name, dae);
+        let dae = self.dae_model_query(resolved, mode.resolve_build_mode(), model_name);
+        let diagnostics = build_model_diagnostics_for_dae_model(resolved.inner(), model_name, dae);
         self.insert_model_stage_semantic_diagnostics(
             model_name.to_string(),
             mode,
@@ -504,10 +504,15 @@ impl Session {
             Err(diags) => return *diags,
         };
 
-        let tree = interface.resolved.inner();
+        let resolved = interface.resolved;
+        let tree = resolved.inner();
         let warnings = model_diagnostics_for_tree(tree, interface.warnings.clone());
-        let body =
-            self.body_semantic_diagnostics_query(tree, model_name, mode, interface.fingerprint);
+        let body = self.body_semantic_diagnostics_query(
+            &resolved,
+            model_name,
+            mode,
+            interface.fingerprint,
+        );
         if interface
             .class_type
             .as_ref()
@@ -520,7 +525,7 @@ impl Session {
         }
 
         let model_stage = self.model_stage_semantic_diagnostics_query(
-            tree,
+            &resolved,
             model_name,
             mode,
             interface.fingerprint,
@@ -540,14 +545,14 @@ impl Session {
 fn build_model_diagnostics_for_typed_model(
     tree: &ast::ClassTree,
     model_name: &str,
-    typed: TypedModelOutcome,
+    typed: TypedModelRecord,
 ) -> BodySemanticDiagnosticsResult {
     let mut collected = Vec::new();
     let model_span =
         class_primary_span(tree, model_name).unwrap_or_else(|| default_tree_span(&tree.source_map));
-    let overlay = match typed {
-        TypedModelOutcome::Success(overlay) => *overlay,
-        TypedModelOutcome::NeedsInner {
+    let projection = match typed {
+        TypedModelRecord::Success(projection) => projection,
+        TypedModelRecord::NeedsInner {
             missing_inners,
             missing_spans,
             ..
@@ -570,14 +575,14 @@ fn build_model_diagnostics_for_typed_model(
                 blocks_model_stage: true,
             };
         }
-        TypedModelOutcome::InstantiateError(error) => {
+        TypedModelRecord::InstantiateError(error) => {
             collected.push(error.to_diagnostic());
             return BodySemanticDiagnosticsResult {
                 diagnostics: model_diagnostics_for_tree(tree, collected),
                 blocks_model_stage: true,
             };
         }
-        TypedModelOutcome::TypecheckError(diags) => {
+        TypedModelRecord::TypecheckError(diags) => {
             return BodySemanticDiagnosticsResult {
                 diagnostics: model_diagnostics_for_tree(tree, diags),
                 blocks_model_stage: true,
@@ -586,7 +591,7 @@ fn build_model_diagnostics_for_typed_model(
     };
 
     collected.extend(synthesized_inner_diagnostics(
-        &overlay.synthesized_inners,
+        &projection.overlay().synthesized_inners,
         model_span,
     ));
 

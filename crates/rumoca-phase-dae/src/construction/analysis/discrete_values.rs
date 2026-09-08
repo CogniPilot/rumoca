@@ -78,20 +78,14 @@ fn require_target_occurrence(
 }
 
 pub(super) fn analyze_discrete_value_topology(
-    flat: &flat::Model,
+    equations: &ModelEquationSequence<'_>,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
 ) -> Result<DiscreteValueTopologyPlan, ToDaeError> {
+    let flat = equations.model();
     let mut owners = Vec::new();
     collect_binding_owners(flat, roles, &mut owners)?;
-    collect_equation_owners(
-        flat,
-        roles,
-        connection_ranks,
-        aggregate_connections,
-        &mut owners,
-    )?;
+    collect_equation_owners(equations, roles, record_equations, &mut owners);
     collect_algorithm_owners(flat, roles, &mut owners)?;
     collect_when_owners(flat, roles, &mut owners)?;
     let held_targets = add_held_owners(flat, roles, &mut owners);
@@ -124,22 +118,19 @@ fn collect_binding_owners(
 }
 
 fn collect_equation_owners(
-    flat: &flat::Model,
+    equations: &ModelEquationSequence<'_>,
     roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
+    record_equations: &HashMap<usize, RecordEquationPlan>,
     owners: &mut Vec<SourceOwner>,
-) -> Result<(), ToDaeError> {
-    for (row, equation) in flat.equations.iter().enumerate() {
-        let EquationPartition::DiscreteValue(plan) = equation_partition(
-            flat,
-            row,
-            equation,
-            roles,
-            connection_ranks,
-            aggregate_connections,
-        )?
-        else {
+) {
+    for row in equations.rows() {
+        let index = row.index();
+        let equation = row.equation();
+        if let Some(record) = record_equations.get(&index) {
+            collect_record_equation_owner(record, equation, owners);
+            continue;
+        }
+        let EquationPartition::DiscreteValue(plan) = row.partition() else {
             continue;
         };
         owners.push(SourceOwner {
@@ -152,7 +143,37 @@ fn collect_equation_owners(
             span: equation.span,
         });
     }
-    Ok(())
+}
+
+fn collect_record_equation_owner(
+    plan: &RecordEquationPlan,
+    equation: &flat::Equation,
+    owners: &mut Vec<SourceOwner>,
+) {
+    let targets = plan
+        .fields
+        .iter()
+        .filter_map(|field| match field {
+            RecordEquationFieldPlan::DiscreteValueDefinition {
+                target,
+                dependencies,
+                ..
+            } => Some(SourceTarget {
+                name: target.name().clone(),
+                dependencies: dependencies.clone(),
+                span: equation.span,
+                ordered_scalar_self_dependencies: false,
+            }),
+            RecordEquationFieldPlan::ContinuousRealResidual { .. }
+            | RecordEquationFieldPlan::DiscreteRealResidual { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if !targets.is_empty() {
+        owners.push(SourceOwner {
+            targets,
+            span: equation.span,
+        });
+    }
 }
 
 fn collect_algorithm_owners(
@@ -607,7 +628,7 @@ fn stable_discrete_targets(
         .collect()
 }
 
-fn current_discrete_dependencies(
+pub(super) fn current_discrete_dependencies(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> HashSet<VarName> {

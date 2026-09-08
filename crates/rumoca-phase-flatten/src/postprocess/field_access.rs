@@ -20,13 +20,16 @@ pub(crate) fn normalize_record_array_field_access_bindings(flat: &mut flat::Mode
     let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
 
     for var in flat.variables.values_mut() {
-        let Some(binding) = var.binding.as_mut() else {
+        let Some(binding) = var.binding.as_ref() else {
             continue;
         };
         if field_access_target_name(binding).is_some_and(|target| all_names.contains(&target)) {
             continue;
         }
-        insert_record_array_full_slice(binding, &record_array_ranks);
+        let Some(binding) = var.binding.take() else {
+            continue;
+        };
+        var.binding = Some(insert_record_array_full_slice(binding, &record_array_ranks));
     }
 }
 
@@ -52,19 +55,30 @@ fn collect_record_array_ranks(flat: &flat::Model) -> HashMap<rumoca_core::DefId,
 }
 
 fn insert_record_array_full_slice(
-    expr: &mut rumoca_core::Expression,
+    expr: rumoca_core::Expression,
     record_array_ranks: &HashMap<rumoca_core::DefId, usize>,
-) {
-    let rumoca_core::Expression::FieldAccess { base, span, .. } = expr else {
-        return;
+) -> rumoca_core::Expression {
+    let rumoca_core::Expression::FieldAccess {
+        base,
+        field,
+        field_def_id,
+        span,
+    } = expr
+    else {
+        return expr;
     };
-    insert_record_array_full_slice(base, record_array_ranks);
+    let base = insert_record_array_full_slice(*base, record_array_ranks);
 
     let rumoca_core::Expression::VarRef {
         name, subscripts, ..
-    } = base.as_ref()
+    } = &base
     else {
-        return;
+        return rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field,
+            field_def_id,
+            span,
+        };
     };
     if !subscripts.is_empty()
         || name
@@ -72,56 +86,69 @@ fn insert_record_array_full_slice(
             .last()
             .is_some_and(|part| !part.subs.is_empty())
     {
-        return;
+        return rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field,
+            field_def_id,
+            span,
+        };
     }
     let Some(rank) = name
         .target_def_id()
         .and_then(|def_id| record_array_ranks.get(&def_id))
         .copied()
     else {
-        return;
+        return rumoca_core::Expression::FieldAccess {
+            base: Box::new(base),
+            field,
+            field_def_id,
+            span,
+        };
     };
-    let sliced_base = std::mem::replace(
-        base,
-        Box::new(rumoca_core::Expression::Empty { span: *span }),
-    );
-    **base = rumoca_core::Expression::Index {
-        base: sliced_base,
-        subscripts: (0..rank)
-            .map(|_| rumoca_core::Subscript::Colon { span: *span })
-            .collect(),
-        span: *span,
-    };
+
+    rumoca_core::Expression::FieldAccess {
+        base: Box::new(rumoca_core::Expression::Index {
+            base: Box::new(base),
+            subscripts: (0..rank)
+                .map(|_| rumoca_core::Subscript::Colon { span })
+                .collect(),
+            span,
+        }),
+        field,
+        field_def_id,
+        span,
+    }
 }
 
-/// Drop FieldAccess bindings whose targets don't exist in the flat model.
+/// Reject FieldAccess bindings whose targets don't exist in the flat model.
 /// During modifier propagation, record bindings like `x = someRecord.field` may reference
 /// internal component structure that was eliminated during flattening. These dangling
-/// FieldAccess bindings would cause incorrect equation generation in todae if kept.
-pub(crate) fn drop_invalid_field_access_bindings(flat: &mut flat::Model) {
+/// FieldAccess bindings cannot be erased: that would turn a specified value into an
+/// unbound variable. Refuse the invalid Flat candidate before DAE construction instead.
+pub(crate) fn reject_invalid_field_access_bindings(flat: &flat::Model) -> Result<(), FlattenError> {
     let all_names: HashSet<rumoca_core::VarName> = flat.variables.keys().cloned().collect();
 
-    let to_clear: Vec<rumoca_core::VarName> = flat
-        .variables
-        .iter()
-        .filter_map(|(name, var)| {
-            let binding = var.binding.as_ref()?;
-            let target_name = field_access_target_name(binding)?;
-            if all_names.contains(&target_name)
-                || !field_access_targets_flat_namespace(binding, &all_names)
-            {
-                None
-            } else {
-                Some(name.clone())
-            }
-        })
-        .collect();
-
-    for name in &to_clear {
-        if let Some(var) = flat.variables.get_mut(name) {
-            var.binding = None;
+    for var in flat.variables.values() {
+        let Some(binding) = var.binding.as_ref() else {
+            continue;
+        };
+        let Some(target_name) = field_access_target_name(binding) else {
+            continue;
+        };
+        if !all_names.contains(&target_name)
+            && field_access_targets_flat_namespace(binding, flat, &all_names)
+        {
+            let span = crate::source_spans::required_span(
+                binding.span().unwrap_or(var.source_span),
+                "dangling Flat field-access binding",
+            )?;
+            return Err(FlattenError::undefined_variable(
+                target_name.to_string(),
+                span,
+            ));
         }
     }
+    Ok(())
 }
 
 pub(crate) fn resolve_nested_constructor_field_access_bindings(flat: &mut flat::Model) {
@@ -321,12 +348,40 @@ pub(crate) fn rendered_component_target(expr: &rumoca_core::Expression) -> Optio
 
 fn field_access_targets_flat_namespace(
     expr: &rumoca_core::Expression,
+    flat: &flat::Model,
     all_names: &HashSet<rumoca_core::VarName>,
 ) -> bool {
-    field_access_base_target(expr)
-        .into_iter()
-        .chain(leftmost_reference_target(expr))
-        .any(|target| flat_namespace_contains(all_names, &target))
+    let base_target = field_access_base_target(expr)
+        .is_some_and(|target| flat_namespace_contains(all_names, &target));
+    let Some(reference) = leftmost_reference(expr) else {
+        return base_target;
+    };
+    if let Some(instance_id) = reference.instance_id() {
+        return flat.instance_relations.contains_key(&instance_id)
+            || flat
+                .variables
+                .values()
+                .any(|variable| variable.instance_id == instance_id)
+            || flat
+                .record_instances
+                .values()
+                .any(|record| record.instance_id == instance_id);
+    }
+    if let Some(root_def_id) = reference
+        .component_ref()
+        .map(|reference| reference.root_def_id())
+    {
+        return flat.variables.values().any(|variable| {
+            variable
+                .component_ref
+                .as_ref()
+                .is_some_and(|reference| reference.root_def_id() == root_def_id)
+        }) || flat
+            .record_instances
+            .values()
+            .any(|record| record.component_ref.root_def_id() == root_def_id);
+    }
+    base_target || flat_namespace_contains(all_names, reference.as_str())
 }
 
 fn field_access_base_target(expr: &rumoca_core::Expression) -> Option<String> {
@@ -336,11 +391,11 @@ fn field_access_base_target(expr: &rumoca_core::Expression) -> Option<String> {
     rendered_component_target(base)
 }
 
-fn leftmost_reference_target(expr: &rumoca_core::Expression) -> Option<String> {
+fn leftmost_reference(expr: &rumoca_core::Expression) -> Option<&rumoca_core::Reference> {
     match expr {
-        rumoca_core::Expression::VarRef { name, .. } => Some(name.as_str().to_string()),
+        rumoca_core::Expression::VarRef { name, .. } => Some(name),
         rumoca_core::Expression::Index { base, .. }
-        | rumoca_core::Expression::FieldAccess { base, .. } => leftmost_reference_target(base),
+        | rumoca_core::Expression::FieldAccess { base, .. } => leftmost_reference(base),
         _ => None,
     }
 }
@@ -418,8 +473,9 @@ mod tests {
     }
 
     fn constructor(name: &str, inputs: Vec<rumoca_core::FunctionParam>) -> rumoca_core::Function {
-        let mut function = rumoca_core::Function::new(name, test_span());
-        function.def_id = Some(fixture_def_id(name));
+        let declaration = fixture_def_id(name);
+        let mut function = rumoca_core::Function::new(name, declaration, test_span());
+        function.def_id = Some(declaration);
         function.is_constructor = true;
         for input in inputs {
             function.add_input(input);
@@ -439,6 +495,7 @@ mod tests {
                 name: reference(constructor),
                 args: Vec::new(),
                 is_constructor: true,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: test_span(),
             }),
             field: field.to_string(),
@@ -518,7 +575,7 @@ mod tests {
         );
 
         normalize_record_array_field_access_bindings(&mut flat);
-        drop_invalid_field_access_bindings(&mut flat);
+        reject_invalid_field_access_bindings(&flat).unwrap();
 
         let binding = flat
             .variables
@@ -626,7 +683,7 @@ mod tests {
             flat::Variable::empty_with_span(test_span()),
         );
 
-        drop_invalid_field_access_bindings(&mut flat);
+        reject_invalid_field_access_bindings(&flat).unwrap();
 
         let binding = flat
             .variables
@@ -637,5 +694,59 @@ mod tests {
             rendered_component_target(binding).as_deref(),
             Some("stack.cell[1,2].limIntegrator.y")
         );
+    }
+
+    #[test]
+    fn field_access_outside_the_flat_namespace_remains_symbolic() {
+        let mut flat = flat::Model::new();
+        flat.add_variable(
+            rumoca_core::VarName::new("y"),
+            variable(
+                "y",
+                rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: rumoca_core::Reference::new("external.record"),
+                        subscripts: Vec::new(),
+                        span: test_span(),
+                    }),
+                    field: "value".to_string(),
+                    field_def_id: fixture_def_id("value"),
+                    span: test_span(),
+                },
+            ),
+        );
+
+        reject_invalid_field_access_bindings(&flat)
+            .expect("a target outside Flat's namespace belongs to later symbolic handling");
+    }
+
+    #[test]
+    fn foreign_identity_with_a_local_spelling_is_not_merged_into_flat_namespace() {
+        let mut flat = flat::Model::new();
+        flat.add_variable(
+            rumoca_core::VarName::new("external.local_member"),
+            flat::Variable::empty_with_span(test_span()),
+        );
+        let foreign = rumoca_core::Reference::new("external")
+            .with_instance_id(rumoca_core::InstanceId::new(9_999));
+        flat.add_variable(
+            rumoca_core::VarName::new("y"),
+            variable(
+                "y",
+                rumoca_core::Expression::FieldAccess {
+                    base: Box::new(rumoca_core::Expression::VarRef {
+                        name: foreign,
+                        subscripts: Vec::new(),
+                        span: test_span(),
+                    }),
+                    field: "value".to_string(),
+                    field_def_id: fixture_def_id("value"),
+                    span: test_span(),
+                },
+            ),
+        );
+
+        reject_invalid_field_access_bindings(&flat)
+            .expect("semantic occurrence identity must outrank a colliding display prefix");
     }
 }

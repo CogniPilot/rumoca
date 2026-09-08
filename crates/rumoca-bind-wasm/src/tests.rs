@@ -3,6 +3,8 @@
 // family into dedicated test modules under src/tests/.
 
 use super::*;
+use rumoca_compile::SessionConfig;
+use rumoca_compile::codegen::targets::TargetRequiredProduct;
 use rumoca_compile::compile::{reset_session_cache_stats, session_cache_stats};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,6 +19,38 @@ mod wasm_cache_tests;
 mod workspace_config_api_tests;
 
 static SESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn navigation_target_uri_requires_exact_session_identity() {
+    let mut session = Session::new(SessionConfig::default());
+    session.update_document("input.mo", "model M end M;");
+    assert_eq!(
+        resolve_session_target_uri(&session, "input.mo")
+            .expect("an exact session document has an authoritative URI")
+            .as_str(),
+        "file:///input.mo"
+    );
+    assert!(
+        resolve_session_target_uri(&session, "missing.mo").is_none(),
+        "a missing target cannot be relabelled as the active document"
+    );
+}
+
+#[test]
+fn builtin_target_descriptors_expose_checked_product_and_file_plans() {
+    let targets = builtin_target_descriptors().expect("built-in target manifests must construct");
+    let rust = targets
+        .iter()
+        .find(|target| target.id == "rust-ode")
+        .expect("rust-ode descriptor");
+    assert_eq!(rust.required_product, TargetRequiredProduct::SolveModel);
+    let [file] = rust.file_plans.as_slice() else {
+        panic!("rust-ode must publish exactly one passive file plan");
+    };
+    assert_eq!(file.path, "{{ model_name }}_ode.rs");
+    assert_eq!(file.semantic_context.as_str(), "solve");
+    assert_eq!(file.semantic_view.as_str(), "solve-model");
+}
 
 const MINI_MODELICA_LIBRARY: &str = r#"
     within ;
@@ -437,7 +471,7 @@ fn test_extract_documentation_annotation_fields_native() {
 }
 
 #[test]
-fn test_compile_to_json_valid_model() {
+fn test_compile_valid_model() {
     let mut session = Session::default();
     let source = r#"
     model Ball
@@ -511,11 +545,9 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
     let result = session
         .compile_model_dae_strict_reachable_uncached_with_recovery("DiscreteController")
         .expect("pure discrete model should compile");
-    let mut session = rumoca_sim::SimulationSession::new_with_diagnostics(
-        &result.dae,
-        rumoca_sim::SimOptions::default(),
-    )
-    .expect("pure discrete session should build");
+    let mut session =
+        rumoca_sim::SimulationSession::new(&result.dae, rumoca_sim::SimOptions::default())
+            .expect("pure discrete session should build");
     session.set_input("u", 1.5).expect("set input u");
     session.step(0.02).expect("first discrete tick");
     assert_eq!(session.time(), 0.02);
@@ -529,46 +561,7 @@ fn test_interactive_session_runs_pure_discrete_model_with_guarded_dynamic_subscr
 }
 
 #[test]
-fn test_compile_to_json_matches_compile_wrapper_output() {
-    let _guard = session_test_guard();
-    clear_source_root_cache().expect("clear source-root cache");
-
-    let source = r#"
-    model Ball
-      Real x(start=0);
-      Real v(start=1);
-    equation
-      der(x) = v;
-      der(v) = -9.81;
-    end Ball;
-    "#;
-
-    let compiled = compile(source, "Ball").expect("compile should succeed");
-    let compiled_to_json = compile_to_json(source, "Ball").expect("compile_to_json should succeed");
-    let mut compiled_value: serde_json::Value =
-        serde_json::from_str(&compiled).expect("compile should return valid JSON");
-    let mut compiled_to_json_value: serde_json::Value =
-        serde_json::from_str(&compiled_to_json).expect("compile_to_json should return valid JSON");
-
-    // Timing metadata is intentionally non-semantic and can vary by call path.
-    // Keep strict alias comparison for all other fields.
-    for value in [&mut compiled_value, &mut compiled_to_json_value] {
-        if let Some(object) = value.as_object_mut() {
-            object.remove("__compile_phase_timing");
-            object.remove("__compile_check_timing");
-        }
-    }
-
-    assert_eq!(
-        compiled_value, compiled_to_json_value,
-        "compile_to_json should remain an exact alias of compile"
-    );
-
-    clear_source_root_cache().expect("clear source-root cache");
-}
-
-#[test]
-fn test_compile_to_json_qualifies_unqualified_within_model_name() {
+fn test_compile_qualifies_unqualified_within_model_name() {
     let _guard = session_test_guard();
     clear_source_root_cache().expect("clear source-root cache");
 
@@ -1492,7 +1485,7 @@ fn test_lsp_completion_reuses_loaded_source_root_namespace_cache_after_local_edi
 }
 
 #[test]
-fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
+fn test_compile_exposes_orbit_algebraics_from_native_dae() {
     let mut session = Session::default();
     let source = r#"
     model SatelliteOrbit2D
@@ -1561,42 +1554,8 @@ fn test_compile_to_json_exposes_orbit_algebraics_from_native_dae() {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 #[test]
-fn test_render_target_wrapper_serializes_target_files() {
-    let mut session = Session::default();
-    let source = r#"
-    model SimpleDecay
-      Real x(start = 1);
-    equation
-      der(x) = -x;
-    end SimpleDecay;
-    "#;
-
-    let compiled = compile_source_in_session(&mut session, source, "SimpleDecay")
-        .expect("compile should succeed for simple model");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&compiled).expect("compile should return valid JSON");
-    let native = parsed
-        .get("dae_native")
-        .expect("compile response should contain dae_native");
-
-    let rendered = render_target(&native.to_string(), "SimpleDecay", "c-ode", "", "{}")
-        .expect("render target should succeed");
-    let decoded: serde_json::Value = decode_wasm_value(rendered);
-    assert!(
-        decoded
-            .get("files")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|files| files.iter().any(|file| {
-                file.get("path").and_then(serde_json::Value::as_str) == Some("SimpleDecay_ode.c")
-            })),
-        "render target should include the checked ODE RHS C target file"
-    );
-}
-
-#[test]
-fn test_compile_to_json_uses_native_only_shape() {
+fn test_compile_uses_native_only_shape() {
     let mut session = Session::default();
     let source = r#"
     model SimpleDecay
@@ -1757,7 +1716,7 @@ end Ball;
 }
 
 #[test]
-fn test_compile_to_json_recovers_after_syntax_diagnostics() {
+fn test_compile_recovers_after_syntax_diagnostics() {
     let mut session = Session::default();
     let invalid = r#"
     model Ball

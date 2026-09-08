@@ -62,8 +62,19 @@ fn override_target_with_active(
     class_type: ClassType,
     active: bool,
 ) -> OverrideTarget {
+    override_target_with_slot(name, def_id, def_id, class_type, active)
+}
+
+fn override_target_with_slot(
+    name: &str,
+    alias_slot: DefId,
+    def_id: DefId,
+    class_type: ClassType,
+    active: bool,
+) -> OverrideTarget {
     OverrideTarget {
         alias: leaf_segment(name).to_string(),
+        alias_slot,
         name: name.to_string(),
         def_id,
         class_type,
@@ -125,6 +136,21 @@ fn deferred_member_ref(receiver: (&str, DefId), member: &str) -> ComponentRefere
     }
 }
 
+/// Run the member-call marker's callee hook on one owned reference through
+/// the kernel's owned-callee entry and report the marked call target.
+fn marked_target_def_id(
+    marker: &MemberFunctionCallMarker<'_>,
+    mut reference: ComponentReference,
+) -> Option<DefId> {
+    let mut marker = MemberFunctionCallMarker {
+        tree: marker.tree,
+        class_index: marker.class_index,
+        override_functions: marker.override_functions,
+    };
+    rumoca_ir_ast::visitor::transform_callee_in_place(&mut marker, &mut reference);
+    reference.target_def_id()
+}
+
 fn ast_var(name: &str) -> rumoca_ir_ast::Expression {
     rumoca_ir_ast::Expression::ComponentReference(comp_ref(&[name]))
 }
@@ -168,7 +194,8 @@ fn named_arg(expr: &Expression) -> Option<(&str, &Expression)> {
         return None;
     };
     Some((
-        name.as_str().strip_prefix("__rumoca_named_arg__.")?,
+        name.as_str()
+            .strip_prefix(rumoca_core::NAMED_FUNCTION_ARG_PREFIX)?,
         args.first()?,
     ))
 }

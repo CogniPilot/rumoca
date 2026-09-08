@@ -211,7 +211,24 @@ model rather than two"
 // Phase-to-phase dependency policy
 // ---------------------------------------------------------------------------
 
-/// Production phase-to-phase dependencies, each with the reason it is allowed.
+/// The complete current forward proof-edge set from SPEC_0029 §4.
+///
+/// Keep this separate from prerequisite services: these edges may name the
+/// predecessor's opaque proof only in the successor mint's input position.
+const PHASE_FORWARD_PROOF_EDGES: &[(&str, &str, &str)] = &[
+    (
+        "rumoca-phase-typecheck",
+        "rumoca-phase-resolve",
+        "Typecheck's sole mint accepts the opaque Resolve proof and immutable views",
+    ),
+    (
+        "rumoca-phase-flatten",
+        "rumoca-phase-typecheck",
+        "Flatten's sole mint consumes the affine Typecheck proof by value",
+    ),
+];
+
+/// Production phase-to-phase shared prerequisite services.
 ///
 /// Phases lower one IR into the next, so they should compose through the IR and
 /// eval crates rather than through each other: a phase that reaches into
@@ -228,14 +245,9 @@ model rather than two"
 /// Scope is `[dependencies]` only. Test fixtures legitimately build their
 /// inputs by running upstream phases, so `[dev-dependencies]` edges are not
 /// restricted.
-const ALLOWED_PHASE_TO_PHASE_DEPENDENCIES: &[(&str, &str, &str)] = &[
+const PHASE_SHARED_PREREQUISITE_EDGES: &[(&str, &str, &str)] = &[
     (
         "rumoca-phase-instantiate",
-        "rumoca-phase-resolve",
-        "name resolution is a shared prerequisite analysis consumed by later phases, not a lowering stage",
-    ),
-    (
-        "rumoca-phase-typecheck",
         "rumoca-phase-resolve",
         "name resolution is a shared prerequisite analysis consumed by later phases, not a lowering stage",
     ),
@@ -279,8 +291,14 @@ fn test_phase_crates_depend_on_each_other_only_by_recorded_exception() {
         }
     }
 
-    let allowed: BTreeSet<(String, String)> = ALLOWED_PHASE_TO_PHASE_DEPENDENCIES
+    assert_eq!(
+        PHASE_FORWARD_PROOF_EDGES.len(),
+        2,
+        "SPEC_0029 §4 defines exactly two current forward proof edges"
+    );
+    let allowed: BTreeSet<(String, String)> = PHASE_FORWARD_PROOF_EDGES
         .iter()
+        .chain(PHASE_SHARED_PREREQUISITE_EDGES)
         .map(|(from, to, _)| ((*from).to_string(), (*to).to_string()))
         .collect();
 
@@ -291,8 +309,8 @@ fn test_phase_crates_depend_on_each_other_only_by_recorded_exception() {
     assert!(
         unrecorded.is_empty(),
         "phase crates must not depend on other phase crates; compose through the IR/eval crates \
-instead. If the edge is genuinely a shared prerequisite analysis, add it to \
-ALLOWED_PHASE_TO_PHASE_DEPENDENCIES with a reason. Unrecorded: {unrecorded:?}"
+instead. Add a proof edge only to PHASE_FORWARD_PROOF_EDGES; add a genuine shared prerequisite \
+only to PHASE_SHARED_PREREQUISITE_EDGES. Unrecorded: {unrecorded:?}"
     );
 
     let stale: Vec<String> = allowed
@@ -301,7 +319,7 @@ ALLOWED_PHASE_TO_PHASE_DEPENDENCIES with a reason. Unrecorded: {unrecorded:?}"
         .collect();
     assert!(
         stale.is_empty(),
-        "ALLOWED_PHASE_TO_PHASE_DEPENDENCIES records edges that no longer exist; delete them so \
+        "the phase proof/prerequisite catalogs record edges that no longer exist; delete them so \
 the exception list stays a live record rather than history: {stale:?}"
     );
 }

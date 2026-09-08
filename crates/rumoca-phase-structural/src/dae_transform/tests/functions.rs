@@ -713,7 +713,7 @@ fn declare_sum_function<'dae>(
         domains.structured(
             rumoca_core::StructuredIndexDomain {
                 binders: vec![rumoca_core::StructuredIndexBinder {
-                    id: 0,
+                    id: rumoca_core::StructuredIndexBinderId::new(0),
                     display_name: "k".to_owned(),
                     lower: 1,
                     upper: 3,

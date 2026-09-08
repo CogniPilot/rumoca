@@ -99,9 +99,9 @@ test("book live runner can execute codegen scenarios", async () => {
   assert.match(liveSource, /GALEC_CODEGEN_TARGETS/);
   assert.match(liveSource, /function buildGalecCodegenWidget/);
   assert.match(liveSource, /renderGalecFilesWithRuntime/);
-  assert.match(liveSource, /renderGalecCFromAlgWithRuntime/);
+  assert.doesNotMatch(liveSource, /renderGalecCFromAlgWithRuntime/);
   assert.match(liveSource, /Generate \.alg/);
-  assert.match(liveSource, /Generate C\/H/);
+  assert.doesNotMatch(liveSource, /Generate C\/H/);
   assert.match(liveSource, /runHeavy\('codegen'/);
   assert.match(liveSource, /rumoca-live-codegen/);
   assert.match(liveSource, /registerGalecLanguage/);
@@ -109,7 +109,6 @@ test("book live runner can execute codegen scenarios", async () => {
   assert.match(liveSource, /activateGalecEditorLanguageServices/);
   assert.match(liveSource, /Modelica source/);
   assert.match(liveSource, /GALEC \.alg/);
-  assert.match(liveSource, /C \.h\/\.c/);
   assert.match(liveSource, /rumoca-live-codegen-editor/);
 
   const codegenWidget = liveSource.slice(

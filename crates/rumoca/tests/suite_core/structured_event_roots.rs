@@ -49,10 +49,12 @@ fn structured_relation_owns_one_compact_root_family_and_two_solve_views() {
 
     let solve = lower_dae_for_simulation(compiled.dae(), &SimOptions::default())
         .expect("structured root family must have a Solve view");
-    crate::solve_root_contract::reseal_solve_problem(&solve.problem).expect("Solve contract");
-    assert_eq!(solve.problem.events().root_conditions.len(), 2);
-    assert_eq!(solve.problem.events().root_zero_domains.len(), 2);
-    assert_eq!(solve.problem.events().root_relation_memory_targets.len(), 2);
+    assert_eq!(solve.problem().events().root_conditions.len(), 2);
+    assert_eq!(solve.problem().events().root_zero_domains.len(), 2);
+    assert_eq!(
+        solve.problem().events().root_relation_memory_targets.len(),
+        2
+    );
 
     let json = serde_json::to_string(compiled.dae()).expect("serialize compact DAE");
     let decoded: rumoca_ir_dae::Dae =

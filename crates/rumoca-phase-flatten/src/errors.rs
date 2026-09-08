@@ -79,6 +79,22 @@ pub enum FlattenError {
         span: Span,
     },
 
+    /// A function-call statement contains an output slot that is neither an
+    /// omitted receiver nor a component reference.
+    #[error("invalid output receiver in call of function `{function}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF036),
+        help(
+            "a function-call output slot must be a writable component reference or an explicitly omitted tuple position"
+        )
+    )]
+    InvalidFunctionCallOutput {
+        function: String,
+        reason: String,
+        #[label("invalid function-call output receiver")]
+        span: Span,
+    },
+
     // EF018 is reserved for the deferred MLS §12.6.1 record-cast check.
     // Note: EF006 was EventTriggerOutsideWhen, removed per MLS Appendix B which
     // allows edge()/change() in discrete equations. Code reserved for future use.
@@ -126,6 +142,23 @@ pub enum FlattenError {
         span: Span,
     },
 
+    /// Two concrete owners disagree on one deferred component extent.
+    #[error(
+        "conflicting component dimension for {name} axis {axis}: admitted extent {admitted} differs from inferred extent {inferred}"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF039),
+        help("the declared/admitted shape and binding-inferred shape must agree exactly")
+    )]
+    ConflictingComponentDimension {
+        name: String,
+        axis: usize,
+        admitted: i64,
+        inferred: i64,
+        #[label("conflicting dimension declared here")]
+        span: Span,
+    },
+
     /// A numeric token accepted by the parser could not be converted to a number.
     #[error("malformed numeric literal: {text}")]
     #[diagnostic(
@@ -135,6 +168,92 @@ pub enum FlattenError {
     MalformedNumericLiteral {
         text: String,
         #[label("malformed numeric literal")]
+        span: Span,
+    },
+
+    /// An AST terminal sentinel reached literal lowering.
+    #[error("invalid literal terminal: {description}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF032),
+        help("an empty terminal is not a Modelica literal and must not reach literal lowering")
+    )]
+    InvalidLiteralTerminal {
+        description: String,
+        #[label("invalid terminal reached literal lowering")]
+        span: Span,
+    },
+
+    /// An AST recovery subscript reached semantic lowering.
+    #[error("invalid AST subscript: {description}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF033),
+        help(
+            "a source colon is represented by Subscript::Range; an empty recovery node cannot select a dimension"
+        )
+    )]
+    InvalidAstSubscript {
+        description: String,
+        #[label("recovery subscript reached semantic lowering")]
+        span: Span,
+    },
+
+    /// An AST recovery node reached a position that requires semantic content.
+    #[error("invalid AST recovery node: {description}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF035),
+        help(
+            "parser-recovery equations, statements, expressions, and operators cannot cross the Flat construction boundary"
+        )
+    )]
+    InvalidAstRecovery {
+        description: String,
+        #[label("recovery node reached semantic lowering")]
+        span: Span,
+    },
+
+    /// Opportunistic constant evaluation found a non-runtime-dependent error.
+    #[error("constant evaluation failed while {context}: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF034),
+        help(
+            "only an explicitly runtime-dependent evaluation failure may defer to initialization or simulation"
+        )
+    )]
+    ConstantEvaluationFailed {
+        context: &'static str,
+        reason: String,
+        #[label("invalid constant expression")]
+        span: Span,
+    },
+
+    /// A structural range would require an unbounded eager allocation.
+    #[error(
+        "structural range requires {element_count} elements, exceeding the eager materialization limit of {limit}"
+    )]
+    #[diagnostic(
+        code(rumoca::flatten::EF037),
+        help(
+            "Rumoca's eager structural-analysis path cannot safely retain this range yet; compact-domain lowering must remove this limit"
+        )
+    )]
+    RangeMaterializationLimit {
+        element_count: u128,
+        limit: usize,
+        #[label("range exceeds the eager materialization budget")]
+        span: Span,
+    },
+
+    /// Connection lowering lacks exact cardinality, selection, or ownership evidence.
+    #[error("invalid or unrepresentable connection evidence: {description}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF038),
+        help(
+            "Rumoca refuses this connection before mutating Flat IR; preserve exact declaration/cardinality evidence or lower partial compact connectivity to a structured owner"
+        )
+    )]
+    InvalidConnectionEvidence {
+        description: String,
+        #[label("connection cannot be represented from the available evidence")]
         span: Span,
     },
 
@@ -351,25 +470,25 @@ pub enum FlattenError {
         plain_span: Span,
     },
 
-    /// A `connect` matched a `parameter`/`constant` primitive member against a
-    /// member of higher variability.
+    /// A `connect` matched primitive members with incompatible variability.
     #[error(
-        "connect matches {structural_variability} variable `{structural_member}` with non-structural variable `{variable_member}`"
+        "connect matches {a_variability} variable `{a_member}` with {b_variability} variable `{b_member}`"
     )]
     #[diagnostic(
         code(rumoca::flatten::EF028),
         help(
-            "MLS §9.3: `the primitive components may only connect parameter variables to parameter variables and constant variables to constant variables`. The same section generates an equality assertion rather than a connection equation for such a pair, so the non-structural side would be left with no equation at all"
+            "MLS §9.3: `the primitive components may only connect parameter variables to parameter variables and constant variables to constant variables`. A mismatched pair has no legal connection equation or structural equality assertion"
         )
     )]
-    StructuralMemberPairedWithVariable {
-        structural_member: String,
-        structural_variability: &'static str,
-        variable_member: String,
-        #[label("this connection member is a parameter or constant")]
-        structural_span: Span,
-        #[label("this connection member is neither a parameter nor a constant")]
-        variable_span: Span,
+    ConnectionVariabilityMismatch {
+        a_member: Box<str>,
+        a_variability: &'static str,
+        b_member: Box<str>,
+        b_variability: &'static str,
+        #[label("declared {a_variability} here")]
+        a_span: Span,
+        #[label("declared {b_variability} here")]
+        b_span: Span,
     },
 
     /// A call marked as a structural constructor resolves to a regular
@@ -432,6 +551,24 @@ pub enum FlattenError {
         #[label("call would silently use the declared default")]
         span: Span,
     },
+
+    /// An unqualified name is supplied ambiguously by imports (MLS §5.3.1).
+    ///
+    /// The lookup authority refused to bind the name, so a use of it must be
+    /// a typed error rather than a silent fallback binding.
+    #[error("ambiguous imported name `{name}`: {reason}")]
+    #[diagnostic(
+        code(rumoca::flatten::EF039),
+        help(
+            "MLS §5.3.1: qualify the reference with its package path or remove the conflicting import"
+        )
+    )]
+    AmbiguousImportedName {
+        name: String,
+        reason: String,
+        #[label("ambiguous name used here")]
+        span: Span,
+    },
 }
 
 impl FlattenError {
@@ -455,6 +592,12 @@ impl FlattenError {
     error_constructor!(
         unsupported_equation,
         UnsupportedEquation {
+            description: String
+        }
+    );
+    error_constructor!(
+        invalid_connection_evidence,
+        InvalidConnectionEvidence {
             description: String
         }
     );
@@ -497,6 +640,19 @@ impl FlattenError {
     /// Create an Internal error (no span).
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal(message.into())
+    }
+
+    /// Create an AmbiguousImportedName error.
+    pub fn ambiguous_imported_name(
+        name: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::AmbiguousImportedName {
+            name: name.into(),
+            reason: reason.into(),
+            span,
+        }
     }
 
     /// Create a MissingSourceScope error.
@@ -573,6 +729,18 @@ impl FlattenError {
         }
     }
 
+    pub fn invalid_function_call_output(
+        function: impl Into<String>,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::InvalidFunctionCallOutput {
+            function: function.into(),
+            reason: reason.into(),
+            span,
+        }
+    }
+
     /// Create a FunctionWithoutBody error.
     pub fn function_without_body(name: impl Into<String>, span: rumoca_core::Span) -> Self {
         Self::FunctionWithoutBody {
@@ -598,6 +766,32 @@ impl FlattenError {
     pub fn malformed_numeric_literal(text: impl Into<String>, span: rumoca_core::Span) -> Self {
         Self::MalformedNumericLiteral {
             text: text.into(),
+            span,
+        }
+    }
+
+    pub fn invalid_ast_subscript(description: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::InvalidAstSubscript {
+            description: description.into(),
+            span,
+        }
+    }
+
+    pub fn invalid_ast_recovery(description: impl Into<String>, span: rumoca_core::Span) -> Self {
+        Self::InvalidAstRecovery {
+            description: description.into(),
+            span,
+        }
+    }
+
+    pub fn constant_evaluation_failed(
+        context: &'static str,
+        reason: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        Self::ConstantEvaluationFailed {
+            context,
+            reason: reason.into(),
             span,
         }
     }
@@ -680,20 +874,22 @@ impl FlattenError {
         }
     }
 
-    /// Create a StructuralMemberPairedWithVariable error (MLS §9.3).
-    pub fn structural_member_paired_with_variable(
-        structural_member: impl Into<String>,
-        structural_variability: &'static str,
-        structural_span: Span,
-        variable_member: impl Into<String>,
-        variable_span: Span,
+    /// Create a ConnectionVariabilityMismatch error (MLS §9.3).
+    pub fn connection_variability_mismatch(
+        a_member: impl Into<String>,
+        a_variability: &'static str,
+        a_span: Span,
+        b_member: impl Into<String>,
+        b_variability: &'static str,
+        b_span: Span,
     ) -> Self {
-        Self::StructuralMemberPairedWithVariable {
-            structural_member: structural_member.into(),
-            structural_variability,
-            variable_member: variable_member.into(),
-            structural_span,
-            variable_span,
+        Self::ConnectionVariabilityMismatch {
+            a_member: a_member.into().into_boxed_str(),
+            a_variability,
+            b_member: b_member.into().into_boxed_str(),
+            b_variability,
+            a_span,
+            b_span,
         }
     }
 }
@@ -721,12 +917,8 @@ impl PhaseError for FlattenError {
                 member_pair = [*stream_span, *plain_span];
                 &member_pair
             }
-            Self::StructuralMemberPairedWithVariable {
-                structural_span,
-                variable_span,
-                ..
-            } => {
-                member_pair = [*structural_span, *variable_span];
+            Self::ConnectionVariabilityMismatch { a_span, b_span, .. } => {
+                member_pair = [*a_span, *b_span];
                 &member_pair
             }
             Self::StructuralAssertionFailed { span, .. }
@@ -734,16 +926,25 @@ impl PhaseError for FlattenError {
             | Self::IncompatibleConnectors { span, .. }
             | Self::UnsupportedEquation { span, .. }
             | Self::InvalidFunctionCallArgs { span, .. }
+            | Self::InvalidFunctionCallOutput { span, .. }
             | Self::MissingSourceScope { span, .. }
             | Self::FunctionWithoutBody { span, .. }
             | Self::UnresolvedComponentDimension { span, .. }
+            | Self::ConflictingComponentDimension { span, .. }
             | Self::MalformedNumericLiteral { span, .. }
+            | Self::InvalidLiteralTerminal { span, .. }
+            | Self::InvalidAstSubscript { span, .. }
+            | Self::InvalidAstRecovery { span, .. }
+            | Self::ConstantEvaluationFailed { span, .. }
+            | Self::RangeMaterializationLimit { span, .. }
+            | Self::InvalidConnectionEvidence { span, .. }
             | Self::FunctionOutputUnassigned { span, .. }
             | Self::UnresolvedVariableType { span, .. }
             | Self::MissingResolvedClassMetadata { span, .. }
             | Self::InconsistentFunctionReference { span, .. }
             | Self::MissingFunctionSelectionIdentity { span, .. }
             | Self::UnhonoredFunctionRedeclare { span, .. }
+            | Self::AmbiguousImportedName { span, .. }
             | Self::UnsupportedExpandableConnectorAugmentation { span, .. }
             | Self::CyclicConstantBinding { span, .. }
             | Self::InvalidConnectionGraph { span, .. }
@@ -814,6 +1015,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn invalid_connection_evidence_is_spanful() {
+        let span = Span::from_offsets(
+            SourceId::from_source_name("phase_flatten_connection_evidence.mo"),
+            4,
+            12,
+        );
+        let error = FlattenError::invalid_connection_evidence(
+            "partial compact connectivity has no Flat owner",
+            span,
+        );
+        let diagnostic = error.to_diagnostic();
+
+        assert_eq!(diagnostic.code.as_deref(), Some("EF038"));
+        assert_eq!(diagnostic.labels[0].span, span);
+    }
+
     fn member_span(start: usize) -> Span {
         Span::from_offsets(
             SourceId::from_source_name("phase_flatten_member_pairing.mo"),
@@ -849,11 +1067,12 @@ mod tests {
 
     #[test]
     fn variability_pairing_error_labels_both_member_declarations() {
-        let error = FlattenError::structural_member_paired_with_variable(
+        let error = FlattenError::connection_variability_mismatch(
             "a.m",
             "parameter",
             member_span(10),
             "b.m",
+            "non-structural",
             member_span(40),
         );
         let diagnostic = error.to_diagnostic();

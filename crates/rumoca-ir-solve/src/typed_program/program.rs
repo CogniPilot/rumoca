@@ -1,6 +1,8 @@
 mod directional;
+mod error;
 mod tensor;
 
+pub use error::SolveProgramConstructionError;
 pub use tensor::promoted_concatenate_dimensions;
 pub(in crate::typed_program) mod wire;
 
@@ -10,6 +12,7 @@ use rumoca_core::{Span, StructuredIndexDomain};
 use serde::{Deserialize, Serialize};
 
 use super::call::{SolvePureCallInterface, SolvePureCallOwnerId};
+use super::reduction::SolveMatrixMultiplyPlan;
 use super::types::{SolveArithmeticProfile, SolveScalarType, SolveValue, SolveValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -275,6 +278,8 @@ pub enum SolveOperation {
         destination: SolveRegisterId,
         lhs: SolveRegisterId,
         rhs: SolveRegisterId,
+        #[serde(skip_serializing)]
+        plan: SolveMatrixMultiplyPlan,
     },
     /// MLS cross product over two numeric three-vectors.
     Cross {
@@ -692,6 +697,15 @@ pub struct TypedProgramBuilder<'program> {
 }
 
 impl<'program> TypedProgramBuilder<'program> {
+    /// Number of operations already issued into this still-sealed program.
+    ///
+    /// This is construction-only evidence used by sibling IR builders to bind
+    /// an exact source action to the operation run it owns. It deliberately
+    /// does not expose the mutable operation storage.
+    pub(crate) fn operation_count(&self) -> usize {
+        self.operations.len()
+    }
+
     pub fn declare_slot(
         &mut self,
         value_type: SolveValueType,
@@ -806,6 +820,9 @@ impl<'program> TypedProgramBuilder<'program> {
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
         let value_type = self.register_type(operand, provenance)?.clone();
+        if integer_unary_result_range_is_unproved(operator, value_type.element_type()) {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+        }
         let valid = match operator {
             SolveUnaryOperator::Negate | SolveUnaryOperator::Abs | SolveUnaryOperator::Sign => {
                 value_type.element_type().is_numeric()
@@ -859,6 +876,9 @@ impl<'program> TypedProgramBuilder<'program> {
         if lhs_type != *rhs_type || !valid_elements {
             return Err(SolveProgramConstructionError::TypeMismatch { provenance });
         }
+        if integer_binary_result_range_is_unproved(operator, lhs_type.element_type()) {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+        }
         let destination = self.issue_register(lhs_type, provenance)?;
         self.push(
             SolveOperation::Binary {
@@ -910,6 +930,15 @@ impl<'program> TypedProgramBuilder<'program> {
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
         let operand_type = self.register_type(operand, provenance)?;
+        if matches!(operand_type.element_type(), SolveScalarType::Real { .. })
+            && matches!(
+                operator,
+                SolveConversionOperator::RealToIntegerTowardZero
+                    | SolveConversionOperator::RealToIntegerTowardNegativeInfinity
+            )
+        {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+        }
         let scalar = match (operator, operand_type.element_type()) {
             (SolveConversionOperator::IntegerToReal, SolveScalarType::Integer(_)) => {
                 SolveScalarType::real(self.arithmetic)
@@ -1879,6 +1908,36 @@ fn binary_operator_accepts(operator: SolveBinaryOperator, scalar: SolveScalarTyp
     }
 }
 
+fn integer_unary_result_range_is_unproved(
+    operator: SolveUnaryOperator,
+    scalar: SolveScalarType,
+) -> bool {
+    let SolveScalarType::Integer(domain) = scalar else {
+        return false;
+    };
+    match operator {
+        SolveUnaryOperator::Negate | SolveUnaryOperator::Abs => true,
+        SolveUnaryOperator::Sign => {
+            (domain.minimum() < 0 && !domain.contains(-1))
+                || (domain.maximum() > 0 && !domain.contains(1))
+        }
+        _ => false,
+    }
+}
+
+fn integer_binary_result_range_is_unproved(
+    operator: SolveBinaryOperator,
+    scalar: SolveScalarType,
+) -> bool {
+    matches!(scalar, SolveScalarType::Integer(_))
+        && matches!(
+            operator,
+            SolveBinaryOperator::Add
+                | SolveBinaryOperator::Subtract
+                | SolveBinaryOperator::Multiply
+        )
+}
+
 fn indices_in_bounds(dimensions: &[u32], indices: &[u32]) -> bool {
     dimensions.len() == indices.len()
         && dimensions
@@ -1898,99 +1957,6 @@ fn slice_in_bounds(base: &[u32], origin: &[u32], dimensions: &[u32]) -> bool {
                 origin.checked_add(*extent).is_some_and(|end| end <= *base)
             })
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SolveProgramConstructionError {
-    MissingProvenance,
-    WireMismatch,
-    IdentityOverflow { provenance: Span },
-    ProfileMismatch { provenance: Span },
-    WritableConstant { provenance: Span },
-    UnknownSlot { provenance: Span },
-    UnknownRegister { provenance: Span },
-    ReadOnlyStore { provenance: Span },
-    TypeMismatch { provenance: Span },
-    InvalidAggregate { provenance: Span },
-    InvalidProjection { provenance: Span },
-    UnknownCallOwner { provenance: Span },
-    InvalidCallInterface { provenance: Span },
-    EmptyCallOutput { provenance: Span },
-    InvalidCallOutput { provenance: Span },
-    InvalidRegion { provenance: Span },
-    InvalidMap { provenance: Span },
-    InvalidFold { provenance: Span },
-    InvalidTensorAlgebra { provenance: Span },
-    IncompleteCallOutput { provenance: Span },
-    DuplicateCallIdentity { provenance: Span },
-    UninitializedSlot { provenance: Span },
-}
-
-impl SolveProgramConstructionError {
-    #[must_use]
-    pub const fn source_span(&self) -> Option<Span> {
-        match self {
-            Self::MissingProvenance | Self::WireMismatch => None,
-            Self::IdentityOverflow { provenance }
-            | Self::ProfileMismatch { provenance }
-            | Self::WritableConstant { provenance }
-            | Self::UnknownSlot { provenance }
-            | Self::UnknownRegister { provenance }
-            | Self::ReadOnlyStore { provenance }
-            | Self::TypeMismatch { provenance }
-            | Self::InvalidAggregate { provenance }
-            | Self::InvalidProjection { provenance }
-            | Self::UnknownCallOwner { provenance }
-            | Self::InvalidCallInterface { provenance }
-            | Self::EmptyCallOutput { provenance }
-            | Self::InvalidCallOutput { provenance }
-            | Self::InvalidRegion { provenance }
-            | Self::InvalidMap { provenance }
-            | Self::InvalidFold { provenance }
-            | Self::InvalidTensorAlgebra { provenance }
-            | Self::IncompleteCallOutput { provenance }
-            | Self::DuplicateCallIdentity { provenance }
-            | Self::UninitializedSlot { provenance } => Some(*provenance),
-        }
-    }
-}
-
-impl std::fmt::Display for SolveProgramConstructionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let message = match self {
-            Self::MissingProvenance => "typed program owner is missing exact provenance",
-            Self::WireMismatch => "typed program wire does not replay through checked construction",
-            Self::IdentityOverflow { .. } => "typed program identity capacity exceeded",
-            Self::ProfileMismatch { .. } => "value type does not belong to the program profile",
-            Self::WritableConstant { .. } => "constant storage cannot be writable",
-            Self::UnknownSlot { .. } => "slot is not owned by this program",
-            Self::UnknownRegister { .. } => "register is not owned by this program",
-            Self::ReadOnlyStore { .. } => "store targets read-only storage",
-            Self::TypeMismatch { .. } => "typed program operand or result type mismatch",
-            Self::InvalidAggregate { .. } => "typed aggregate shape or element contract is invalid",
-            Self::InvalidProjection { .. } => "typed aggregate projection is invalid",
-            Self::UnknownCallOwner { .. } => "pure-call owner was not issued by this table",
-            Self::InvalidCallInterface { .. } => "pure-call argument or slot interface is invalid",
-            Self::EmptyCallOutput { .. } => "pure-call owner has no value or assertion output",
-            Self::InvalidCallOutput { .. } => "pure-call output kind does not match its type",
-            Self::InvalidRegion { .. } => "typed structured region interface is invalid",
-            Self::InvalidMap { .. } => "typed compact map interface or domain is invalid",
-            Self::InvalidFold { .. } => "typed compact fold interface or domain is invalid",
-            Self::InvalidTensorAlgebra { .. } => {
-                "typed tensor-algebra rank, shape, or element contract is invalid"
-            }
-            Self::IncompleteCallOutput { .. } => {
-                "pure-call body does not define every output exactly once"
-            }
-            Self::DuplicateCallIdentity { .. } => "pure-call semantic identity was already issued",
-            Self::UninitializedSlot { .. } => {
-                "slot load is not dominated by an external or stored definition"
-            }
-        };
-        formatter.write_str(message)
-    }
-}
-
-impl std::error::Error for SolveProgramConstructionError {}
 
 #[cfg(test)]
 mod tests;

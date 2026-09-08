@@ -1,7 +1,5 @@
 use super::*;
 
-// SPEC_0021: Exception - exhaustive expression-tree rewrite over AST variants.
-#[allow(clippy::too_many_lines)]
 pub(super) fn simplify_zero_sized_reductions(
     ctx: &Context,
     expr: &ast::Expression,
@@ -13,24 +11,11 @@ pub(super) fn simplify_zero_sized_reductions(
             args,
             is_partial_application,
             span,
-        } => {
-            if args.len() == 1
-                && expression_is_statically_zero_sized(ctx, &args[0], prefix)
-                && let Some(neutral) = zero_sized_reduction_neutral(comp, *span)
-            {
-                return neutral;
-            }
-
-            ast::Expression::FunctionCall {
-                comp: comp.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| simplify_zero_sized_reductions(ctx, arg, prefix))
-                    .collect(),
-                is_partial_application: *is_partial_application,
-                span: *span,
-            }
-        }
+        } => simplify_reduction_call(ctx, comp, args, *is_partial_application, *span, prefix),
+        ast::Expression::DerivativeCall { args, span } => ast::Expression::DerivativeCall {
+            args: simplify_expression_elements(ctx, args, prefix),
+            span: *span,
+        },
         ast::Expression::Binary { op, lhs, rhs, span } => ast::Expression::Binary {
             op: op.clone(),
             lhs: Arc::new(simplify_zero_sized_reductions(ctx, lhs, prefix)),
@@ -50,51 +35,21 @@ pub(super) fn simplify_zero_sized_reductions(
             branches,
             else_branch,
             span,
-        } => ast::Expression::If {
-            branches: branches
-                .iter()
-                .map(|(condition, value)| {
-                    (
-                        simplify_zero_sized_reductions(ctx, condition, prefix),
-                        simplify_zero_sized_reductions(ctx, value, prefix),
-                    )
-                })
-                .collect(),
-            else_branch: Arc::new(simplify_zero_sized_reductions(ctx, else_branch, prefix)),
-            span: *span,
-        },
+        } => simplify_if_expression(ctx, branches, else_branch, *span, prefix),
         ast::Expression::Array {
             elements,
             is_matrix,
             span,
-        } => ast::Expression::Array {
-            elements: elements
-                .iter()
-                .map(|element| simplify_zero_sized_reductions(ctx, element, prefix))
-                .collect(),
-            is_matrix: *is_matrix,
-            span: *span,
-        },
-        ast::Expression::Tuple { elements, span } => ast::Expression::Tuple {
-            elements: elements
-                .iter()
-                .map(|element| simplify_zero_sized_reductions(ctx, element, prefix))
-                .collect(),
-            span: *span,
-        },
+        } => simplify_array_expression(ctx, elements, *is_matrix, *span, prefix),
+        ast::Expression::Tuple { elements, span } => {
+            simplify_tuple_expression(ctx, elements, *span, prefix)
+        }
         ast::Expression::Range {
             start,
             step,
             end,
             span,
-        } => ast::Expression::Range {
-            start: Arc::new(simplify_zero_sized_reductions(ctx, start, prefix)),
-            step: step
-                .as_ref()
-                .map(|step| Arc::new(simplify_zero_sized_reductions(ctx, step, prefix))),
-            end: Arc::new(simplify_zero_sized_reductions(ctx, end, prefix)),
-            span: *span,
-        },
+        } => simplify_range_expression(ctx, start, step.as_deref(), end, *span, prefix),
         ast::Expression::ArrayComprehension {
             expr,
             indices,
@@ -139,13 +94,116 @@ pub(super) fn simplify_zero_sized_reductions(
             span,
         } => ast::Expression::Modification {
             target: target.clone(),
-            value: Arc::new(simplify_zero_sized_reductions(ctx, value, prefix)),
+            value: value
+                .as_ref()
+                .map(|value| Arc::new(simplify_zero_sized_reductions(ctx, value, prefix))),
             span: *span,
         },
         ast::Expression::ClassModification { .. }
         | ast::Expression::ComponentReference(_)
         | ast::Expression::Terminal { .. }
         | ast::Expression::Empty { .. } => expr.clone(),
+    }
+}
+
+fn simplify_array_expression(
+    ctx: &Context,
+    elements: &[ast::Expression],
+    is_matrix: bool,
+    span: rumoca_core::Span,
+    prefix: &ast::QualifiedName,
+) -> ast::Expression {
+    ast::Expression::Array {
+        elements: simplify_expression_elements(ctx, elements, prefix),
+        is_matrix,
+        span,
+    }
+}
+
+fn simplify_range_expression(
+    ctx: &Context,
+    start: &ast::Expression,
+    step: Option<&ast::Expression>,
+    end: &ast::Expression,
+    span: rumoca_core::Span,
+    prefix: &ast::QualifiedName,
+) -> ast::Expression {
+    ast::Expression::Range {
+        start: Arc::new(simplify_zero_sized_reductions(ctx, start, prefix)),
+        step: step.map(|step| Arc::new(simplify_zero_sized_reductions(ctx, step, prefix))),
+        end: Arc::new(simplify_zero_sized_reductions(ctx, end, prefix)),
+        span,
+    }
+}
+
+fn simplify_tuple_expression(
+    ctx: &Context,
+    elements: &[ast::Expression],
+    span: rumoca_core::Span,
+    prefix: &ast::QualifiedName,
+) -> ast::Expression {
+    ast::Expression::Tuple {
+        elements: simplify_expression_elements(ctx, elements, prefix),
+        span,
+    }
+}
+
+fn simplify_expression_elements(
+    ctx: &Context,
+    elements: &[ast::Expression],
+    prefix: &ast::QualifiedName,
+) -> Vec<ast::Expression> {
+    elements
+        .iter()
+        .map(|element| simplify_zero_sized_reductions(ctx, element, prefix))
+        .collect()
+}
+
+fn simplify_reduction_call(
+    ctx: &Context,
+    comp: &ast::ComponentReference,
+    args: &[ast::Expression],
+    is_partial_application: bool,
+    span: rumoca_core::Span,
+    prefix: &ast::QualifiedName,
+) -> ast::Expression {
+    if args.len() == 1
+        && expression_is_statically_zero_sized(ctx, &args[0], prefix)
+        && let Some(neutral) = zero_sized_reduction_neutral(ctx, comp, span)
+    {
+        return neutral;
+    }
+
+    ast::Expression::FunctionCall {
+        comp: comp.clone(),
+        args: args
+            .iter()
+            .map(|arg| simplify_zero_sized_reductions(ctx, arg, prefix))
+            .collect(),
+        is_partial_application,
+        span,
+    }
+}
+
+fn simplify_if_expression(
+    ctx: &Context,
+    branches: &[(ast::Expression, ast::Expression)],
+    else_branch: &ast::Expression,
+    span: rumoca_core::Span,
+    prefix: &ast::QualifiedName,
+) -> ast::Expression {
+    ast::Expression::If {
+        branches: branches
+            .iter()
+            .map(|(condition, value)| {
+                (
+                    simplify_zero_sized_reductions(ctx, condition, prefix),
+                    simplify_zero_sized_reductions(ctx, value, prefix),
+                )
+            })
+            .collect(),
+        else_branch: Arc::new(simplify_zero_sized_reductions(ctx, else_branch, prefix)),
+        span,
     }
 }
 
@@ -186,16 +244,13 @@ fn component_ref_is_statically_zero_sized(
 }
 
 fn zero_sized_reduction_neutral(
+    ctx: &Context,
     comp: &ast::ComponentReference,
     span: rumoca_core::Span,
 ) -> Option<ast::Expression> {
-    if comp.local || comp.parts.len() != 1 {
-        return None;
-    }
-    let name = comp.parts.last()?.ident.text.as_ref();
-    match name {
-        "sum" => Some(real_literal_expr(0.0, span)),
-        "product" => Some(real_literal_expr(1.0, span)),
+    match scalar_reduction_builtin(ctx, comp)? {
+        rumoca_core::BuiltinFunction::Sum => Some(real_literal_expr(0.0, span)),
+        rumoca_core::BuiltinFunction::Product => Some(real_literal_expr(1.0, span)),
         _ => None,
     }
 }
@@ -218,7 +273,7 @@ pub(super) fn expand_reduction_over_array_ref(
     prefix: &ast::QualifiedName,
     span: rumoca_core::Span,
 ) -> Result<Option<ast::Expression>, FlattenError> {
-    let Some((neutral, op)) = scalar_reduction_neutral_and_op(comp, span) else {
+    let Some((neutral, op)) = scalar_reduction_neutral_and_op(ctx, comp, span) else {
         return Ok(None);
     };
     let [ast::Expression::ComponentReference(arg_ref)] = args else {
@@ -255,17 +310,24 @@ pub(super) fn expand_reduction_over_array_ref(
 }
 
 fn scalar_reduction_neutral_and_op(
+    ctx: &Context,
     comp: &ast::ComponentReference,
     span: rumoca_core::Span,
 ) -> Option<(ast::Expression, OpBinary)> {
-    if comp.local || comp.parts.len() != 1 {
-        return None;
-    }
-    match comp.parts[0].ident.text.as_ref() {
-        "sum" => Some((real_literal_expr(0.0, span), OpBinary::Add)),
-        "product" => Some((real_literal_expr(1.0, span), OpBinary::Mul)),
+    match scalar_reduction_builtin(ctx, comp)? {
+        rumoca_core::BuiltinFunction::Sum => Some((real_literal_expr(0.0, span), OpBinary::Add)),
+        rumoca_core::BuiltinFunction::Product => {
+            Some((real_literal_expr(1.0, span), OpBinary::Mul))
+        }
         _ => None,
     }
+}
+
+fn scalar_reduction_builtin(
+    ctx: &Context,
+    comp: &ast::ComponentReference,
+) -> Option<rumoca_core::BuiltinFunction> {
+    ctx.predefined_intrinsics.resolve(comp.target_def_id())
 }
 
 fn component_ref_with_array_index(
@@ -315,6 +377,9 @@ fn fold_reduction_terms(
 mod tests {
     use super::*;
 
+    const PREDEFINED_SUM: rumoca_core::DefId = rumoca_core::DefId(18_001);
+    const PREDEFINED_PRODUCT: rumoca_core::DefId = rumoca_core::DefId(18_002);
+
     fn part(name: &str, index: usize) -> ast::ComponentRefPart {
         ast::ComponentRefPart {
             ident: rumoca_core::Token {
@@ -339,17 +404,47 @@ mod tests {
         }
     }
 
-    fn var_ref(path: &[&str]) -> ast::Expression {
-        ast::Expression::ComponentReference(component_ref(path))
-    }
-
-    fn call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
+    fn resolved_call(
+        name: &str,
+        target: rumoca_core::DefId,
+        args: Vec<ast::Expression>,
+    ) -> ast::Expression {
+        let mut comp = component_ref(&[name]);
+        comp.set_target_def_id(Some(target));
         ast::Expression::FunctionCall {
-            comp: component_ref(&[name]),
+            comp,
             args,
             is_partial_application: false,
             span: rumoca_core::Span::DUMMY,
         }
+    }
+
+    fn var_ref(path: &[&str]) -> ast::Expression {
+        ast::Expression::ComponentReference(component_ref(path))
+    }
+
+    fn predefined_reduction_context() -> Context {
+        let mut tree = ast::ClassTree::new();
+        tree.scope_tree.add_predefined_member(
+            rumoca_core::ComponentPath::from_flat_path("sum"),
+            PREDEFINED_SUM,
+        );
+        tree.scope_tree.add_predefined_member(
+            rumoca_core::ComponentPath::from_flat_path("product"),
+            PREDEFINED_PRODUCT,
+        );
+        let mut ctx = Context::new();
+        ctx.predefined_intrinsics = crate::ast_lower::PredefinedIntrinsicIds::from_tree(&tree);
+        ctx
+    }
+
+    fn reduction_call(name: &str, args: Vec<ast::Expression>) -> ast::Expression {
+        let target = match name {
+            "sum" => PREDEFINED_SUM,
+            "product" => PREDEFINED_PRODUCT,
+            _ => panic!("test reduction must be sum or product"),
+        };
+        resolved_call(name, target, args)
     }
 
     fn qualified_call(path: &[&str], args: Vec<ast::Expression>) -> ast::Expression {
@@ -381,11 +476,11 @@ mod tests {
 
     #[test]
     fn simplifies_sum_over_zero_sized_component_array_field() {
-        let mut ctx = Context::new();
+        let mut ctx = predefined_reduction_context();
         ctx.array_dimensions
             .insert("tank.topPorts".to_string(), vec![0]);
 
-        let expr = call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
+        let expr = reduction_call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
         let simplified =
             simplify_zero_sized_reductions(&ctx, &expr, &ast::QualifiedName::from_dotted("tank"));
 
@@ -394,11 +489,11 @@ mod tests {
 
     #[test]
     fn preserves_sum_over_nonzero_component_array_field() {
-        let mut ctx = Context::new();
+        let mut ctx = predefined_reduction_context();
         ctx.array_dimensions
             .insert("tank.topPorts".to_string(), vec![1]);
 
-        let expr = call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
+        let expr = reduction_call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
         let simplified =
             simplify_zero_sized_reductions(&ctx, &expr, &ast::QualifiedName::from_dotted("tank"));
 
@@ -407,11 +502,11 @@ mod tests {
 
     #[test]
     fn expands_sum_over_component_array_field() {
-        let mut ctx = Context::new();
+        let mut ctx = predefined_reduction_context();
         ctx.array_dimensions
             .insert("tank.topPorts".to_string(), vec![2]);
 
-        let expr = call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
+        let expr = reduction_call("sum", vec![var_ref(&["topPorts", "m_flow"])]);
         let ast::Expression::FunctionCall {
             comp, args, span, ..
         } = expr
@@ -437,11 +532,11 @@ mod tests {
 
     #[test]
     fn expands_product_over_component_array_field() {
-        let mut ctx = Context::new();
+        let mut ctx = predefined_reduction_context();
         ctx.array_dimensions
             .insert("tank.topPorts".to_string(), vec![2]);
 
-        let expr = call("product", vec![var_ref(&["topPorts", "m_flow"])]);
+        let expr = reduction_call("product", vec![var_ref(&["topPorts", "m_flow"])]);
         let ast::Expression::FunctionCall {
             comp, args, span, ..
         } = expr
@@ -468,6 +563,54 @@ mod tests {
     }
 
     #[test]
+    fn preserves_shadowed_sum_over_nonempty_array_by_resolved_identity() {
+        let mut ctx = predefined_reduction_context();
+        ctx.array_dimensions
+            .insert("tank.topPorts".to_string(), vec![2]);
+        let user_sum = rumoca_core::DefId::new(18_101);
+        let expr = resolved_call("sum", user_sum, vec![var_ref(&["topPorts", "m_flow"])]);
+        let ast::Expression::FunctionCall {
+            comp, args, span, ..
+        } = expr
+        else {
+            panic!("expected function call");
+        };
+
+        let expanded = expand_reduction_over_array_ref(
+            &ctx,
+            &comp,
+            &args,
+            &ast::QualifiedName::from_dotted("tank"),
+            span,
+        )
+        .expect("identity classification must not fail");
+
+        assert!(expanded.is_none(), "a user function is not a reduction");
+        assert_eq!(comp.target_def_id(), Some(user_sum));
+    }
+
+    #[test]
+    fn preserves_shadowed_product_over_empty_array_by_resolved_identity() {
+        let mut ctx = predefined_reduction_context();
+        ctx.array_dimensions
+            .insert("tank.topPorts".to_string(), vec![0]);
+        let user_product = rumoca_core::DefId::new(18_102);
+        let expr = resolved_call(
+            "product",
+            user_product,
+            vec![var_ref(&["topPorts", "m_flow"])],
+        );
+
+        let simplified =
+            simplify_zero_sized_reductions(&ctx, &expr, &ast::QualifiedName::from_dotted("tank"));
+
+        let ast::Expression::FunctionCall { comp, .. } = simplified else {
+            panic!("a user function over an empty array must remain a call");
+        };
+        assert_eq!(comp.target_def_id(), Some(user_product));
+    }
+
+    #[test]
     fn preserves_qualified_sum_over_zero_sized_component_array_field() {
         let mut ctx = Context::new();
         ctx.array_dimensions
@@ -482,14 +625,35 @@ mod tests {
 
     #[test]
     fn simplifies_product_over_zero_sized_component_array_field() {
-        let mut ctx = Context::new();
+        let mut ctx = predefined_reduction_context();
         ctx.array_dimensions
             .insert("tank.topPorts".to_string(), vec![0]);
 
-        let expr = call("product", vec![var_ref(&["topPorts", "m_flow"])]);
+        let expr = reduction_call("product", vec![var_ref(&["topPorts", "m_flow"])]);
         let simplified =
             simplify_zero_sized_reductions(&ctx, &expr, &ast::QualifiedName::from_dotted("tank"));
 
         assert_eq!(literal_text(&simplified), Some("1"));
+    }
+
+    #[test]
+    fn leading_dot_reductions_keep_their_neutral_elements_for_empty_arrays() {
+        let mut ctx = predefined_reduction_context();
+        ctx.array_dimensions
+            .insert("tank.topPorts".to_string(), vec![0]);
+
+        for (name, neutral) in [("sum", "0"), ("product", "1")] {
+            let mut expr = reduction_call(name, vec![var_ref(&["topPorts", "m_flow"])]);
+            let ast::Expression::FunctionCall { comp, .. } = &mut expr else {
+                panic!("reduction fixture is a call");
+            };
+            comp.local = true;
+            let simplified = simplify_zero_sized_reductions(
+                &ctx,
+                &expr,
+                &ast::QualifiedName::from_dotted("tank"),
+            );
+            assert_eq!(literal_text(&simplified), Some(neutral), "{name}");
+        }
     }
 }

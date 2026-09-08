@@ -483,10 +483,10 @@ fn ops_reference_seeded_inputs(ops: &[LinearOp], seed_mode: SeedMode) -> bool {
     ops.iter().any(|op| {
         matches!(op, LinearOp::LoadY { .. })
             || matches!(seed_mode, SeedMode::SolverYAndP { .. })
-                && matches!(op, LinearOp::LoadP { .. } | LinearOp::LoadIndexedP { .. })
+                && matches!(op, LinearOp::LoadP { .. })
             || matches!(op, LinearOp::FunctionFold { program, .. }
                 | LinearOp::GuardedFunctionFold { program, .. }
-                if ops_reference_seeded_inputs(&program.update, seed_mode))
+                if ops_reference_seeded_inputs(program.update(), seed_mode))
     })
 }
 
@@ -771,12 +771,6 @@ impl AdBuilder {
             LinearOp::LoadTime { dst } => self.lower_load_time(dst),
             LinearOp::LoadY { dst, index } => self.lower_load_y(dst, index),
             LinearOp::LoadP { dst, index } => self.lower_load_p(dst, index),
-            LinearOp::LoadIndexedP {
-                dst,
-                base,
-                count,
-                index,
-            } => self.lower_load_indexed_p(dst, base, count, index),
             LinearOp::LoadIndexedRegister {
                 dst,
                 base,
@@ -799,9 +793,6 @@ impl AdBuilder {
                 indices,
             } => self.lower_load_indexed_fold_capture(dst, base, stride, dimensions, &indices),
             LinearOp::LoadSeed { .. } => Err(unsupported("unexpected LoadSeed in primal row")),
-            LinearOp::LoadIndexedSeed { .. } => {
-                Err(unsupported("unexpected LoadIndexedSeed in primal row"))
-            }
             LinearOp::LoadFoldCarried { dst, index } => self.lower_load_fold_carried(dst, index),
             LinearOp::LoadFoldIndex { dst, dimension } => {
                 self.lower_load_fold_index(dst, dimension)
@@ -894,23 +885,6 @@ impl AdBuilder {
                 rhs_start,
                 lanes,
             } => self.lower_tensor_cross(dst_start, lhs_start, rhs_start, lanes),
-            LinearOp::TableBounds { dst, table_id, max } => {
-                self.lower_table_bounds(dst, table_id, max)
-            }
-            LinearOp::TableLookup {
-                dst,
-                table_id,
-                column,
-                input,
-            } => self.lower_table_lookup(dst, table_id, column, input),
-            LinearOp::TableLookupSlope { .. } => {
-                Err(unsupported("unexpected TableLookupSlope in primal row"))
-            }
-            LinearOp::TableNextEvent {
-                dst,
-                table_id,
-                time,
-            } => self.lower_table_next_event(dst, table_id, time),
             LinearOp::RandomInitialState {
                 dst,
                 generator,
@@ -1337,20 +1311,20 @@ impl AdBuilder {
         );
         update.conditional_program_cache = self.conditional_program_cache.clone();
         update.store_output_mode = StoreOutputMode::Dual;
-        for operation in &primal.update {
+        for operation in primal.update() {
             update.lower_op(operation.clone())?;
         }
         let carried_count = primal
-            .carried_count
+            .carried_count()
             .checked_mul(2)
             .ok_or_else(|| unsupported("function-fold AD carried count overflow"))?;
         let capture_count = primal
-            .capture_count
+            .capture_count()
             .checked_mul(2)
             .ok_or_else(|| unsupported("function-fold AD capture count overflow"))?;
         let program = Arc::new(
             rumoca_ir_solve::FunctionFoldProgram::checked(
-                primal.domain.clone(),
+                primal.domain().clone(),
                 carried_count,
                 capture_count,
                 update.ops,
@@ -1395,26 +1369,29 @@ impl AdBuilder {
         }
 
         let capture_count = checked_ad_product(
-            primal.capture_count,
+            primal.capture_count(),
             2,
             self.span,
             "function-conditional AD captures",
         )?;
         let target_widths = primal
-            .target_widths
+            .target_widths()
             .iter()
             .map(|width| checked_ad_product(*width, 2, self.span, "function-conditional AD target"))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut arms =
-            ad_vec_with_capacity(primal.arms.len(), "function-conditional AD arms", self.span)?;
-        for arm in &primal.arms {
+        let mut arms = ad_vec_with_capacity(
+            primal.arms().len(),
+            "function-conditional AD arms",
+            self.span,
+        )?;
+        for arm in primal.arms() {
             arms.push((
-                self.derive_conditional_region(&arm.condition, StoreOutputMode::Primal)?,
-                self.derive_conditional_region(&arm.result, StoreOutputMode::Dual)?,
+                self.derive_conditional_region(arm.condition(), StoreOutputMode::Primal)?,
+                self.derive_conditional_region(arm.result(), StoreOutputMode::Dual)?,
             ));
         }
-        let fallback = self.derive_conditional_region(&primal.fallback, StoreOutputMode::Dual)?;
-        let checked = match primal.owner {
+        let fallback = self.derive_conditional_region(primal.fallback(), StoreOutputMode::Dual)?;
+        let checked = match primal.owner() {
             Some(owner) => rumoca_ir_solve::FunctionConditionalProgram::checked_owned(
                 owner,
                 capture_count,
@@ -1464,10 +1441,10 @@ impl AdBuilder {
         program: Arc<rumoca_ir_solve::FunctionConditionalProgram>,
     ) -> Result<(), LowerError> {
         let packed_captures =
-            self.pack_dual_register_range(capture_start, program.capture_count)?;
+            self.pack_dual_register_range(capture_start, program.capture_count())?;
         let derived_program = self.derived_conditional_program(&program)?;
         let result_start = self.next_reg;
-        for _ in 0..derived_program.result_count {
+        for _ in 0..derived_program.result_count() {
             self.alloc_reg()?;
         }
         self.ops.push(LinearOp::FunctionConditional {
@@ -1475,7 +1452,7 @@ impl AdBuilder {
             capture_start: packed_captures,
             program: derived_program,
         });
-        for offset in 0..program.result_count {
+        for offset in 0..program.result_count() {
             let primal_dst =
                 checked_ad_reg_offset(dst_start, offset, self.span, "function conditional output")?;
             let lane =
@@ -1517,11 +1494,12 @@ impl AdBuilder {
         activation: Option<Reg>,
         program: Arc<rumoca_ir_solve::FunctionFoldProgram>,
     ) -> Result<(), LowerError> {
-        let packed_initial = self.pack_dual_register_range(initial_start, program.carried_count)?;
+        let packed_initial =
+            self.pack_dual_register_range(initial_start, program.carried_count())?;
         let packed_captures =
-            self.pack_dual_register_range(capture_start, program.capture_count)?;
+            self.pack_dual_register_range(capture_start, program.capture_count())?;
         let derived_program = self.derived_fold_program(&program)?;
-        let carried_count = derived_program.carried_count;
+        let carried_count = derived_program.carried_count();
         let folded_start = self.next_reg;
         for _ in 0..carried_count {
             self.alloc_reg()?;
@@ -1541,7 +1519,7 @@ impl AdBuilder {
                 program: derived_program,
             },
         });
-        for offset in 0..program.carried_count {
+        for offset in 0..program.carried_count() {
             let offset_reg = Reg::try_from(offset)
                 .map_err(|_| unsupported("function-fold AD destination offset overflow"))?;
             let primal_dst = dst_start
@@ -1756,29 +1734,6 @@ impl AdBuilder {
         let du = match self.seed_mode {
             SeedMode::SolverYOnly => self.zero_reg()?,
             SeedMode::SolverYAndP { .. } => self.emit_load_seed(self.p_seed_index(index)?)?,
-        };
-        self.bind(dst, DualReg { re, du })
-    }
-
-    /// Forward-mode dual of a runtime-indexed parameter load. The value is
-    /// loaded at the same runtime offset; its tangent is zero under solver-y AD
-    /// and, under parameter-seed AD, the seed at the matching offset shifted
-    /// into the seed region (`p_seed_index` is affine, so the whole run shifts
-    /// by `p_seed_offset` while the index register is reused unchanged).
-    fn lower_load_indexed_p(
-        &mut self,
-        dst: Reg,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<(), LowerError> {
-        let idx = self.lookup(index)?;
-        let re = self.emit_load_indexed_p(base, count, idx.re)?;
-        let du = match self.seed_mode {
-            SeedMode::SolverYOnly => self.zero_reg()?,
-            SeedMode::SolverYAndP { .. } => {
-                self.emit_load_indexed_seed(self.p_seed_index(base)?, count, idx.re)?
-            }
         };
         self.bind(dst, DualReg { re, du })
     }
@@ -2093,8 +2048,8 @@ impl AdBuilder {
                 }
             }
         }
-        let mut captures = Vec::with_capacity(program.capture_count.saturating_mul(2));
-        for offset in 0..program.capture_count {
+        let mut captures = Vec::with_capacity(program.capture_count().saturating_mul(2));
+        for offset in 0..program.capture_count() {
             let source = capture_start
                 .checked_add(
                     Reg::try_from(offset)
@@ -2123,42 +2078,6 @@ impl AdBuilder {
             nested_when_true,
         });
         Ok(())
-    }
-
-    fn lower_table_bounds(&mut self, dst: Reg, table_id: Reg, max: bool) -> Result<(), LowerError> {
-        let table = self.lookup(table_id)?;
-        let re = self.emit_table_bounds(table.re, max)?;
-        let du = self.zero_reg()?;
-        self.bind(dst, DualReg { re, du })
-    }
-
-    fn lower_table_lookup(
-        &mut self,
-        dst: Reg,
-        table_id: Reg,
-        column: Reg,
-        input: Reg,
-    ) -> Result<(), LowerError> {
-        let table = self.lookup(table_id)?;
-        let column = self.lookup(column)?;
-        let input = self.lookup(input)?;
-        let re = self.emit_table_lookup(table.re, column.re, input.re)?;
-        let slope = self.emit_table_lookup_slope(table.re, column.re, input.re)?;
-        let du = self.emit_binary(BinaryOp::Mul, slope, input.du)?;
-        self.bind(dst, DualReg { re, du })
-    }
-
-    fn lower_table_next_event(
-        &mut self,
-        dst: Reg,
-        table_id: Reg,
-        time: Reg,
-    ) -> Result<(), LowerError> {
-        let table = self.lookup(table_id)?;
-        let time = self.lookup(time)?;
-        let re = self.emit_table_next_event(table.re, time.re)?;
-        let du = self.zero_reg()?;
-        self.bind(dst, DualReg { re, du })
     }
 
     fn lower_unary(&mut self, dst: Reg, op: UnaryOp, arg: Reg) -> Result<(), LowerError> {
@@ -3229,38 +3148,6 @@ impl AdBuilder {
         Ok(dst)
     }
 
-    fn emit_load_indexed_p(
-        &mut self,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::LoadIndexedP {
-            dst,
-            base,
-            count,
-            index,
-        });
-        Ok(dst)
-    }
-
-    fn emit_load_indexed_seed(
-        &mut self,
-        base: usize,
-        count: usize,
-        index: Reg,
-    ) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::LoadIndexedSeed {
-            dst,
-            base,
-            count,
-            index,
-        });
-        Ok(dst)
-    }
-
     fn p_seed_index(&self, index: usize) -> Result<usize, LowerError> {
         match self.seed_mode {
             SeedMode::SolverYOnly => Ok(index),
@@ -3275,54 +3162,6 @@ impl AdBuilder {
                 })
             }
         }
-    }
-
-    fn emit_table_bounds(&mut self, table_id: Reg, max: bool) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::TableBounds { dst, table_id, max });
-        Ok(dst)
-    }
-
-    fn emit_table_lookup(
-        &mut self,
-        table_id: Reg,
-        column: Reg,
-        input: Reg,
-    ) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        });
-        Ok(dst)
-    }
-
-    fn emit_table_lookup_slope(
-        &mut self,
-        table_id: Reg,
-        column: Reg,
-        input: Reg,
-    ) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        });
-        Ok(dst)
-    }
-
-    fn emit_table_next_event(&mut self, table_id: Reg, time: Reg) -> Result<Reg, LowerError> {
-        let dst = self.alloc_reg()?;
-        self.ops.push(LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        });
-        Ok(dst)
     }
 
     fn emit_unary(&mut self, op: UnaryOp, arg: Reg) -> Result<Reg, LowerError> {

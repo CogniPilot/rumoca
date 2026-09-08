@@ -11,7 +11,7 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
     let mut alias_target = override_target("AliasMedium", ids.alias_pkg, ClassType::Package);
     alias_target.alias = "Medium".to_string();
     let mut override_functions = OverrideFunctionMap::default();
-    override_functions.insert("Medium".to_string(), alias_target.clone());
+    override_functions.insert(alias_target.alias_slot, alias_target.clone());
     let marker = MemberFunctionCallMarker {
         tree: &tree,
         class_index: &class_index,
@@ -19,18 +19,16 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
     };
 
     assert_eq!(
-        marker
-            .mark_component_function_call(deferred_member_ref(
-                ("Medium", ids.alias_pkg),
-                "setState_phX",
-            ))
-            .target_def_id(),
+        marked_target_def_id(
+            &marker,
+            deferred_member_ref(("Medium", ids.alias_pkg), "setState_phX"),
+        ),
         Some(ids.concrete_fn)
     );
 
     let override_packages = vec![alias_target];
     let no_override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -57,7 +55,7 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
         .expect("function selection");
     assert_eq!(density.selection.implementation, ids.concrete_density);
     let unscoped_ctx =
-        FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &no_override_functions);
+        FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &no_override_functions);
     let unscoped_density =
         resolve_exact_function_rewrite(&concrete_component_ref, false, &unscoped_ctx, test_span())
             .expect("structured target is sufficient without a spelling context")
@@ -69,6 +67,7 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
 
     let mut flat = flat_with_partial_density_function(ids);
     let component_override_map = root_component_override_map(&override_packages[0]);
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
     rewrite_function_overrides_in_flat_model(
         &mut flat,
@@ -76,6 +75,7 @@ fn replaceable_package_function_prefers_concrete_override_chain() {
         &class_index,
         &component_override_map,
         &component_member_scope::ComponentMemberScopes::default(),
+        &semantic_catalogs,
     )
     .expect("function override rewrite");
 
@@ -217,7 +217,11 @@ fn alias_medium_package(ids: ConcreteOverrideChainIds) -> ClassDef {
 
 fn flat_with_partial_density_function(ids: ConcreteOverrideChainIds) -> rumoca_ir_flat::Model {
     let mut flat = rumoca_ir_flat::Model::new();
-    let mut function = rumoca_core::Function::new("PartialMedium.density_phX", test_span());
+    let mut function = rumoca_core::Function::new(
+        "PartialMedium.density_phX",
+        rumoca_core::DefId::new(61_010),
+        test_span(),
+    );
     function.body.push(rumoca_core::Statement::Assignment {
         comp: core_comp_ref(&[("d", DefId::new(8))]),
         value: Expression::FunctionCall {
@@ -227,6 +231,7 @@ fn flat_with_partial_density_function(ids: ConcreteOverrideChainIds) -> rumoca_i
             ),
             args: vec![core_var(&[("state", DefId::new(9))])],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: test_span(),
         },
         span: test_span(),
@@ -239,7 +244,7 @@ fn root_component_override_map(alias_target: &OverrideTarget) -> ComponentOverri
     let mut component_override_map = ComponentOverrideMap::default();
     component_override_map.insert(
         ComponentPath::root(),
-        [("Medium".to_string(), alias_target.clone())]
+        [(alias_target.alias_slot, alias_target.clone())]
             .into_iter()
             .collect(),
     );
@@ -269,7 +274,7 @@ fn marks_member_function_calls_through_component_type_aliases() {
     world.def_id = Some(world_def);
     tree.def_map.insert(world_def, "World".to_string());
     override_functions.insert(
-        "world".to_string(),
+        world_def,
         override_target("World", world_def, ClassType::Model),
     );
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
@@ -280,12 +285,10 @@ fn marks_member_function_calls_through_component_type_aliases() {
     };
 
     assert_eq!(
-        marker
-            .mark_component_function_call(deferred_member_ref(
-                ("world", world_def),
-                "gravityAcceleration",
-            ))
-            .target_def_id(),
+        marked_target_def_id(
+            &marker,
+            deferred_member_ref(("world", world_def), "gravityAcceleration"),
+        ),
         Some(gravity_def)
     );
 }
@@ -307,11 +310,10 @@ fn root_package_alias_marks_member_function_calls() {
     };
 
     assert_eq!(
-        marker
-            .mark_component_function_call(
-                deferred_member_ref(("Medium", ids.alias_pkg), "density",)
-            )
-            .target_def_id(),
+        marked_target_def_id(
+            &marker,
+            deferred_member_ref(("Medium", ids.alias_pkg), "density"),
+        ),
         Some(ids.concrete_density)
     );
 }
@@ -335,8 +337,10 @@ fn active_package_alias_rewrites_inherited_partial_function_call() {
         ),
         args: vec![core_var(&[("state", DefId::new(8))])],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
+    let semantic_catalogs = crate::test_support::semantic_catalog_projection();
 
     rewrite_function_overrides_in_expression(
         &mut expr,
@@ -344,6 +348,7 @@ fn active_package_alias_rewrites_inherited_partial_function_call() {
         &class_index,
         &override_packages,
         &override_functions,
+        &semantic_catalogs,
     )
     .expect("function override rewrite");
 
@@ -358,7 +363,7 @@ fn leaves_unknown_member_function_calls_unmarked() {
     let tree = ClassTree::new();
     let mut override_functions = OverrideFunctionMap::default();
     override_functions.insert(
-        "world".to_string(),
+        DefId::new(1),
         override_target("World", DefId::new(1), ClassType::Model),
     );
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
@@ -369,12 +374,142 @@ fn leaves_unknown_member_function_calls_unmarked() {
     };
 
     assert_eq!(
-        marker
-            .mark_component_function_call(deferred_member_ref(
-                ("world", DefId::new(1)),
-                "gravityAcceleration",
-            ))
-            .target_def_id(),
+        marked_target_def_id(
+            &marker,
+            deferred_member_ref(("world", DefId::new(1)), "gravityAcceleration"),
+        ),
         None
     );
+}
+
+/// MLS 3.7 grammar: a function-call primary consumes a full component
+/// reference, and every component-reference part carries optional array
+/// subscripts, so an indexed receiver call `tab[j].interp(x)` is admitted
+/// source. The parser preserves the subscript on the callee's leading part.
+#[test]
+fn parser_admits_indexed_receiver_callee_parts() {
+    let source = "model M\n  Real y = tab[j].interp(x);\nend M;\n";
+    let stored = rumoca_phase_parse::parse_to_ast(source, "indexed_receiver_callee.mo")
+        .expect("an indexed receiver call is grammatically admitted source");
+    let class_m = stored.classes.get("M").expect("model M");
+    let component_y = class_m.components.get("y").expect("component y");
+    let binding = component_y.binding.as_ref().expect("binding of y");
+    let rumoca_ir_ast::Expression::FunctionCall { comp, args, .. } = binding else {
+        panic!("expected a parsed function call, got {binding:?}");
+    };
+    assert_eq!(comp.parts.len(), 2);
+    assert_eq!(comp.parts[0].ident.text.as_ref(), "tab");
+    let subs = comp.parts[0].subs.as_ref().expect("callee part subscripts");
+    assert!(
+        matches!(subs.as_slice(), [rumoca_ir_ast::Subscript::Expression(_)]),
+        "the callee's leading part keeps its subscript"
+    );
+    assert_eq!(comp.parts[1].ident.text.as_ref(), "interp");
+    assert_eq!(args.len(), 1);
+}
+
+/// A replaceable-function modifier value carrying an indexed receiver call:
+/// `gain = tab[k].interp(x)` with receiver scope `pump`.
+fn indexed_receiver_modifier_value() -> rumoca_ir_ast::Expression {
+    let callee = ComponentReference {
+        local: false,
+        parts: vec![
+            ComponentRefPart {
+                ident: token("tab"),
+                subs: Some(vec![rumoca_ir_ast::Subscript::Expression(
+                    rumoca_ir_ast::Expression::ComponentReference(resolved_comp_ref(&[(
+                        "k",
+                        DefId::new(23),
+                    )])),
+                )]),
+                def_id: Some(DefId::new(21)),
+            },
+            ComponentRefPart {
+                ident: token("interp"),
+                subs: None,
+                def_id: Some(DefId::new(22)),
+            },
+        ],
+        span: test_span(),
+        qualified_display_name: None,
+    };
+    rumoca_ir_ast::Expression::NamedArgument {
+        name: token("gain"),
+        value: Arc::new(rumoca_ir_ast::Expression::FunctionCall {
+            comp: callee,
+            args: vec![resolved_ast_var(&[("x", DefId::new(24))])],
+            is_partial_application: false,
+            span: test_span(),
+        }),
+        span: test_span(),
+    }
+}
+
+/// Lowered outcome of receiver qualification over an indexed receiver call:
+/// the reference inside the callee-part subscript is qualified exactly once,
+/// while the callee name itself stays outside receiver qualification.
+///
+/// The kernel order (callee part subscripts before the callee hook) is
+/// carried by the ordered recorder traces in
+/// `rumoca-ir-ast/src/visitor/tests.rs`; this witness pins what the qualifier
+/// and lowering do to the traversed nodes.
+#[test]
+fn indexed_receiver_modifier_value_qualifies_subscript_reference_not_callee() {
+    let tree = ClassTree::new();
+    let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
+    let override_packages: Vec<OverrideTarget> = Vec::new();
+    let override_functions = OverrideFunctionMap::default();
+    let ctx = FunctionOverrideRewriteContext::new_test(
+        &tree,
+        &class_index,
+        &override_packages,
+        &override_functions,
+    );
+    let receiver = ComponentPath::from_flat_path("pump");
+
+    let (name, lowered, _span) =
+        super::super::replaceable_modifiers::replaceable_function_modifier_arg(
+            &indexed_receiver_modifier_value(),
+            &receiver,
+            &ctx,
+        )
+        .expect("named modifier argument");
+    assert_eq!(name, "gain");
+
+    let Expression::FunctionCall {
+        name: callee, args, ..
+    } = &lowered
+    else {
+        panic!("expected a lowered call, got {lowered:?}");
+    };
+    assert!(
+        !callee.var_name().as_str().starts_with("pump."),
+        "the callee name is not a receiver member and must stay unqualified, got {}",
+        callee.var_name().as_str()
+    );
+    let callee_ref = callee.component_ref().expect("structured callee identity");
+    let [
+        rumoca_core::Subscript::Expr {
+            expr: subscript, ..
+        },
+    ] = callee_ref.parts()[0].subs.as_slice()
+    else {
+        panic!("expected one lowered expression subscript on the indexed receiver part");
+    };
+    let Expression::VarRef {
+        name: subscript_name,
+        ..
+    } = subscript.as_ref()
+    else {
+        panic!("expected a lowered reference in the callee-part subscript");
+    };
+    assert_eq!(
+        subscript_name.var_name().as_str(),
+        "pump.k",
+        "the subscript reference is receiver-qualified exactly once"
+    );
+    let [Expression::VarRef { name: argument, .. }] = args.as_slice() else {
+        panic!("expected one lowered reference argument");
+    };
+    assert_eq!(argument.var_name().as_str(), "pump.x");
 }

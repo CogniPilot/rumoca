@@ -8,7 +8,7 @@
 
 use crate::path_utils;
 use indexmap::IndexSet;
-use rumoca_core::{DefId, Span};
+use rumoca_core::{ComponentPath, DefId, Span};
 use rumoca_core::{SourceMap, is_builtin_type};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -28,7 +28,7 @@ use crate::traversal_adapter::{
     expression_contains_redeclare, redeclare_target_value, walk_extend_modifications,
     walk_nested_classes,
 };
-use crate::type_overrides::find_nested_class_in_hierarchy;
+use crate::type_overrides::{find_nested_class_by_def_id_in_hierarchy, resolve_cref_def_id};
 use duplicate_identity::{
     inherited_components_are_identical, merged_declared_names, merged_element_names,
 };
@@ -39,8 +39,9 @@ use redeclaration::*;
 /// This is particularly important for diamond inheritance patterns where
 /// a base class may be inherited through multiple paths.
 ///
-/// Using `Arc<InheritedContent>` for O(1) cache retrieval - no deep cloning needed
-/// when the same base class is inherited through multiple paths.
+/// The cache avoids repeating inheritance traversal in diamond patterns. Its
+/// public API still returns owned content, so a cache hit clones that content;
+/// the pending effective-specialization graph owns eliminating that clone.
 pub type InheritanceCache = IndexMap<DefId, Arc<InheritedContent>>;
 
 /// Cache for subtype check results to avoid recomputation.
@@ -50,19 +51,40 @@ pub type InheritanceCache = IndexMap<DefId, Arc<InheritedContent>>;
 /// not cached: rendered class names are not semantic identity (SPEC_0001).
 pub type SubtypeCache = IndexMap<(DefId, DefId), bool>;
 
-/// Check if two type names refer to the same resolved type.
-///
-/// MLS §5.4, §7.3: relative and qualified spellings are equivalent only after
-/// resolution proves they identify the same declaration.
-pub fn type_names_match(tree: &ast::ClassTree, name_a: &str, name_b: &str) -> bool {
-    if name_a == name_b {
-        return true;
-    }
+/// Return the predefined type named by an extends edge, using resolved
+/// identity rather than source spelling. A user class may legally carry the
+/// same leaf spelling in a nested scope, so spelling alone cannot terminate a
+/// semantic graph walk.
+pub(crate) fn predefined_extend_name(
+    tree: &ast::ClassTree,
+    extend: &ast::Extend,
+) -> InstantiateResult<Option<String>> {
+    let base_name = extend.base_name.to_string();
+    let base_def_id = extend
+        .base_def_id
+        .or(extend.base_name.def_id)
+        .ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("extends edge `{base_name}`"),
+                extend.location.span(),
+            ))
+        })?;
+    Ok(rumoca_core::BUILTIN_TYPES.iter().find_map(|name| {
+        (tree
+            .scope_tree
+            .predefined_member(&ComponentPath::from_flat_path(name))
+            == Some(base_def_id))
+        .then(|| (*name).to_string())
+    }))
+}
 
-    matches!(
-        (tree.name_map.get(name_a), tree.name_map.get(name_b)),
-        (Some(a), Some(b)) if a == b
-    )
+fn required_class_identity(class: &ast::ClassDef, context: &str) -> InstantiateResult<DefId> {
+    class.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("{context} `{}`", class.name.text),
+            class.location.span(),
+        ))
+    })
 }
 
 /// Result of processing inheritance for a class.
@@ -100,52 +122,47 @@ fn apply_protected_class_visibility(class: &mut ast::ClassDef, is_protected: boo
     }
 }
 
-/// Extract a redeclared type and resolve it to a fully qualified class name.
-fn extract_redeclare_type_qualified(
+#[derive(Clone)]
+struct RedeclaredType {
+    source_name: String,
+    def_id: DefId,
+}
+
+/// Extract the replacement type without converting Resolve's identity proof
+/// back into source spelling.
+fn extract_redeclared_type(
     expr: &ast::Expression,
-    tree: &ast::ClassTree,
-) -> Option<String> {
-    // Try to get the def_id directly from the expression's ast::ComponentReference
-    let def_id_opt = match expr {
-        ast::Expression::Modification { value, .. } => {
-            if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                redeclare_reference_target(comp_ref)
-            } else if let ast::Expression::ClassModification { target, .. } = value.as_ref() {
-                redeclare_reference_target(target)
-            } else {
-                None
-            }
+    span: Span,
+) -> InstantiateResult<RedeclaredType> {
+    let reference = match expr {
+        ast::Expression::Modification {
+            value: Some(value), ..
         }
-        ast::Expression::ClassModification { target, .. } => redeclare_reference_target(target),
+        | ast::Expression::NamedArgument { value, .. } => match value.as_ref() {
+            ast::Expression::ComponentReference(reference) => Some(reference),
+            ast::Expression::ClassModification { target, .. } => Some(target),
+            _ => None,
+        },
+        ast::Expression::ClassModification { target, .. } => Some(target),
         _ => None,
-    };
-
-    // If we have a def_id, use it to get the fully qualified name
-    if let Some(def_id) = def_id_opt
-        && let Some(qualified) = tree.def_map.get(&def_id)
-    {
-        return Some(qualified.clone());
     }
-
-    // Fall back to extracting the type name from the expression
-    let type_name = extract_redeclare_type(expr)?;
-
-    // Try to find the fully qualified name via tree lookup
-    // Check if this short name maps to a class in the tree
-    if let Some(&def_id) = tree.name_map.get(&type_name)
-        && let Some(qualified) = tree.def_map.get(&def_id)
-    {
-        return Some(qualified.clone());
-    }
-
-    // Also try looking for the class directly (handles already-qualified names)
-    if find_class_in_tree(tree, &type_name).is_some() {
-        return Some(type_name);
-    }
-
-    // Return the original name if we can't find a qualified version
-    // This allows the subtype check to handle the name matching
-    Some(type_name)
+    .ok_or_else(|| {
+        Box::new(InstantiateError::redeclare_error(
+            "<unknown>",
+            "redeclare replacement has no exact type reference",
+            span,
+        ))
+    })?;
+    let def_id = redeclare_reference_target(reference).ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("redeclare replacement `{reference}`"),
+            span,
+        ))
+    })?;
+    Ok(RedeclaredType {
+        source_name: reference.to_string(),
+        def_id,
+    })
 }
 
 /// Validate a redeclaration against the base class component.
@@ -164,7 +181,7 @@ fn validate_redeclaration(
     tree: &ast::ClassTree,
     component: &ast::Component,
     target_name: &str,
-    new_type: Option<&str>,
+    new_type: Option<&RedeclaredType>,
     span: Span,
 ) -> InstantiateResult<()> {
     // MLS §7.3.3: constants cannot be redeclared.
@@ -195,42 +212,76 @@ fn validate_redeclaration(
     // MLS §7.3.2: Validate constrainedby
     // The redeclared type must be a subtype of the constraining type.
     // If no constrainedby is specified, the original type is the constraint.
-    if let Some(new_type_name) = new_type {
-        // Resolve the constraint type to fully qualified name
-        let constraint_type_raw = component
-            .constrainedby
-            .as_ref()
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| component.type_name.to_string());
-
-        // Try to resolve constraint type using def_id or tree lookup
-        let constraint_type = if let Some(def_id) = component.type_def_id
-            && let Some(qualified) = tree.def_map.get(&def_id)
-        {
-            qualified.clone()
-        } else if let Some(&def_id) = tree.name_map.get(&constraint_type_raw)
-            && let Some(qualified) = tree.def_map.get(&def_id)
-        {
-            qualified.clone()
-        } else {
-            constraint_type_raw.clone()
-        };
-
-        // Try to resolve new type name using the constraint type's package as context
-        // This handles cases like GearType1 in the same package as GearType2
-        let resolved_new_type = resolve_type_in_context(tree, new_type_name, &constraint_type);
-
-        if !is_type_subtype(tree, &resolved_new_type, &constraint_type) {
+    if let Some(new_type) = new_type {
+        let (constraint_def_id, constraint_source_name) =
+            if let Some(constraint) = component.constrainedby.as_ref() {
+                let def_id = constraint.def_id.ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("constraining type `{constraint}` for `{target_name}`"),
+                        span,
+                    ))
+                })?;
+                (def_id, constraint.to_string())
+            } else {
+                let def_id = component
+                    .type_def_id
+                    .or(component.type_name.def_id)
+                    .ok_or_else(|| {
+                        Box::new(InstantiateError::missing_resolved_identity(
+                            format!("default constraining type for `{target_name}`"),
+                            span,
+                        ))
+                    })?;
+                (def_id, component.type_name.to_string())
+            };
+        let mut cache = SubtypeCache::default();
+        if !is_type_subtype_by_def_id(tree, new_type.def_id, constraint_def_id, &mut cache)? {
+            let replacement_name = tree
+                .def_map
+                .get(&new_type.def_id)
+                .cloned()
+                .unwrap_or_else(|| new_type.source_name.clone());
+            let constraint_name = tree
+                .def_map
+                .get(&constraint_def_id)
+                .cloned()
+                .unwrap_or(constraint_source_name);
             return Err(Box::new(InstantiateError::redeclare_constraint_violation(
                 target_name,
-                &resolved_new_type,
-                &constraint_type,
+                &replacement_name,
+                &constraint_name,
                 span,
             )));
         }
     }
 
     Ok(())
+}
+
+/// Validate one occurrence-local component type selection proved from a
+/// resolved component redeclare modifier.
+pub(super) fn validate_component_redeclaration_selection(
+    tree: &ast::ClassTree,
+    component: &ast::Component,
+    target_name: &str,
+    replacement_def_id: DefId,
+    span: Span,
+) -> InstantiateResult<()> {
+    let source_name = tree
+        .def_map
+        .get(&replacement_def_id)
+        .cloned()
+        .unwrap_or_else(|| format!("{replacement_def_id:?}"));
+    validate_redeclaration(
+        tree,
+        component,
+        target_name,
+        Some(&RedeclaredType {
+            source_name,
+            def_id: replacement_def_id,
+        }),
+        span,
+    )
 }
 
 /// Validate a redeclared nested class/package target.
@@ -242,7 +293,7 @@ fn validate_class_redeclaration(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     target_name: &str,
-    new_type: Option<&str>,
+    new_type: Option<&RedeclaredType>,
     span: Span,
 ) -> InstantiateResult<()> {
     if class.is_final {
@@ -259,69 +310,54 @@ fn validate_class_redeclaration(
         )));
     }
 
-    if let Some(new_type_name) = new_type {
-        // MLS §7.3.2 default constraint for class/package redeclare:
-        // if constrainedby is omitted, use the original declared type,
-        // not the nested alias class name itself.
-        let default_constraint_from_decl = class.extends.first().map(|extend| {
-            let base_raw = extend.base_name.to_string();
-            extend
-                .base_name
-                .def_id
-                .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-                .or_else(|| {
-                    tree.name_map
-                        .get(&base_raw)
-                        .and_then(|def_id| tree.def_map.get(def_id).cloned())
-                })
-                .unwrap_or(base_raw)
-        });
-
-        let constraint_type_raw = class
-            .constrainedby
-            .as_ref()
-            .map(ToString::to_string)
-            .or(default_constraint_from_decl)
-            .unwrap_or_else(|| {
-                class
-                    .def_id
-                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-                    .unwrap_or_else(|| class.name.text.to_string())
-            });
-
-        let constraint_type = class
-            .constrainedby
-            .as_ref()
-            .and_then(|name| name.def_id)
-            .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-            .or_else(|| {
-                class
-                    .extends
-                    .first()
-                    .and_then(|extend| extend.base_name.def_id)
-                    .and_then(|def_id| tree.def_map.get(&def_id).cloned())
-            })
-            .or_else(|| {
-                tree.name_map
-                    .get(&constraint_type_raw)
-                    .and_then(|def_id| tree.def_map.get(def_id).cloned())
-            })
-            .unwrap_or_else(|| {
-                class
-                    .def_id
-                    .and_then(|def_id| tree.def_map.get(&def_id))
-                    .map(|declaration_context| {
-                        resolve_type_in_context(tree, &constraint_type_raw, declaration_context)
-                    })
-                    .unwrap_or_else(|| constraint_type_raw.clone())
-            });
-
-        let resolved_new_type = resolve_type_in_context(tree, new_type_name, &constraint_type);
-        if !is_type_subtype(tree, &resolved_new_type, &constraint_type) {
+    if let Some(new_type) = new_type {
+        // MLS §7.3.2 default constraint for class/package redeclare: if
+        // constrainedby is omitted, use the original declared base.
+        let (constraint_def_id, constraint_source_name) =
+            if let Some(constraint) = class.constrainedby.as_ref() {
+                let def_id = constraint.def_id.ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("constraining type `{constraint}` for `{target_name}`"),
+                        span,
+                    ))
+                })?;
+                (def_id, constraint.to_string())
+            } else if let Some(extend) = class.extends.first() {
+                let def_id = extend
+                    .base_def_id
+                    .or(extend.base_name.def_id)
+                    .ok_or_else(|| {
+                        Box::new(InstantiateError::missing_resolved_identity(
+                            format!("default constraining extends edge for `{target_name}`"),
+                            span,
+                        ))
+                    })?;
+                (def_id, extend.base_name.to_string())
+            } else {
+                let def_id = class.def_id.ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("default constraining class `{target_name}`"),
+                        span,
+                    ))
+                })?;
+                (def_id, class.name.text.to_string())
+            };
+        let mut cache = SubtypeCache::default();
+        if !is_type_subtype_by_def_id(tree, new_type.def_id, constraint_def_id, &mut cache)? {
+            let replacement_name = tree
+                .def_map
+                .get(&new_type.def_id)
+                .cloned()
+                .unwrap_or_else(|| new_type.source_name.clone());
+            let constraint_name = tree
+                .def_map
+                .get(&constraint_def_id)
+                .cloned()
+                .unwrap_or(constraint_source_name);
             return Err(Box::new(InstantiateError::redeclare_constraint_violation(
                 target_name,
-                &resolved_new_type,
-                &constraint_type,
+                &replacement_name,
+                &constraint_name,
                 span,
             )));
         }
@@ -330,52 +366,12 @@ fn validate_class_redeclaration(
     Ok(())
 }
 
-/// Try to resolve a type name using the context of another type's package.
-///
-/// For example, if context_type is "Package.SubPackage.TypeB" and type_name is "TypeA",
-/// this will try "Package.SubPackage.TypeA" first.
-fn resolve_type_in_context(tree: &ast::ClassTree, type_name: &str, context_type: &str) -> String {
-    // Builtins are always fully qualified
-    if is_builtin_type(type_name) {
-        return type_name.to_string();
-    }
-
-    // If the name already exists in the tree, return as-is
-    if tree.name_map.contains_key(type_name) {
-        return type_name.to_string();
-    }
-
-    // Try to resolve by prepending context package prefixes
-    // For context "A.B.C.TypeX", try: "A.B.C.{type_name}", "A.B.{type_name}", "A.{type_name}"
-    for package in tree.enclosing_class_names_of(context_type) {
-        let qualified = format!("{package}.{type_name}");
-        if tree.name_map.contains_key(&qualified) {
-            return qualified;
-        }
-    }
-
-    // Fall back to the original name
-    type_name.to_string()
-}
-
 fn redeclare_target_span(
     tree: &ast::ClassTree,
     target_name: &str,
-    modification: &ast::ExtendModification,
+    target: &ast::ComponentReference,
     extend_span: Span,
 ) -> InstantiateResult<Span> {
-    let target = match &modification.expr {
-        ast::Expression::Modification { target, .. }
-        | ast::Expression::ClassModification { target, .. } => target,
-        _ => {
-            return Err(Box::new(InstantiateError::redeclare_error(
-                target_name,
-                "redeclare target is missing source span",
-                extend_span,
-            )));
-        }
-    };
-
     let Some(part) = target.parts.first() else {
         return Err(Box::new(InstantiateError::redeclare_error(
             target_name,
@@ -403,7 +399,11 @@ fn redeclare_target_span(
 ///
 /// For performance-critical code with deeply nested inheritance, use
 /// `is_type_subtype_cached` instead.
-pub fn is_type_subtype(tree: &ast::ClassTree, subtype: &str, supertype: &str) -> bool {
+pub fn is_type_subtype(
+    tree: &ast::ClassTree,
+    subtype: &str,
+    supertype: &str,
+) -> InstantiateResult<bool> {
     let mut cache = SubtypeCache::default();
     is_type_subtype_cached(tree, subtype, supertype, &mut cache)
 }
@@ -423,74 +423,133 @@ pub fn is_type_subtype_cached(
     subtype: &str,
     supertype: &str,
     cache: &mut SubtypeCache,
-) -> bool {
-    // Exact match is always a subtype
-    if subtype == supertype {
-        return true;
-    }
-
-    // Check if the types match when considering short vs qualified names
-    if type_names_match(tree, subtype, supertype) {
-        return true;
-    }
-
-    let subtype_def_id = tree
-        .get_def_id_by_name(subtype)
-        .or_else(|| find_class_in_tree(tree, subtype).and_then(|class| class.def_id));
-    let supertype_def_id = tree
-        .get_def_id_by_name(supertype)
-        .or_else(|| find_class_in_tree(tree, supertype).and_then(|class| class.def_id));
-    let cache_key = subtype_def_id.zip(supertype_def_id);
-    if let Some(key) = cache_key
-        && let Some(&result) = cache.get(&key)
-    {
-        return result;
-    }
-
-    // A built-in subtype can't extend anything else - no subtyping between primitives
-    // But a class type CAN extend a built-in type (e.g., SI.Voltage extends Real)
-    if is_builtin_type(subtype) {
-        if let Some(key) = cache_key {
-            cache.insert(key, false);
+) -> InstantiateResult<bool> {
+    let subtype_class = resolved_type_class(tree, subtype)?;
+    let supertype_class = resolved_type_class(tree, supertype)?;
+    match (subtype_class, supertype_class) {
+        (None, None) => return Ok(subtype == supertype),
+        (None, Some(_)) => return Ok(false),
+        (Some(subtype_class), None) => {
+            return class_extends_builtin(tree, subtype_class, supertype);
         }
-        return false;
+        (Some(_), Some(_)) => {}
+    }
+    let subtype_class = subtype_class.expect("builtin case returned above");
+    let supertype_class = supertype_class.expect("builtin case returned above");
+    let subtype_def_id = required_class_identity(subtype_class, "subtype")?;
+    let supertype_def_id = required_class_identity(supertype_class, "supertype")?;
+    if let Some(&result) = cache.get(&(subtype_def_id, supertype_def_id)) {
+        return Ok(result);
     }
 
-    // For class types, check if subtype's class extends supertype's class
-    let result = if let Some(subtype_class) = find_class_in_tree(tree, subtype) {
-        let accepted = if class_extends_cached(tree, subtype_class, supertype, cache) {
-            true
-        } else if let Some(supertype_class) = find_class_in_tree(tree, supertype) {
-            // Check for sibling types: both extend the same base class.
-            // This supports replaceable component redeclarations where both
-            // types share a common base (e.g., CellRCStack and CellStack both
-            // extend BaseCellStack). Siblinghood alone does not make the
-            // interfaces compatible, so the plug-compatibility comparator
-            // (MLS §6.5) must also pass.
-            types_share_common_base(tree, subtype_class, supertype_class, cache)
-                && crate::plug_compat::members_plug_compatible(tree, subtype_class, supertype_class)
-        } else if is_builtin_type(supertype) {
-            // Supertype is a built-in type (Real, Integer, Boolean, String) not
-            // in the class tree. Check if subtype transitively extends this built-in.
-            // This handles e.g. Resistance -> Real, Voltage -> Real chains.
-            class_extends_builtin(tree, subtype_class, supertype)
-        } else {
-            false
-        };
-        accepted
-            && crate::plug_compat::class_flags_compatible(
-                tree,
-                subtype_class,
-                find_class_in_tree(tree, supertype),
-            )
+    if subtype_def_id == supertype_def_id {
+        cache.insert((subtype_def_id, supertype_def_id), true);
+        return Ok(true);
+    }
+
+    let accepted = if class_extends_def_id(tree, subtype_class, supertype_def_id)? {
+        true
     } else {
-        false
+        // Check for sibling types: both extend the same base class.
+        // Siblinghood alone does not make the interfaces compatible, so the
+        // MLS §6.5 member comparator must also pass.
+        types_share_common_base(tree, subtype_class, supertype_class)?
+            && crate::plug_compat::members_plug_compatible(tree, subtype_class, supertype_class)?
     };
+    let result = accepted
+        && crate::plug_compat::class_flags_compatible(tree, subtype_class, Some(supertype_class))?;
 
-    if let Some(key) = cache_key {
-        cache.insert(key, result);
+    cache.insert((subtype_def_id, supertype_def_id), result);
+    Ok(result)
+}
+
+fn resolved_type_class<'a>(
+    tree: &'a ast::ClassTree,
+    type_name: &str,
+) -> InstantiateResult<Option<&'a ast::ClassDef>> {
+    if is_builtin_type(type_name) {
+        return Ok(None);
     }
-    result
+    let class = find_class_in_tree(tree, type_name)
+        .ok_or_else(|| Box::new(InstantiateError::ModelNotFound(type_name.to_string())))?;
+    required_class_identity(class, "resolved type")?;
+    Ok(Some(class))
+}
+
+pub(crate) fn is_type_subtype_by_def_id(
+    tree: &ast::ClassTree,
+    subtype_def_id: DefId,
+    supertype_def_id: DefId,
+    cache: &mut SubtypeCache,
+) -> InstantiateResult<bool> {
+    let is_predefined = |def_id| {
+        rumoca_core::BUILTIN_TYPES.iter().any(|name| {
+            tree.scope_tree
+                .predefined_member(&ComponentPath::from_flat_path(name))
+                == Some(def_id)
+        })
+    };
+    let subtype_predefined = is_predefined(subtype_def_id);
+    let supertype_predefined = is_predefined(supertype_def_id);
+    let subtype_class = tree.get_class_by_def_id(subtype_def_id);
+    let supertype_class = tree.get_class_by_def_id(supertype_def_id);
+    if !subtype_predefined && subtype_class.is_none() {
+        return Err(Box::new(InstantiateError::ModelNotFound(format!(
+            "resolved subtype {subtype_def_id:?}"
+        ))));
+    }
+    if !supertype_predefined && supertype_class.is_none() {
+        return Err(Box::new(InstantiateError::ModelNotFound(format!(
+            "resolved supertype {supertype_def_id:?}"
+        ))));
+    }
+    if subtype_predefined {
+        return Ok(supertype_predefined && subtype_def_id == supertype_def_id);
+    }
+    if supertype_predefined {
+        let subtype_class = subtype_class.ok_or_else(|| {
+            Box::new(InstantiateError::ModelNotFound(format!(
+                "resolved subtype {subtype_def_id:?}"
+            )))
+        })?;
+        let supertype_name = rumoca_core::BUILTIN_TYPES
+            .iter()
+            .find(|name| {
+                tree.scope_tree
+                    .predefined_member(&ComponentPath::from_flat_path(name))
+                    == Some(supertype_def_id)
+            })
+            .expect("predefined identity was established above");
+        let result = class_extends_builtin(tree, subtype_class, supertype_name)?;
+        cache.insert((subtype_def_id, supertype_def_id), result);
+        return Ok(result);
+    }
+    let subtype_class = subtype_class.ok_or_else(|| {
+        Box::new(InstantiateError::ModelNotFound(format!(
+            "resolved subtype {subtype_def_id:?}"
+        )))
+    })?;
+    let supertype_class = supertype_class.ok_or_else(|| {
+        Box::new(InstantiateError::ModelNotFound(format!(
+            "resolved supertype {supertype_def_id:?}"
+        )))
+    })?;
+    if subtype_def_id == supertype_def_id {
+        return Ok(true);
+    }
+    if let Some(result) = cache.get(&(subtype_def_id, supertype_def_id)) {
+        return Ok(*result);
+    }
+    let accepted = if class_extends_def_id(tree, subtype_class, supertype_def_id)? {
+        true
+    } else {
+        types_share_common_base(tree, subtype_class, supertype_class)?
+            && crate::plug_compat::members_plug_compatible(tree, subtype_class, supertype_class)?
+    };
+    let result = accepted
+        && crate::plug_compat::class_flags_compatible(tree, subtype_class, Some(supertype_class))?;
+    cache.insert((subtype_def_id, supertype_def_id), result);
+    Ok(result)
 }
 
 /// Check if two types share a common direct base class.
@@ -502,66 +561,119 @@ fn types_share_common_base(
     tree: &ast::ClassTree,
     type_a: &ast::ClassDef,
     type_b: &ast::ClassDef,
-    cache: &mut SubtypeCache,
-) -> bool {
+) -> InstantiateResult<bool> {
+    let mut type_b_ids = IndexSet::new();
+    let mut type_b_builtins = IndexSet::new();
+    let mut pending = vec![type_b];
+    while let Some(class) = pending.pop() {
+        let class_def_id = required_class_identity(class, "sibling type")?;
+        if !type_b_ids.insert(class_def_id) {
+            continue;
+        }
+        for extend in &class.extends {
+            if let Some(predefined) = predefined_extend_name(tree, extend)? {
+                type_b_builtins.insert(predefined);
+                continue;
+            }
+            let base_name = extend.base_name.to_string();
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("sibling base `{base_name}`"),
+                        extend.location.span(),
+                    ))
+                })?;
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("sibling base `{base_name}` ({base_def_id:?})"),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push(base);
+        }
+    }
     for extend_a in &type_a.extends {
         let base_a_name = extend_a.base_name.to_string();
-
-        // Check if type_b also extends this base (directly or via name matching)
-        for extend_b in &type_b.extends {
-            let base_b_name = extend_b.base_name.to_string();
-
-            if base_a_name == base_b_name || type_names_match(tree, &base_a_name, &base_b_name) {
-                return true;
+        if let Some(predefined_name) = predefined_extend_name(tree, extend_a)? {
+            if type_b_builtins.contains(&predefined_name) {
+                return Ok(true);
             }
-
-            // Also check transitively - if type_b extends something that extends base_a
-            let base_b_class = extend_b
-                .base_def_id
-                .and_then(|id| tree.get_class_by_def_id(id))
-                .or_else(|| find_class_in_tree(tree, &base_b_name));
-            if base_b_class.is_some_and(|c| class_extends_cached(tree, c, &base_a_name, cache)) {
-                return true;
-            }
+            continue;
+        }
+        let base_a_def_id = extend_a
+            .base_def_id
+            .or(extend_a.base_name.def_id)
+            .ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("sibling base `{base_a_name}`"),
+                    extend_a.location.span(),
+                ))
+            })?;
+        if type_b_ids.contains(&base_a_def_id) {
+            return Ok(true);
         }
     }
 
-    false
+    Ok(false)
 }
 
 /// Check if a class transitively extends a built-in type (Real, Integer, Boolean, String).
 ///
-/// Built-in types are not stored in the class tree, so `class_extends_cached` may fail
-/// to detect the chain. This function walks the extends chain with a depth limit,
-/// checking if any base_name matches the target built-in type.
+/// Built-in types are not stored in the class tree, so the checked class graph
+/// records their terminal edges separately from class declaration identities.
 ///
 /// This handles type alias chains like:
 /// ```modelica
 /// type Resistance = Real(final quantity="ElectricalResistance", final unit="Ohm");
 /// ```
-fn class_extends_builtin(tree: &ast::ClassTree, class: &ast::ClassDef, builtin: &str) -> bool {
-    const MAX_DEPTH: usize = 10;
-    let mut current = Some(class);
-    for _ in 0..MAX_DEPTH {
-        let Some(cls) = current else { return false };
-        for extend in &cls.extends {
-            let base_name = extend.base_name.to_string();
-            if base_name == builtin || type_names_match(tree, &base_name, builtin) {
-                return true;
-            }
+fn class_extends_builtin(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    builtin: &str,
+) -> InstantiateResult<bool> {
+    let expected_def_id = tree
+        .scope_tree
+        .predefined_member(&ComponentPath::from_flat_path(builtin));
+    let mut pending = vec![class];
+    let mut visited = IndexSet::new();
+    while let Some(owner) = pending.pop() {
+        let owner_def_id = required_class_identity(owner, "builtin subtype")?;
+        if !visited.insert(owner_def_id) {
+            continue;
         }
-        // Follow the first extends clause (type aliases have exactly one)
-        if cls.extends.len() == 1 {
-            let ext = &cls.extends[0];
-            current = ext
+        for extend in &owner.extends {
+            let base_def_id = extend
                 .base_def_id
-                .and_then(|id| tree.get_class_by_def_id(id))
-                .or_else(|| find_class_in_tree(tree, &ext.base_name.to_string()));
-        } else {
-            return false;
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("builtin extends edge `{}`", extend.base_name),
+                        extend.location.span(),
+                    ))
+                })?;
+            match (
+                predefined_extend_name(tree, extend)?,
+                Some(base_def_id) == expected_def_id,
+            ) {
+                (Some(_), true) => return Ok(true),
+                (Some(_), false) => continue,
+                (None, _) => {}
+            }
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!(
+                        "builtin extends edge `{}` ({base_def_id:?})",
+                        extend.base_name
+                    ),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push(base);
         }
     }
-    false
+    Ok(false)
 }
 
 /// Find a class by resolved name in the tree (top-level or nested).
@@ -618,7 +730,7 @@ fn redeclare_reference_target(reference: &ast::ComponentReference) -> Option<Def
 pub(crate) fn is_effectively_primitive_transitive(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
-) -> bool {
+) -> InstantiateResult<bool> {
     // A class is effectively primitive if it:
     // 1. Has no components (not a container)
     // 2. Has no equations (not a model with behavior)
@@ -626,75 +738,64 @@ pub(crate) fn is_effectively_primitive_transitive(
     //    a. Has exactly one extends clause that transitively leads to a built-in type
     //    b. Is an enumeration type (has enum_literals)
     if !class.components.is_empty() {
-        return false;
+        return Ok(false);
     }
     if !class.equations.is_empty() || !class.initial_equations.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     if !class.enum_literals.is_empty() {
-        return true;
+        return Ok(true);
     }
 
     // Check for extends to a type that is primitive (built-in or transitively primitive)
     if class.extends.len() != 1 {
-        return false;
+        return Ok(false);
     }
-
-    let extend = &class.extends[0];
-    let base_name = extend.base_name.to_string();
-
-    // If the direct base is a built-in, we're done
-    if is_builtin_type(&base_name) {
-        return true;
-    }
-
-    // Otherwise, try to look up the base type and check transitively
-    // (with a depth limit to avoid infinite loops on malformed models)
-    const MAX_DEPTH: usize = 10;
-
-    // Use base_def_id for O(1) lookup when available (populated during resolve phase)
-    // This handles cases where the base name is unqualified (e.g., "DigitalSignal")
-    // but the actual class is in a package (e.g., "Interfaces.DigitalSignal")
-    let mut current_class = extend
-        .base_def_id
-        .and_then(|def_id| tree.get_class_by_def_id(def_id))
-        .or_else(|| find_class_in_tree(tree, &base_name));
-
-    for _ in 0..MAX_DEPTH {
-        // Look up the current type
-        let Some(bc) = current_class else {
-            // Can't find the class - might be unresolved, assume not primitive
-            return false;
-        };
+    let mut current = class;
+    let mut visited = IndexSet::new();
+    loop {
+        let current_def_id = required_class_identity(current, "primitive type")?;
+        if !visited.insert(current_def_id) {
+            return Ok(false);
+        }
+        let extend = &current.extends[0];
+        if let Some(predefined) = predefined_extend_name(tree, extend)? {
+            return Ok(predefined != "ExternalObject");
+        }
+        let base_def_id = extend
+            .base_def_id
+            .or(extend.base_name.def_id)
+            .ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("primitive extends edge `{}`", extend.base_name),
+                    extend.location.span(),
+                ))
+            })?;
+        let bc = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!(
+                    "primitive extends edge `{}` ({base_def_id:?})",
+                    extend.base_name
+                ),
+                extend.location.span(),
+            ))
+        })?;
         // If this class has components or equations, not primitive
         if !bc.components.is_empty() || !bc.equations.is_empty() || !bc.initial_equations.is_empty()
         {
-            return false;
+            return Ok(false);
         }
         // If this is an enumeration type, it's primitive
         if !bc.enum_literals.is_empty() {
-            return true;
+            return Ok(true);
         }
         // If it extends exactly one thing, follow the chain
         if bc.extends.len() != 1 {
-            return false;
+            return Ok(false);
         }
-        let next_extend = &bc.extends[0];
-        let next_name = next_extend.base_name.to_string();
-        if is_builtin_type(&next_name) {
-            return true;
-        }
-        // Use base_def_id for O(1) lookup; unresolved unit tests may only
-        // provide an exact tree name.
-        current_class = next_extend
-            .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
-            .or_else(|| find_class_in_tree(tree, &next_name));
+        current = bc;
     }
-
-    // Exceeded max depth, assume not primitive
-    false
 }
 
 /// Check if a type is discrete-valued by its base type (MLS §3.8.3).
@@ -710,7 +811,7 @@ pub(crate) fn is_discrete_by_type(
     tree: &ast::ClassTree,
     type_name: &str,
     class_def: Option<&ast::ClassDef>,
-) -> bool {
+) -> InstantiateResult<bool> {
     // Helper to check if a name is a discrete-valued predefined type
     fn is_discrete_builtin(name: &str) -> bool {
         let simple_name = path_utils::class_name_leaf(name);
@@ -718,68 +819,89 @@ pub(crate) fn is_discrete_by_type(
     }
 
     // Direct check on the type name
-    if is_discrete_builtin(type_name) {
-        return true;
+    if class_def.is_none() && is_discrete_builtin(type_name) {
+        return Ok(true);
     }
 
     // If we have a class definition, check its inheritance chain
     let Some(class) = class_def else {
-        return false;
+        return Ok(false);
     };
 
     // Enumerations are discrete values
     if !class.enum_literals.is_empty() {
-        return true;
+        return Ok(true);
     }
-
-    // Follow the inheritance chain with a depth limit
-    const MAX_DEPTH: usize = 10;
 
     // If the class extends something, follow the chain
     if class.extends.len() == 1 {
         let extend = &class.extends[0];
-        let base_name = extend.base_name.to_string();
-
-        if is_discrete_builtin(&base_name) {
-            return true;
+        if let Some(predefined) = predefined_extend_name(tree, extend)? {
+            return Ok(is_discrete_builtin(&predefined));
         }
 
-        // Use base_def_id for O(1) lookup when available (populated during resolve phase)
-        let mut current_class = extend
+        let base_def_id = extend
             .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
-            .or_else(|| find_class_in_tree(tree, &base_name));
+            .or(extend.base_name.def_id)
+            .ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("discrete-type extends edge `{}`", extend.base_name),
+                    extend.location.span(),
+                ))
+            })?;
+        let mut current_class = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!(
+                    "discrete-type extends edge `{}` ({base_def_id:?})",
+                    extend.base_name
+                ),
+                extend.location.span(),
+            ))
+        })?;
+        let mut visited = IndexSet::new();
 
-        for _ in 0..MAX_DEPTH {
-            // Look up the current type
-            let Some(bc) = current_class else {
-                return false;
-            };
+        loop {
+            let bc = current_class;
+            let bc_def_id = required_class_identity(bc, "discrete type")?;
+            if !visited.insert(bc_def_id) {
+                return Ok(false);
+            }
 
             // Enumerations are discrete
             if !bc.enum_literals.is_empty() {
-                return true;
+                return Ok(true);
             }
 
             // Follow the chain if there's exactly one extends
             if bc.extends.len() != 1 {
-                return false;
+                return Ok(false);
             }
             let next_extend = &bc.extends[0];
-            let next_name = next_extend.base_name.to_string();
-            if is_discrete_builtin(&next_name) {
-                return true;
+            if let Some(predefined) = predefined_extend_name(tree, next_extend)? {
+                return Ok(is_discrete_builtin(&predefined));
             }
-            // Use base_def_id for O(1) lookup; unresolved unit tests may only
-            // provide an exact tree name.
-            current_class = next_extend
+            let next_def_id = next_extend
                 .base_def_id
-                .and_then(|def_id| tree.get_class_by_def_id(def_id))
-                .or_else(|| find_class_in_tree(tree, &next_name));
+                .or(next_extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("discrete-type extends edge `{}`", next_extend.base_name),
+                        next_extend.location.span(),
+                    ))
+                })?;
+            current_class = tree.get_class_by_def_id(next_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!(
+                        "discrete-type extends edge `{}` ({next_def_id:?})",
+                        next_extend.base_name
+                    ),
+                    next_extend.location.span(),
+                ))
+            })?;
         }
     }
 
-    false
+    Ok(false)
 }
 
 /// Check if a class extends a base class (by name) directly or transitively.
@@ -789,80 +911,75 @@ pub(crate) fn is_discrete_by_type(
 ///
 /// For performance-critical code with deeply nested inheritance, use
 /// `class_extends_cached` instead.
-pub fn class_extends(tree: &ast::ClassTree, class: &ast::ClassDef, base_name: &str) -> bool {
+pub fn class_extends(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    base_name: &str,
+) -> InstantiateResult<bool> {
     let mut cache = SubtypeCache::default();
     class_extends_cached(tree, class, base_name, &mut cache)
 }
 
 /// Check if a class extends a base class (by resolved name) directly or transitively, with caching.
-///
-/// This cached version avoids recomputation for deeply nested inheritance hierarchies.
-/// Record `result` under `cache_key` when the caller had both identities, and
-/// return it.
-///
-/// The key is absent only when a class or its queried base has no `DefId`; the
-/// answer is still correct, it just cannot be memoized.
-fn remember_subtype(
-    cache: &mut SubtypeCache,
-    cache_key: Option<(DefId, DefId)>,
-    result: bool,
-) -> bool {
-    if let Some(key) = cache_key {
-        cache.insert(key, result);
-    }
-    result
-}
-
 pub fn class_extends_cached(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
     base_name: &str,
     cache: &mut SubtypeCache,
-) -> bool {
-    let target_base_def_id = tree
-        .get_def_id_by_name(base_name)
-        .or_else(|| find_class_in_tree(tree, base_name).and_then(|c| c.def_id));
-    let cache_key = class.def_id.zip(target_base_def_id);
-
-    if let Some(key) = cache_key
-        && let Some(&result) = cache.get(&key)
-    {
-        return result;
+) -> InstantiateResult<bool> {
+    if is_builtin_type(base_name) {
+        return class_extends_builtin(tree, class, base_name);
     }
+    let target =
+        resolved_type_class(tree, base_name)?.expect("non-builtin resolved type must be a class");
+    let target_def_id = required_class_identity(target, "extends target")?;
+    let class_def_id = required_class_identity(class, "extends source")?;
+    if let Some(result) = cache.get(&(class_def_id, target_def_id)) {
+        return Ok(*result);
+    }
+    let result = class_extends_def_id(tree, class, target_def_id)?;
+    cache.insert((class_def_id, target_def_id), result);
+    Ok(result)
+}
 
-    for extend in &class.extends {
-        let extend_name = extend.base_name.to_string();
-        // DefId-based direct match handles relative extends names that do not
-        // string-match the queried supertype (e.g. "StateGraph.Interfaces.X"
-        // vs "Interfaces.X").
-        if let Some(target_id) = target_base_def_id
-            && extend.base_def_id == Some(target_id)
-        {
-            return remember_subtype(cache, cache_key, true);
+fn class_extends_def_id(
+    tree: &ast::ClassTree,
+    class: &ast::ClassDef,
+    target_def_id: DefId,
+) -> InstantiateResult<bool> {
+    let mut pending = vec![class];
+    let mut visited = IndexSet::new();
+    while let Some(owner) = pending.pop() {
+        let owner_def_id = required_class_identity(owner, "extends source")?;
+        if !visited.insert(owner_def_id) {
+            continue;
         }
-        // Direct extension - use type_names_match for short vs qualified name handling
-        if type_names_match(tree, &extend_name, base_name) {
-            return remember_subtype(cache, cache_key, true);
-        }
-        // Transitive extension - use def_id for O(1) lookup when available
-        let base_class = if let Some(def_id) = extend.base_def_id {
-            tree.get_class_by_def_id(def_id)
-        } else {
-            find_class_in_tree(tree, &extend_name)
-        };
-        if let Some(base_class) = base_class {
-            if let Some(target_id) = target_base_def_id
-                && base_class.def_id == Some(target_id)
-            {
-                return remember_subtype(cache, cache_key, true);
+        for extend in &owner.extends {
+            if predefined_extend_name(tree, extend)?.is_some() {
+                continue;
             }
-            if class_extends_cached(tree, base_class, base_name, cache) {
-                return remember_subtype(cache, cache_key, true);
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("extends edge `{}`", extend.base_name),
+                        extend.location.span(),
+                    ))
+                })?;
+            if base_def_id == target_def_id {
+                return Ok(true);
             }
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!("extends edge `{}` ({base_def_id:?})", extend.base_name),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push(base);
         }
     }
-
-    remember_subtype(cache, cache_key, false)
+    Ok(false)
 }
 
 /// Process extends clauses and collect inherited content.
@@ -918,7 +1035,7 @@ pub fn process_extends_with_cache(
     for extend in &class.extends {
         // Skip built-in types (Real, Integer, Boolean, String, ExternalObject)
         // They don't have components/equations to inherit, just type properties
-        if is_builtin_type(&extend.base_name.to_string()) {
+        if predefined_extend_name(tree, extend)?.is_some() {
             continue;
         }
 
@@ -937,15 +1054,13 @@ pub fn process_extends_with_cache(
         apply_extends_modifications(tree, &mut inherited, base_class, extend)?;
     }
 
-    // Store in cache for reuse, then return
-    // Wrap in Arc first, clone Arc (cheap, just refcount increment) for cache, then unwrap to return
-    let inherited_arc = Arc::new(inherited);
+    // The public API returns owned content while the cache retains a shared
+    // snapshot, so publication currently requires one deep clone. The pending
+    // effective-specialization graph will replace this split ownership.
     if let Some(def_id) = class.def_id {
-        cache.insert(def_id, Arc::clone(&inherited_arc));
+        cache.insert(def_id, Arc::new(inherited.clone()));
     }
-
-    // If we're the only reference (refcount=1), move without cloning; otherwise clone
-    Ok(Arc::unwrap_or_clone(inherited_arc))
+    Ok(inherited)
 }
 
 /// Apply non-redeclare extends modifications to merged inherited components.
@@ -1018,33 +1133,6 @@ fn resolve_base_class<'a>(
 
     tree.get_class_by_def_id(def_id)
         .ok_or_else(|| Box::new(InstantiateError::ModelNotFound(base_name)))
-}
-
-/// Return the output size of a class's `equalityConstraint` function (MLS §9.4).
-///
-/// Returns `Some(n)` where `n` is the scalar size of the function's output
-/// (e.g., 3 for `Orientation` whose `equalityConstraint` returns `Real[3]`).
-/// Returns `None` if the class has no `equalityConstraint` function.
-pub(crate) fn equality_constraint_output_size(class: &ast::ClassDef) -> Option<usize> {
-    let eq_func = class.classes.values().find(|c| {
-        c.class_type == rumoca_core::ClassType::Function
-            && c.name.text.as_ref() == "equalityConstraint"
-    })?;
-
-    // Find the output component of the function
-    for comp in eq_func.components.values() {
-        if matches!(comp.causality, rumoca_core::Causality::Output(_)) {
-            // Compute the product of array dimensions (e.g., Real[3] → 3, Real[3,3] → 9)
-            if comp.shape.is_empty() {
-                return Some(1); // scalar output
-            }
-            return Some(comp.shape.iter().product());
-        }
-    }
-
-    // If we found the function but no output component, default to 3
-    // (common case for Orientation's equalityConstraint returning Real[3])
-    Some(3)
 }
 
 /// Create a Span from a rumoca_core::Location using the source map for file resolution.
@@ -1243,9 +1331,8 @@ fn enclosing_component_of_nested_redeclare(modification: &ast::ExtendModificatio
 /// What an `extends` modification's redeclarations state about the inherited
 /// components they replace (MLS §7.3).
 struct CollectedRedeclarations {
-    /// Redeclared component name -> new type name, for the redeclarations whose
-    /// type this phase could extract.
-    types: IndexMap<String, String>,
+    /// Redeclared component name -> exact resolved replacement type.
+    types: IndexMap<String, RedeclaredType>,
     /// Redeclared component name -> the array dimensions the redeclaration
     /// states, for the redeclarations that state any.
     ///
@@ -1358,33 +1445,67 @@ fn collect_redeclarations(
         {
             redeclared_components.insert(enclosing.to_string());
         }
-        let Some((target_name, _value_expr)) = redeclare_target_value(modification) else {
+        let Some((target_name, target_ref, _value_expr)) = redeclare_target_value(modification)
+        else {
             return;
         };
         if validation_error.is_some() {
             return;
         }
         let target_name_owned = target_name.to_string();
-        let new_type = extract_redeclare_type_qualified(&modification.expr, tree);
-        let span = match redeclare_target_span(tree, &target_name_owned, modification, extend_span)
-        {
+        let span = match redeclare_target_span(tree, &target_name_owned, target_ref, extend_span) {
             Ok(span) => span,
             Err(err) => {
                 validation_error = Some(err);
                 return;
             }
         };
-        let Some(component) = class.components.get(&target_name_owned) else {
-            let Some(redeclared_class) =
-                find_nested_class_in_hierarchy(tree, class, &target_name_owned)
-            else {
+        let new_type = match extract_redeclared_type(&modification.expr, span) {
+            Ok(new_type) => new_type,
+            Err(err) => {
+                validation_error = Some(err);
                 return;
+            }
+        };
+        let Some(target_def_id) = resolve_cref_def_id(target_ref) else {
+            validation_error = Some(Box::new(InstantiateError::missing_resolved_identity(
+                format!("extends redeclare LHS `{target_name}`"),
+                span,
+            )));
+            return;
+        };
+        let component_slot = class
+            .components
+            .iter()
+            .find(|(_, component)| component.def_id == Some(target_def_id));
+        let Some((component_name, component)) = component_slot else {
+            let redeclared_class = match find_nested_class_by_def_id_in_hierarchy(
+                tree,
+                class,
+                target_def_id,
+            ) {
+                Ok(Some(redeclared_class)) => redeclared_class,
+                Ok(None) => {
+                    validation_error = Some(Box::new(InstantiateError::redeclare_error(
+                        &target_name_owned,
+                        format!(
+                            "resolved LHS identity {target_def_id:?} is absent from the base-class hierarchy"
+                        ),
+                        span,
+                    )));
+                    return;
+                }
+                Err(error) => {
+                    validation_error = Some(error);
+                    return;
+                }
             };
+            let redeclared_class_name = redeclared_class.name.text.as_ref();
             if let Err(err) = validate_class_redeclaration(
                 tree,
                 redeclared_class,
-                &target_name_owned,
-                new_type.as_deref(),
+                redeclared_class_name,
+                Some(&new_type),
                 span,
             ) {
                 validation_error = Some(err);
@@ -1392,28 +1513,22 @@ fn collect_redeclarations(
             return;
         };
 
-        if let Err(err) = validate_redeclaration(
-            tree,
-            component,
-            &target_name_owned,
-            new_type.as_deref(),
-            span,
-        ) {
+        if let Err(err) =
+            validate_redeclaration(tree, component, component_name, Some(&new_type), span)
+        {
             validation_error = Some(err);
             return;
         }
 
-        redeclared_components.insert(target_name_owned.clone());
+        let component_name = component_name.to_string();
+        redeclared_components.insert(component_name.clone());
         // MLS §7.3: the redeclaration's own array dimensions, when it states
-        // any, describe the component it replaces. Record them even when the
-        // new type could not be extracted — the shape is stated independently
-        // of whether this phase can name the type.
+        // any, describe the component it replaces. Shape is stated
+        // independently of the exact replacement identity proved above.
         if let Some(dims) = redeclared_dimensions(modification) {
-            redeclare_dims.insert(target_name_owned.clone(), dims);
+            redeclare_dims.insert(component_name.clone(), dims);
         }
-        if let Some(new_type_name) = new_type {
-            redeclare_types.insert(target_name_owned, new_type_name);
-        }
+        redeclare_types.insert(component_name, new_type);
     });
 
     if let Some(err) = validation_error {
@@ -1509,9 +1624,8 @@ fn merge_class_content(
     }
 
     // MLS §7.3: a redeclaration is a whole declaration, so the dimensions it
-    // states replace the replaced declaration's. This is keyed independently of
-    // the type changes below, because a redeclaration states its shape whether
-    // or not this phase could extract its type.
+    // states replace the replaced declaration's. This is keyed independently
+    // of the exact type change below because a redeclaration states both facts.
     for (comp_name, dims) in &redeclarations.dims {
         if let Some(comp) = target.components.get_mut(comp_name) {
             apply_redeclared_dimensions(comp, dims);
@@ -1520,18 +1634,11 @@ fn merge_class_content(
 
     // MLS §7.3: Apply redeclared types to inherited components
     // This updates the component's type so that instantiation uses the new type's fields
-    for (comp_name, new_type_name) in &redeclarations.types {
+    for (comp_name, new_type) in &redeclarations.types {
         if let Some(comp) = target.components.get_mut(comp_name) {
-            comp.type_name = rumoca_ir_ast::Name::from_string(new_type_name);
-            comp.type_def_id = tree.name_map.get(new_type_name).copied().or_else(|| {
-                // Try with shorter name (last segment) for unqualified lookups
-                let short_name = path_utils::class_name_leaf(new_type_name);
-                tree.name_map.get(short_name).copied()
-            });
-
-            // MLS §7.3.2: Activate constraining-clause defaults for redeclared
-            // replaceable components.
-            activate_constrainedby_defaults_for_redeclare(comp);
+            comp.type_name = rumoca_ir_ast::Name::from_string(&new_type.source_name);
+            comp.type_name.def_id = Some(new_type.def_id);
+            comp.type_def_id = Some(new_type.def_id);
         }
     }
 
@@ -1650,39 +1757,6 @@ fn validate_break_names(
     Ok(())
 }
 
-fn activate_constrainedby_defaults_for_redeclare(comp: &mut ast::Component) {
-    let mut inserts: Vec<(String, ast::Expression)> = Vec::new();
-    let mut prefixed_keys: Vec<String> = Vec::new();
-
-    for (key, value) in &comp.modifications {
-        let Some(target_name) = key.strip_prefix(rumoca_core::CONSTRAINEDBY_MOD_PREFIX) else {
-            continue;
-        };
-        prefixed_keys.push(key.clone());
-        if comp.modifications.contains_key(target_name) {
-            continue;
-        }
-        inserts.push((target_name.to_string(), value.clone()));
-    }
-
-    for (target_name, value) in inserts {
-        comp.modifications.insert(target_name.clone(), value);
-        let prefixed_key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
-        if comp.each_modifications.contains(&prefixed_key) {
-            comp.each_modifications.insert(target_name.clone());
-        }
-        if comp.final_attributes.contains(&prefixed_key) {
-            comp.final_attributes.insert(target_name.clone());
-        }
-    }
-
-    for key in prefixed_keys {
-        comp.modifications.shift_remove(&key);
-        comp.each_modifications.shift_remove(&key);
-        comp.final_attributes.shift_remove(&key);
-    }
-}
-
 /// Merge nested class modifications from extends clause into inherited components.
 ///
 /// MLS §7.2: When an extends clause has modifications like
@@ -1726,7 +1800,11 @@ fn extend_nested_target_modifications<'a>(
             extend_relative_component_target(extend, target)?,
             modifications.as_slice(),
         )),
-        ast::Expression::Modification { target, value, .. } => {
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => {
             let ast::Expression::ClassModification { modifications, .. } = value.as_ref() else {
                 return None;
             };
@@ -1743,12 +1821,16 @@ fn extend_nested_target_modifications<'a>(
 fn insert_nested_modification(comp: &mut ast::Component, nested_mod: &ast::Expression) {
     match nested_mod {
         ast::Expression::Modification {
-            target: t, value, ..
+            target: t,
+            value: Some(value),
+            ..
         } => {
             if let Some(name) = t.parts.first().map(|p| p.ident.text.to_string()) {
                 comp.modifications.insert(name, value.as_ref().clone());
             }
         }
+        // A value-less modifier binds nothing (MLS §7.2).
+        ast::Expression::Modification { value: None, .. } => {}
         ast::Expression::NamedArgument { name, value, .. } => {
             comp.modifications
                 .insert(name.text.to_string(), value.as_ref().clone());

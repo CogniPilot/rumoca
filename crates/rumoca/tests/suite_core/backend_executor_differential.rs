@@ -144,35 +144,35 @@ fn scalar(label: &str, block: &ScalarProgramBlock, into: &mut Vec<NamedBlock>) {
 /// through a different entry point.
 fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
     let mut blocks = Vec::new();
-    let continuous = model.problem.continuous();
+    let continuous = model.problem().continuous();
     scalarized(
         "continuous.implicit_rhs",
-        &continuous.implicit_rhs,
+        continuous.implicit_rhs(),
         &mut blocks,
     );
-    scalarized("continuous.residual", &continuous.residual, &mut blocks);
+    scalarized("continuous.residual", continuous.residual(), &mut blocks);
     scalarized(
         "continuous.derivative_rhs",
-        &continuous.derivative_rhs,
+        continuous.derivative_rhs(),
         &mut blocks,
     );
     scalarized(
         "continuous.manifold_residual",
-        &continuous.manifold_residual,
+        continuous.manifold_residual(),
         &mut blocks,
     );
-    let initialization = model.problem.initialization();
+    let initialization = model.problem().initialization();
     scalarized(
         "initialization.residual",
-        &initialization.residual,
+        initialization.residual(),
         &mut blocks,
     );
     scalar(
         "initialization.update_rhs",
-        &initialization.update_rhs,
+        initialization.update_rhs(),
         &mut blocks,
     );
-    let discrete = model.problem.discrete();
+    let discrete = model.problem().discrete();
     scalar("discrete.rhs", &discrete.rhs, &mut blocks);
     scalar(
         "discrete.runtime_assignment_rhs",
@@ -186,10 +186,14 @@ fn blocks_under_test(model: &SolveModel) -> Vec<NamedBlock> {
     );
     scalar(
         "events.root_conditions",
-        &model.problem.events().root_conditions,
+        &model.problem().events().root_conditions,
         &mut blocks,
     );
-    scalar("visible_value_rows", &model.visible_value_rows, &mut blocks);
+    scalar(
+        "visible_value_rows",
+        model.visible_value_rows(),
+        &mut blocks,
+    );
     blocks.retain(|named| !named.block.programs().is_empty() || named.unavailable.is_some());
     blocks
 }
@@ -228,7 +232,7 @@ fn probe_points(model: &SolveModel) -> Vec<(Vec<f64>, f64)> {
     (0..PROBE_COUNT)
         .map(|probe| {
             let y = model
-                .initial_y
+                .initial_y()
                 .iter()
                 .enumerate()
                 .map(|(slot, value)| {
@@ -265,7 +269,6 @@ struct ProbeRequest<'a> {
     prepared: &'a PreparedScalarProgramBlock,
     compiled: &'a CompiledExpressionRows,
     inputs: ProbeInputs<'a>,
-    external_tables: &'a [rumoca_core::ExternalTableData],
     pure_calls: &'a SolvePureCallTable,
 }
 
@@ -281,26 +284,18 @@ fn compare_probe(
         prepared,
         compiled,
         inputs,
-        external_tables,
         pure_calls,
     } = request;
     let output_count = prepared.len();
     let mut interpreted_out = vec![0.0; output_count];
     let mut native_out = vec![0.0; output_count];
     let context = RowEvalContext {
-        external_tables: Some(external_tables),
         pure_calls: Some(pure_calls),
         ..Default::default()
     };
     let interpreted =
         prepared.eval_with_context(inputs.y, inputs.p, inputs.t, context, &mut interpreted_out);
-    let native = compiled.call_with_external_tables(
-        inputs.y,
-        inputs.p,
-        inputs.t,
-        external_tables,
-        &mut native_out,
-    );
+    let native = compiled.call(inputs.y, inputs.p, inputs.t, &mut native_out);
     let at = format!("{label} at t={}", inputs.t);
     match (interpreted, native) {
         (Ok(()), Ok(())) => {
@@ -347,7 +342,7 @@ fn differential(source: &str, model_name: &str) -> Differential {
     let model = rumoca_sim::lower_for_simulation_with_overrides(compiled.dae(), &opts)
         .unwrap_or_else(|error| panic!("lower {model_name}: {error:?}"));
 
-    let pure_calls = rumoca_exec_cranelift::compile_pure_call_table(&model.pure_calls).ok();
+    let pure_calls = rumoca_exec_cranelift::compile_pure_call_table(model.pure_calls()).ok();
     let probes = probe_points(&model);
     let mut outcomes = BTreeMap::new();
     let mut divergences = Vec::new();
@@ -402,13 +397,14 @@ fn evaluate_block(
         ));
         return;
     }
-    if requirements.y_len > model.initial_y.len() || requirements.p_len > model.parameters.len() {
+    if requirements.y_len > model.initial_y().len() || requirements.p_len > model.parameters().len()
+    {
         outcome.notes.push(format!(
             "requires y_len={} p_len={} beyond the model's y_len={} p_len={}",
             requirements.y_len,
             requirements.p_len,
-            model.initial_y.len(),
-            model.parameters.len()
+            model.initial_y().len(),
+            model.parameters().len()
         ));
         return;
     }
@@ -442,11 +438,10 @@ fn evaluate_block(
                 compiled: &compiled,
                 inputs: ProbeInputs {
                     y,
-                    p: &model.parameters,
+                    p: model.parameters(),
                     t: *t,
                 },
-                external_tables: model.external_tables.as_slice(),
-                pure_calls: &model.pure_calls,
+                pure_calls: model.pure_calls(),
             },
             outcome,
             divergences,

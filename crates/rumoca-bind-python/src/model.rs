@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
-use rumoca_sim::{SimOptions, SimSolverMode, simulate_with_diagnostics};
+use rumoca_sim::{SimOptions, SimSolverMode, simulate_dae};
 
 /// Solver controls, bundled so `Model.simulate` stays ergonomic without a long
 /// argument list. The common `dt`/`solver` remain direct `simulate` kwargs and
@@ -131,7 +131,6 @@ pub(crate) struct RecompileContext {
 
 #[pyclass(module = "rumoca", unsendable)]
 pub struct Model {
-    name: String,
     // Shared so a tunable `with_params`/`with_start` handle reuses the compiled
     // structural artifact (a 100-point tunable sweep compiles once).
     result: Rc<HighLevelCompilationResult>,
@@ -144,21 +143,12 @@ pub struct Model {
 }
 
 impl Model {
-    pub(crate) fn new(
-        name: String,
-        result: HighLevelCompilationResult,
-        recompile: RecompileContext,
-    ) -> Self {
-        Self::from_parts(name, result, Rc::new(recompile))
+    pub(crate) fn new(result: HighLevelCompilationResult, recompile: RecompileContext) -> Self {
+        Self::from_parts(result, Rc::new(recompile))
     }
 
-    fn from_parts(
-        name: String,
-        result: HighLevelCompilationResult,
-        recompile: Rc<RecompileContext>,
-    ) -> Self {
+    fn from_parts(result: HighLevelCompilationResult, recompile: Rc<RecompileContext>) -> Self {
         Self {
-            name,
             result: Rc::new(result),
             recompile,
             param_overrides: Vec::new(),
@@ -173,7 +163,6 @@ impl Model {
         extra_start: &[(String, f64)],
     ) -> Self {
         Self {
-            name: self.name.clone(),
             result: Rc::clone(&self.result),
             recompile: Rc::clone(&self.recompile),
             param_overrides: merge_overrides(&self.param_overrides, extra_params),
@@ -284,7 +273,7 @@ pub(crate) fn parse_time_span(t: &Bound<'_, PyAny>) -> ApiResult<(f64, f64)> {
 impl Model {
     #[getter]
     fn name(&self) -> String {
-        self.name.clone()
+        self.result.model_name().to_owned()
     }
 
     #[getter]
@@ -309,7 +298,7 @@ impl Model {
 
     #[getter]
     fn parameters(&self) -> ParamView {
-        ParamView::new(self.result.dae.inspect(|view| {
+        ParamView::new(self.result.dae().inspect(|view| {
             view.variables()
                 .filter(|(_, variable)| variable.role() == VariableRole::Parameter)
                 .map(|(_, variable)| ParameterInfo::from_variable(view, variable))
@@ -321,12 +310,17 @@ impl Model {
         let (states, algebraics, inputs, outputs, parameters) = self.variable_role_counts();
         format!(
             "{} — {} states, {} algebraic, {} inputs, {} outputs, {} parameters",
-            self.name, states, algebraics, inputs, outputs, parameters,
+            self.result.model_name(),
+            states,
+            algebraics,
+            inputs,
+            outputs,
+            parameters,
         )
     }
 
     fn structure(&self) -> StructuralInfo {
-        let b = &self.result.balance_detail;
+        let b = self.result.balance_detail();
         let (n_eq, n_unk) = b.equations_unknowns();
         let (n_states, n_algebraic, _, n_outputs, _) = self.variable_role_counts();
         let mut info = StructuralInfo {
@@ -345,7 +339,7 @@ impl Model {
         // structure` uses. A structurally singular system has no full matching,
         // so the report errors — leave the BLT fields at their unmatched defaults.
         if let Ok(report) =
-            rumoca_sim::structural_report_for_dae(&self.result.dae, &SimOptions::default())
+            rumoca_sim::structural_report_for_dae(self.result.dae(), &SimOptions::default())
         {
             info.is_matched = true;
             // Source the scalar counts from the same (prepared) system the BLT
@@ -407,12 +401,12 @@ impl Model {
     /// Render a codegen target and return its single concatenated content string.
     /// Use [`Model::codegen`] for the per-file result.
     fn render(&self, target: &str) -> std::result::Result<String, PyRuntimeStringError> {
-        let files = render_target_files(&self.result, &self.name, target)?;
+        let files = render_target_files(&self.result, target)?;
         Ok(CodegenResult::new(target.to_string(), files).joined_content())
     }
 
     fn codegen(&self, target: &str) -> std::result::Result<CodegenResult, PyRuntimeStringError> {
-        let files = render_target_files(&self.result, &self.name, target)?;
+        let files = render_target_files(&self.result, target)?;
         Ok(CodegenResult::new(target.to_string(), files))
     }
 
@@ -454,13 +448,13 @@ impl Model {
         // Bind `&Dae` before the closure so it captures a `Send` reference, not
         // the `!Send` `Rc`. The solver-neutral dispatcher honors `solver_mode`
         // (auto/bdf via diffsol, rk-like via rk45), applying overrides identically.
-        let dae = &self.result.dae;
+        let dae = self.result.dae().as_ref();
         let started = Instant::now();
-        let sim = Python::with_gil(|py| py.allow_threads(|| simulate_with_diagnostics(dae, &opts)))
+        let sim = Python::with_gil(|py| py.allow_threads(|| simulate_dae(dae, &opts)))
             .map_err(|e| ApiError::Sim(format!("{e}")))?;
         let simulate_seconds = started.elapsed().as_secs_f64();
         Ok(SimPyResult::from_sim(
-            self.name.clone(),
+            self.result.model_name().to_owned(),
             sim,
             None,
             Some(simulate_seconds),
@@ -514,7 +508,7 @@ impl Model {
             ..SimOptions::default()
         };
 
-        let dae = &self.result.dae;
+        let dae = self.result.dae().as_ref();
         let probe = if adjoint {
             rumoca_sim::steady_state_adjoint_objective_gradient_for_dae(
                 dae,
@@ -540,7 +534,11 @@ impl Model {
         if let Some(error) = &probe.report.error {
             return Err(ApiError::Sim(error.clone()));
         }
-        Ok(GradientResult::from_probe(self.name.clone(), mode, probe))
+        Ok(GradientResult::from_probe(
+            self.result.model_name().to_owned(),
+            mode,
+            probe,
+        ))
     }
 
     // ── live symbolic exports — both consume the checked Solve program. The
@@ -597,14 +595,19 @@ impl Model {
             "<b>Model</b> <code>{}</code><ul>\
              <li>{} states</li><li>{} algebraic</li><li>{} inputs</li>\
              <li>{} outputs</li><li>{} parameters</li></ul>",
-            self.name, states, algebraics, inputs, outputs, parameters,
+            self.result.model_name(),
+            states,
+            algebraics,
+            inputs,
+            outputs,
+            parameters,
         )
     }
 }
 
 impl Model {
     fn variables_with_role(&self, role: VariableRole) -> VarView {
-        VarView::new(self.result.dae.inspect(|view| {
+        VarView::new(self.result.dae().inspect(|view| {
             view.variables()
                 .filter(|(_, variable)| variable.role() == role)
                 .map(|(_, variable)| VariableInfo::from_variable(view, variable))
@@ -613,7 +616,7 @@ impl Model {
     }
 
     fn variable_role_counts(&self) -> (usize, usize, usize, usize, usize) {
-        self.result.dae.inspect(|view| {
+        self.result.dae().inspect(|view| {
             let mut counts = (0, 0, 0, 0, 0);
             for (_, variable) in view.variables() {
                 increment_role_count(&mut counts, variable.role());
@@ -631,7 +634,7 @@ impl Model {
         if overrides.is_empty() {
             return Ok(());
         }
-        let params = self.result.dae.inspect(|view| {
+        let params = self.result.dae().inspect(|view| {
             view.variables()
                 .filter(|(_, variable)| variable.role() == VariableRole::Parameter)
                 .map(|(_, variable)| (variable.name().to_string(), variable.is_tunable()))
@@ -668,7 +671,7 @@ impl Model {
         if overrides.is_empty() {
             return Ok(());
         }
-        let states = self.result.dae.inspect(|view| {
+        let states = self.result.dae().inspect(|view| {
             view.variables()
                 .filter(|(_, variable)| variable.role() == VariableRole::State)
                 .map(|(_, variable)| variable.name().to_string())
@@ -697,27 +700,30 @@ impl Model {
         let ctx = &self.recompile;
         let mut session = CompileSession::new(SessionConfig::default());
         session.set_structural_overrides(overrides);
-        let (result, name) = crate::compile_source_in_session(
+        let result = crate::compile_source_in_session(
             &mut session,
             &ctx.source,
-            Some(&self.name),
+            Some(self.result.model_name()),
             &ctx.filename,
             &ctx.roots,
         )
         .map_err(|e| ApiError::Compile(e.0))?;
         // The recompiled model has identical source/filename/roots — share the
         // recompile context rather than cloning the source again.
-        Ok(Model::from_parts(name, result, Rc::clone(&self.recompile)))
+        Ok(Model::from_parts(result, Rc::clone(&self.recompile)))
     }
 
     /// Render a python codegen target in memory and hand its source to the
     /// `rumoca._export` builder, which exec+wraps it into a live typed object.
     fn live_export(&self, builder: &str, target: &str, form: &str) -> ApiResult<PyObject> {
-        let files = render_target_files(&self.result, &self.name, target)?;
+        let files = render_target_files(&self.result, target)?;
         let content = CodegenResult::new(target.to_string(), files).joined_content();
         Python::with_gil(|py| {
             let module = py.import_bound("rumoca._export")?;
-            let obj = module.call_method1(builder, (content, self.name.clone(), form))?;
+            let obj = module.call_method1(
+                builder,
+                (content, self.result.model_name().to_owned(), form),
+            )?;
             Ok(obj.into_py(py))
         })
     }
@@ -727,8 +733,8 @@ impl Model {
         stage: &str,
     ) -> std::result::Result<serde_json::Value, PyRuntimeStringError> {
         match stage {
-            "dae" => serde_json::to_value(&self.result.dae),
-            "flat" => serde_json::to_value(&self.result.flat),
+            "dae" => serde_json::to_value(self.result.dae()),
+            "flat" => serde_json::to_value(self.result.flat()),
             other => {
                 return Err(PyRuntimeStringError(format!(
                     "stage {other:?} is not yet available via to_dict/to_json (have: \"dae\", \"flat\"); \

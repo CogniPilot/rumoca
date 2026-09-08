@@ -35,7 +35,7 @@
     const SERIES_COLORS = [
         '#2470c2', '#d94f30', '#2c9462', '#9356c8', '#c8842c', '#3aa0ab',
     ];
-    const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+    const GALEC_CODEGEN_TARGETS = new Set(['galec']);
     const MAX_PLOT_SERIES = 6;
     const MAX_EDITOR_LINES = 28;
     const DIAGNOSTIC_DEBOUNCE_MS = 400;
@@ -55,8 +55,6 @@
     let runtimeDriverPromise = null;
     // Cached promise for the shared browser interactive runtime module.
     let interactiveRuntimePromise = null;
-    // Cached promise for the WebGPU RK4 driver module (rumoca_gpu.js).
-    let gpuDriverPromise = null;
     // Cached promise for the local Three.js bundle used by custom guide viz.
     let threeModulePromise = null;
     // Cached promise for shared browser UI helpers from rumoca-web.
@@ -447,23 +445,6 @@
         return diffsolDriverPromise || Promise.resolve(null);
     }
 
-    // Lazily import the WebGPU RK4 driver (rumoca_gpu.js), the canonical
-    // packaged GPU helper that sits next to the main WASM and is also published
-    // as `@cognipilot/rumoca/gpu`. Exposes probeGpu/buildGpuProgram/
-    // runGpuSimulation. Returns null if unavailable (older package without it).
-    function loadGpuDriver() {
-        if (!gpuDriverPromise && resolvedPkgBase) {
-            const url = new URL(resolvedPkgBase + 'rumoca_gpu.js', window.location.href);
-            url.searchParams.set('rumoca_live_gpu', String(Date.now()));
-            gpuDriverPromise = import(url.href)
-                .catch(() => {
-                    gpuDriverPromise = null;
-                    return null;
-                });
-        }
-        return gpuDriverPromise || Promise.resolve(null);
-    }
-
     // -----------------------------------------------------------------
     // Simulation worker
     //
@@ -481,12 +462,11 @@
 import init, * as rumoca from '${pkgBase}rumoca_bind_wasm.js';
 import {
     ensureParsedSourceRootCache,
-    prepareGpuSimulationWithRuntime,
     renderDaeTextWithRuntime,
     renderGalecFilesWithRuntime,
     simulateModelWithRuntime,
 } from '${pkgBase}rumoca_runtime.js';
-const GALEC_CODEGEN_TARGETS = new Set(['galec', 'galec-production', 'embedded-c-galec']);
+const GALEC_CODEGEN_TARGETS = new Set(['galec']);
 const ready = init();
 self.onmessage = async (event) => {
     const { id, action, args } = event.data;
@@ -505,18 +485,6 @@ self.onmessage = async (event) => {
                 sourceRootCacheUrl: args.sourceRootCacheUrl || '',
                 parameterOverrides: args.parameterOverrides || {},
             }));
-        } else if (action === 'prepare_gpu') {
-            result = await prepareGpuSimulationWithRuntime({
-                wasm: rumoca,
-                source: args.source,
-                modelName: args.model,
-                sourceRootCacheUrl: args.sourceRootCacheUrl || '',
-            });
-        } else if (action === 'update_gpu') {
-            if (typeof rumoca.update_gpu_parameters !== 'function') {
-                throw new Error('update_gpu_parameters missing in this WASM build');
-            }
-            result = rumoca.update_gpu_parameters(args.source, args.model, args.overrides);
         } else if (action === 'dae') {
             result = await renderDaeTextWithRuntime({
                 wasm: rumoca,
@@ -1681,27 +1649,19 @@ self.onmessage = async (event) => {
                 return sourceNumericParameter(name, fallback);
             },
             // Slider bound to a scalar parameter. Two modes:
-            //  - default: a tunable parameter; changing it re-settles the
-            //    prepared vectors and re-runs (fast GPU path) without recompiling.
+            //  - default: a tunable parameter; changing it reruns the model
+            //    with the selected runtime override.
             //  - { recompile: true }: a STRUCTURAL parameter (e.g. one marked
             //    annotation(Evaluate=true)). A runtime override of such a
             //    parameter is rejected by the compiler, so the slider rewrites
             //    the source literal `<name> = <value>` in the editor and forces a
             //    full recompile + re-run.
-            //  - { interactiveInput: "u" }: when the widget's Interactive toggle
-            //    is on, slider movement writes the named model input before
-            //    each interactive interval; when it is off, the slider behaves
-            //    like a normal parameter tuner.
             // Locked while a simulation is in flight.
             addTuner(name, opts = {}) {
                 if (!widget) {
                     return;
                 }
                 const structural = !!opts.recompile;
-                const interactiveInput = typeof opts.interactiveInput === 'string'
-                    && opts.interactiveInput
-                    ? opts.interactiveInput
-                    : null;
                 const store = structural ? widget.structuralParams : widget.paramOverrides;
                 const row = document.createElement('div');
                 row.className = 'rumoca-live-tuner';
@@ -1716,19 +1676,12 @@ self.onmessage = async (event) => {
                 const readout = document.createElement('span');
                 readout.className = 'rumoca-live-status';
                 readout.textContent = slider.value;
-                if (interactiveInput) {
-                    slider.dataset.rumocaLiveInput = interactiveInput;
-                    widget.liveInputs[interactiveInput] = Number(slider.value);
-                }
                 slider.addEventListener('input', () => {
                     readout.textContent = slider.value;
                     const value = Number(slider.value);
                     if (Number.isFinite(value)) {
                         if (!structural) {
                             widget.paramOverrides[name] = value;
-                        }
-                        if (interactiveInput) {
-                            widget.liveInputs[interactiveInput] = value;
                         }
                     }
                 });
@@ -1740,12 +1693,6 @@ self.onmessage = async (event) => {
                         if (!structural) {
                             widget.paramOverrides[name] = value;
                         }
-                        if (interactiveInput) {
-                            widget.liveInputs[interactiveInput] = value;
-                        }
-                    }
-                    if (liveCheck.checked && !structural) {
-                        return;
                     }
                     if (widget.busy) {
                         widget.restartRun();
@@ -1761,7 +1708,6 @@ self.onmessage = async (event) => {
                             + '-?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?');
                         const next = src.replace(re, '$1' + value);
                         if (next !== src) {
-                            widget.gpuPrep = null;   // invalidate the compiled cache
                             widget.setSource(next);  // surface the new value in source
                         }
                     } else {
@@ -2319,42 +2265,6 @@ self.onmessage = async (event) => {
             return 'Generated file';
         }
 
-        function modelIdentifierFromAlgPath(path) {
-            const leaf = String(path || 'model.alg').split('/').pop() || 'model.alg';
-            const stem = leaf.replace(/\.alg$/i, '') || 'model';
-            return stem.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'model';
-        }
-
-        function galecCGenerationTarget(target) {
-            return target === 'galec-production' || target === 'embedded-c-galec'
-                ? target
-                : 'embedded-c-galec';
-        }
-
-        async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {
-            const target = galecCGenerationTarget(configuredTarget);
-            const algSource = generatedEditor.getValue();
-            const modelName = modelIdentifierFromAlgPath(algPath);
-            button.disabled = true;
-            widget.setStatus(`Generating C/H from ${algPath}…`);
-            try {
-                const runtime = await loadRuntimeDriver();
-                const cFiles = await runtime.renderGalecCFromAlgWithRuntime({
-                    pkgBase: resolvedPkgBase || await locatePkgBase(),
-                    algSource,
-                    fileName: algPath,
-                    modelName,
-                    target,
-                });
-                renderCodegenResult([{ path: algPath, content: algSource }, ...cFiles], target);
-                widget.setStatus(`Generated C/H from ${algPath}`);
-            } catch (error) {
-                showError(error);
-            } finally {
-                button.disabled = false;
-            }
-        }
-
         function appendCodegenPipeline(shell, files) {
             const hasAlg = files.some((file) => String(file.path || '').toLowerCase().endsWith('.alg'));
             const hasC = files.some((file) => /\.(?:c|h)$/i.test(String(file.path || '')));
@@ -2414,20 +2324,6 @@ self.onmessage = async (event) => {
                 if (monaco) {
                     activateGalecEditorLanguageServices(monaco, generatedEditor, path);
                 }
-                const actions = document.createElement('span');
-                actions.className = 'rumoca-live-codegen-actions';
-                const generateCButton = document.createElement('button');
-                generateCButton.type = 'button';
-                generateCButton.className = 'rumoca-live-button rumoca-live-codegen-action';
-                generateCButton.textContent = 'Generate C/H';
-                generateCButton.title = 'Generate C header/source from the current GALEC .alg editor text';
-                generateCButton.addEventListener('click', (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    void generateCFromAlg(generatedEditor, path, target, generateCButton);
-                });
-                actions.appendChild(generateCButton);
-                summary.appendChild(actions);
                 return;
             }
 
@@ -2468,7 +2364,7 @@ self.onmessage = async (event) => {
             const hasOnlyAlg = files.length === 1
                 && String(files[0]?.path || '').toLowerCase().endsWith('.alg');
             widget.setStatus(hasOnlyAlg
-                ? 'Generated GALEC .alg; use Generate C/H in the .alg panel for the next step'
+                ? 'Generated GALEC .alg'
                 : `Generated ${files.length} ${target} file(s)`);
         }
 
@@ -2566,7 +2462,6 @@ self.onmessage = async (event) => {
         let scenarioConfig = null;
         let scenarioDescriptor = null;
         const wantsRadialViz = /\bviz-radial\b/.test(codeEl.className || '');
-        const gpuDefault = /\bgpu\b/.test(codeEl.className || '');
         const workspaceFocusPath = () =>
             repoExamplesRelativePath(scenarioUrl || sourceUrl);
         const scenarioWorkspacePath = () =>
@@ -2709,28 +2604,12 @@ self.onmessage = async (event) => {
             solverSelect.appendChild(opt);
         }
         solverLabel.append(document.createTextNode('Solver '), solverSelect);
-        const gpuLabel = document.createElement('label');
-        gpuLabel.className = 'rumoca-live-gpu';
-        const gpuCheck = document.createElement('input');
-        gpuCheck.type = 'checkbox';
-        gpuCheck.checked = gpuDefault;
-        gpuLabel.append(gpuCheck, document.createTextNode(' GPU'));
-        gpuLabel.title = 'Run on WebGPU (wgsl-ode backend; experimental)';
-        const liveLabel = document.createElement('label');
-        liveLabel.className = 'rumoca-live-gpu';
-        const liveCheck = document.createElement('input');
-        liveCheck.type = 'checkbox';
-        liveCheck.checked = false;
-        liveLabel.append(liveCheck, document.createTextNode(' Interactive'));
-        liveLabel.title = 'Keep registered input sliders live during WasmSimulationSession runs';
         const scenarioControlsPending = Boolean(scenarioUrl);
         solverLabel.hidden = scenarioControlsPending;
-        gpuLabel.hidden = scenarioControlsPending;
-        liveLabel.hidden = scenarioControlsPending;
         daeBtn.hidden = scenarioControlsPending;
         const status = document.createElement('span');
         status.className = 'rumoca-live-status';
-        toolbar.append(runBtn, stopBtn, daeBtn, resetBtn, settingsBtn, solverLabel, gpuLabel, liveLabel, status);
+        toolbar.append(runBtn, stopBtn, daeBtn, resetBtn, settingsBtn, solverLabel, status);
         // Enable the stiff (BDF/diffsol) option only when the browser can load
         // the relaxed-SIMD addon; otherwise leave it greyed out with a reason.
         async function refreshBdfAvailability() {
@@ -2788,8 +2667,8 @@ self.onmessage = async (event) => {
 
         const lastRunMs = {};
         let progressTimer = null;
-        // When a run reports its own phases (the GPU path), `phase`
-        // overrides the elapsed-time estimate: a fraction renders a real
+        // When a run reports its own phases, `phase` overrides the
+        // elapsed-time estimate: a fraction renders a real
         // progress fill, null renders the indeterminate stripe.
         let phase = null;
         const setPhase = (label, fraction) => {
@@ -2854,14 +2733,12 @@ self.onmessage = async (event) => {
             busy: false,
             vizEditor: null,
             viewerScriptsByPath: new Map(),
-            gpuPrep: null,
             interactiveRunner: null,
             generatedEditors: [],
             activeRun: null,
             rerunAfterStop: false,
             paramOverrides: {},
             structuralParams: {},
-            liveInputs: {},
             plotSeries: null,
             tunerInputs: [],
             languageServicesActive: false,
@@ -3173,13 +3050,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             runBtn.title = codegen
                 ? 'Render the code generation target configured by this scenario'
                 : '';
-            if (codegen) {
-                gpuCheck.checked = false;
-                liveCheck.checked = false;
-            }
             solverLabel.hidden = codegen;
-            gpuLabel.hidden = codegen;
-            liveLabel.hidden = codegen;
             daeBtn.hidden = codegen;
             const unavailable = sourceOnly;
             runBtn.disabled = loading || unavailable;
@@ -3414,11 +3285,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             daeBtn.disabled = true;
             widget.busy = true;
             clearGeneratedEditors();
-            // Parameters are frozen during a simulation: lock ordinary tuners.
-            // Registered input tuners stay enabled in Interactive mode because
-            // the WasmSimulationSession path reads their current values before each advance.
+            // Parameters are frozen during a simulation.
             for (const input of widget.tunerInputs) {
-                input.disabled = !(liveCheck.checked && input.dataset.rumocaLiveInput);
+                input.disabled = true;
             }
             let started = null;
             let succeeded = false;
@@ -3546,45 +3415,6 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             return 'Generated file';
         }
 
-        function modelIdentifierFromAlgPath(path) {
-            const leaf = String(path || 'model.alg').split('/').pop() || 'model.alg';
-            const stem = leaf.replace(/\.alg$/i, '') || 'model';
-            return stem.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^_+|_+$/g, '') || 'model';
-        }
-
-        function galecCGenerationTarget(target) {
-            return target === 'galec-production' || target === 'embedded-c-galec'
-                ? target
-                : 'embedded-c-galec';
-        }
-
-        async function generateCFromAlg(generatedEditor, algPath, configuredTarget, button) {
-            const target = galecCGenerationTarget(configuredTarget);
-            const algSource = generatedEditor.getValue();
-            const modelName = modelIdentifierFromAlgPath(algPath);
-            button.disabled = true;
-            widget.setStatus(`Generating C/H from ${algPath}…`);
-            try {
-                const runtime = await loadRuntimeDriver();
-                const cFiles = await runtime.renderGalecCFromAlgWithRuntime({
-                    pkgBase: resolvedPkgBase || await locatePkgBase(),
-                    algSource,
-                    fileName: algPath,
-                    modelName,
-                    target,
-                });
-                renderCodegenResult(
-                    [{ path: algPath, content: algSource }, ...cFiles],
-                    target,
-                );
-                widget.setStatus(`Generated C/H from ${algPath}`);
-            } catch (error) {
-                showError(error);
-            } finally {
-                button.disabled = false;
-            }
-        }
-
         function appendCodegenPipeline(shell, files) {
             const hasAlg = files.some((file) => String(file.path || '').toLowerCase().endsWith('.alg'));
             const hasC = files.some((file) => /\.(?:c|h)$/i.test(String(file.path || '')));
@@ -3649,20 +3479,6 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 });
                 if (language === 'galec') {
                     activateGalecEditorLanguageServices(monaco, generatedEditor, path);
-                    const actions = document.createElement('span');
-                    actions.className = 'rumoca-live-codegen-actions';
-                    const generateCButton = document.createElement('button');
-                    generateCButton.type = 'button';
-                    generateCButton.className = 'rumoca-live-button rumoca-live-codegen-action';
-                    generateCButton.textContent = 'Generate C/H';
-                    generateCButton.title = 'Generate C header/source from the current GALEC .alg editor text';
-                    generateCButton.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void generateCFromAlg(generatedEditor, path, target, generateCButton);
-                    });
-                    actions.appendChild(generateCButton);
-                    summary.appendChild(actions);
                 }
             } else {
                 const pre = document.createElement('pre');
@@ -3683,7 +3499,7 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
             const hasOnlyAlg = files.length === 1
                 && String(files[0]?.path || '').toLowerCase().endsWith('.alg');
             widget.setStatus(hasOnlyAlg
-                ? 'Generated GALEC .alg; use Generate C/H in the .alg panel for the next step'
+                ? 'Generated GALEC .alg'
                 : `Generated ${files.length} ${target} file(s)`);
         }
 
@@ -3773,308 +3589,9 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
                 widget.setStatus('Interactive simulation running');
                 return;
             }
-            if (liveCheck.checked) {
-                const liveSource = enableLiveInputModelSource(source);
-                if (typeof wasm.prepare_gpu_simulation !== 'function') {
-                    throw new Error('Interactive timing metadata needs prepare_gpu_simulation in this WASM build.');
-                }
-                const gpu = await loadGpuDriver();
-                if (!gpu || typeof gpu.probeGpu !== 'function') {
-                    throw new Error(
-                        'Interactive airfoil stepping needs the WebGPU driver; '
-                        + 'rebuild the package or use the non-interactive path.'
-                    );
-                }
-                const adapter = await gpu.probeGpu();
-                setPhase('Preparing interactive GPU session', null);
-                const prep = JSON.parse(await runHeavy(
-                    'prepare_gpu',
-                    { source: liveSource, model, sourceRootCacheUrl },
-                    async () => {
-                        const runtime = await loadRuntimeDriver();
-                        return runtime.prepareGpuSimulationWithRuntime({
-                            wasm,
-                            source: liveSource,
-                            modelName: model,
-                            sourceRootCacheUrl,
-                        });
-                    },
-                    signal
-                ));
-                const variableNames = Array.isArray(prep.state_names)
-                    ? prep.state_names.slice()
-                    : [];
-                if (variableNames.length === 0) {
-                    throw new Error('Interactive GPU prep did not expose state names.');
-                }
-                const t0 = Number(prep.t_start) || 0;
-                const outputDt = Number(prep.dt) || 0.05;
-                const stepDt = Number(prep.internal_dt) || outputDt;
-                const times = [];
-                const rows = variableNames.map(() => []);
-
-                let currentY = Array.isArray(prep.y0) ? prep.y0.slice() : [];
-                let currentP = Array.isArray(prep.p0) ? prep.p0.slice() : [];
-                let overrideKey = null;
-                let t = t0;
-                let completedSteps = 0;
-                const bindings = prep.var_layout?.bindings || {};
-                const pIndex = (name) => {
-                    const index = bindings[name]?.P?.index;
-                    return Number.isSafeInteger(index) ? index : null;
-                };
-                const pValue = (name, fallback = 0) => {
-                    const index = pIndex(name);
-                    const value = index === null ? NaN : Number(currentP[index]);
-                    return Number.isFinite(value) ? value : fallback;
-                };
-                const setP = (name, value) => {
-                    const index = pIndex(name);
-                    if (index !== null && Number.isFinite(value)) {
-                        currentP[index] = value;
-                    }
-                };
-                const commandInput = (inputName, overrideName = inputName, fallback = 0) => {
-                    const live = Number(widget.liveInputs[inputName]);
-                    if (Number.isFinite(live)) {
-                        return live;
-                    }
-                    const override = Number(widget.paramOverrides[overrideName]);
-                    if (Number.isFinite(override)) {
-                        return override;
-                    }
-                    return pValue(inputName, fallback);
-                };
-                const syncLiveInputs = () => {
-                    setP('aoa_cmd', commandInput('aoa_cmd', 'aoa', pValue('aoa', 0)));
-                    setP('mc', commandInput('mc', 'mc', pValue('mc', pValue('mc0', 0.02))));
-                    setP('pc', commandInput('pc', 'pc', pValue('pc', pValue('pc0', 0.4))));
-                    setP('tk', commandInput('tk', 'tk', pValue('tk', pValue('tk0', 0.12))));
-                };
-                const refreshStaticParametersIfNeeded = async () => {
-                    const liveInputs = new Set(['aoa', 'aoa_cmd', 'mc', 'pc', 'tk']);
-                    const nextKey = JSON.stringify(
-                        Object.fromEntries(Object.entries(widget.paramOverrides)
-                            .filter(([name]) => !liveInputs.has(name)))
-                    );
-                    if (nextKey === overrideKey) {
-                        return;
-                    }
-                    overrideKey = nextKey;
-                    const updated = JSON.parse(await runHeavy(
-                        'update_gpu',
-                        { source: liveSource, model, overrides: nextKey },
-                        () => wasm.update_gpu_parameters(liveSource, model, nextKey),
-                        signal
-                    ));
-                    currentP = Array.isArray(updated.p0) ? updated.p0.slice() : currentP;
-                    if (completedSteps === 0 && Array.isArray(updated.y0)) {
-                        currentY = updated.y0.slice();
-                    }
-                    syncLiveInputs();
-                };
-                const pushSample = () => {
-                    times.push(t);
-                    for (let i = 0; i < variableNames.length; i++) {
-                        rows[i].push(Number(currentY[i]) || 0);
-                    }
-                };
-                syncLiveInputs();
-                await refreshStaticParametersIfNeeded();
-                pushSample();
-                const liveHost = document.createElement('div');
-                liveHost.className = 'rumoca-live-radial';
-                output.replaceChildren(liveHost);
-                output.hidden = false;
-                const livePayload = {
-                    names: variableNames,
-                    allData: [times, ...rows],
-                    nStates: Number(prep.n_states) || 0,
-                    simDetails: {
-                        actual: {
-                            t_start: t0,
-                            t_end: t0,
-                            points: 1,
-                            variables: variableNames.length,
-                        },
-                        requested: {
-                            solver: 'wgsl-ode interactive',
-                            t_start: t0,
-                            dt: outputDt,
-                            internal_dt: stepDt,
-                        },
-                    },
-                };
-                const liveAnimations = [];
-                if (widget.vizEditor) {
-                    await runCustomViz(
-                        liveHost,
-                        livePayload,
-                        times,
-                        widget.vizEditor.getValue(),
-                        widget,
-                        { live: true, liveAnimations },
-                    );
-                } else if (wantsRadialViz) {
-                    renderRadialViz(liveHost, times, livePayload);
-                }
-                let disposed = false;
-                let timer = null;
-                const runner = {
-                    dispose() {
-                        disposed = true;
-                        if (timer !== null) {
-                            clearTimeout(timer);
-                            timer = null;
-                        }
-                    },
-                };
-                widget.interactiveRunner = runner;
-                let nextTickWall = performance.now();
-                const redrawLive = () => {
-                    const frame = times.length - 1;
-                    for (const anim of liveAnimations) {
-                        anim.redraw(frame);
-                    }
-                    livePayload.simDetails.actual.t_end = times[frame];
-                    livePayload.simDetails.actual.points = times.length;
-                    widget.setStatus(
-                        `Interactive t = ${times[frame].toFixed(2)} s`
-                        + ` · ${completedSteps} steps`
-                    );
-                };
-                const scheduleTick = () => {
-                    const delay = Math.max(0, nextTickWall - performance.now());
-                    timer = setTimeout(tick, delay);
-                };
-                const tick = async () => {
-                    if (disposed) {
-                        return;
-                    }
-                    try {
-                        if (signal.aborted) {
-                            throw makeAbortError();
-                        }
-                        await refreshStaticParametersIfNeeded();
-                        syncLiveInputs();
-                        const intervalPrep = {
-                            ...prep,
-                            y0: currentY,
-                            p0: currentP,
-                            t_start: t,
-                            t_end: t + outputDt,
-                            dt: outputDt,
-                            internal_dt: stepDt,
-                        };
-                        const result = await gpu.runGpuSimulation(
-                            adapter,
-                            intervalPrep,
-                            () => {},
-                            widget.gpu || (widget.gpu = {}),
-                            { signal },
-                        );
-                        const allData = result.payload?.allData || [];
-                        const frameCount = Array.isArray(allData[0]) ? allData[0].length : 0;
-                        if (frameCount < 2) {
-                            throw new Error('Interactive GPU interval produced no output sample.');
-                        }
-                        const last = frameCount - 1;
-                        t = Number(allData[0][last]) || (t + outputDt);
-                        currentY = variableNames.map((_, index) => Number(allData[index + 1]?.[last]) || 0);
-                        completedSteps += Math.max(1, Math.round(outputDt / stepDt));
-                        pushSample();
-                        redrawLive();
-                        if (!disposed) {
-                            nextTickWall = Math.max(
-                                nextTickWall + outputDt * 1000,
-                                performance.now(),
-                            );
-                            scheduleTick();
-                        }
-                    } catch (error) {
-                        runner.dispose();
-                        if (isAbortError(error)) {
-                            widget.setStatus('Stopped');
-                        } else {
-                            showError(error);
-                        }
-                    }
-                };
-                redrawLive();
-                scheduleTick();
-                widget.setStatus('Interactive simulation running');
-                return;
-            }
-            if (gpuCheck.checked) {
-                const gpu = await loadGpuDriver();
-                if (!gpu || typeof gpu.probeGpu !== 'function') {
-                    throw new Error(
-                        'GPU driver (rumoca_gpu.js) not found in this package; '
-                        + 'rebuild it (cargo xtask playground build) or uncheck GPU to '
-                        + 'simulate on the CPU (WASM) path.'
-                    );
-                }
-                const adapter = await gpu.probeGpu();
-                if (typeof wasm.prepare_gpu_simulation !== 'function') {
-                    throw new Error(
-                        'This WASM build predates the wgsl-ode backend; '
-                        + 'rebuild the package (cargo xtask playground build) or '
-                        + 'uncheck GPU to simulate on the CPU (WASM) path.'
-                    );
-                }
-                let prep;
-                if (widget.gpuPrep && widget.gpuPrep.source === source) {
-                    prep = widget.gpuPrep.prep;
-                } else {
-                    setPhase('Compiling model (Modelica → Solve IR → WGSL)', null);
-                    prep = JSON.parse(await runHeavy(
-                        'prepare_gpu',
-                        { source, model, sourceRootCacheUrl },
-                        async () => {
-                            const runtime = await loadRuntimeDriver();
-                            return runtime.prepareGpuSimulationWithRuntime({
-                                wasm,
-                                source,
-                                modelName: model,
-                                sourceRootCacheUrl,
-                            });
-                        },
-                        signal
-                    ));
-                    widget.gpuPrep = { source, prep };
-                }
-                if (Object.keys(widget.paramOverrides).length > 0) {
-                    // Parameter-only change: re-settle the prepared vectors
-                    // in milliseconds instead of re-lowering the model. The
-                    // worker keeps the lowered model from the prepare call.
-                    setPhase('Updating parameters', null);
-                    const overrides = JSON.stringify(widget.paramOverrides);
-                    const updated = JSON.parse(await runHeavy(
-                        'update_gpu',
-                        { source, model, overrides },
-                        () => wasm.update_gpu_parameters(source, model, overrides),
-                        signal
-                    ));
-                    prep = { ...prep, y0: updated.y0, p0: updated.p0 };
-                }
-                // Per-widget GPU program cache: a parameter-only re-run reuses
-                // the compiled shader + pipelines and just re-uploads y0/p0.
-                widget.gpu = widget.gpu || {};
-                const result = await gpu.runGpuSimulation(adapter, prep, setPhase, widget.gpu, { signal });
-                throwIfAborted(signal);
-                await renderRunResult(result);
-                return;
-            }
-            if (Object.keys(widget.paramOverrides).length > 0) {
-                throw new Error(
-                    'Parameter sliders drive the GPU fast path; enable the '
-                    + 'GPU checkbox, or edit the parameter in the source and '
-                    + 're-run on the CPU.'
-                );
-            }
             if (solver === 'bdf') {
                 // Stiff path: the diffsol addon (separate relaxed-SIMD module)
-                // runs on the main thread, like the GPU path. The main module
+                // runs on the main thread. The main module
                 // lowers the model and the addon simulates it. t_end/dt = 0
                 // defer to the model's experiment annotation.
                 const runtime = await loadRuntimeDriver();
@@ -4327,17 +3844,8 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
         }
     }
 
-    // Debug/test surface (used by the book smoke tests). runGpuSimulation is a
-    // thin wrapper over the lazily-imported packaged GPU driver (rumoca_gpu.js).
     window.rumocaLive = {
         loadWasm,
-        runGpuSimulation: async (adapter, prep, onPhase, cache) => {
-            const gpu = await loadGpuDriver();
-            if (!gpu || typeof gpu.runGpuSimulation !== 'function') {
-                throw new Error('GPU driver (rumoca_gpu.js) unavailable in this package.');
-            }
-            return gpu.runGpuSimulation(adapter, prep, onPhase, cache);
-        },
     };
 
     if (document.readyState === 'loading') {

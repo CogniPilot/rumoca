@@ -17,6 +17,13 @@ fn test_provenance() -> ProvenanceSpan {
         .expect("test span has provenance")
 }
 
+fn integer_expression(value: i64) -> Expression {
+    Expression::Literal {
+        value: Literal::Integer(value),
+        span: test_span(),
+    }
+}
+
 fn component_reference(name: &str, def_id: DefId, subs: Vec<Subscript>) -> ComponentReference {
     ComponentReference::construct(
         false,
@@ -29,6 +36,37 @@ fn component_reference(name: &str, def_id: DefId, subs: Vec<Subscript>) -> Compo
         }],
     )
     .expect("test reference is nonempty and resolved")
+}
+
+fn checked_wire_model() -> Model {
+    let mut model = Model::new();
+    let predefined = PredefinedTypeIds {
+        real: TypeId::new(101),
+        integer: TypeId::new(102),
+        boolean: TypeId::new(103),
+        string: TypeId::new(104),
+        clock: TypeId::new(105),
+    };
+    let string_declaration = DefId::new(104);
+    model.predefined_string_declaration = Some(string_declaration);
+    model.predefined_types = predefined;
+    model
+        .type_ids_by_def_id
+        .insert(string_declaration, predefined.string);
+    for type_id in [
+        predefined.real,
+        predefined.integer,
+        predefined.boolean,
+        predefined.string,
+        predefined.clock,
+    ] {
+        model.type_roots.insert(type_id, type_id);
+        model.effective_types.insert(
+            type_id,
+            EffectiveType::new(type_id, type_id, []).expect("scalar test type is exact"),
+        );
+    }
+    model
 }
 
 #[test]
@@ -207,7 +245,32 @@ fn flat_wire_accepts_only_the_current_reference_shape() {
         component_reference("x", DefId::new(4), Vec::new()),
     )
     .with_instance_id(InstanceId::new(1));
-    let mut flat = Model::new();
+    let mut flat = checked_wire_model();
+    let root = InstanceId::new(2);
+    flat.instance_relations.insert(
+        root,
+        InstanceRelation {
+            owner: None,
+            declaration: Some(DefId::new(3)),
+            indices: Box::default(),
+            kind: InstanceKind::Class,
+        },
+    );
+    flat.instance_relations.insert(
+        InstanceId::new(1),
+        InstanceRelation {
+            owner: Some(root),
+            declaration: Some(DefId::new(4)),
+            indices: Box::default(),
+            kind: InstanceKind::Materialized,
+        },
+    );
+    let mut variable = Variable::empty_with_span(test_span());
+    variable.instance_id = InstanceId::new(1);
+    variable.name = VarName::new("x");
+    variable.component_ref = reference.component_ref().cloned();
+    variable.type_id = flat.predefined_types.real;
+    flat.add_variable(variable.name.clone(), variable);
     flat.equations.push(Equation {
         residual: Expression::VarRef {
             name: reference.clone(),
@@ -260,7 +323,7 @@ fn flat_wire_accepts_only_the_current_reference_shape() {
 /// turn a pure external body into an impure one (or the reverse) on replay.
 #[test]
 fn flat_wire_requires_the_declared_purity_of_an_external_function() {
-    let mut function = Function::new("f", test_span());
+    let mut function = Function::new("f", DefId::new(61_010), test_span());
     function.pure = true;
     function.purity_declared = true;
     function.external = Some(rumoca_core::ExternalFunction {
@@ -270,7 +333,7 @@ fn flat_wire_requires_the_declared_purity_of_an_external_function() {
         args: Vec::new(),
         annotations: Vec::new(),
     });
-    let mut flat = Model::new();
+    let mut flat = checked_wire_model();
     flat.add_function(function);
 
     let encoded = serde_json::to_value(&flat).expect("serialize flat model");
@@ -295,6 +358,48 @@ fn flat_wire_requires_the_declared_purity_of_an_external_function() {
         error
             .to_string()
             .contains("missing field `purity_declared`"),
+        "unexpected rejection: {error}"
+    );
+}
+
+#[test]
+fn flat_wire_replays_the_shared_structured_owner_proof() {
+    let mut flat = checked_wire_model();
+    let origin = EquationOrigin::ComponentEquation {
+        component: "wire structured owner".to_string(),
+    };
+    flat.equations.push(Equation::new(
+        integer_expression(1),
+        test_span(),
+        origin.clone(),
+    ));
+    flat.structured_equations.push(StructuredEquationFamily {
+        domain: StructuredIndexDomain {
+            binders: Vec::new(),
+        },
+        first_equation_index: 0,
+        equations_per_point: 1,
+        span: test_span(),
+        origin,
+        regular: None,
+        template: Some(ComprehensionTemplate {
+            body: vec![integer_expression(2)],
+            scalar_view: rumoca_core::ComprehensionScalarView::BinderSubstitution,
+        }),
+        interiors_materialized: true,
+    });
+    let encoded = serde_json::to_value(&flat).expect("serialize exact structured owner");
+    serde_json::from_value::<Model>(encoded.clone())
+        .expect("wire replay accepts the same checked owner partition as live consumers");
+
+    let mut wrong_scalar_shape = encoded;
+    wrong_scalar_shape["equations"][0]["scalar_count"] = serde_json::json!(2);
+    let error = serde_json::from_value::<Model>(wrong_scalar_shape)
+        .expect_err("wire replay must reject a scalar-view shape mutation");
+    assert!(
+        error
+            .to_string()
+            .contains("scalar shape contradicts its structured projection"),
         "unexpected rejection: {error}"
     );
 }

@@ -64,6 +64,7 @@ impl<'a> TangentBuilder<'a> {
             let Some(binding) = port.binding.clone() else {
                 continue;
             };
+            self.reject_expression_value(&binding, "declaration binding")?;
             self.check_binding_reach(&port, position, &binding)?;
             if port.kind == ValueKind::Constant {
                 self.check_binding_holds_still(&port, &binding)?;
@@ -145,19 +146,23 @@ impl<'a> TangentBuilder<'a> {
     ) -> Refusable<Vec<String>> {
         let mut lines = Vec::new();
         for statement in statements {
-            self.statement(statement, indent, &mut lines)?;
+            if !matches!(statement, ast::Statement::Empty)
+                && let Some(violation) = ast::statement_required_value_violation(statement)
+            {
+                return Err(self.value_refusal(violation, "algorithm statement"));
+            }
+            self.statement_inner(statement, indent, &mut lines)?;
         }
         Ok(lines)
     }
 
-    fn statement(
+    fn statement_inner(
         &mut self,
         statement: &ast::Statement,
         indent: usize,
         lines: &mut Vec<String>,
     ) -> Refusable<()> {
         match statement {
-            ast::Statement::Empty => Ok(()),
             ast::Statement::Assignment { comp, value } => {
                 self.assignment(comp, value, indent, lines)
             }
@@ -200,6 +205,9 @@ impl<'a> TangentBuilder<'a> {
 
     fn refuse_statement(&self, statement: &ast::Statement) -> Refusal {
         let described = match statement {
+            ast::Statement::Empty => {
+                "an empty statement node is parser recovery; an empty algorithm is an empty list"
+            }
             ast::Statement::While(_) => "a while loop is data dependent and carries no tangent",
             ast::Statement::When(_) => "a when statement is not admitted in a function body",
             ast::Statement::Break { .. } => "break is not admitted in a differentiated body",
@@ -231,7 +239,7 @@ impl<'a> TangentBuilder<'a> {
         indent: usize,
         lines: &mut Vec<String>,
     ) -> Refusable<()> {
-        let slope = self.derivative(value)?;
+        let slope = self.derivative_inner(value)?;
         let target = self.assignment_target(comp)?;
         match (target, slope) {
             (Some(tangent), Some(slope)) => {
@@ -310,7 +318,7 @@ impl<'a> TangentBuilder<'a> {
         self.indices
             .extend(indices.iter().map(|index| index.ident.text.to_string()));
         for statement in body {
-            self.statement(statement, indent + 1, lines)?;
+            self.statement_inner(statement, indent + 1, lines)?;
         }
         self.indices.truncate(depth);
         lines.push(indented(indent, "end for;"));
@@ -358,21 +366,31 @@ impl<'a> TangentBuilder<'a> {
     /// cannot take apart is assumed to move, so a construct admitted on the
     /// strength of a non-moving subexpression really does hold still.
     fn moves(&self, expression: &ast::Expression) -> bool {
+        if ast::expression_required_value_violation(expression).is_some() {
+            return true;
+        }
+        self.moves_inner(expression)
+    }
+
+    fn moves_inner(&self, expression: &ast::Expression) -> bool {
         match expression {
-            ast::Expression::Terminal { .. } | ast::Expression::Empty { .. } => false,
+            ast::Expression::Terminal { .. } => false,
+            ast::Expression::Empty { .. } => true,
             ast::Expression::ComponentReference(comp) => self.reference_moves(comp),
-            ast::Expression::Parenthesized { inner, .. } => self.moves(inner),
-            ast::Expression::Unary { rhs, .. } => self.moves(rhs),
-            ast::Expression::Binary { lhs, rhs, .. } => self.moves(lhs) || self.moves(rhs),
+            ast::Expression::Parenthesized { inner, .. } => self.moves_inner(inner),
+            ast::Expression::Unary { rhs, .. } => self.moves_inner(rhs),
+            ast::Expression::Binary { lhs, rhs, .. } => {
+                self.moves_inner(lhs) || self.moves_inner(rhs)
+            }
             ast::Expression::Range {
                 start, step, end, ..
             } => {
-                self.moves(start)
-                    || step.as_deref().is_some_and(|step| self.moves(step))
-                    || self.moves(end)
+                self.moves_inner(start)
+                    || step.as_deref().is_some_and(|step| self.moves_inner(step))
+                    || self.moves_inner(end)
             }
             ast::Expression::Array { elements, .. } => {
-                elements.iter().any(|element| self.moves(element))
+                elements.iter().any(|element| self.moves_inner(element))
             }
             ast::Expression::FunctionCall { comp, args, .. } => {
                 let [part] = comp.parts.as_slice() else {
@@ -381,7 +399,7 @@ impl<'a> TangentBuilder<'a> {
                 // `size` and `ndims` read a shape, which no Real perturbation
                 // moves, so their arguments do not have to hold still.
                 !crate::builtins::is_constant(part.ident.text.as_ref())
-                    && args.iter().any(|argument| self.moves(argument))
+                    && args.iter().any(|argument| self.moves_inner(argument))
             }
             _ => true,
         }
@@ -492,13 +510,13 @@ impl<'a> TangentBuilder<'a> {
             let keyword = if position == 0 { "if" } else { "elseif" };
             lines.push(indented(indent, &format!("{keyword} {} then", block.cond)));
             for statement in &block.stmts {
-                self.statement(statement, indent + 1, lines)?;
+                self.statement_inner(statement, indent + 1, lines)?;
             }
         }
         if let Some(statements) = else_block {
             lines.push(indented(indent, "else"));
             for statement in statements {
-                self.statement(statement, indent + 1, lines)?;
+                self.statement_inner(statement, indent + 1, lines)?;
             }
         }
         lines.push(indented(indent, "end if;"));
@@ -507,10 +525,47 @@ impl<'a> TangentBuilder<'a> {
 
     /// The directional derivative of `expression`, or the structural zero.
     pub(crate) fn derivative(&mut self, expression: &ast::Expression) -> Refusable<Slope> {
+        self.reject_expression_value(expression, "differentiated expression")?;
+        self.derivative_inner(expression)
+    }
+
+    fn reject_expression_value(
+        &self,
+        expression: &ast::Expression,
+        context: &str,
+    ) -> Refusable<()> {
+        if let Some(violation) = ast::expression_required_value_violation(expression) {
+            return Err(self.value_refusal(violation, context));
+        }
+        Ok(())
+    }
+
+    fn value_refusal(&self, violation: ast::RequiredValueViolation, context: &str) -> Refusal {
+        let site = violation.span.map_or_else(
+            || self.site.clone(),
+            |span| Site {
+                line: self.site.line,
+                column: self.site.column,
+                ..Site::with_span(&self.site.file, None, span)
+            },
+        );
+        Refusal::new(
+            Rule::ExpressionForm,
+            site,
+            format!("{context} contains {}", violation.kind.description()),
+        )
+    }
+
+    fn derivative_inner(&mut self, expression: &ast::Expression) -> Refusable<Slope> {
         match expression {
-            ast::Expression::Terminal { .. } | ast::Expression::Empty { .. } => Ok(None),
+            ast::Expression::Terminal { .. } => Ok(None),
+            ast::Expression::Empty { .. } => Err(Refusal::new(
+                Rule::ExpressionForm,
+                self.site.clone(),
+                "parser-recovery expression cannot carry a tangent",
+            )),
             ast::Expression::ComponentReference(comp) => self.reference_derivative(comp),
-            ast::Expression::Parenthesized { inner, .. } => self.derivative(inner),
+            ast::Expression::Parenthesized { inner, .. } => self.derivative_inner(inner),
             ast::Expression::Unary { op, rhs, .. } => self.unary_derivative(op, rhs),
             ast::Expression::Binary { op, lhs, rhs, .. } => self.binary_derivative(op, lhs, rhs),
             ast::Expression::Array { elements, .. } => self.array_derivative(elements),
@@ -549,7 +604,7 @@ impl<'a> TangentBuilder<'a> {
         op: &rumoca_core::OpUnary,
         rhs: &ast::Expression,
     ) -> Refusable<Slope> {
-        let slope = self.derivative(rhs)?;
+        let slope = self.derivative_inner(rhs)?;
         match (op, slope) {
             (_, None) => Ok(None),
             (rumoca_core::OpUnary::Plus, slope) => Ok(slope),
@@ -572,8 +627,8 @@ impl<'a> TangentBuilder<'a> {
     ) -> Refusable<Slope> {
         use rumoca_core::OpBinary as Op;
         self.check_operand_shapes(op, lhs, rhs)?;
-        let left = self.derivative(lhs)?;
-        let right = self.derivative(rhs)?;
+        let left = self.derivative_inner(lhs)?;
+        let right = self.derivative_inner(rhs)?;
         if left.is_none() && right.is_none() {
             return Ok(None);
         }
@@ -724,7 +779,7 @@ impl<'a> TangentBuilder<'a> {
         let mut slopes = Vec::with_capacity(elements.len());
         let mut moving = false;
         for element in elements {
-            match self.derivative(element)? {
+            match self.derivative_inner(element)? {
                 Some(slope) => {
                     moving = true;
                     slopes.push(slope);
@@ -746,11 +801,11 @@ impl<'a> TangentBuilder<'a> {
         let mut slopes = Vec::with_capacity(branches.len());
         let mut moving = false;
         for (condition, value) in branches {
-            let slope = self.derivative(value)?;
+            let slope = self.derivative_inner(value)?;
             moving |= slope.is_some();
             slopes.push((condition, slope.unwrap_or_else(|| zero_like(value))));
         }
-        let otherwise = self.derivative(else_branch)?;
+        let otherwise = self.derivative_inner(else_branch)?;
         moving |= otherwise.is_some();
         if !moving {
             return Ok(None);
@@ -824,14 +879,14 @@ impl<'a> TangentBuilder<'a> {
 
     fn user_call_derivative(&mut self, name: &str, args: &[ast::Expression]) -> Refusable<Slope> {
         let site = self.site.clone();
-        let Some(class) = self.scope.find(name) else {
+        let Some((class, owner)) = self.scope.find_with_owner(name) else {
             return Err(Refusal::new(
                 Rule::CalleeTangent,
                 site,
                 format!("`{name}` is neither a rule-carrying builtin nor a function in scope"),
             ));
         };
-        let callee = FunctionModel::read(class, &site)?;
+        let callee = FunctionModel::read(class, self.scope, &owner, &site)?;
         let inputs: Vec<_> = callee.ports_with(PortRole::Input).cloned().collect();
         if inputs.len() != args.len() {
             return Err(Refusal::new(
@@ -859,7 +914,7 @@ impl<'a> TangentBuilder<'a> {
         let mut tangents = Vec::new();
         let mut moving = false;
         for (port, argument) in inputs.iter().zip(args) {
-            let slope = self.derivative(argument)?;
+            let slope = self.derivative_inner(argument)?;
             if port.kind == ValueKind::Constant {
                 continue;
             }
@@ -920,7 +975,7 @@ impl<'a> TangentBuilder<'a> {
         }
         let mut slopes = Vec::with_capacity(args.len());
         for argument in args {
-            slopes.push(self.derivative(argument)?);
+            slopes.push(self.derivative_inner(argument)?);
         }
         if slopes.iter().all(Option::is_none) {
             return Ok(None);

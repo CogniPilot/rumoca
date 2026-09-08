@@ -27,6 +27,7 @@ fn initial_condition_owns_a_dedicated_runtime_flag() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -105,6 +106,7 @@ fn scalar_initial_coordinate_reads_the_existing_runtime_flag() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -137,7 +139,7 @@ fn scalar_initial_coordinate_reads_the_existing_runtime_flag() {
         .solve_layout()
         .initial_event_parameter_index
         .expect("the initial condition reserves its established runtime flag");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let program = &rows.programs()[0];
@@ -206,12 +208,33 @@ fn homotopy_owns_a_dedicated_continuation_parameter() {
                 declaration,
             )
         })?;
+        let start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                dae::VariableAttributes {
+                    component_ref: None,
+                    binding: None,
+                    start: Some(start),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
+                    min: None,
+                    max: None,
+                    nominal: None,
+                    unit: None,
+                    state_select: rumoca_core::StateSelect::Default,
+                    description: None,
+                    causality: dae::VariableCausality::Local,
+                    is_tunable: false,
+                    is_held: false,
+                    origin: dae::VariableOrigin::Source,
+                },
             )
         })?;
         let residual = model.expressions(|expressions| {
@@ -258,7 +281,7 @@ fn homotopy_owns_a_dedicated_continuation_parameter() {
         .solve_layout()
         .initial_homotopy_parameter_index
         .expect("homotopy owns one checked continuation parameter");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -295,11 +318,12 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
         let unsolved = model.variables(|variables| {
             variables.parameter(
                 VarName::new("q"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 declaration,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(false),
+                    fixed: Some(rumoca_core::Fixity::Free),
                     ..dae::VariableAttributes::default()
                 },
             )
@@ -335,32 +359,36 @@ fn fixed_false_parameter_becomes_an_initialization_projection_unknown() {
     else {
         panic!("a parameter occupies P storage");
     };
-    let [block] = solve.initialization().projection_plan.blocks.as_slice() else {
+    let [block] = solve.initialization().projection_plan().blocks.as_slice() else {
         panic!(
             "one initialization projection block expected, got {:?}",
-            solve.initialization().projection_plan.blocks
+            solve.initialization().projection_plan().blocks
         );
     };
     assert_eq!(block.rows, [0]);
     assert_eq!(block.unknowns, [rumoca_ir_solve::scalar_slot_p(index)]);
     assert_eq!(
-        solve.initialization().projection_unknowns,
+        solve.initialization().projection_unknowns(),
         [rumoca_ir_solve::scalar_slot_p(index)]
     );
 }
 
-/// A fixed algebraic is an initialization equation even when no selected state
-/// carries its equality class. The row retains `a = 0` exactly and joins the
-/// simultaneous continuous refresh, whose total sensitivity makes it determine
-/// `q`; retaining the parameter's start guess would be wrong-code.
+/// A fixed algebraic's §8.6 equation refuses Solve construction until its
+/// exact transitive incidence through the continuous system is computed.
+///
+/// This is the graph that proved assumed-universal incidence wrong: the
+/// `fixed = true` row of `a` is unrelated to `q`, yet under universal
+/// incidence the matching could pair it with `q`, the refresh zeroed the row,
+/// and `q = 100` was silently retained with no equation determining it. The
+/// declaration must refuse instead, at its own span, before any matching runs.
 #[test]
-fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
+fn a_fixed_algebraic_initial_equation_is_refused_until_incidence_is_exact() {
     let source = TestSource::new(
-        "parameter Real q(start=100, fixed=false); Real a(start=0, fixed=true); equation a=q-49;",
+        "parameter Real q(start=100, fixed=false); Real a(start=0, fixed=true); equation a=0;",
     );
     let q_at = source.at(0, 40);
     let a_at = source.at(42, 69);
-    let equation_at = source.at(80, 86);
+    let equation_at = source.at(80, 83);
     let model = dae::Dae::construct(source.map, |model| {
         let real = model.types(|types| {
             types.intern(
@@ -375,18 +403,24 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
                 expressions.at(a_at).literal(dae::DaeLiteral::Real(0.0))?,
             ))
         })?;
-        let (q, a, a_reservation) = model.variables(|variables| {
+        let (_q, a, a_reservation) = model.variables(|variables| {
             let q = variables.parameter(
                 VarName::new("q"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 q_at,
                 dae::VariableAttributes {
                     start: Some(q_start),
-                    fixed: Some(false),
+                    fixed: Some(rumoca_core::Fixity::Free),
                     ..dae::VariableAttributes::default()
                 },
             )?;
-            let (a, reservation) = variables.reserve_algebraic(VarName::new("a"), real, a_at)?;
+            let (a, reservation) = variables.reserve_algebraic(
+                VarName::new("a"),
+                rumoca_core::InstanceId::new(6),
+                real,
+                a_at,
+            )?;
             Ok((q, a, reservation))
         })?;
         model.variables(|variables| {
@@ -394,7 +428,7 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
                 a_reservation,
                 dae::VariableAttributes {
                     start: Some(a_start),
-                    fixed: Some(true),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
                     ..dae::VariableAttributes::default()
                 },
                 a_at,
@@ -404,52 +438,27 @@ fn fixed_algebraic_initial_equation_joins_the_continuous_initial_solve() {
             let a = expressions
                 .at(equation_at)
                 .coordinate(dae::CoordinateInput::Algebraic(a))?;
-            let q = expressions
+            let zero = expressions
                 .at(equation_at)
-                .coordinate(dae::CoordinateInput::Parameter(q))?;
-            let forty_nine = expressions
-                .at(equation_at)
-                .literal(dae::DaeLiteral::Real(49.0))?;
-            let rhs =
-                expressions
-                    .at(equation_at)
-                    .binary(dae::BinaryOperator::Subtract, q, forty_nine)?;
+                .literal(dae::DaeLiteral::Real(0.0))?;
             expressions
                 .at(equation_at)
-                .binary(dae::BinaryOperator::Subtract, a, rhs)
+                .binary(dae::BinaryOperator::Subtract, a, zero)
         })?;
         model.continuous(|continuous| continuous.value_equation(equation_at, residual))
     })
     .expect("fixed algebraic fixture DAE is valid");
 
-    let solve = lower_solve_problem(&model).expect("fixed algebraic equation is retained");
-    reseal_solve_problem(&solve).expect("lowered Solve problem is valid");
-    let q_slot = solve
-        .layout()
-        .binding("q")
-        .expect("q has parameter storage");
-    let ScalarSlot::P { .. } = q_slot else {
-        panic!("q occupies parameter storage");
-    };
-    assert_eq!(solve.initialization().projection_unknowns, [q_slot]);
-    let [block] = solve.initialization().projection_plan.blocks.as_slice() else {
-        panic!("one initialization projection block expected");
-    };
-    assert_eq!(block.rows, [0]);
-    assert_eq!(block.unknowns, [q_slot]);
-    assert_eq!(
-        solve.initialization().row_roles,
-        [rumoca_ir_solve::InitializationRowRole::SolvedThroughAlgebraicRefresh]
+    let error = lower_solve_problem(&model)
+        .expect_err("a fixed algebraic row must not be admitted on assumed incidence");
+    assert!(
+        matches!(
+            &error,
+            LowerError::NonComputable { reason, span }
+                if reason.contains("transitive incidence") && *span == a_at.span()
+        ),
+        "the refusal names the missing incidence certificate at `a`'s declaration: {error:?}"
     );
-    let a_slot = solve.layout().binding("a").expect("a has solver storage");
-    let ScalarSlot::Y { index: a_index, .. } = a_slot else {
-        panic!("a occupies solver storage");
-    };
-    assert!(solve.initialization().residual.nodes.iter().any(|node| {
-        matches!(node, ComputeNode::ScalarPrograms(rows) if rows.programs().iter().flatten().any(
-            |operation| matches!(operation, LinearOp::LoadY { index, .. } if *index == a_index)
-        ))
-    }));
 }
 
 /// MLS 3.6 §8.6: "All variables declared as parameter having `fixed = false` are
@@ -473,7 +482,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
         .binding("g")
         .expect("the dependent parameter keeps its parameter storage");
     assert_eq!(
-        solve.initialization().update_targets,
+        solve.initialization().update_targets(),
         [dependent_slot],
         "the dependent binding is the only initialization update row"
     );
@@ -489,7 +498,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
         panic!("a parameter occupies P storage");
     };
     assert!(
-        solve.initialization().update_rhs.programs()[0]
+        solve.initialization().update_rhs().programs()[0]
             .iter()
             .any(|operation| matches!(
                 operation,
@@ -500,7 +509,7 @@ fn a_parameter_reading_an_initialization_unknown_is_re_applied_after_the_solve()
     assert!(
         !solve
             .initialization()
-            .projection_unknowns
+            .projection_unknowns()
             .contains(&dependent_slot),
         "the dependent parameter is assigned by its binding, not solved as an unknown"
     );
@@ -530,11 +539,12 @@ fn dependent_parameter_model() -> dae::Dae {
         let unsolved = model.variables(|variables| {
             variables.parameter(
                 VarName::new("q"),
+                rumoca_core::InstanceId::new(7),
                 real,
                 declaration,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(false),
+                    fixed: Some(rumoca_core::Fixity::Free),
                     ..dae::VariableAttributes::default()
                 },
             )
@@ -553,6 +563,7 @@ fn dependent_parameter_model() -> dae::Dae {
         model.variables(|variables| {
             variables.parameter(
                 VarName::new("g"),
+                rumoca_core::InstanceId::new(8),
                 real,
                 dependent,
                 dae::VariableAttributes {
@@ -581,4 +592,548 @@ fn dependent_parameter_model() -> dae::Dae {
         Ok(())
     })
     .unwrap()
+}
+
+/// MLS 3.6 §8.6 already adds `x = startExpression` for a `fixed = true` start,
+/// so an explicit `initial equation` whose every coordinate is already
+/// determined is a second equation for one value: the system is overdetermined
+/// and must refuse Solve construction at the row's own provenance, not surface
+/// later as a runtime residual failure.
+#[test]
+fn an_initial_equation_over_a_fixed_start_state_is_refused_as_overdetermined() {
+    let source = TestSource::new(
+        "constant Boolean k = true; Real x(start=2, fixed=k); initial equation x = 3; \
+         equation der(x) = 1;",
+    );
+    let declaration = source.at(27, 51);
+    let owner = source.at(70, 75);
+    let equation_at = source.at(86, 96);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let attributes = real_state_attributes(model, declaration, 2.0, true)?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(9),
+                real,
+                declaration,
+                attributes,
+            )
+        })?;
+        let initial_residual = model.expressions(|expressions| {
+            let x = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let three = expressions.at(owner).literal(dae::DaeLiteral::Real(3.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, x, three)
+        })?;
+        model.initialization(|initialization| {
+            initialization.value_equation(owner, initial_residual)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let one = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, derivative, one)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .expect("the overdetermination is a Solve refusal, not a DAE construction failure");
+
+    let error = lower_solve_problem(&model)
+        .expect_err("a fixed start and an initial equation are two owners for one coordinate");
+    assert!(
+        matches!(
+            &error,
+            LowerError::NonComputable { reason, span }
+                if reason.contains("overdetermined") && *span == owner.span()
+        ),
+        "the refusal names MLS §8.6 overdetermination at the initial equation's own span: \
+         {error:?}"
+    );
+}
+
+/// MLS 3.6 §8.6: a `fixed = false` parameter is an unknown of the
+/// initialization problem, so a row may read a stated `fixed = true` state as a
+/// determined number and still own that parameter. The stated read contributes
+/// no unknown; it must not disqualify the row.
+#[test]
+fn a_row_reading_a_stated_state_may_still_determine_a_fixed_false_parameter() {
+    let model = stated_state_parameter_model();
+    let solve = lower_solve_problem(&model)
+        .expect("a row reading a stated state still owns the fixed = false parameter");
+    reseal_solve_problem(&solve).expect("lowered Solve problem is valid");
+    let p_slot = solve
+        .layout()
+        .binding("p")
+        .expect("the unsolved parameter keeps its parameter storage");
+    let ScalarSlot::P { .. } = p_slot else {
+        panic!("a parameter occupies P storage");
+    };
+    assert_eq!(solve.initialization().projection_unknowns(), [p_slot]);
+    let [block] = solve.initialization().projection_plan().blocks.as_slice() else {
+        panic!(
+            "one initialization projection block expected, got {:?}",
+            solve.initialization().projection_plan().blocks
+        );
+    };
+    assert_eq!(block.rows, [0]);
+    assert_eq!(block.unknowns, [p_slot]);
+    assert_eq!(
+        solve.initialization().row_roles(),
+        [rumoca_ir_solve::InitializationRowRole::Solved],
+        "the row is matched to the parameter, not left as an unowned check"
+    );
+    assert_eq!(solve.initialization().row_targets(), [Some(p_slot)]);
+}
+
+fn stated_state_parameter_model() -> dae::Dae {
+    let source = TestSource::new(
+        "parameter Real p(start=0, fixed=false); Real x(start=2, fixed=true); \
+         initial equation p = x + 1; equation der(x) = 1;",
+    );
+    let parameter_at = source.at(0, 38);
+    let declaration = source.at(40, 67);
+    let owner = source.at(86, 95);
+    let equation_at = source.at(106, 116);
+    dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let guess = model.expressions(|expressions| {
+            expressions
+                .at(parameter_at)
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
+        let unsolved = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("p"),
+                rumoca_core::InstanceId::new(10),
+                real,
+                parameter_at,
+                dae::VariableAttributes {
+                    start: Some(guess),
+                    fixed: Some(rumoca_core::Fixity::Free),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let attributes = real_state_attributes(model, declaration, 2.0, true)?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(11),
+                real,
+                declaration,
+                attributes,
+            )
+        })?;
+        let initial_residual = model.expressions(|expressions| {
+            let p = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let x = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            let sum = expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Add, x, one)?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, p, sum)
+        })?;
+        model.initialization(|initialization| {
+            initialization.value_equation(owner, initial_residual)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let one = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, derivative, one)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .expect("stated-state read fixture DAE is valid")
+}
+
+/// The valid §8.6 kernel: a `fixed = true` start is the state's initialization
+/// equation, the declaration seed answers it, and no residual row or projection
+/// block remains. Zero rows for zero unknowns is the correct square count.
+#[test]
+fn a_fixed_start_state_alone_constructs_an_empty_initialization_system() {
+    let source = TestSource::new("Real x(start=2, fixed=true); equation der(x) = 1;");
+    let declaration = source.at(0, 27);
+    let equation_at = source.at(38, 48);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let attributes = real_state_attributes(model, declaration, 2.0, true)?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(12),
+                real,
+                declaration,
+                attributes,
+            )
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let one = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, derivative, one)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .expect("kernel fixture DAE is valid");
+
+    let solve = lower_solve_problem(&model).expect("the kernel constructs");
+    reseal_solve_problem(&solve).expect("lowered Solve problem is valid");
+    let initialization = solve.initialization();
+    assert!(initialization.row_roles().is_empty());
+    assert!(initialization.row_targets().is_empty());
+    assert!(initialization.projection_unknowns().is_empty());
+    assert!(initialization.projection_plan().blocks.is_empty());
+    assert!(initialization.update_targets().is_empty());
+}
+
+/// A `fixed = true` state whose `start` transitively reads a coordinate the
+/// projection solves is refused at its declaration. `x(start = p)` with
+/// `p(fixed = false)` and `initial equation p = 1` would otherwise seed
+/// `x = 0` from `p`'s guess, solve `p = 1`, and never re-apply the state's
+/// §8.6 equation, silently violating `x = p`.
+#[test]
+fn a_fixed_start_reading_a_projection_solved_parameter_is_refused() {
+    let source = TestSource::new(
+        "parameter Real p(start=0, fixed=false); Real x(start=p, fixed=true); \
+         initial equation p = 1; equation der(x) = 0;",
+    );
+    let parameter_at = source.at(0, 38);
+    let declaration = source.at(40, 67);
+    let owner = source.at(86, 91);
+    let equation_at = source.at(102, 112);
+    let model = dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                declaration,
+            )
+        })?;
+        let guess = model.expressions(|expressions| {
+            expressions
+                .at(parameter_at)
+                .literal(dae::DaeLiteral::Real(0.0))
+        })?;
+        let unsolved = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("p"),
+                rumoca_core::InstanceId::new(13),
+                real,
+                parameter_at,
+                dae::VariableAttributes {
+                    start: Some(guess),
+                    fixed: Some(rumoca_core::Fixity::Free),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let dependent_start = model.expressions(|expressions| {
+            expressions
+                .at(declaration)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))
+        })?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(14),
+                real,
+                declaration,
+                dae::VariableAttributes {
+                    start: Some(dependent_start),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let initial_residual = model.expressions(|expressions| {
+            let p = expressions
+                .at(owner)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+            let one = expressions.at(owner).literal(dae::DaeLiteral::Real(1.0))?;
+            expressions
+                .at(owner)
+                .binary(dae::BinaryOperator::Subtract, p, one)
+        })?;
+        model.initialization(|initialization| {
+            initialization.value_equation(owner, initial_residual)
+        })?;
+        let residual = model.expressions(|expressions| {
+            let derivative = expressions
+                .at(equation_at)
+                .coordinate(dae::CoordinateInput::Derivative(state))?;
+            let zero = expressions
+                .at(equation_at)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(equation_at)
+                .binary(dae::BinaryOperator::Subtract, derivative, zero)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(equation_at, residual))
+    })
+    .expect("dependent fixed-start fixture DAE is valid");
+
+    let error = lower_solve_problem(&model)
+        .expect_err("a fixed start over a projection-solved parameter must refuse");
+    assert!(
+        matches!(
+            &error,
+            LowerError::NonComputable { reason, span }
+                if reason.contains("transitively reads") && *span == declaration.span()
+        ),
+        "the refusal names the dependent seed at the state's declaration: {error:?}"
+    );
+}
+
+/// The matching covers every unknown and every mandatory row, drawing an
+/// optional stated-value check into the plan only when nothing else can own an
+/// unknown. The graph: mandatory `R1` reads `{x, q}`, mandatory `R2` reads
+/// `{x}`, and the carried check `C` reads `{q}`. An unknown-driven matching
+/// may take `q -> R1` and then reroute `q -> C` to free `R1` for `x`, leaving
+/// mandatory `R2` unmatched and refusing a valid model; the constrained
+/// matching must give `R1 -> q`, `R2 -> x`, and leave only `C` unmatched as
+/// the stated-value check.
+#[test]
+fn mandatory_rows_are_covered_before_an_optional_check_joins_the_plan() {
+    let model = constrained_matching_model();
+    let solve = lower_solve_problem(&model)
+        .expect("both mandatory rows are covered and the carried check stays optional");
+    reseal_solve_problem(&solve).expect("lowered Solve problem is valid");
+    let q_slot = solve
+        .layout()
+        .binding("q")
+        .expect("q keeps parameter storage");
+    let ScalarSlot::P { .. } = q_slot else {
+        panic!("q occupies parameter storage");
+    };
+    let x_slot = solve.layout().binding("x").expect("x keeps solver storage");
+    let ScalarSlot::Y { .. } = x_slot else {
+        panic!("x occupies solver storage");
+    };
+    assert_eq!(
+        solve.initialization().row_roles(),
+        [
+            rumoca_ir_solve::InitializationRowRole::Solved,
+            rumoca_ir_solve::InitializationRowRole::Solved,
+            rumoca_ir_solve::InitializationRowRole::StatedValueCheck,
+        ],
+        "R1 and R2 are solved; only the carried check stands unmatched"
+    );
+    assert_eq!(
+        solve.initialization().row_targets(),
+        [Some(q_slot), Some(x_slot), None],
+        "R1 determines q, R2 determines x, and the check owns nothing"
+    );
+    let [block] = solve.initialization().projection_plan().blocks.as_slice() else {
+        panic!(
+            "one initialization projection block expected, got {:?}",
+            solve.initialization().projection_plan().blocks
+        );
+    };
+    assert_eq!(block.rows, [0, 1]);
+    assert_eq!(block.unknowns, [q_slot, x_slot]);
+    assert_eq!(
+        solve.initialization().projection_unknowns(),
+        [q_slot, x_slot]
+    );
+}
+
+fn constrained_matching_model() -> dae::Dae {
+    let source = TestSource::new(
+        "parameter Real q(start=0, fixed=false); Real s(start=3, fixed=true); \
+         Real b(start=q, fixed=true); Real x(start=0, fixed=false); \
+         equation der(s) = 1; b = s; der(x) = 1; initial equation x + q = 5; x = 2;",
+    );
+    let q_at = source.at(0, 38);
+    let s_at = source.at(40, 67);
+    let b_at = source.at(69, 96);
+    let x_at = source.at(98, 126);
+    let der_s_at = source.at(137, 147);
+    let alias_at = source.at(149, 154);
+    let der_x_at = source.at(156, 166);
+    let r1_at = source.at(185, 194);
+    let r2_at = source.at(196, 201);
+    dae::Dae::construct(source.map, |model| {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                q_at,
+            )
+        })?;
+        let q_start = model
+            .expressions(|expressions| expressions.at(q_at).literal(dae::DaeLiteral::Real(0.0)))?;
+        let unsolved = model.variables(|variables| {
+            variables.parameter(
+                VarName::new("q"),
+                rumoca_core::InstanceId::new(15),
+                real,
+                q_at,
+                dae::VariableAttributes {
+                    start: Some(q_start),
+                    fixed: Some(rumoca_core::Fixity::Free),
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        let stated_attributes = real_state_attributes(model, s_at, 3.0, true)?;
+        let stated = model.variables(|variables| {
+            variables.state(
+                VarName::new("s"),
+                rumoca_core::InstanceId::new(16),
+                real,
+                s_at,
+                stated_attributes,
+            )
+        })?;
+        let carried_start = model.expressions(|expressions| {
+            expressions
+                .at(b_at)
+                .coordinate(dae::CoordinateInput::Parameter(unsolved))
+        })?;
+        let (member, member_reservation) = model.variables(|variables| {
+            variables.reserve_algebraic(
+                VarName::new("b"),
+                rumoca_core::InstanceId::new(17),
+                real,
+                b_at,
+            )
+        })?;
+        model.variables(|variables| {
+            variables.define(
+                member_reservation,
+                dae::VariableAttributes {
+                    start: Some(carried_start),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
+                    ..dae::VariableAttributes::default()
+                },
+                b_at,
+            )
+        })?;
+        let free_attributes = real_state_attributes(model, x_at, 0.0, false)?;
+        let state = model.variables(|variables| {
+            variables.state(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(18),
+                real,
+                x_at,
+                free_attributes,
+            )
+        })?;
+        unit_derivative_equation(model, der_s_at, stated)?;
+        let alias = model.expressions(|expressions| {
+            let b = expressions
+                .at(alias_at)
+                .coordinate(dae::CoordinateInput::Algebraic(member))?;
+            let s = expressions
+                .at(alias_at)
+                .coordinate(dae::CoordinateInput::State(stated))?;
+            expressions
+                .at(alias_at)
+                .binary(dae::BinaryOperator::Subtract, b, s)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(alias_at, alias))?;
+        unit_derivative_equation(model, der_x_at, state)?;
+        mandatory_initialization_equations(model, state, unsolved, r1_at, r2_at)?;
+        Ok(())
+    })
+    .expect("constrained-matching fixture DAE is valid")
+}
+
+fn unit_derivative_equation<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    provenance: dae::DaeProvenance,
+    state: dae::StateId<'dae>,
+) -> Result<(), dae::DaeConstructionError> {
+    let residual = model.expressions(|expressions| {
+        let derivative = expressions
+            .at(provenance)
+            .coordinate(dae::CoordinateInput::Derivative(state))?;
+        let one = expressions
+            .at(provenance)
+            .literal(dae::DaeLiteral::Real(1.0))?;
+        expressions
+            .at(provenance)
+            .binary(dae::BinaryOperator::Subtract, derivative, one)
+    })?;
+    model.continuous(|continuous| continuous.value_equation(provenance, residual))
+}
+
+fn mandatory_initialization_equations<'dae>(
+    model: &mut dae::DaeConstruction<'dae>,
+    state: dae::StateId<'dae>,
+    unsolved: dae::ParameterId<'dae>,
+    r1_at: dae::DaeProvenance,
+    r2_at: dae::DaeProvenance,
+) -> Result<(), dae::DaeConstructionError> {
+    let first = model.expressions(|expressions| {
+        let x = expressions
+            .at(r1_at)
+            .coordinate(dae::CoordinateInput::State(state))?;
+        let q = expressions
+            .at(r1_at)
+            .coordinate(dae::CoordinateInput::Parameter(unsolved))?;
+        let sum = expressions
+            .at(r1_at)
+            .binary(dae::BinaryOperator::Add, x, q)?;
+        let five = expressions.at(r1_at).literal(dae::DaeLiteral::Real(5.0))?;
+        expressions
+            .at(r1_at)
+            .binary(dae::BinaryOperator::Subtract, sum, five)
+    })?;
+    model.initialization(|initialization| initialization.value_equation(r1_at, first))?;
+    let second = model.expressions(|expressions| {
+        let x = expressions
+            .at(r2_at)
+            .coordinate(dae::CoordinateInput::State(state))?;
+        let two = expressions.at(r2_at).literal(dae::DaeLiteral::Real(2.0))?;
+        expressions
+            .at(r2_at)
+            .binary(dae::BinaryOperator::Subtract, x, two)
+    })?;
+    model.initialization(|initialization| initialization.value_equation(r2_at, second))?;
+    Ok(())
 }

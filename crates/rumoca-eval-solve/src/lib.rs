@@ -2,11 +2,10 @@
 //!
 //! ## Threading and Test Isolation
 //!
-//! Simulation facades should pass model-local table data through
-//! [`RowEvalContext::external_tables`]. Impure random-generator streams are
-//! carried by [`SimulationRuntimeState`] and are never process-global.
+//! Impure random-generator streams are carried by [`SimulationRuntimeState`]
+//! and are never process-global.
 
-// SPEC_0021 file-size exception - split plan: extract external-table access and the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
+// SPEC_0021 file-size exception - split plan: extract the impure random-stream runtime state into eval-solve/src/runtime_state.rs, leaving this file as the row-evaluation facade; tracked as RDD2/GALEC cleanup debt (SPEC_0021 follow-up).
 
 use std::{
     cell::RefCell,
@@ -20,10 +19,11 @@ use std::{
 
 use rumoca_ir_solve::{
     BinaryOp, CompareOp, FoldTensorUpdateStore, LinearOp, MatrixProductShape, Reg,
-    ScalarProgramBlock, ScalarProgramRegisterFlow, SolveEventActionKind, SolveEventMessagePart,
-    SolveEventPartition, SolveProblemShapeContractError, SolvePureCallDirectionalSite,
-    SolvePureCallSite, SolvePureCallTable, SolveScalarType, SolveStringConversionFormat,
-    SolveStringConversionSource, SolveValueKind, SolveValueType, StridedOperand, UnaryOp,
+    ScalarProgramBlock, ScalarProgramRegisterFlow, ScalarSlot, SolveEventActionKind,
+    SolveEventMessagePart, SolveEventPartition, SolveProblemShapeContractError,
+    SolvePureCallDirectionalSite, SolvePureCallSite, SolvePureCallTable, SolveScalarType,
+    SolveStringConversionFormat, SolveStringConversionSource, SolveValueKind, SolveValueType,
+    StridedOperand, UnaryOp,
 };
 
 mod compute_block_scalarize;
@@ -39,7 +39,6 @@ pub mod reverse;
 #[cfg(test)]
 mod scalar_program_contract_tests;
 mod sparsity;
-mod table_runtime;
 pub mod tensor_policy;
 mod typed_program;
 mod update_rows;
@@ -52,8 +51,8 @@ use linear_solve::{solve_component_op, solve_component_unchecked};
 pub use ops::{eval_binary, eval_compare, eval_unary};
 pub use prepared::{
     ComputeNodeOutputRangeRequest, PreparedComputeBlock, PreparedScalarProgramBlock,
-    PreparedTornSweep, TargetAssignmentOutputRequest, TornSweepComposite, TornSweepStatus,
-    target_assignment_shape, target_assignment_shapes,
+    PreparedTornSweep, TargetAssignmentOutputRequest, TornSweepStatus, target_assignment_shape,
+    target_assignment_shapes,
 };
 pub use prepared_event_transaction::PreparedEventTransactionProgram;
 pub use prepared_guarded_assignment::PreparedGuardedAssignmentProgram;
@@ -65,10 +64,6 @@ pub use sparsity::{
     derive_column_coloring, derive_jacobian_pattern_from_jvp,
     derive_jacobian_pattern_from_scalar_jvp, derive_solve_structural_artifacts,
     row_seed_dependencies,
-};
-pub use table_runtime::{
-    TableRuntimeError, eval_table_bound_value_in, eval_table_lookup_slope_value_in,
-    eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
 pub use typed_program::{
     TypedProgramEvalError, TypedValue, TypedValueConstructionError, eval_pure_call,
@@ -126,12 +121,6 @@ type BlockEvalStatsMap = BTreeMap<(&'static str, usize), BlockEvalStats>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalSolveError {
-    ExternalTable {
-        operation: &'static str,
-        table_id: f64,
-        column: Option<f64>,
-        reason: String,
-    },
     MissingInput {
         vector: &'static str,
         index: usize,
@@ -156,6 +145,14 @@ pub enum EvalSolveError {
     UpdateRowTargetMismatch {
         rows: usize,
         targets: usize,
+    },
+    /// An update row targets a slot with no writable runtime storage.
+    ///
+    /// Construction refuses such targets, so reaching this arm means a
+    /// product bypassed its issuer; the write is refused loudly instead of
+    /// silently dropped.
+    UnwritableUpdateTarget {
+        target: ScalarSlot,
     },
     UpdateDidNotConverge {
         t: f64,
@@ -289,24 +286,6 @@ impl EvalSolveError {
 impl std::fmt::Display for EvalSolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ExternalTable {
-                operation,
-                table_id,
-                column,
-                reason,
-            } => {
-                if let Some(column) = column {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id} column {column}: {reason}"
-                    )
-                } else {
-                    write!(
-                        f,
-                        "external table {operation} failed for table id {table_id}: {reason}"
-                    )
-                }
-            }
             Self::MissingInput {
                 vector, index, len, ..
             } => write!(
@@ -332,6 +311,10 @@ impl std::fmt::Display for EvalSolveError {
             Self::UpdateRowTargetMismatch { rows, targets } => write!(
                 f,
                 "update RHS row count {rows} does not match target count {targets}"
+            ),
+            Self::UnwritableUpdateTarget { target } => write!(
+                f,
+                "update row targets {target:?}, which has no writable runtime storage"
             ),
             Self::UpdateDidNotConverge { t, max_iters } => write!(
                 f,
@@ -525,6 +508,16 @@ impl SimulationRuntimeState {
         SimulationRuntimeStateSnapshot { impure_random }
     }
 
+    /// Copy the evaluator continuation into construction-reserved rollback
+    /// storage. Existing map allocations are retained by `clone_from`.
+    pub fn snapshot_into(&self, snapshot: &mut SimulationRuntimeStateSnapshot) {
+        let impure_random = self
+            .impure_random
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.impure_random.clone_from(&impure_random);
+    }
+
     pub fn restore(&self, snapshot: &SimulationRuntimeStateSnapshot) {
         let mut state = self
             .impure_random
@@ -575,7 +568,6 @@ impl Drop for SimulationContext {
 #[derive(Clone, Copy, Default)]
 pub struct RowEvalContext<'a> {
     pub seed: Option<&'a [f64]>,
-    pub external_tables: Option<&'a [rumoca_core::ExternalTableData]>,
     pub pure_calls: Option<&'a SolvePureCallTable>,
     pub runtime_state: Option<&'a SimulationRuntimeState>,
 }
@@ -1322,7 +1314,20 @@ fn require_program_output_count(
     expected: usize,
     span: Option<rumoca_core::Span>,
 ) -> Result<(), EvalSolveError> {
-    let actual = ScalarProgramBlock::program_output_count(row);
+    let actual = row
+        .iter()
+        .try_fold(0usize, |count, op| {
+            let width = match op {
+                LinearOp::StoreOutput { .. } => 1,
+                LinearOp::StoreOutputRange { count, .. } => *count,
+                _ => 0,
+            };
+            count.checked_add(width)
+        })
+        .ok_or_else(|| EvalSolveError::InvalidRow {
+            message: "single-program output width overflows host range".to_string(),
+            span,
+        })?;
     if actual == expected {
         return Ok(());
     }
@@ -2727,12 +2732,6 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
                     }
                 }
             }
-            LinearOp::TableBounds { .. }
-            | LinearOp::TableLookup { .. }
-            | LinearOp::TableLookupSlope { .. }
-            | LinearOp::TableNextEvent { .. } => {
-                self.eval_table_op(&op)?;
-            }
             LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
             | LinearOp::RandomState { .. }
@@ -2760,16 +2759,6 @@ impl CheckedRowEvaluator<'_, '_, '_, '_> {
             }
         }
         Ok(())
-    }
-
-    fn eval_table_op(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
-        apply_table_op(
-            self.regs,
-            self.initialized,
-            op,
-            self.input.context,
-            self.input.source_span,
-        )
     }
 
     fn eval_random_op(&mut self, op: &LinearOp) -> Result<(), EvalSolveError> {
@@ -3259,12 +3248,6 @@ fn eval_row_prepared_fast(
                         sink.store(value)?;
                     }
                 }
-            }
-            LinearOp::TableBounds { .. }
-            | LinearOp::TableLookup { .. }
-            | LinearOp::TableLookupSlope { .. }
-            | LinearOp::TableNextEvent { .. } => {
-                eval_fast_table_op(regs, &mut scratch.initialized, input, op)?
             }
             LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
@@ -3778,16 +3761,6 @@ fn tensor_slice_coordinate_offset<E>(
     Ok(None)
 }
 
-fn eval_fast_table_op(
-    regs: &mut [f64],
-    initialized: &mut Vec<bool>,
-    input: PreparedRowEval<'_, '_>,
-    op: &LinearOp,
-) -> Result<(), EvalSolveError> {
-    initialized.resize(input.register_count, true);
-    apply_table_op(regs, initialized, op, input.context, input.source_span)
-}
-
 fn eval_fast_random_op(
     regs: &mut [f64],
     initialized: &mut Vec<bool>,
@@ -3803,87 +3776,6 @@ fn eval_fast_random_op(
         input.context,
         input.source_span,
     )
-}
-
-fn apply_table_op(
-    regs: &mut [f64],
-    initialized: &mut [bool],
-    op: &LinearOp,
-    context: RowEvalContext<'_>,
-    span: Option<rumoca_core::Span>,
-) -> Result<(), EvalSolveError> {
-    match *op {
-        LinearOp::TableBounds { dst, table_id, max } => {
-            let table_id = get(regs, initialized, table_id, span)?;
-            let tables = context.external_tables.unwrap_or(&[]);
-            let operation = if max { "bounds max" } else { "bounds min" };
-            let value = eval_table_bound_value_in(table_id, max, tables)
-                .map_err(|error| external_table_error(operation, table_id, None, error))?;
-            set(regs, initialized, dst, value, span)?;
-        }
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = get(regs, initialized, table_id, span)?;
-            let column = get(regs, initialized, column, span)?;
-            let input = get(regs, initialized, input, span)?;
-            let tables = context.external_tables.unwrap_or(&[]);
-            let value = eval_table_lookup_value_in(table_id, column, input, tables)
-                .map_err(|error| external_table_error("lookup", table_id, Some(column), error))?;
-            set(regs, initialized, dst, value, span)?;
-        }
-        LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => {
-            let table_id = get(regs, initialized, table_id, span)?;
-            let column = get(regs, initialized, column, span)?;
-            let input = get(regs, initialized, input, span)?;
-            let tables = context.external_tables.unwrap_or(&[]);
-            let value = eval_table_lookup_slope_value_in(table_id, column, input, tables).map_err(
-                |error| external_table_error("lookup slope", table_id, Some(column), error),
-            )?;
-            set(regs, initialized, dst, value, span)?;
-        }
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => {
-            let table_id = get(regs, initialized, table_id, span)?;
-            let time = get(regs, initialized, time, span)?;
-            let tables = context.external_tables.unwrap_or(&[]);
-            let value = eval_time_table_next_event_value_in(table_id, time, tables)
-                .map_err(|error| external_table_error("next event", table_id, None, error))?;
-            set(regs, initialized, dst, value, span)?;
-        }
-        _ => {
-            return Err(EvalSolveError::InvalidLinearOp {
-                helper: "table",
-                op: linear_op_name(op),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn external_table_error(
-    operation: &'static str,
-    table_id: f64,
-    column: Option<f64>,
-    error: TableRuntimeError,
-) -> EvalSolveError {
-    EvalSolveError::ExternalTable {
-        operation,
-        table_id,
-        column,
-        reason: error.to_string(),
-    }
 }
 
 fn apply_random_op(
@@ -4022,10 +3914,6 @@ fn linear_op_name(op: &LinearOp) -> &'static str {
         LinearOp::TensorFill { .. } => "TensorFill",
         LinearOp::TensorIdentity { .. } => "TensorIdentity",
         LinearOp::TensorLoad { .. } => "TensorLoad",
-        LinearOp::TableBounds { .. } => "TableBounds",
-        LinearOp::TableLookup { .. } => "TableLookup",
-        LinearOp::TableLookupSlope { .. } => "TableLookupSlope",
-        LinearOp::TableNextEvent { .. } => "TableNextEvent",
         LinearOp::RandomInitialState { .. } => "RandomInitialState",
         LinearOp::RandomResult { .. } => "RandomResult",
         LinearOp::RandomState { .. } => "RandomState",

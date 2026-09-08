@@ -1,12 +1,12 @@
 //! Unit tests for array component expansion.
 
 use super::{
-    ArrayExpansionScope, array_element_binding_modification,
+    ArrayExpansionScope, apply_unary_to_structural_array, array_element_binding_modification,
     distribute_component_ref_mods_for_element, distribute_mods_for_element,
     index_array_expression_for_element, index_binding_for_element, pre_resolve_array_modifications,
     project_array_selection_for_element, resolve_mod_to_array,
 };
-use crate::type_overrides::TypeOverrideMap;
+use crate::type_overrides::{SelectedComponentTypes, TypeOverrideMap};
 use rumoca_core::DefId;
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
@@ -59,6 +59,37 @@ fn make_component_ref(names: &[&str]) -> ast::ComponentReference {
 
 fn make_comp_ref_expr(names: &[&str]) -> ast::Expression {
     ast::Expression::ComponentReference(make_component_ref(names))
+}
+
+fn make_resolved_ref_expr(name: &str, def_id: DefId) -> ast::Expression {
+    let mut reference = make_component_ref(&[name]);
+    reference.parts[0].def_id = Some(def_id);
+    ast::Expression::ComponentReference(reference)
+}
+
+fn resolved_component(name: &str, def_id: DefId) -> ast::Component {
+    let mut component = ast::Component::empty_with_span(test_span());
+    component.name = name.to_string();
+    component.def_id = Some(def_id);
+    component
+}
+
+fn assert_mod_env_matches(
+    current: &ast::ModificationEnvironment,
+    snapshot: &ast::ModificationEnvironment,
+) {
+    assert_eq!(current.active.len(), snapshot.active.len());
+    for (key, before) in &snapshot.active {
+        let after = current
+            .active
+            .get(key)
+            .expect("snapshot key remains present");
+        assert_eq!(after.value, before.value);
+        assert_eq!(after.source, before.source);
+        assert_eq!(after.source_scope, before.source_scope);
+        assert_eq!(after.each, before.each);
+        assert_eq!(after.final_, before.final_);
+    }
 }
 
 fn make_indexed_comp_ref_expr(name: &str, index_name: &str) -> ast::Expression {
@@ -120,15 +151,20 @@ fn test_array_element_binding_preserves_modifier_source_scope() {
     let tree = ast::ClassTree::new();
     let effective_components = IndexMap::default();
     let type_overrides = TypeOverrideMap::new();
+    let selected_component_types = SelectedComponentTypes::empty_for_test();
     let imports = Vec::new();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let scope = ArrayExpansionScope {
         tree: &tree,
         effective_components: &effective_components,
         type_overrides: &type_overrides,
+        selected_component_types: &selected_component_types,
         owner_class_id: rumoca_core::InstanceId::new(1),
         imports: crate::ComponentImports {
-            qualification: &imports,
-            attributes: &[],
+            class_index: &class_index,
+            overriding_constants: &imports,
+            enclosing_constants: &[],
+            class_imports: None,
         },
     };
     let source = make_comp_ref_expr(&["outer", "x"]);
@@ -167,15 +203,20 @@ fn test_array_element_binding_preserves_declaration_source_scope() {
     let tree = ast::ClassTree::new();
     let effective_components = IndexMap::default();
     let type_overrides = TypeOverrideMap::new();
+    let selected_component_types = SelectedComponentTypes::empty_for_test();
     let imports = Vec::new();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let scope = ArrayExpansionScope {
         tree: &tree,
         effective_components: &effective_components,
         type_overrides: &type_overrides,
+        selected_component_types: &selected_component_types,
         owner_class_id: rumoca_core::InstanceId::new(1),
         imports: crate::ComponentImports {
-            qualification: &imports,
-            attributes: &[],
+            class_index: &class_index,
+            overriding_constants: &imports,
+            enclosing_constants: &[],
+            class_imports: None,
         },
     };
     let binding = make_comp_ref_expr(&["plug", "pin"]);
@@ -234,7 +275,8 @@ fn test_resolve_mod_to_array_symmetric_orientation_with_unary_minus() {
         &rumoca_ir_ast::ModificationEnvironment::default(),
         &IndexMap::default(),
         &ast::ClassTree::default(),
-    );
+    )
+    .expect("array modifier resolves");
 
     let ast::Expression::Array { elements, .. } = resolved else {
         panic!("symmetricOrientation() should resolve to an array");
@@ -247,6 +289,19 @@ fn test_resolve_mod_to_array_symmetric_orientation_with_unary_minus() {
 }
 
 #[test]
+fn recovery_unary_operator_never_masquerades_as_structural_plus() {
+    let array = ast::Expression::Array {
+        elements: vec![make_int_expr(7)],
+        is_matrix: false,
+        span: test_span(),
+    };
+    assert!(
+        apply_unary_to_structural_array(&rumoca_core::OpUnary::Empty, &array, test_span())
+            .is_none()
+    );
+}
+
+#[test]
 fn test_resolve_mod_to_array_fill_constructor() {
     let expr = make_function_call("fill", vec![make_int_expr(7), make_int_expr(3)]);
     let resolved = resolve_mod_to_array(
@@ -254,7 +309,8 @@ fn test_resolve_mod_to_array_fill_constructor() {
         &rumoca_ir_ast::ModificationEnvironment::default(),
         &IndexMap::default(),
         &ast::ClassTree::default(),
-    );
+    )
+    .expect("array modifier resolves");
 
     let ast::Expression::Array { elements, .. } = resolved else {
         panic!("fill() should resolve to an array for modifier distribution");
@@ -266,6 +322,92 @@ fn test_resolve_mod_to_array_fill_constructor() {
             _ => panic!("fill() element should be a scalar expression"),
         }
     }
+}
+
+#[test]
+fn array_modifier_resolution_follows_long_exact_identity_chain() {
+    let mut mod_env = ast::ModificationEnvironment::default();
+    let mut components = IndexMap::default();
+    for index in 0..24_u32 {
+        let name = format!("p{index}");
+        let def_id = DefId::new(800 + index);
+        components.insert(name.clone(), resolved_component(&name, def_id));
+        let value = if index == 23 {
+            ast::Expression::Array {
+                elements: vec![make_int_expr(9)],
+                is_matrix: false,
+                span: test_span(),
+            }
+        } else {
+            let target = format!("p{}", index + 1);
+            make_resolved_ref_expr(&target, DefId::new(801 + index))
+        };
+        mod_env.add(
+            ast::QualifiedName::from_ident(&name),
+            ast::ModificationValue::simple(value),
+        );
+    }
+    let expression = make_resolved_ref_expr("p0", DefId::new(800));
+    let resolved = resolve_mod_to_array(
+        &expression,
+        &mod_env,
+        &components,
+        &ast::ClassTree::default(),
+    )
+    .expect("long acyclic modifier chain resolves");
+    assert!(matches!(resolved, ast::Expression::Array { .. }));
+}
+
+#[test]
+fn array_modifier_resolution_rejects_cycle_without_partial_mutation() {
+    let mut mod_env = ast::ModificationEnvironment::default();
+    let components = [
+        ("a".to_string(), resolved_component("a", DefId::new(900))),
+        ("b".to_string(), resolved_component("b", DefId::new(901))),
+    ]
+    .into_iter()
+    .collect::<IndexMap<_, _>>();
+    mod_env.add(
+        ast::QualifiedName::from_ident("a"),
+        ast::ModificationValue::simple(make_resolved_ref_expr("b", DefId::new(901))),
+    );
+    mod_env.add(
+        ast::QualifiedName::from_ident("b"),
+        ast::ModificationValue::simple(make_resolved_ref_expr("a", DefId::new(900))),
+    );
+    let mod_snapshot = mod_env.clone();
+    let component_snapshot = components.clone();
+    let expression = make_resolved_ref_expr("a", DefId::new(900));
+    let error = resolve_mod_to_array(
+        &expression,
+        &mod_env,
+        &components,
+        &ast::ClassTree::default(),
+    )
+    .expect_err("cyclic array modifier reference is invalid");
+    assert!(matches!(
+        *error,
+        crate::InstantiateError::InstantiationCycle { .. }
+    ));
+    assert_mod_env_matches(&mod_env, &mod_snapshot);
+    assert_eq!(components, component_snapshot);
+}
+
+#[test]
+fn array_modifier_resolution_rejects_same_spelling_different_identity() {
+    let components = [("p".to_string(), resolved_component("p", DefId::new(950)))]
+        .into_iter()
+        .collect::<IndexMap<_, _>>();
+    let expression = make_resolved_ref_expr("p", DefId::new(951));
+    assert!(
+        resolve_mod_to_array(
+            &expression,
+            &ast::ModificationEnvironment::default(),
+            &components,
+            &ast::ClassTree::default(),
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -409,7 +551,7 @@ fn test_index_binding_for_element_substitutes_comprehension_index_in_class_modif
             target: make_component_ref(&["SalientPermeance"]),
             modifications: vec![ast::Expression::Modification {
                 target: make_component_ref(&["d"]),
-                value: Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k")),
+                value: Some(Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k"))),
                 span: rumoca_core::Span::DUMMY,
             }],
             each_flags: vec![false],
@@ -436,7 +578,10 @@ fn test_index_binding_for_element_substitutes_comprehension_index_in_class_modif
     let ast::Expression::ClassModification { modifications, .. } = indexed else {
         panic!("array comprehension should project to class modification body");
     };
-    let ast::Expression::Modification { value, .. } = &modifications[0] else {
+    let ast::Expression::Modification {
+        value: Some(value), ..
+    } = &modifications[0]
+    else {
         panic!("expected field modification");
     };
     let ast::Expression::ComponentReference(cref) = value.as_ref() else {
@@ -458,7 +603,7 @@ fn test_resolve_mod_to_array_substitutes_comprehension_index_in_class_modificati
             target: make_component_ref(&["SalientPermeance"]),
             modifications: vec![ast::Expression::Modification {
                 target: make_component_ref(&["d"]),
-                value: Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k")),
+                value: Some(Arc::new(make_indexed_comp_ref_expr("effectiveTurns", "k"))),
                 span: rumoca_core::Span::DUMMY,
             }],
             each_flags: vec![false],
@@ -479,14 +624,18 @@ fn test_resolve_mod_to_array_substitutes_comprehension_index_in_class_modificati
         &rumoca_ir_ast::ModificationEnvironment::default(),
         &IndexMap::default(),
         &ast::ClassTree::default(),
-    );
+    )
+    .expect("array modifier resolves");
     let ast::Expression::Array { elements, .. } = resolved else {
         panic!("class modification comprehension should resolve to an array");
     };
     let ast::Expression::ClassModification { modifications, .. } = &elements[1] else {
         panic!("second element should remain a class modification");
     };
-    let ast::Expression::Modification { value, .. } = &modifications[0] else {
+    let ast::Expression::Modification {
+        value: Some(value), ..
+    } = &modifications[0]
+    else {
         panic!("expected field modification");
     };
     let ast::Expression::ComponentReference(cref) = value.as_ref() else {
@@ -649,7 +798,8 @@ fn test_distribute_mods_for_element_fill_modifier() {
         &rumoca_ir_ast::ModificationEnvironment::default(),
         &IndexMap::default(),
         &ast::ClassTree::default(),
-    );
+    )
+    .expect("array modifiers pre-resolve");
     assert_eq!(
         resolved_mods.len(),
         1,

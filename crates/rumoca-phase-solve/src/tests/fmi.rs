@@ -14,14 +14,14 @@ use rumoca_ir_solve::fmi::{
     MAX_STEP_DURATION_NAME, MAX_STEP_DURATION_UNIT,
 };
 
-use crate::fmi::lower_to_fmi_component;
-
 fn component(model: &dae::Dae) -> rumoca_ir_solve::fmi::FmiComponent {
-    lower_to_fmi_component(model, &std::collections::HashMap::new())
-        .expect("the checked DAE projects to one correlated FMI component")
+    let lowered = crate::lower_solve_model(model, &std::collections::HashMap::new(), |_| {})
+        .expect("the checked DAE constructs one complete Solve root");
+    crate::fmi::finish_fmi_component(lowered)
+        .expect("the completed Solve root projects to one correlated FMI component")
 }
 
-/// `Real x; der(x) = delay(x, 0.5);`
+/// A fixed-start `Real x` with `der(x) = delay(x, 0.5);`.
 fn delayed_state_model() -> dae::Dae {
     let source = TestSource::new("Real x; der(x) = delay(x, 0.5);");
     let declaration = source.at(0, 6);
@@ -38,20 +38,14 @@ fn delayed_state_model() -> dae::Dae {
                 declaration,
             )
         })?;
-        let start = model.expressions(|expressions| {
-            expressions
-                .at(declaration)
-                .literal(dae::DaeLiteral::Real(0.0))
-        })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
-                dae::VariableAttributes {
-                    start: Some(start),
-                    ..dae::VariableAttributes::default()
-                },
+                state_attributes,
             )
         })?;
         let (delayed, delay_time) = model.expressions(|expressions| {
@@ -83,13 +77,15 @@ fn delayed_state_model() -> dae::Dae {
     .expect("delayed state fixture is a checked DAE")
 }
 
-/// `Real x; der(x) = -x;`
+/// `Real x(start=0.0, fixed=false); initial equation x=0.0; der(x)=-x;`.
 fn undelayed_state_model() -> dae::Dae {
-    let source = TestSource::new("Real x; der(x) = -x;");
-    let declaration = source.at(0, 6);
-    let owner = source.at(8, 19);
-    let derivative_at = source.at(8, 14);
-    let value_at = source.at(17, 19);
+    let source =
+        TestSource::new("Real x(start=0.0, fixed=false); initial equation x = 0.0; der(x) = -x;");
+    let declaration = source.at(0, 30);
+    let initialization_owner = source.at(49, 56);
+    let owner = source.at(58, 69);
+    let derivative_at = source.at(58, 64);
+    let value_at = source.at(67, 69);
     dae::Dae::construct(source.map, |model| {
         let real = model.types(|types| {
             types.intern(
@@ -98,21 +94,29 @@ fn undelayed_state_model() -> dae::Dae {
                 declaration,
             )
         })?;
-        let start = model.expressions(|expressions| {
-            expressions
-                .at(declaration)
-                .literal(dae::DaeLiteral::Real(0.0))
-        })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, false)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
-                dae::VariableAttributes {
-                    start: Some(start),
-                    ..dae::VariableAttributes::default()
-                },
+                state_attributes,
             )
+        })?;
+        let initialization_residual = model.expressions(|expressions| {
+            let state = expressions
+                .at(initialization_owner)
+                .coordinate(dae::CoordinateInput::State(state))?;
+            let zero = expressions
+                .at(initialization_owner)
+                .literal(dae::DaeLiteral::Real(0.0))?;
+            expressions
+                .at(initialization_owner)
+                .binary(dae::BinaryOperator::Subtract, state, zero)
+        })?;
+        model.initialization(|initialization| {
+            initialization.value_equation(initialization_owner, initialization_residual)
         })?;
         let residual = model.expressions(|expressions| {
             let derivative = expressions
@@ -219,4 +223,85 @@ fn an_undelayed_model_publishes_no_maximum_step_duration_local() {
         component.derivative_value_reference_base_fmi3(),
         u32::try_from(runs).expect("fixture inventory is small") + 1
     );
+}
+
+#[test]
+fn experiment_override_is_one_value_in_runtime_storage_catalog_and_fmi() {
+    let model = undelayed_state_model();
+    let overrides = std::collections::HashMap::from([("x".to_string(), 42.5)]);
+    let lowered = crate::lower_solve_model(&model, &overrides, |_| {})
+        .expect("the exact state scalar override lowers atomically");
+    let solve = lowered.model();
+    let catalog = solve
+        .variable_catalog()
+        .entries()
+        .iter()
+        .find(|entry| entry.name() == "x")
+        .expect("the state declaration has one catalog entry");
+    assert_eq!(solve.initial_state_values(), [42.5]);
+    assert_eq!(catalog.start(), Some([42.5].as_slice()));
+    assert_eq!(catalog.fixed(), rumoca_core::Fixity::Free);
+
+    let component = crate::fmi::finish_fmi_component(lowered)
+        .expect("the completed Solve root alone constructs FMI");
+    let fmi = component
+        .variables()
+        .iter()
+        .find(|variable| variable.name() == "x")
+        .expect("the FMI projection derives the same state entry");
+    assert_eq!(fmi.start(), Some([42.5].as_slice()));
+    assert_eq!(fmi.initial(), Some(FmiInitial::Approx));
+}
+
+#[test]
+fn runtime_override_must_name_one_exact_scalar_and_be_finite() {
+    let model = undelayed_state_model();
+    for overrides in [
+        std::collections::HashMap::from([("missing".to_string(), 1.0)]),
+        std::collections::HashMap::from([("x[1]".to_string(), 1.0)]),
+        std::collections::HashMap::from([("x".to_string(), f64::NAN)]),
+    ] {
+        assert!(matches!(
+            crate::lower_solve_model(&model, &overrides, |_| {}),
+            Err(crate::SolveModelLoweringError::InvalidOverride { .. })
+        ));
+    }
+}
+
+#[test]
+fn integer_runtime_override_must_be_integral() {
+    let source = TestSource::new("input Integer count;");
+    let declaration = source.at(0, 20);
+    let model = dae::Dae::construct(source.map, |model| {
+        let integer = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Integer),
+                declaration,
+            )
+        })?;
+        model.variables(|variables| {
+            variables.discrete_value(
+                VarName::new("count"),
+                rumoca_core::InstanceId::new(3),
+                integer,
+                declaration,
+                dae::VariableAttributes {
+                    causality: dae::VariableCausality::Input,
+                    ..dae::VariableAttributes::default()
+                },
+            )
+        })?;
+        Ok(())
+    })
+    .expect("Integer input fixture is a checked DAE");
+
+    let overrides = std::collections::HashMap::from([("count".to_string(), 1.5)]);
+    let error = crate::lower_solve_model(&model, &overrides, |_| {})
+        .err()
+        .expect("a fractional Integer override cannot enter Solve construction");
+    assert!(matches!(
+        error,
+        crate::SolveModelLoweringError::InvalidOverride { .. }
+    ));
 }

@@ -134,7 +134,6 @@ fn cli_parses_verify_template_runtimes_job() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::All);
-                assert!(!args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -156,29 +155,6 @@ fn cli_parses_verify_template_runtimes_backend() {
         Commands::Verify(args) => match args.command {
             VerifyCommand::TemplateRuntimes(args) => {
                 assert_eq!(args.backend, TemplateRuntimeBackend::Casadi);
-            }
-            other => panic!("expected template runtimes command, got {other:?}"),
-        },
-        other => panic!("expected verify command, got {other:?}"),
-    }
-}
-
-#[test]
-fn cli_parses_verify_template_runtimes_required_tools_policy() {
-    let cli = Cli::try_parse_from([
-        "xtask",
-        "verify",
-        "template-runtimes",
-        "--backend",
-        "cuda",
-        "--require-external-tools",
-    ])
-    .expect("parse required external tool policy");
-    match cli.command {
-        Commands::Verify(args) => match args.command {
-            VerifyCommand::TemplateRuntimes(args) => {
-                assert_eq!(args.backend, TemplateRuntimeBackend::Cuda);
-                assert!(args.require_external_tools);
             }
             other => panic!("expected template runtimes command, got {other:?}"),
         },
@@ -320,8 +296,6 @@ fn cli_parses_verify_msl_parity_prebuilt_workers() {
         "result-msl-test/bin/msl_tests",
         "--prebuilt-model-worker",
         "result-msl-test/bin/rumoca-worker",
-        "--prebuilt-sim-worker",
-        "result-sim-worker/bin/rumoca-sim-worker",
     ])
     .expect("parse verify msl-parity prebuilt workers");
     match cli.command {
@@ -673,6 +647,42 @@ fn cli_parses_coverage_report() {
         },
         other => panic!("expected coverage command, got {other:?}"),
     }
+}
+
+#[test]
+fn cli_parses_golden_coverage_commands() {
+    let model = Cli::try_parse_from(["xtask", "coverage", "golden", "UnitDerivative"])
+        .expect("parse per-model golden coverage");
+    assert!(matches!(
+        model.command,
+        Commands::Coverage(super::CoverageArgs {
+            command: CoverageCommand::Golden(_),
+        })
+    ));
+
+    let aggregate = Cli::try_parse_from(["xtask", "coverage", "golden-all"])
+        .expect("parse aggregate golden coverage");
+    assert!(matches!(
+        aggregate.command,
+        Commands::Coverage(super::CoverageArgs {
+            command: CoverageCommand::GoldenAll(_),
+        })
+    ));
+
+    let transition = Cli::try_parse_from([
+        "xtask",
+        "coverage",
+        "golden-transition",
+        "UnitDerivative",
+        "typed-instanced-to-flat",
+    ])
+    .expect("parse exact golden transition coverage");
+    assert!(matches!(
+        transition.command,
+        Commands::Coverage(super::CoverageArgs {
+            command: CoverageCommand::GoldenTransition(_),
+        })
+    ));
 }
 
 #[test]

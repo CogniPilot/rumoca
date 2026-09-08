@@ -242,7 +242,7 @@ impl CompilePerfArtifacts {
         let file_name = format!("{model_name}.perf.data");
         let profile_path = perf_dir.join(&file_name);
         if profile_path.exists() {
-            let _ = fs::remove_file(&profile_path);
+            let _stale_profile_removal_error = fs::remove_file(&profile_path);
         }
         let relative_path = Path::new("perf")
             .join("compile")
@@ -289,7 +289,7 @@ fn retain_compile_perf_profile_if(
     if should_keep {
         Some(artifacts.relative_path.clone())
     } else {
-        let _ = fs::remove_file(&artifacts.profile_path);
+        let _profile_removal_error = fs::remove_file(&artifacts.profile_path);
         None
     }
 }
@@ -922,7 +922,6 @@ fn prepare_model_worker_request(
         sim_timeout_secs: Some(sim_timeout_secs()),
         emit_json: false,
         nan_trace: false,
-        emit_modelica: false,
         source_root_path: plan.source_root_path.to_path_buf(),
         output_dir: output_dir.clone(),
     };
@@ -934,9 +933,10 @@ fn prepare_model_worker_request(
         )));
     }
     let progress_jsonl = output_dir.join("progress.jsonl");
-    let _ = fs::remove_file(&progress_jsonl);
-    let _ = fs::remove_file(output_dir.join(MODEL_WORKER_RESULT_FILE));
-    let _ = fs::remove_file(output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
+    let _stale_progress_removal_error = fs::remove_file(&progress_jsonl);
+    let _stale_result_removal_error = fs::remove_file(output_dir.join(MODEL_WORKER_RESULT_FILE));
+    let _stale_partial_result_removal_error =
+        fs::remove_file(output_dir.join(MODEL_WORKER_PARTIAL_RESULT_FILE));
     Ok((output_dir, progress_jsonl, request))
 }
 

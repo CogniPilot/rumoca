@@ -1,0 +1,65 @@
+name = "RumocaKernelPilot"
+version = "0.1.0"
+defaultTargets = ["RumocaKernelPilot", "RumocaFactContract", "RumocaCompleteFactContract", "RumocaProjectionContract", "RumocaRootValueContract", "RumocaRootValueFixture", "RumocaRootValueWitness", "RumocaVariableViewContract", "RumocaSolveFactContract", "RumocaDaeFactContract", "RumocaExtentCountContract", "RumocaVariableClassificationContract", "RumocaDimensionCheckContract", "RumocaVariableEqualityContract", "RumocaVariableCheckContract", "RumocaOccurrenceContract", "RumocaStorageContract"]
+leanOptions = { warningAsError = true }
+
+[[require]]
+name = "aeneas"
+git = "https://github.com/AeneasVerif/aeneas"
+rev = "f9a8e338188447c77f31246892cb9a7a742e58ef"
+subDir = "backends/lean"
+
+[[lean_lib]]
+name = "RumocaKernelPilot"
+
+[[lean_lib]]
+name = "RumocaFactContract"
+
+[[lean_lib]]
+name = "RumocaCompleteFactContract"
+
+[[lean_lib]]
+name = "RumocaProjectionContract"
+
+[[lean_lib]]
+name = "RumocaRootValueContract"
+
+[[lean_lib]]
+name = "RumocaRootValueFixture"
+
+[[lean_lib]]
+name = "RumocaRootValueWitness"
+
+[[lean_lib]]
+name = "RumocaVariableViewContract"
+
+[[lean_lib]]
+name = "RumocaSolveFactContract"
+
+[[lean_lib]]
+name = "RumocaDaeFactContract"
+
+[[lean_lib]]
+name = "RumocaExtentCountContract"
+
+[[lean_lib]]
+name = "RumocaVariableClassificationContract"
+
+[[lean_lib]]
+name = "RumocaDimensionCheckContract"
+
+[[lean_lib]]
+name = "RumocaVariableEqualityContract"
+
+[[lean_lib]]
+name = "RumocaVariableCheckContract"
+
+[[lean_lib]]
+name = "RumocaOccurrenceContract"
+
+[[lean_lib]]
+name = "RumocaStorageContract"
+
+[[lean_lib]]
+name = "RumocaPhaseSolve"
+srcDir = "generated"

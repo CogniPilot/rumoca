@@ -5,10 +5,14 @@ pub struct BuildSimulationTimings {
     pub ir_solve_seconds: f64,
     pub override_apply_seconds: f64,
     pub backend_build_seconds: f64,
+    pub initialization_seconds: f64,
 }
 
 impl BuildSimulationTimings {
     pub fn accounted_seconds(self) -> f64 {
-        self.ir_solve_seconds + self.override_apply_seconds + self.backend_build_seconds
+        self.ir_solve_seconds
+            + self.override_apply_seconds
+            + self.backend_build_seconds
+            + self.initialization_seconds
     }
 }

@@ -489,6 +489,7 @@ impl ExpressionRewriter for FrameSubstitution<'_> {
         name: &rumoca_core::Reference,
         args: &[Expression],
         is_constructor: bool,
+        call_kind: rumoca_core::FunctionCallKind,
         span: Span,
     ) -> Expression {
         self.error.get_or_insert_with(|| {
@@ -506,6 +507,7 @@ impl ExpressionRewriter for FrameSubstitution<'_> {
             name: name.clone(),
             args: self.rewrite_expressions(args),
             is_constructor,
+            call_kind,
             span,
         }
     }

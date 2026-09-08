@@ -15,22 +15,22 @@ pub(crate) fn override_context_for_component_path(
     scope_path: &ComponentPath,
     component_override_map: &ComponentOverrideMap,
 ) -> (Vec<OverrideTarget>, OverrideFunctionMap) {
-    fn apply_scope_override<'a>(
-        alias: &'a str,
+    fn apply_scope_override(
         target: &OverrideTarget,
         packages: &mut Vec<OverrideTarget>,
-        package_aliases: &mut rustc_hash::FxHashMap<&'a str, usize>,
+        package_slots: &mut rustc_hash::FxHashMap<rumoca_core::DefId, usize>,
         function_overrides: &mut OverrideFunctionMap,
     ) {
+        let alias_slot = target.alias_slot;
         if target.is_package() {
-            if let Some(index) = package_aliases.get(alias).copied() {
+            if let Some(index) = package_slots.get(&alias_slot).copied() {
                 update_package_override_slot(packages, index, target);
             } else {
-                package_aliases.insert(alias, packages.len());
+                package_slots.insert(alias_slot, packages.len());
                 packages.push(target.clone());
             }
         }
-        update_function_override_entry(function_overrides, alias, target);
+        update_function_override_entry(function_overrides, alias_slot, target);
     }
 
     if component_override_map.is_empty() {
@@ -38,31 +38,29 @@ pub(crate) fn override_context_for_component_path(
     }
     let estimated_overrides = override_scope_entry_count(scope_path, component_override_map);
     let mut packages = Vec::new();
-    let mut package_aliases = rustc_hash::FxHashMap::default();
+    let mut package_slots = rustc_hash::FxHashMap::default();
     let mut function_overrides = OverrideFunctionMap::default();
     packages.reserve(estimated_overrides);
-    package_aliases.reserve(estimated_overrides);
+    package_slots.reserve(estimated_overrides);
     function_overrides.reserve(estimated_overrides);
     for path in scope_chain_inner_to_outer(scope_path) {
         if let Some(path_overrides) = component_override_map.get(&path) {
-            for (alias, target) in path_overrides {
+            for target in path_overrides.values() {
                 apply_scope_override(
-                    alias,
                     target,
                     &mut packages,
-                    &mut package_aliases,
+                    &mut package_slots,
                     &mut function_overrides,
                 );
             }
         }
     }
     if let Some(path_overrides) = root_override_entries(component_override_map) {
-        for (alias, target) in path_overrides {
+        for target in path_overrides.values() {
             apply_scope_override(
-                alias,
                 target,
                 &mut packages,
-                &mut package_aliases,
+                &mut package_slots,
                 &mut function_overrides,
             );
         }
@@ -72,16 +70,16 @@ pub(crate) fn override_context_for_component_path(
 
 fn update_function_override_entry(
     function_overrides: &mut OverrideFunctionMap,
-    alias: &str,
+    alias_slot: rumoca_core::DefId,
     target: &OverrideTarget,
 ) {
-    match function_overrides.get(alias) {
+    match function_overrides.get(&alias_slot) {
         Some(existing) if target.active && !existing.active => {
-            function_overrides.insert(alias.to_string(), target.clone());
+            function_overrides.insert(alias_slot, target.clone());
         }
         Some(_) => {}
         None => {
-            function_overrides.insert(alias.to_string(), target.clone());
+            function_overrides.insert(alias_slot, target.clone());
         }
     }
 }
@@ -148,7 +146,7 @@ fn scope_chain_inner_to_outer(
 
 fn root_override_entries(
     component_override_map: &ComponentOverrideMap,
-) -> Option<&rustc_hash::FxHashMap<String, OverrideTarget>> {
+) -> Option<&AliasOverrideTable> {
     component_override_map.get(&ComponentPath::root())
 }
 

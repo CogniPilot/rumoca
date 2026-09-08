@@ -57,8 +57,6 @@
     let __r{{ op.dst }}: f64 = y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}
     let __r{{ op.dst }}: f64 = p[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}
-    let __r{{ op.dst }}: f64 = p[{{ op.base }} + __r{{ op.index_ref }}.round().clamp(0.0, {{ op.count - 1 if op.count > 0 else 0 }} as f64) as usize];
 {%- elif op.kind == "Move" %}
     let __r{{ op.dst }}: f64 = __r{{ op.src }};
 {%- elif op.kind == "TensorLoad" %}
@@ -67,15 +65,6 @@
 {%- endif %}
 {%- for offset in range(op.count) %}
     let __r{{ op.dst + offset }}: f64 = {% if op.input == "Y" %}y{% elif op.input == "P" %}p{% else %}{{ fail("unsupported-feature:scalar.op.TensorLoad.input") }}{% endif %}[{{ op.input_start + offset }}];
-{%- endfor %}
-{%- elif op.kind == "MatrixMultiply" %}
-{%- if op.lanes != 1 %}
-{{ fail("unsupported-feature:scalar.op.MatrixMultiply.directional") }}
-{%- endif %}
-{%- for row in range(op.rows) %}
-{%- for column in range(op.columns) %}
-    let __r{{ op.dst + row * op.columns + column }}: f64 = {% if op.inner == 0 %}0.0{% else %}{% for inner in range(op.inner) %}__r{{ op.lhs_start + row * op.inner + inner }} * __r{{ op.rhs_start + inner * op.columns + column }}{{ " + " if not loop.last else "" }}{% endfor %}{% endif %};
-{%- endfor %}
 {%- endfor %}
 {%- elif op.kind == "LinearSolveComponent" %}
 {{ fail("unsupported-feature:tensor.linsolve: rust-fixed-ode does not support scalar-fallback LinSolve") }}
@@ -134,7 +123,6 @@ pub fn derivative_rhs_into(
     let _ = time;
     let _ = y;
     let _ = p;
-    out.fill(0.0);
 {%- set plan = solve_blocks.continuous.derivative_rhs.scalar_plan %}
 {%- for program in plan.programs %}
 {%- for op in program.ops %}

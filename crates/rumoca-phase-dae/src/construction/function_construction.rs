@@ -1,5 +1,265 @@
+use super::analysis::function_statement_products::FunctionLoweringPlan;
 use super::function_shapes::FunctionCallShapeCertificate;
 use super::*;
+
+pub(super) fn advance_function_lowering_record_staging(
+    plan: &FunctionLoweringPlan,
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    match plan {
+        FunctionLoweringPlan::Assignment(assignment) => {
+            advance_lowering_assignment_staging(assignment, available);
+        }
+        FunctionLoweringPlan::MultiOutputCall { outputs } => {
+            for assignment in outputs.iter().flatten() {
+                advance_lowering_assignment_staging(assignment, available);
+            }
+        }
+        FunctionLoweringPlan::RecordMultiOutputAssembly(assembly) => {
+            available.retain(|identity| identity.target != assembly.target_def_id);
+        }
+        FunctionLoweringPlan::RecordAssembly(assembly) => {
+            available.retain(|identity| identity.target != assembly.target_def_id);
+        }
+        FunctionLoweringPlan::RecordFieldAssembly(assembly) => {
+            let identity = FunctionRecordFieldIdentity {
+                target: assembly.target_def_id,
+                field: assembly.field.def_id,
+            };
+            if assembly.finalize_fields.is_some() {
+                available.retain(|field| field.target != identity.target);
+            } else {
+                available.insert(identity);
+            }
+        }
+        FunctionLoweringPlan::If {
+            branches, fallback, ..
+        } => {
+            let mut paths = branches
+                .iter()
+                .map(|branch| lowering_record_staging_after(branch, available))
+                .collect::<Vec<_>>();
+            paths.push(match fallback {
+                Some(sequence) => lowering_record_staging_after(sequence, available),
+                None => available.clone(),
+            });
+            intersect_lowering_staging_paths(available, &paths);
+        }
+        FunctionLoweringPlan::ProvenBranch { statements, .. } => {
+            advance_function_sequence_record_staging(statements, available);
+        }
+        FunctionLoweringPlan::For { statements, .. } => {
+            let body = lowering_record_staging_after(statements, available);
+            available.retain(|identity| body.contains(identity));
+        }
+        FunctionLoweringPlan::ProvenAssertion
+        | FunctionLoweringPlan::RuntimeAssertion
+        | FunctionLoweringPlan::GeneratedBooleanAssignment { .. }
+        | FunctionLoweringPlan::ArrayAssembly(_) => {}
+    }
+}
+
+fn advance_function_sequence_record_staging(
+    sequence: &FunctionStatementSequence,
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    for product in sequence.products() {
+        advance_function_lowering_record_staging(product.plan(), available);
+    }
+}
+
+fn lowering_record_staging_after(
+    sequence: &FunctionStatementSequence,
+    incoming: &HashSet<FunctionRecordFieldIdentity>,
+) -> HashSet<FunctionRecordFieldIdentity> {
+    let mut available = incoming.clone();
+    advance_function_sequence_record_staging(sequence, &mut available);
+    available
+}
+
+fn advance_lowering_assignment_staging(
+    assignment: &FunctionAssignmentPlan,
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    match assignment.record_field() {
+        Some(identity) if assignment.is_whole() => {
+            available.insert(identity);
+        }
+        Some(_) => {}
+        None => {
+            available.retain(|identity| identity.target != assignment.target_def_id());
+        }
+    }
+}
+
+fn intersect_lowering_staging_paths(
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+    paths: &[HashSet<FunctionRecordFieldIdentity>],
+) {
+    let Some(first) = paths.first() else {
+        available.clear();
+        return;
+    };
+    *available = first
+        .iter()
+        .copied()
+        .filter(|identity| paths[1..].iter().all(|path| path.contains(identity)))
+        .collect();
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FunctionSymbols<'symbols, 'dae> {
+    pub(super) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
+    pub(super) function_values: &'symbols HashMap<rumoca_core::DefId, dae::FunctionValueId<'dae>>,
+    pub(super) record_staging: &'symbols FunctionRecordStagingValues<'dae>,
+    pub(super) record_staging_available: &'symbols FunctionRecordStagingAvailability,
+    pub(super) functions: &'symbols FunctionRegistry<'symbols, 'dae>,
+    pub(super) shapes: &'symbols ShapeEnvironment,
+}
+
+impl<'symbols, 'dae> FunctionSymbols<'symbols, 'dae> {
+    pub(super) fn with_record_staging_available<'short>(
+        &'short self,
+        available: &'short FunctionRecordStagingAvailability,
+    ) -> FunctionSymbols<'short, 'dae> {
+        FunctionSymbols {
+            coordinates: self.coordinates,
+            function_values: self.function_values,
+            record_staging: self.record_staging,
+            record_staging_available: available,
+            functions: self.functions,
+            shapes: self.shapes,
+        }
+    }
+
+    pub(super) fn record_staging_scope(self) -> FunctionRecordStagingScope<'symbols, 'dae> {
+        FunctionRecordStagingScope::from_inventories(
+            self.record_staging,
+            self.record_staging_available,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum FunctionRecordStagedValue<'dae> {
+    Local(dae::FunctionValueId<'dae>),
+    Expression(dae::ExprId<'dae>),
+}
+
+#[derive(Default)]
+pub(super) struct FunctionRecordStagingValues<'dae> {
+    by_identity: HashMap<FunctionRecordFieldIdentity, FunctionRecordStagedValue<'dae>>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct FunctionRecordStagingAvailability {
+    identities: HashSet<FunctionRecordFieldIdentity>,
+}
+
+impl FunctionRecordStagingAvailability {
+    pub(super) fn advance(&mut self, plan: &FunctionStatementPlan) {
+        advance_function_record_staging(plan, &mut self.identities);
+    }
+
+    pub(super) fn insert(&mut self, identity: FunctionRecordFieldIdentity) {
+        self.identities.insert(identity);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct FunctionRecordStagingScope<'symbols, 'dae> {
+    values: &'symbols FunctionRecordStagingValues<'dae>,
+    available: &'symbols FunctionRecordStagingAvailability,
+    overrides: Option<&'symbols HashMap<FunctionRecordFieldIdentity, dae::ExprId<'dae>>>,
+}
+
+impl<'symbols, 'dae> FunctionRecordStagingScope<'symbols, 'dae> {
+    pub(super) fn from_inventories(
+        values: &'symbols FunctionRecordStagingValues<'dae>,
+        available: &'symbols FunctionRecordStagingAvailability,
+    ) -> Self {
+        Self {
+            values,
+            available,
+            overrides: None,
+        }
+    }
+
+    pub(super) fn get(
+        self,
+        identity: FunctionRecordFieldIdentity,
+    ) -> Option<FunctionRecordStagedValue<'dae>> {
+        if !self.available.identities.contains(&identity) {
+            return None;
+        }
+        self.overrides
+            .and_then(|values| values.get(&identity).copied())
+            .map(FunctionRecordStagedValue::Expression)
+            .or_else(|| self.values.get(identity))
+    }
+
+    pub(super) fn with_overrides(
+        self,
+        overrides: &'symbols HashMap<FunctionRecordFieldIdentity, dae::ExprId<'dae>>,
+    ) -> Self {
+        Self {
+            overrides: Some(overrides),
+            ..self
+        }
+    }
+}
+
+impl<'dae> FunctionRecordStagingValues<'dae> {
+    pub(super) fn insert_local(
+        &mut self,
+        identity: FunctionRecordFieldIdentity,
+        local: dae::FunctionValueId<'dae>,
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        self.insert(identity, FunctionRecordStagedValue::Local(local), span)
+    }
+
+    pub(super) fn insert_expression(
+        &mut self,
+        identity: FunctionRecordFieldIdentity,
+        expression: dae::ExprId<'dae>,
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        self.insert(
+            identity,
+            FunctionRecordStagedValue::Expression(expression),
+            span,
+        )
+    }
+
+    pub(super) fn get(
+        &self,
+        identity: FunctionRecordFieldIdentity,
+    ) -> Option<FunctionRecordStagedValue<'dae>> {
+        self.by_identity.get(&identity).copied()
+    }
+
+    fn insert(
+        &mut self,
+        identity: FunctionRecordFieldIdentity,
+        value: FunctionRecordStagedValue<'dae>,
+        span: Span,
+    ) -> Result<(), dae::DaeConstructionError> {
+        match self.by_identity.entry(identity) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(value);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(dae::DaeConstructionError::DuplicateKey {
+                    kind: "function record staging field identity",
+                    key: format!("{}:{}", identity.target.index(), identity.field.index()),
+                    span,
+                })
+            }
+        }
+    }
+}
 
 pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) flat: &'shape flat::Model,
@@ -9,14 +269,17 @@ pub(super) struct FunctionRegistry<'shape, 'dae> {
     pub(super) record_array_fields: &'shape RecordArrayFieldPlans,
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
+    pub(super) derivatives: &'shape DerivativePlans,
     pub(super) history_operators: &'shape HistoryOperatorPlans,
     pub(super) coordinate_instances: &'shape HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
+    pub(super) state_occurrences:
+        &'shape HashMap<rumoca_core::SourceOccurrenceId, dae::StateId<'dae>>,
     /// MLS §8.5 event owners proven for the model equation expressions this
     /// registry lowers. Function bodies never occupy those spans, so the same
     /// registry serves both without leaking model events into functions.
     pub(super) expression_events: &'shape ExpressionEventPlans,
     pub(super) sample_alias_schedules: &'shape HashMap<VarName, PeriodicClockSchedule>,
-    pub(super) clocked_coordinate_owners: &'shape HashMap<InstanceId, ClockPlan>,
+    pub(super) clock_transfer_plans: &'shape ClockTransferPlans,
     pub(super) clocks: &'shape LoweredClocks<'dae>,
 }
 
@@ -47,7 +310,12 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
                     span,
                 },
             )?;
-        let id = self.ids[&key];
+        let id = self.ids.get(&key).copied().ok_or(
+            dae::DaeConstructionError::MissingFunctionCallCertificate {
+                function: name.var_name().clone(),
+                span,
+            },
+        )?;
         Ok((key, id))
     }
 
@@ -68,18 +336,13 @@ impl<'dae> FunctionRegistry<'_, 'dae> {
                     span,
                 },
             )?;
-        let id = self.ids[&call.specialization];
+        let id = self.ids.get(&call.specialization.key).copied().ok_or(
+            dae::DaeConstructionError::MissingFunctionCallCertificate {
+                function: name.var_name().clone(),
+                span,
+            },
+        )?;
         Ok((call, id))
-    }
-
-    pub(super) fn primitive_parameter_scalar(
-        &self,
-        key: &FunctionSpecializationKey,
-        ordinal: usize,
-    ) -> dae::ScalarType {
-        let parameter = &self.flat.functions[&key.function].inputs[ordinal];
-        effective_function_scalar_type(self.flat, parameter)
-            .expect("record lowering leaves primitive function parameters")
     }
 }
 
@@ -130,11 +393,14 @@ pub(super) struct FunctionRegistryInput<'shape, 'dae> {
     pub(super) record_array_fields: &'shape RecordArrayFieldPlans,
     pub(super) constants: &'shape EvalContext,
     pub(super) delay_plans: &'shape HashMap<Span, DelayPlan>,
+    pub(super) derivatives: &'shape DerivativePlans,
     pub(super) history_operators: &'shape HistoryOperatorPlans,
     pub(super) coordinate_instances: &'shape HashMap<rumoca_core::InstanceId, Coordinate<'dae>>,
+    pub(super) state_occurrences:
+        &'shape HashMap<rumoca_core::SourceOccurrenceId, dae::StateId<'dae>>,
     pub(super) expression_events: &'shape ExpressionEventPlans,
     pub(super) sample_alias_schedules: &'shape HashMap<VarName, PeriodicClockSchedule>,
-    pub(super) clocked_coordinate_owners: &'shape HashMap<InstanceId, ClockPlan>,
+    pub(super) clock_transfer_plans: &'shape ClockTransferPlans,
     pub(super) clocks: &'shape LoweredClocks<'dae>,
 }
 
@@ -152,11 +418,13 @@ impl<'shape, 'dae> FunctionRegistry<'shape, 'dae> {
             record_array_fields: input.record_array_fields,
             constants: input.constants,
             delay_plans: input.delay_plans,
+            derivatives: input.derivatives,
             history_operators: input.history_operators,
             coordinate_instances: input.coordinate_instances,
+            state_occurrences: input.state_occurrences,
             expression_events: input.expression_events,
             sample_alias_schedules: input.sample_alias_schedules,
-            clocked_coordinate_owners: input.clocked_coordinate_owners,
+            clock_transfer_plans: input.clock_transfer_plans,
             clocks: input.clocks,
         }
     }
@@ -180,7 +448,10 @@ fn construct_recursive_component<'dae>(
         .into_iter();
     let first = signatures
         .next()
-        .expect("recursive components are constructor-proven nonempty");
+        .ok_or(dae::DaeConstructionError::MissingProvenance {
+            origin: dae::DaeProvenanceOrigin::Source,
+            attempted_span: None,
+        })?;
     construction.recursive_functions(first, signatures, |construction, reservations| {
         for (&specialization, reservation) in specializations.iter().zip(&reservations) {
             ids.insert(
@@ -252,24 +523,23 @@ pub(super) fn function_value_type<'dae>(
     }
     let type_def_id = value
         .type_def_id
-        .expect("function analysis requires resolved record type identity");
-    assert!(
-        active_records.insert(type_def_id),
-        "function analysis rejects recursive value records"
-    );
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: value.span })?;
+    if !active_records.insert(type_def_id) {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm { span: value.span });
+    }
     let constructor = rumoca_core::resolve_record_constructor(
         flat.functions.values(),
         &value.type_name,
         type_def_id,
     )
-    .expect("function analysis requires resolved record constructor metadata");
+    .map_err(|_| dae::DaeConstructionError::InvalidExpressionForm { span: value.span })?;
     let mut fields = Vec::with_capacity(constructor.inputs.len());
     for field in &constructor.inputs {
         let shape = field
             .dimensions()
             .iter()
-            .map(|extent| u32::try_from(*extent).expect("function shape analysis proves extents"))
-            .collect::<Vec<_>>();
+            .map(|extent| checked_source_array_extent(*extent, field.span))
+            .collect::<Result<Vec<_>, _>>()?;
         let value_type = function_value_type(construction, flat, field, &shape, active_records)?;
         fields.push((VarName::new(&field.name), value_type));
     }
@@ -278,7 +548,7 @@ pub(super) fn function_value_type<'dae>(
         .record_types
         .get(&type_def_id)
         .map(|record| VarName::new(&record.name))
-        .expect("Flat construction retains every reachable constructor layout");
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: value.span })?;
     construction
         .types(|types| types.record_array(record_name, fields, dimensions.clone(), provenance))
 }
@@ -293,7 +563,7 @@ fn define_function<'dae>(
 ) -> Result<(), dae::DaeConstructionError> {
     let certificate = &functions.shapes.certificates()[specialization];
     let function = &functions.flat.functions[&certificate.key.function];
-    let plan = &plans[&certificate.key];
+    let plan = exact_function_plan(plans, certificate, specialization, function.span)?;
     let mut coordinates =
         register_function_inputs(construction, global_coordinates, &reservation, function)?;
     let mut mutable_values = Vec::with_capacity(function.outputs.len() + function.locals.len());
@@ -312,7 +582,7 @@ fn define_function<'dae>(
     }
     for local in &function.locals {
         let provenance = dae::DaeProvenance::source(local.span)?;
-        let shape = &certificate.values[&VarName::new(&local.name)];
+        let shape = exact_function_local_shape(certificate, local)?;
         let value_type = function_value_type(
             construction,
             functions.flat,
@@ -331,15 +601,10 @@ fn define_function<'dae>(
         coordinates.insert(VarName::new(&local.name), Coordinate::FunctionValue(value));
         mutable_values.push((value, local));
     }
+    let function_values = exact_function_value_coordinates(&mutable_values)?;
     register_generated_boolean_values(construction, &reservation, plan, &mut coordinates)?;
-    register_record_staging_fields(
-        construction,
-        &functions,
-        &reservation,
-        function,
-        plan,
-        &mut coordinates,
-    )?;
+    let record_staging =
+        register_record_staging_fields(construction, &functions, &reservation, function, plan)?;
     if let FunctionPlan::External(external) = plan {
         return define_external_function(
             construction,
@@ -360,6 +625,7 @@ fn define_function<'dae>(
         let expression = lower_function_expression(
             construction,
             &coordinates,
+            None,
             &functions,
             &certificate.values,
             &body,
@@ -373,14 +639,69 @@ fn define_function<'dae>(
     for (name, _) in generated_boolean_values(plan) {
         plan_shapes.insert(name.clone(), Vec::new());
     }
+    let record_staging_available = FunctionRecordStagingAvailability::default();
     let symbols = FunctionSymbols {
         coordinates: &coordinates,
+        function_values: &function_values,
+        record_staging: &record_staging,
+        record_staging_available: &record_staging_available,
         functions: &functions,
         shapes: &plan_shapes,
     };
     body = lower_function_plan(construction, symbols, body, function, plan)?;
     construction.functions(|owner| owner.define(body, provenance))?;
     Ok(())
+}
+
+fn exact_function_plan<'plan>(
+    plans: &'plan HashMap<FunctionSpecializationKey, FunctionPlan>,
+    certificate: &FunctionShapeCertificate,
+    specialization: usize,
+    span: Span,
+) -> Result<&'plan FunctionPlan, dae::DaeConstructionError> {
+    if let Some(plan) = plans.get(&certificate.key) {
+        return Ok(plan);
+    }
+    let index =
+        u32::try_from(specialization).map_err(|_| dae::DaeConstructionError::CapacityExceeded {
+            arena: "function specialization",
+            attempted_index: specialization,
+            span,
+        })?;
+    Err(dae::DaeConstructionError::IncompleteDefinition {
+        kind: "function lowering plan",
+        index,
+        span,
+    })
+}
+
+fn exact_function_local_shape<'shape>(
+    certificate: &'shape FunctionShapeCertificate,
+    local: &rumoca_core::FunctionParam,
+) -> Result<&'shape ValueShape, dae::DaeConstructionError> {
+    certificate
+        .values
+        .get(&VarName::new(&local.name))
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: local.span })
+}
+
+fn exact_function_value_coordinates<'dae>(
+    values: &[(dae::FunctionValueId<'dae>, &rumoca_core::FunctionParam)],
+) -> Result<HashMap<rumoca_core::DefId, dae::FunctionValueId<'dae>>, dae::DaeConstructionError> {
+    let mut coordinates = HashMap::with_capacity(values.len());
+    for (value, declaration) in values {
+        let Some(identity) = declaration.def_id.filter(|identity| identity.index() != 0) else {
+            continue;
+        };
+        if coordinates.insert(identity, *value).is_some() {
+            return Err(dae::DaeConstructionError::DuplicateDefinition {
+                kind: "function-value identity",
+                index: identity.index(),
+                span: declaration.span,
+            });
+        }
+    }
+    Ok(coordinates)
 }
 
 fn register_function_inputs<'dae>(
@@ -442,33 +763,45 @@ fn register_record_staging_fields<'dae>(
     reservation: &dae::FunctionReservation<'_, 'dae>,
     function: &rumoca_core::Function,
     plan: &FunctionPlan,
-    coordinates: &mut HashMap<VarName, Coordinate<'dae>>,
-) -> Result<(), dae::DaeConstructionError> {
-    for (target, field) in record_staging_fields(plan) {
+) -> Result<FunctionRecordStagingValues<'dae>, dae::DaeConstructionError> {
+    let mut staging = FunctionRecordStagingValues::default();
+    for (target, target_def_id, field) in record_staging_fields(plan) {
         let declaration = function
             .outputs
             .iter()
             .chain(&function.locals)
-            .find(|value| value.name == target.as_str())
-            .expect("record staging target resolves its declaration");
+            .find(|value| value.def_id == Some(target_def_id) && value.name == target.as_str())
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: function.span,
+            })?;
+        let type_def_id =
+            declaration
+                .type_def_id
+                .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: declaration.span,
+                })?;
         let constructor = rumoca_core::resolve_record_constructor(
             functions.flat.functions.values(),
             &declaration.type_name,
-            declaration
-                .type_def_id
-                .expect("record staging target has exact type identity"),
+            type_def_id,
         )
-        .expect("record staging target has a constructor layout");
+        .map_err(|_| dae::DaeConstructionError::InvalidExpressionForm {
+            span: declaration.span,
+        })?;
         let field_declaration = constructor
             .inputs
             .iter()
-            .find(|candidate| candidate.name == field.as_str())
-            .expect("record staging field belongs to the constructor");
+            .find(|candidate| {
+                candidate.def_id == Some(field.def_id) && candidate.name == field.name.as_str()
+            })
+            .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                span: declaration.span,
+            })?;
         let shape = field_declaration
             .dimensions()
             .iter()
-            .map(|extent| u32::try_from(*extent).expect("analysis proves field extents"))
-            .collect::<Vec<_>>();
+            .map(|extent| checked_source_array_extent(*extent, field_declaration.span))
+            .collect::<Result<Vec<_>, _>>()?;
         let value_type = function_value_type(
             construction,
             functions.flat,
@@ -476,17 +809,26 @@ fn register_record_staging_fields<'dae>(
             &shape,
             &mut HashSet::new(),
         )?;
-        let staging_name = function_record_field_name(&target, &field);
+        let staging_name = function_record_field_name(&target, &field.name);
         let provenance = dae::DaeProvenance::source(field_declaration.span)?;
         let value = construction.functions(|owner| {
             owner.local(reservation, staging_name.clone(), value_type, provenance)
         })?;
-        coordinates.insert(staging_name, Coordinate::FunctionValue(value));
+        staging.insert_local(
+            FunctionRecordFieldIdentity {
+                target: target_def_id,
+                field: field.def_id,
+            },
+            value,
+            field_declaration.span,
+        )?;
     }
-    Ok(())
+    Ok(staging)
 }
 
-fn record_staging_fields(plan: &FunctionPlan) -> Vec<(VarName, VarName)> {
+fn record_staging_fields(
+    plan: &FunctionPlan,
+) -> Vec<(VarName, rumoca_core::DefId, ResolvedFunctionRecordField)> {
     let mut fields = Vec::new();
     match plan {
         FunctionPlan::Statements { statements, .. } => {
@@ -503,19 +845,35 @@ fn record_staging_fields(plan: &FunctionPlan) -> Vec<(VarName, VarName)> {
         }
         FunctionPlan::External(_) => {}
     }
-    fields.sort();
-    fields.dedup();
+    fields.sort_by_key(|(_, target, field)| (target.index(), field.def_id.index()));
+    fields.dedup_by_key(|(_, target, field)| (*target, field.def_id));
     fields
 }
 
 fn collect_record_staging_fields(
-    plans: &[FunctionStatementPlan],
-    fields: &mut Vec<(VarName, VarName)>,
+    sequence: &FunctionStatementSequence,
+    fields: &mut Vec<(VarName, rumoca_core::DefId, ResolvedFunctionRecordField)>,
 ) {
-    for plan in plans {
+    for product in sequence.products() {
+        let plan = product.plan();
         match plan {
+            FunctionStatementPlan::Assignment(assignment) => {
+                append_resolved_record_staging_field(assignment, fields);
+            }
+            FunctionStatementPlan::MultiOutputCall { outputs } => {
+                for assignment in outputs.iter().flatten() {
+                    append_resolved_record_staging_field(assignment, fields);
+                }
+            }
             FunctionStatementPlan::RecordFieldAssembly(assembly) => {
-                fields.push((assembly.target.clone(), assembly.field.name.clone()));
+                fields.push((
+                    assembly.target.clone(),
+                    assembly.target_def_id,
+                    ResolvedFunctionRecordField {
+                        name: assembly.field.name.clone(),
+                        def_id: assembly.field.def_id,
+                    },
+                ));
             }
             FunctionStatementPlan::For { statements, .. }
             | FunctionStatementPlan::ProvenBranch { statements, .. } => {
@@ -531,9 +889,31 @@ fn collect_record_staging_fields(
                     collect_record_staging_fields(fallback, fields);
                 }
             }
-            _ => {}
+            FunctionStatementPlan::ProvenAssertion
+            | FunctionStatementPlan::RuntimeAssertion
+            | FunctionStatementPlan::GeneratedBooleanAssignment { .. }
+            | FunctionStatementPlan::RecordMultiOutputAssembly(_)
+            | FunctionStatementPlan::ArrayAssembly(_)
+            | FunctionStatementPlan::RecordAssembly(_) => {}
         }
     }
+}
+
+fn append_resolved_record_staging_field(
+    assignment: &FunctionAssignmentPlan,
+    fields: &mut Vec<(VarName, rumoca_core::DefId, ResolvedFunctionRecordField)>,
+) {
+    let Some((target, identity, field)) = assignment.resolved_record_field() else {
+        return;
+    };
+    fields.push((
+        target.clone(),
+        identity.target,
+        ResolvedFunctionRecordField {
+            name: field.clone(),
+            def_id: identity.field,
+        },
+    ));
 }
 
 fn lower_function_plan<'dae>(
@@ -544,9 +924,10 @@ fn lower_function_plan<'dae>(
     plan: &FunctionPlan,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     match plan {
-        FunctionPlan::External(_) => unreachable!("external bodies define through their interface"),
+        FunctionPlan::External(_) => Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: function.span,
+        }),
         FunctionPlan::Statements {
-            source,
             statements,
             certified_output_seeds,
             ..
@@ -565,20 +946,25 @@ fn lower_function_plan<'dae>(
                 statements,
                 function.span,
             )?;
-            lower_function_statements(construction, symbols, body, source, statements)
+            lower_function_statements(construction, symbols, body, statements)
         }
         FunctionPlan::GuardedReturn {
+            conditions,
             branches,
             tail,
             targets,
+            span,
         } => lower_guarded_function_return(
             construction,
             symbols,
             body,
-            function,
-            branches,
-            tail,
-            targets,
+            GuardedFunctionReturn {
+                conditions,
+                branches,
+                tail,
+                targets,
+                span: *span,
+            },
         ),
         FunctionPlan::IntegerReduction {
             initial,

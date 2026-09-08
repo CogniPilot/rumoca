@@ -61,7 +61,7 @@ fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
         false,
     )];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -79,6 +79,7 @@ fn fully_qualified_sibling_package_call_is_not_aliased_to_self() {
         ),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -112,7 +113,7 @@ fn function_retarget_defers_display_canonicalization_until_instance_selection() 
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let override_packages = Vec::new();
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -129,6 +130,7 @@ fn function_retarget_defers_display_canonicalization_until_instance_selection() 
         .with_instance_id(occurrence),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -230,7 +232,7 @@ fn unqualified_partial_package_call_uses_active_component_override_scope() {
     override_package.alias = "Medium".to_string();
     let override_packages = vec![override_package];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -242,6 +244,7 @@ fn unqualified_partial_package_call_uses_active_component_override_scope() {
         name: rumoca_core::Reference::with_component_reference("specificEnthalpy", component_ref),
         args: Vec::new(),
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 
@@ -286,10 +289,10 @@ fn replaceable_constructor_uses_exact_target_not_same_spelling_override() {
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
     let mut overrides = OverrideFunctionMap::default();
     overrides.insert(
-        "R".to_string(),
+        record_b,
         override_target("B.R", record_b, ClassType::Record),
     );
-    let ctx = FunctionOverrideRewriteContext::new(&tree, &class_index, &[], &overrides);
+    let ctx = FunctionOverrideRewriteContext::new_test(&tree, &class_index, &[], &overrides);
     let mut expression = Expression::FunctionCall {
         name: rumoca_core::Reference::with_component_reference(
             "R",
@@ -297,6 +300,7 @@ fn replaceable_constructor_uses_exact_target_not_same_spelling_override() {
         ),
         args: Vec::new(),
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: test_span(),
     };
 

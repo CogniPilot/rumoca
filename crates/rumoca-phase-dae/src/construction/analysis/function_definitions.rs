@@ -11,10 +11,27 @@ use rumoca_core::FallibleExpressionVisitor;
 /// this certificate carries that proof.
 #[derive(Clone)]
 pub(super) struct FunctionDefinitions {
-    values: HashMap<VarName, ValueCoverage>,
+    values: HashMap<FunctionDefinitionIdentity, ValueCoverage>,
+    /// Staging storage issued anywhere in this checked plan. Membership does
+    /// not define a value; it makes a premature exact field read recognizable.
+    tracked_record_fields: HashSet<FunctionRecordFieldIdentity>,
     /// Values only some conditional branches define, keyed to the conditional
     /// that left them without a total owner.
-    branch_only: HashMap<VarName, BranchOnlyCoverage>,
+    branch_only: HashMap<FunctionDefinitionIdentity, BranchOnlyCoverage>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum FunctionDefinitionIdentity {
+    Value(VarName),
+    RecordField(FunctionRecordFieldIdentity),
+}
+
+impl FunctionDefinitionIdentity {
+    fn for_target(target: &FunctionConditionalTarget) -> Self {
+        target
+            .record_field
+            .map_or_else(|| Self::Value(target.name.clone()), Self::RecordField)
+    }
 }
 
 #[derive(Clone)]
@@ -99,21 +116,32 @@ impl FunctionDefinitions {
             .iter()
             .chain(&function.locals)
             .filter(|value| value.default.is_some())
-            .map(|value| (VarName::new(&value.name), ValueCoverage::Whole))
+            .map(|value| {
+                (
+                    FunctionDefinitionIdentity::Value(VarName::new(&value.name)),
+                    ValueCoverage::Whole,
+                )
+            })
             .collect();
         Self {
             values,
+            tracked_record_fields: HashSet::new(),
             branch_only: HashMap::new(),
         }
     }
 
+    pub(super) fn track_record_staging(&mut self, plans: &[FunctionStatementPlan]) {
+        collect_tracked_record_fields(plans, &mut self.tracked_record_fields);
+    }
+
     pub(super) fn is_defined(&self, name: &VarName) -> bool {
-        self.values.contains_key(name)
+        self.values
+            .contains_key(&FunctionDefinitionIdentity::Value(name.clone()))
     }
 
     pub(super) fn has_total_guarded_definition(&self, name: &VarName) -> bool {
         self.branch_only
-            .get(name)
+            .get(&FunctionDefinitionIdentity::Value(name.clone()))
             .and_then(|definition| definition.coverage.as_ref())
             .is_some_and(ValueCoverage::is_total)
     }
@@ -123,20 +151,21 @@ impl FunctionDefinitions {
     /// what code after the loop must observe.
     pub(super) fn restore_names(&mut self, enclosing: &Self, names: &[VarName]) {
         for name in names {
-            match enclosing.values.get(name) {
+            let identity = FunctionDefinitionIdentity::Value(name.clone());
+            match enclosing.values.get(&identity) {
                 Some(value) => {
-                    self.values.insert(name.clone(), value.clone());
+                    self.values.insert(identity.clone(), value.clone());
                 }
                 None => {
-                    self.values.remove(name);
+                    self.values.remove(&identity);
                 }
             }
-            match enclosing.branch_only.get(name) {
+            match enclosing.branch_only.get(&identity) {
                 Some(value) => {
-                    self.branch_only.insert(name.clone(), value.clone());
+                    self.branch_only.insert(identity.clone(), value.clone());
                 }
                 None => {
-                    self.branch_only.remove(name);
+                    self.branch_only.remove(&identity);
                 }
             }
         }
@@ -151,8 +180,9 @@ impl FunctionDefinitions {
     /// accidentally carrying the preceding iteration's definition forward.
     pub(super) fn clear_names(&mut self, names: &[VarName]) {
         for name in names {
-            self.values.remove(name);
-            self.branch_only.remove(name);
+            let identity = FunctionDefinitionIdentity::Value(name.clone());
+            self.values.remove(&identity);
+            self.branch_only.remove(&identity);
         }
     }
 
@@ -164,16 +194,16 @@ impl FunctionDefinitions {
         let admitted = self
             .branch_only
             .iter()
-            .filter_map(|(name, definition)| {
+            .filter_map(|(identity, definition)| {
                 let guard = definition.guard.as_ref()?;
                 let coverage = definition.coverage.clone()?;
                 condition_implies_guard(condition, guard, context, 0)
-                    .then(|| (name.clone(), coverage))
+                    .then(|| (identity.clone(), coverage))
             })
             .collect::<Vec<_>>();
-        for (name, coverage) in admitted {
-            self.branch_only.remove(&name);
-            self.values.insert(name, coverage);
+        for (identity, coverage) in admitted {
+            self.branch_only.remove(&identity);
+            self.values.insert(identity, coverage);
         }
     }
 
@@ -181,18 +211,19 @@ impl FunctionDefinitions {
         &mut self,
         condition: &Expression,
         branch: &Self,
-        targets: &[VarName],
+        targets: &[FunctionConditionalTarget],
         span: Span,
     ) {
         for target in targets {
-            if self.values.contains_key(target) {
+            let identity = FunctionDefinitionIdentity::for_target(target);
+            if self.values.contains_key(&identity) {
                 continue;
             }
-            let Some(coverage) = branch.values.get(target) else {
+            let Some(coverage) = branch.values.get(&identity) else {
                 continue;
             };
             self.branch_only.insert(
-                target.clone(),
+                identity,
                 BranchOnlyCoverage {
                     span,
                     guard: Some(condition.clone()),
@@ -225,12 +256,42 @@ impl FunctionDefinitions {
     }
 
     pub(super) fn is_total(&self, name: &VarName) -> bool {
-        self.values.get(name).is_some_and(ValueCoverage::is_total)
+        self.values
+            .get(&FunctionDefinitionIdentity::Value(name.clone()))
+            .is_some_and(ValueCoverage::is_total)
     }
 
     pub(super) fn define_whole(&mut self, name: &VarName) {
-        self.branch_only.remove(name);
-        self.values.insert(name.clone(), ValueCoverage::Whole);
+        self.define(FunctionDefinitionIdentity::Value(name.clone()));
+    }
+
+    pub(super) fn define_function_value(
+        &mut self,
+        name: &VarName,
+        target_def_id: rumoca_core::DefId,
+    ) {
+        self.values.retain(|identity, _| {
+            !matches!(identity, FunctionDefinitionIdentity::RecordField(field) if field.target == target_def_id)
+        });
+        self.branch_only.retain(|identity, _| {
+            !matches!(identity, FunctionDefinitionIdentity::RecordField(field) if field.target == target_def_id)
+        });
+        self.define_whole(name);
+    }
+
+    pub(super) fn define_record_field(&mut self, identity: FunctionRecordFieldIdentity) {
+        self.define(FunctionDefinitionIdentity::RecordField(identity));
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_record_field_defined(&self, identity: FunctionRecordFieldIdentity) -> bool {
+        self.values
+            .contains_key(&FunctionDefinitionIdentity::RecordField(identity))
+    }
+
+    fn define(&mut self, identity: FunctionDefinitionIdentity) {
+        self.branch_only.remove(&identity);
+        self.values.insert(identity, ValueCoverage::Whole);
     }
 
     /// Install the output totality already proven by a disjoint early-return
@@ -278,7 +339,8 @@ impl FunctionDefinitions {
     ) -> Result<Option<FunctionValueSeed>, ToDaeError> {
         let dimensions = declared_dimensions(target, context, span)?;
         let written = written_indices(subscripts, &dimensions, context);
-        match self.values.get_mut(target) {
+        let identity = FunctionDefinitionIdentity::Value(target.clone());
+        match self.values.get_mut(&identity) {
             Some(ValueCoverage::Whole) => Ok(None),
             Some(ValueCoverage::Elements {
                 covered, proven, ..
@@ -311,9 +373,9 @@ impl FunctionDefinitions {
                     )
                 })?;
                 let scalars = declared_scalar_count(&dimensions, target, context, span)?;
-                self.branch_only.remove(target);
+                self.branch_only.remove(&identity);
                 self.values.insert(
-                    target.clone(),
+                    identity,
                     ValueCoverage::Elements {
                         covered: indices,
                         scalars,
@@ -353,7 +415,23 @@ impl FunctionDefinitions {
         span: Span,
     ) -> Result<(), ToDaeError> {
         let name = reference.var_name();
-        if let Some(conditional) = self.branch_only.get(name) {
+        let exact =
+            reference_record_field_identity(reference).map(FunctionDefinitionIdentity::RecordField);
+        let name_identity = FunctionDefinitionIdentity::Value(name.clone());
+        let root_identity = reference
+            .component_ref()
+            .and_then(|reference| reference.parts().first())
+            .map(|root| FunctionDefinitionIdentity::Value(VarName::new(&root.ident)));
+        let conditional = exact
+            .as_ref()
+            .and_then(|identity| self.branch_only.get(identity))
+            .or_else(|| {
+                root_identity
+                    .as_ref()
+                    .and_then(|identity| self.branch_only.get(identity))
+            })
+            .or_else(|| self.branch_only.get(&name_identity));
+        if let Some(conditional) = conditional {
             return Err(ToDaeError::unsupported_flat(
                 "function conditional",
                 format!(
@@ -363,7 +441,31 @@ impl FunctionDefinitions {
                 span,
             ));
         }
-        let Some(coverage @ ValueCoverage::Elements { covered, .. }) = self.values.get(name) else {
+        let coverage = exact
+            .as_ref()
+            .and_then(|identity| self.values.get(identity))
+            .or_else(|| {
+                root_identity
+                    .as_ref()
+                    .and_then(|identity| self.values.get(identity))
+            })
+            .or_else(|| self.values.get(&name_identity));
+        if coverage.is_none()
+            && exact.as_ref().is_some_and(|identity| {
+                matches!(
+                    identity,
+                    FunctionDefinitionIdentity::RecordField(field)
+                        if self.tracked_record_fields.contains(field)
+                )
+            })
+        {
+            return Err(ToDaeError::unsupported_flat(
+                "record output assembly",
+                format!("`{name}` is read before its exact staged field has a reaching definition"),
+                span,
+            ));
+        }
+        let Some(coverage @ ValueCoverage::Elements { covered, .. }) = coverage else {
             return Ok(());
         };
         if coverage.is_total() {
@@ -386,6 +488,72 @@ impl FunctionDefinitions {
         ))
     }
 
+    /// Check a direct structured `root.field` read without flattening its
+    /// semantic identity back into a dotted spelling.
+    ///
+    /// Flat may represent the projection as `FieldAccess(VarRef(root), field)`
+    /// rather than one multi-part `Reference`.  The field node still carries
+    /// the exact resolved field `DefId`; require it and the retained spellings
+    /// to agree with the constructor before consulting reaching definitions.
+    fn require_direct_record_field_readable(
+        &self,
+        reference: &rumoca_core::Reference,
+        field_name: &str,
+        field_def_id: rumoca_core::DefId,
+        context: FunctionValidationContext<'_>,
+        span: Span,
+    ) -> Result<bool, ToDaeError> {
+        let [root] = reference.parts() else {
+            return Ok(false);
+        };
+        let Some(value) = resolved_record_value(root, context.function)? else {
+            return Ok(false);
+        };
+        if value.type_class != Some(rumoca_core::ClassType::Record) {
+            return Ok(false);
+        }
+        let target_def_id = function_value_def_id(value, context.function)?;
+        let constructor = record_constructor(value, context)?;
+        let fields = resolved_constructor_fields(&value.name, constructor)?;
+        let field = rumoca_core::ComponentRefPart {
+            ident: field_name.to_string(),
+            span,
+            subs: Vec::new(),
+            def_id: field_def_id,
+        };
+        let resolved = require_constructor_field(&value.name, &field, &fields)?;
+        let exact = FunctionDefinitionIdentity::RecordField(FunctionRecordFieldIdentity {
+            target: target_def_id,
+            field: resolved.def_id,
+        });
+        let root = FunctionDefinitionIdentity::Value(VarName::new(&value.name));
+        let conditional = self
+            .branch_only
+            .get(&exact)
+            .or_else(|| self.branch_only.get(&root));
+        if let Some(conditional) = conditional {
+            return Err(ToDaeError::unsupported_flat(
+                "function conditional",
+                format!(
+                    "`{}` reads `{}.{field_name}`, which only some branches of the conditional at byte {} define",
+                    context.function.name, value.name, conditional.span.start.0
+                ),
+                span,
+            ));
+        }
+        if self.values.contains_key(&exact) || self.values.contains_key(&root) {
+            return Ok(true);
+        }
+        Err(ToDaeError::unsupported_flat(
+            "record output assembly",
+            format!(
+                "`{}.{field_name}` is read before its exact staged field or whole record has a reaching definition",
+                value.name
+            ),
+            span,
+        ))
+    }
+
     /// Join the branch certificates of one conditional onto this one.
     ///
     /// A value survives the join when this state already defines it, or when
@@ -396,19 +564,30 @@ impl FunctionDefinitions {
         &mut self,
         branches: &[Self],
         exhaustive: bool,
-        ordered_targets: &[VarName],
+        ordered_targets: &[FunctionConditionalTarget],
         context: FunctionValidationContext<'_>,
         span: Span,
-    ) -> Result<Vec<VarName>, ToDaeError> {
+    ) -> Result<Vec<FunctionConditionalTarget>, ToDaeError> {
+        let incoming_record_fields = self
+            .values
+            .iter()
+            .filter_map(|(identity, coverage)| match identity {
+                FunctionDefinitionIdentity::RecordField(field) => Some((*field, coverage.clone())),
+                FunctionDefinitionIdentity::Value(_) => None,
+            })
+            .collect::<HashMap<_, _>>();
         let mut joined = Vec::with_capacity(ordered_targets.len());
         for target in ordered_targets {
-            let defines_everywhere =
-                exhaustive && branches.iter().all(|branch| branch.is_defined(target));
-            if !self.is_defined(target) && !defines_everywhere {
-                require_definable_branch_local(target, context, span)?;
-                self.values.remove(target);
+            let identity = FunctionDefinitionIdentity::for_target(target);
+            let defines_everywhere = exhaustive
+                && branches
+                    .iter()
+                    .all(|branch| branch.values.contains_key(&identity));
+            if !self.values.contains_key(&identity) && !defines_everywhere {
+                require_definable_branch_local(&target.name, context, span)?;
+                self.values.remove(&identity);
                 self.branch_only.insert(
-                    target.clone(),
+                    identity,
                     BranchOnlyCoverage {
                         span,
                         guard: None,
@@ -417,12 +596,12 @@ impl FunctionDefinitions {
                 );
                 continue;
             }
-            let prior = self.values.get(target).cloned();
+            let prior = self.values.get(&identity).cloned();
             let mut coverage: Option<ValueCoverage> = None;
             for branch in branches {
                 let branch_coverage = branch
                     .values
-                    .get(target)
+                    .get(&identity)
                     .cloned()
                     .or_else(|| prior.clone())
                     .expect("a joined value has a definition on every branch");
@@ -438,12 +617,127 @@ impl FunctionDefinitions {
                     None => fallthrough,
                 });
             }
-            let coverage = coverage.expect("a conditional has at least one branch");
-            self.branch_only.remove(target);
-            self.values.insert(target.clone(), coverage);
+            let Some(coverage) = coverage else {
+                return Err(ToDaeError::unsupported_flat(
+                    "function conditional",
+                    "a conditional statement joins no branches",
+                    span,
+                ));
+            };
+            self.branch_only.remove(&identity);
+            self.values.insert(identity, coverage);
             joined.push(target.clone());
         }
+        self.join_record_field_reaching_definitions(
+            branches,
+            exhaustive,
+            &incoming_record_fields,
+            span,
+        )?;
         Ok(joined)
+    }
+
+    fn join_record_field_reaching_definitions(
+        &mut self,
+        branches: &[Self],
+        exhaustive: bool,
+        incoming: &HashMap<FunctionRecordFieldIdentity, ValueCoverage>,
+        span: Span,
+    ) -> Result<(), ToDaeError> {
+        let tracked = self
+            .tracked_record_fields
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for field in tracked {
+            let identity = FunctionDefinitionIdentity::RecordField(field);
+            let mut paths = branches
+                .iter()
+                .map(|branch| branch.values.get(&identity).cloned())
+                .collect::<Vec<_>>();
+            if !exhaustive {
+                paths.push(incoming.get(&field).cloned());
+            }
+            let present = paths.iter().filter(|coverage| coverage.is_some()).count();
+            if present != 0 && present != paths.len() {
+                return Err(ToDaeError::unsupported_flat(
+                    "record output assembly",
+                    "a conditional mixes exact staged-field and whole-record reaching definitions without a typed field join",
+                    span,
+                ));
+            }
+            self.branch_only.remove(&identity);
+            if present == 0 {
+                self.values.remove(&identity);
+                continue;
+            }
+            let mut paths = paths.into_iter().flatten();
+            let mut coverage = paths
+                .next()
+                .expect("a present staged-field path has one coverage");
+            for path in paths {
+                coverage = coverage.meet(&path);
+            }
+            self.values.insert(identity, coverage);
+        }
+        Ok(())
+    }
+}
+
+fn reference_record_field_identity(
+    reference: &rumoca_core::Reference,
+) -> Option<FunctionRecordFieldIdentity> {
+    let parts = reference.component_ref()?.parts();
+    let [target, field] = parts else {
+        return None;
+    };
+    (target.def_id != rumoca_core::DefId::default()
+        && field.def_id != rumoca_core::DefId::default())
+    .then_some(FunctionRecordFieldIdentity {
+        target: target.def_id,
+        field: field.def_id,
+    })
+}
+
+fn collect_tracked_record_fields(
+    plans: &[FunctionStatementPlan],
+    tracked: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    for plan in plans {
+        match plan {
+            FunctionStatementPlan::Assignment(assignment) => {
+                tracked.extend(assignment.record_field());
+            }
+            FunctionStatementPlan::MultiOutputCall { outputs } => {
+                tracked.extend(
+                    outputs
+                        .iter()
+                        .flatten()
+                        .filter_map(FunctionAssignmentPlan::record_field),
+                );
+            }
+            FunctionStatementPlan::RecordFieldAssembly(assembly) => {
+                tracked.insert(FunctionRecordFieldIdentity {
+                    target: assembly.target_def_id,
+                    field: assembly.field.def_id,
+                });
+            }
+            FunctionStatementPlan::For { statements, .. }
+            | FunctionStatementPlan::ProvenBranch { statements, .. } => {
+                collect_tracked_record_fields(statements, tracked);
+            }
+            FunctionStatementPlan::If {
+                branches, fallback, ..
+            } => {
+                for branch in branches {
+                    collect_tracked_record_fields(branch, tracked);
+                }
+                if let Some(fallback) = fallback {
+                    collect_tracked_record_fields(fallback, tracked);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -534,6 +828,33 @@ struct DefinedValueReadChecker<'scope> {
 
 impl FallibleExpressionVisitor for DefinedValueReadChecker<'_> {
     type Error = ToDaeError;
+
+    fn visit_expression(&mut self, expression: &Expression) -> Result<(), Self::Error> {
+        if let Expression::FieldAccess {
+            base,
+            field,
+            field_def_id,
+            span,
+        } = expression
+            && let Expression::VarRef {
+                name, subscripts, ..
+            } = base.as_ref()
+        {
+            for subscript in subscripts {
+                self.visit_subscript(subscript)?;
+            }
+            if self.definitions.require_direct_record_field_readable(
+                name,
+                field,
+                *field_def_id,
+                self.context,
+                *span,
+            )? {
+                return Ok(());
+            }
+        }
+        self.walk_expression(expression)
+    }
 
     fn visit_var_ref(
         &mut self,

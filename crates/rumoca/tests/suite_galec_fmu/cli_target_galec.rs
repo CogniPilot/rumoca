@@ -30,7 +30,9 @@ use tempfile::tempdir;
 // The shared helpers are declared once by the umbrella binary
 // that owns this file (see `suite_galec_fmu/main.rs`), so the sibling suites share
 // one copy instead of compiling the same file several times per binary.
-use super::cli_support::{diagnostic_contains, run_compile_target, strip_ansi, write_fixture};
+use super::cli_support::{
+    diagnostic_contains, run_compile_target, sha1_hex, strip_ansi, write_fixture,
+};
 use super::container_xml_support::{
     assert_xsd_rejects, attribute_values, mask_attribute, mask_uuids, move_line_after,
     relative_file_paths, sole_attribute_value, surgically, validate_against_xsd,
@@ -174,14 +176,6 @@ fn galec_call_site_count(source: &str, function: &str) -> usize {
         .count()
 }
 
-fn c_call_site_count(source: &str, function: &str) -> usize {
-    let call = format!("{function}(");
-    source
-        .lines()
-        .filter(|line| line.trim_start().starts_with(&call))
-        .count()
-}
-
 /// One packaged eFMU produced by a real CLI run.
 struct BuiltContainer {
     /// The eFMU directory-form root (`<out_dir>/<Model>/`).
@@ -200,7 +194,7 @@ impl BuiltContainer {
     }
 
     fn alg_file(&self) -> PathBuf {
-        self.root.join("AlgorithmCode").join(format!("{MODEL}.alg"))
+        self.root.join("AlgorithmCode").join("model.alg")
     }
 }
 
@@ -353,7 +347,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let recorded = sole_attribute_value(&container.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca::sha1_hex(&manifest_bytes),
+        sha1_hex(&manifest_bytes),
         "__content.xml checksum must be the SHA-1 of the written manifest.xml"
     );
 
@@ -361,7 +355,7 @@ fn container_checksums_recompute_from_written_bytes() {
     let listed = sole_attribute_value(&container.manifest_xml(), "checksum");
     assert_eq!(
         listed,
-        rumoca::sha1_hex(&alg_bytes),
+        sha1_hex(&alg_bytes),
         "manifest.xml File checksum must be the SHA-1 of the written .alg"
     );
 }
@@ -536,7 +530,7 @@ fn rerunning_same_command_replaces_previous_container() {
     let recorded = sole_attribute_value(&second.content_xml(), "checksum");
     assert_eq!(
         recorded,
-        rumoca::sha1_hex(&second_manifest),
+        sha1_hex(&second_manifest),
         "the replaced container's checksum must recompute from its own bytes"
     );
     assert!(second.efmu_zip.is_file(), ".efmu zip must be rebuilt too");
@@ -606,65 +600,67 @@ fn content_name_carries_dotted_source_model_name() {
     let dir = tempdir().expect("tempdir");
     let file = dir.path().join("GalecCliPkg.mo");
     fs::write(&file, NESTED_FIXTURE).expect("write nested fixture");
-    for target in ["galec", "galec-production"] {
-        let out_dir = dir.path().join(target);
-        let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
-            .arg("compile")
-            .arg(&file)
-            .arg("--model")
-            .arg("GalecCliPkg.Inner")
-            .arg("--target")
-            .arg(target)
-            .arg("-o")
-            .arg(&out_dir)
-            .output()
-            .unwrap_or_else(|error| panic!("run nested-model {target} compile: {error}"));
-        assert!(
-            output.status.success(),
-            "nested-model {target} compile failed.\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let target = "galec";
+    let out_dir = dir.path().join(target);
+    let output = Command::new(env!("CARGO_BIN_EXE_rumoca"))
+        .arg("compile")
+        .arg(&file)
+        .arg("--model")
+        .arg("GalecCliPkg.Inner")
+        .arg("--target")
+        .arg(target)
+        .arg("-o")
+        .arg(&out_dir)
+        .output()
+        .unwrap_or_else(|error| panic!("run nested-model {target} compile: {error}"));
+    assert!(
+        output.status.success(),
+        "nested-model {target} compile failed.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-        let root = out_dir.join("GalecCliPkg_Inner");
-        assert!(root.is_dir(), "container directory uses the identifier");
-        assert!(
-            out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
-            ".efmu archive uses the identifier"
-        );
-        // Document order: the root Content element's name comes first, before
-        // the ModelRepresentation entries' names.
-        let names = attribute_values(&root.join("__content.xml"), "name");
-        assert_eq!(
-            names.first().map(String::as_str),
-            Some("GalecCliPkg.Inner"),
-            "{target} Content/@name must be the source model name, got {names:?}"
-        );
-    }
+    let root = out_dir.join("GalecCliPkg_Inner");
+    assert!(root.is_dir(), "container directory uses the identifier");
+    assert!(
+        out_dir.join("GalecCliPkg_Inner.efmu").is_file(),
+        ".efmu archive uses the identifier"
+    );
+    // Document order: the root Content element's name comes first, before
+    // the ModelRepresentation entries' names.
+    let names = attribute_values(&root.join("__content.xml"), "name");
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("GalecCliPkg.Inner"),
+        "{target} Content/@name must be the source model name, got {names:?}"
+    );
 }
 
 #[test]
-fn compile_target_galec_rejects_continuous_model_with_capability_diagnostic() {
-    let dir = tempdir().expect("tempdir");
-    let file = write_fixture(dir.path(), "GalecCliContinuous", CONTINUOUS_FIXTURE);
-    let out_dir = dir.path().join("out");
+fn compile_efmi_targets_reject_continuous_model_before_publication() {
+    for target in ["galec", "efmu"] {
+        let dir = tempdir().expect("tempdir");
+        let file = write_fixture(dir.path(), "GalecCliContinuous", CONTINUOUS_FIXTURE);
+        let out_dir = dir.path().join("out");
 
-    let output = run_compile_target_galec(&file, &out_dir);
-    assert!(
-        !output.status.success(),
-        "`compile --target galec` must fail for a continuous model.\nstdout:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        stderr.contains("unsupported-feature:continuous_states"),
-        "expected the generic capability diagnostic (GAL-006), got stderr:\n{stderr}"
-    );
-    // The gate runs before any rendering: nothing may be written on rejection.
-    assert!(
-        !out_dir.exists(),
-        "capability rejection must happen before the output directory is created"
-    );
+        let output = run_compile_target(&file, target, &out_dir);
+        assert!(
+            !output.status.success(),
+            "`compile --target {target}` must fail for a continuous model.\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            stderr.contains("unsupported-feature:continuous_states"),
+            "expected the generic capability diagnostic (GAL-006) from {target}, got stderr:\n{stderr}"
+        );
+        // Identity values may already exist in memory, but no artifact bytes
+        // or package members may be rendered or published on rejection.
+        assert!(
+            !out_dir.exists(),
+            "{target} capability rejection must precede output-directory creation"
+        );
+    }
 }
 
 /// GAL-036/GAL-037 regression ratchet.  The structural assertions are the
@@ -690,21 +686,13 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
     let galec_path = galec_out
         .join(COMPACT_ESTIMATOR_MODEL)
         .join("AlgorithmCode")
-        .join(format!("{COMPACT_ESTIMATOR_MODEL}.alg"));
+        .join("model.alg");
     let galec = fs::read_to_string(&galec_path).expect("read compact GALEC artifact");
 
-    let c_out = dir.path().join("embedded-c-galec");
-    let c_compile = run_compile_target(&file, "embedded-c-galec", &c_out);
-    assert!(
-        c_compile.status.success(),
-        "compact embedded-C fixture failed:\n{}",
-        String::from_utf8_lossy(&c_compile.stderr)
-    );
-    let c_path = c_out.join(format!("{COMPACT_ESTIMATOR_MODEL}.c"));
-    let c = fs::read_to_string(&c_path).expect("read compact generated C artifact");
-
+    // GALEC never emits C: the C half of this ratchet moves to the
+    // Solve-rendered embedded target's differential gate. The `.alg`
+    // structural obligations stay here.
     assert!(!has_ordinal_call_temporary(&galec), "{galec}");
-    assert!(!has_ordinal_call_temporary(&c), "{c}");
     for function in [
         "compactPredict",
         "compactCorrectPosition",
@@ -716,46 +704,11 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
             1,
             "one source call to {function} must remain one GALEC call site:\n{galec}"
         );
-        assert_eq!(
-            c_call_site_count(&c, function),
-            1,
-            "one GALEC call to {function} must remain one C call site:\n{c}"
-        );
     }
-    // A whole-tensor move no longer prints a `rumoca_tensor_` loop nest at
-    // all: the projection emits the whole-array assignment directly, and the
-    // C target prints it as a call into the shared kernel library — the
-    // counted generic kernel, or the fixed-count specialization the library
-    // defines for this run length. The bounded-ness evidence is that kernel
-    // call, not a loop header — and its absence would mean the moves fell
-    // back to some new expanded form this ratchet must catch.
-    assert!(
-        c.contains("rumoca_galec_copy_real(INT32_C(") || c.contains("rumoca_galec_copy_real_"),
-        "tensor moves must lower to shared-kernel calls:\n{c}"
-    );
-    let constant_coordinate_assignments = c
-        .lines()
-        .filter(|line| {
-            line.contains("[((int32_t)(")
-                && line.contains(")) - 1] =")
-                && line.split("[((int32_t)(").nth(1).is_some_and(|tail| {
-                    tail.starts_with(|character: char| character.is_ascii_digit())
-                })
-        })
-        .count();
-    assert!(
-        constant_coordinate_assignments <= 36,
-        "constant-coordinate C assignments regressed from the reviewed ceiling: {constant_coordinate_assignments}"
-    );
     assert!(
         galec.lines().count() <= 240,
         "GALEC artifact unexpectedly expanded to {} lines",
         galec.lines().count()
-    );
-    assert!(
-        c.lines().count() <= 850,
-        "C artifact unexpectedly expanded to {} lines",
-        c.lines().count()
     );
     let longest_galec = galec
         .lines()
@@ -765,10 +718,6 @@ fn estimator_projection_preserves_call_cardinality_and_compact_tensors() {
         longest_galec.len() <= 240,
         "GALEC artifact contains an expanded {}-byte expression line:\n{longest_galec}",
         longest_galec.len()
-    );
-    assert!(
-        c.lines().map(str::len).max().unwrap_or_default() <= 240,
-        "C artifact contains an expanded expression line"
     );
 }
 
@@ -925,13 +874,8 @@ fn projected_alg(model: &str, fixture: &str) -> String {
         output.status.code(),
         strip_ansi(&String::from_utf8_lossy(&output.stderr))
     );
-    fs::read_to_string(
-        out_dir
-            .join(model)
-            .join("AlgorithmCode")
-            .join(format!("{model}.alg")),
-    )
-    .expect("read projected GALEC")
+    fs::read_to_string(out_dir.join(model).join("AlgorithmCode").join("model.alg"))
+        .expect("read projected GALEC")
 }
 
 /// Compile one inline fixture expected to be rejected and return the plain

@@ -1,6 +1,6 @@
 use super::inheritance::resolve_effective_components_for_eval;
 use super::source_scope::component_declaration_source_scope;
-use super::type_overrides::TypeOverrideMap;
+use super::type_overrides::{SelectedComponentTypes, TypeOverrideMap};
 use super::{ComponentInstantiationScope, instantiate_component};
 use super::{
     InstantiateContext, InstantiateError, InstantiateResult, find_class_in_tree,
@@ -9,7 +9,6 @@ use super::{
 use rumoca_eval_ast::eval_instantiate::{InstantiateEvalCtx, try_eval_integer_expr};
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-use rumoca_ir_ast::ExpressionTransformer;
 use std::sync::Arc;
 
 mod family_replication;
@@ -29,6 +28,7 @@ pub(super) struct ArrayExpansionScope<'a> {
     pub(super) tree: &'a ast::ClassTree,
     pub(super) effective_components: &'a IndexMap<String, ast::Component>,
     pub(super) type_overrides: &'a TypeOverrideMap,
+    pub(super) selected_component_types: &'a SelectedComponentTypes,
     pub(super) owner_class_id: rumoca_core::InstanceId,
     pub(super) imports: super::ComponentImports<'a>,
 }
@@ -262,6 +262,7 @@ fn instantiate_array_element(
             owner_class_id: Some(scope.owner_class_id),
             effective_components: scope.effective_components,
             type_overrides: scope.type_overrides,
+            selected_component_types: scope.selected_component_types,
             imports: scope.imports,
         },
     );
@@ -704,13 +705,17 @@ fn index_nested_modification_for_element(
                 }
             }
         }
-        ast::Expression::Modification { value, .. } => {
+        ast::Expression::Modification {
+            value: Some(value), ..
+        } => {
             if let Some(indexed_value) =
                 index_array_expression_for_element(tree, parent_components, value, indices)?
             {
                 *value = Arc::new(indexed_value);
             }
         }
+        // A value-less modifier carries nothing to index.
+        ast::Expression::Modification { value: None, .. } => {}
         _ => return Ok(None),
     }
     Ok(Some(indexed))
@@ -744,12 +749,10 @@ fn resolve_mod_to_array_inner(
 ) -> InstantiateResult<ast::Expression> {
     if let ast::Expression::ComponentReference(cref) = expr
         && cref.parts.len() == 1
-    {
-        if let Some(resolved) =
+        && let Some(resolved) =
             resolve_single_ref(cref, mod_env, effective_components, tree, active)?
-        {
-            return Ok(resolved);
-        }
+    {
+        return Ok(resolved);
     }
     // MLS §11.1.2.1: Evaluate array comprehensions like {j for j in 1:m}
     if let Some(array) = try_eval_array_comprehension(expr, mod_env, effective_components, tree) {
@@ -1169,54 +1172,15 @@ fn eval_range_bounds(
 }
 
 /// Substitute a component reference to `var_name` with an integer literal.
+///
+/// Total over `i64`: the substitution is the AST-owned named operation,
+/// which owns MLS 3.7 §10.4.1 iterator scoping (a rebinding comprehension's
+/// ranges are substituted, its body and filter are not) and mints the
+/// minimum in the §4.9.2 lower-bound expression shape.
 fn substitute_var(expr: &ast::Expression, var_name: &str, value: i64) -> ast::Expression {
-    LoopIndexSubstituter { var_name, value }.transform_expression(expr.clone())
-}
-
-fn replace_component_reference_with_integer(
-    expr: &ast::Expression,
-    var_name: &str,
-    value: i64,
-) -> Option<ast::Expression> {
-    let ast::Expression::ComponentReference(cref) = expr else {
-        return None;
-    };
-    if cref.parts.len() != 1 || cref.parts[0].ident.text.as_ref() != var_name {
-        return None;
-    }
-
-    Some(ast::Expression::Terminal {
-        terminal_type: ast::TerminalType::UnsignedInteger,
-        token: rumoca_core::Token {
-            text: Arc::from(value.to_string().as_str()),
-            ..rumoca_core::Token::default()
-        },
-        span: cref.span,
-    })
-}
-
-struct LoopIndexSubstituter<'a> {
-    var_name: &'a str,
-    value: i64,
-}
-
-impl ast::ExpressionTransformer for LoopIndexSubstituter<'_> {
-    fn transform_expression_in_place(&mut self, expr: &mut ast::Expression) {
-        if matches!(
-            expr,
-            ast::Expression::ArrayComprehension { indices, .. }
-                if indices.iter().any(|index| index.ident.text.as_ref() == self.var_name)
-        ) {
-            return;
-        }
-        if let Some(replacement) =
-            replace_component_reference_with_integer(expr, self.var_name, self.value)
-        {
-            *expr = replacement;
-        } else {
-            self.walk_expression(expr);
-        }
-    }
+    let mut substituted = expr.clone();
+    ast::visitor::substitute_integer_loop_index(&mut substituted, var_name, value);
+    substituted
 }
 
 /// Index an array modification value for a specific element.
@@ -1492,4 +1456,81 @@ fn lookup_class_def<'a>(
         .or(comp.type_name.def_id)
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .or_else(|| find_class_in_tree(tree, &comp.type_name.to_string()))
+}
+
+/// Outcome witnesses for loop-index substitution through the exact downstream
+/// integer evaluator (`rumoca_eval_ast::eval_instantiate::try_eval_integer_expr`)
+/// that this module's comprehension expansion feeds.
+#[cfg(test)]
+mod substitution_round_trip {
+    use super::*;
+
+    fn loop_index_expr() -> ast::Expression {
+        ast::Expression::ComponentReference(ast::ComponentReference {
+            local: false,
+            parts: vec![rumoca_ir_ast::ComponentRefPart {
+                ident: rumoca_core::Token {
+                    text: Arc::from("i"),
+                    ..rumoca_core::Token::default()
+                },
+                subs: None,
+                def_id: None,
+            }],
+            span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
+        })
+    }
+
+    fn eval_substituted(value: i64) -> Option<i64> {
+        let substituted = substitute_var(&loop_index_expr(), "i", value);
+        let tree = ast::ClassTree::new();
+        let mod_env = ast::ModificationEnvironment::new();
+        let effective_components = IndexMap::default();
+        let ctx = InstantiateEvalCtx {
+            tree: &tree,
+            mod_env: &mod_env,
+            effective_components: &effective_components,
+            resolve_class_components: resolve_effective_components_for_eval,
+        };
+        try_eval_integer_expr(&ctx, &substituted)
+    }
+
+    /// A negative substitution is a unary minus over an unsigned magnitude
+    /// and evaluates back to the value; the sign never sits inside the
+    /// unsigned token.
+    #[test]
+    fn negative_substitution_round_trips_through_the_integer_evaluator() {
+        let substituted = substitute_var(&loop_index_expr(), "i", -1);
+        let ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Minus,
+            rhs,
+            ..
+        } = &substituted
+        else {
+            panic!("a negative substitution must install a unary minus, got {substituted:?}");
+        };
+        let ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token,
+            ..
+        } = rhs.as_ref()
+        else {
+            panic!("the magnitude must be an unsigned-integer terminal");
+        };
+        assert_eq!(token.text.as_ref(), "1");
+        assert_eq!(eval_substituted(-1), Some(-1));
+        assert_eq!(eval_substituted(7), Some(7));
+    }
+
+    /// The substitution is total over `i64`: the boundary neighbor and
+    /// `i64::MIN` itself both round-trip through the exact downstream
+    /// integer evaluator. The minimum's minted shape is the legal MLS 3.7
+    /// §4.9.2 lower-bound expression `(-9223372036854775807) - 1`, whose
+    /// checked subtraction the evaluator executes without overflow; no
+    /// value is refused, wrapped, or clamped.
+    #[test]
+    fn minimum_and_boundary_round_trip_through_the_integer_evaluator() {
+        assert_eq!(eval_substituted(i64::MIN + 1), Some(i64::MIN + 1));
+        assert_eq!(eval_substituted(i64::MIN), Some(i64::MIN));
+    }
 }

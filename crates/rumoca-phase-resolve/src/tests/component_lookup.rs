@@ -24,7 +24,7 @@ end Test;
     let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
-    let tree = result.unwrap().into_inner();
+    let tree = result.unwrap().inner().clone();
     let model = tree
         .definitions
         .classes
@@ -159,10 +159,12 @@ fn test_unknown_operator_record_member_reference_is_error() {
 #[test]
 fn test_def_id_zero_is_reserved_for_root_not_builtin() {
     let resolver = Resolver::new();
-    let real_id = resolver
+    let rumoca_ir_ast::LookupOutcome::Found(real_id) = resolver
         .scope_tree
         .lookup(ScopeId::GLOBAL, &ComponentPath::from_flat_path("Real"))
-        .expect("Real builtin should be registered globally");
+    else {
+        panic!("Real builtin should be registered globally");
+    };
 
     assert_ne!(
         real_id,

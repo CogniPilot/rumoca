@@ -1,14 +1,12 @@
 use crate::path_utils;
 use rumoca_core::{DefId, TypeId};
 use rumoca_ir_ast as ast;
-use rustc_hash::FxHashSet;
 
 use super::inheritance;
+#[cfg(test)]
+use super::is_type_subtype;
 use super::type_overrides::resolve_redeclare_value_def_id;
-use super::{
-    InstantiateError, InstantiateResult, find_class_in_tree, is_type_subtype, location_to_span,
-    type_names_match,
-};
+use super::{InstantiateError, InstantiateResult, find_class_in_tree, location_to_span};
 
 /// Type information for a component, resolved from the class tree.
 pub(super) struct TypeInfo<'a> {
@@ -47,44 +45,96 @@ fn predefined_type_is_discrete(tree: &ast::ClassTree, type_id: TypeId) -> bool {
     )
 }
 
-/// Resolve the primitive base TypeId for a component type when available.
+/// Resolve the provisional primitive base `TypeId` for an instance component.
 ///
 /// For direct builtins this returns the corresponding TypeId. For type aliases
 /// and short class definitions, this follows a single-inheritance chain until
-/// a builtin primitive is found, or returns UNKNOWN when unresolved.
+/// a builtin primitive is found. User enumeration `TypeId`s are issued by the
+/// typecheck type-context owner, so Instance IR retains their exact `DefId` and
+/// leaves this provisional slot unknown. Missing or contradictory inheritance
+/// evidence remains an instantiation error.
 pub(super) fn resolve_primitive_type_id(
     tree: &ast::ClassTree,
     type_name: &str,
     class_def: Option<&ast::ClassDef>,
-) -> TypeId {
-    if let Some(id) = builtin_type_id(tree, type_name) {
-        return id;
+) -> InstantiateResult<TypeId> {
+    if class_def.is_none()
+        && let Some(id) = builtin_type_id(tree, type_name)
+    {
+        return Ok(id);
     }
-
-    const MAX_DEPTH: usize = 10;
-    let mut current = class_def;
-
-    for _ in 0..MAX_DEPTH {
-        let Some(class) = current else {
-            return TypeId::UNKNOWN;
-        };
-        if class.extends.len() != 1 {
-            return TypeId::UNKNOWN;
+    let class = class_def
+        .ok_or_else(|| Box::new(InstantiateError::ModelNotFound(type_name.to_string())))?;
+    let mut pending = vec![class];
+    let mut visited = std::collections::HashSet::new();
+    let mut primitive_ids = indexmap::IndexSet::new();
+    let mut reaches_enumeration = false;
+    while let Some(owner) = pending.pop() {
+        let owner_def_id = owner.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("primitive type owner `{}`", owner.name.text),
+                owner.location.span(),
+            ))
+        })?;
+        if !visited.insert(owner_def_id) {
+            continue;
         }
-
-        let ext = &class.extends[0];
-        let base_name = ext.base_name.to_string();
-        if let Some(id) = builtin_type_id(tree, &base_name) {
-            return id;
+        if !owner.enum_literals.is_empty() {
+            reaches_enumeration = true;
+            continue;
         }
-
-        current = ext
-            .base_def_id
-            .and_then(|def_id| tree.get_class_by_def_id(def_id))
-            .or_else(|| find_class_in_tree(tree, &base_name));
+        for extend in &owner.extends {
+            if let Some(base) = inheritance::predefined_extend_name(tree, extend)? {
+                primitive_ids.extend(builtin_type_id(tree, &base));
+                continue;
+            }
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("primitive extends edge `{}`", extend.base_name),
+                        extend.location.span(),
+                    ))
+                })?;
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!(
+                        "primitive extends edge `{}` ({base_def_id:?})",
+                        extend.base_name
+                    ),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push(base);
+        }
     }
-
-    TypeId::UNKNOWN
+    if reaches_enumeration {
+        if !primitive_ids.is_empty() {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                type_name,
+                "primitive classification reaches both enumeration and predefined bases",
+                class.location.span(),
+            )));
+        }
+        return Ok(TypeId::UNKNOWN);
+    }
+    let mut primitive_ids = primitive_ids.into_iter();
+    let Some(primitive_id) = primitive_ids.next() else {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            type_name,
+            "primitive classification has no predefined base type",
+            class.location.span(),
+        )));
+    };
+    if primitive_ids.any(|candidate| candidate != primitive_id) {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            type_name,
+            "primitive classification reaches contradictory predefined base types",
+            class.location.span(),
+        )));
+    }
+    Ok(primitive_id)
 }
 
 /// Find a nested type member within a class, following the extends chain.
@@ -97,69 +147,104 @@ pub(super) fn find_member_type_in_class<'a>(
     tree: &'a ast::ClassTree,
     class: &'a ast::ClassDef,
     member_name: &str,
-) -> Option<&'a ast::ClassDef> {
-    // MLS §7.3: extends-modification redeclarations override inherited
-    // replaceable declarations in this class context.
-    if let Some(redeclared) = find_extends_redeclared_member_type(tree, class, member_name) {
-        return Some(redeclared);
-    }
-
-    // Then check direct nested classes.
-    if let Some(member) = class.classes.get(member_name) {
-        return Some(member);
-    }
-
-    // Follow extends chain to find the member in base classes.
-    // Also follow ALL extends (not just single), since packages can have
-    // multiple inheritance-like extends clauses.
-    const MAX_DEPTH: usize = 15;
-    let mut visited = FxHashSet::default();
-    let mut to_visit: Vec<Option<&ast::ClassDef>> = class
-        .extends
-        .iter()
-        .map(|ext| {
-            let base_name = ext.base_name.to_string();
-            ext.base_def_id
-                .and_then(|def_id| tree.get_class_by_def_id(def_id))
-                .or_else(|| find_class_in_tree(tree, &base_name))
-        })
-        .collect();
-
-    for _ in 0..MAX_DEPTH {
-        if to_visit.is_empty() {
-            break;
+) -> InstantiateResult<Option<&'a ast::ClassDef>> {
+    let mut hierarchy = Vec::new();
+    let mut pending = vec![(class, false)];
+    let mut visited = std::collections::HashSet::new();
+    while let Some((owner, exiting)) = pending.pop() {
+        let owner_def_id = owner.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!("member lookup owner `{}`", owner.name.text),
+                owner.location.span(),
+            ))
+        })?;
+        if exiting {
+            hierarchy.push(owner);
+            continue;
         }
-        let mut next_visit = Vec::new();
-        for current in to_visit.drain(..) {
-            let Some(bc) = current else { continue };
-            // Resolved declaration identity is the only admissible cycle key.
-            // Unresolved fixtures remain eligible for traversal rather than being
-            // merged by their display spelling.
-            if let Some(def_id) = bc.def_id
-                && !visited.insert(def_id)
-            {
+        if !visited.insert(owner_def_id) {
+            continue;
+        }
+        pending.push((owner, true));
+        for extend in owner.extends.iter().rev() {
+            if inheritance::predefined_extend_name(tree, extend)?.is_some() {
                 continue;
             }
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("member lookup extends edge `{}`", extend.base_name),
+                        extend.location.span(),
+                    ))
+                })?;
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(InstantiateError::missing_resolved_identity(
+                    format!(
+                        "member lookup extends edge `{}` ({base_def_id:?})",
+                        extend.base_name
+                    ),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push((base, false));
+        }
+    }
+    let mut effective = indexmap::IndexMap::<DefId, Option<&ast::ClassDef>>::new();
 
-            if let Some(member) = find_extends_redeclared_member_type(tree, bc, member_name) {
-                return Some(member);
+    for owner in hierarchy {
+        let owner_def_id = owner
+            .def_id
+            .expect("member traversal admits only identity-bearing classes");
+        let direct = find_extends_redeclared_member_type(tree, owner, member_name)?
+            .or_else(|| owner.classes.get(member_name));
+        if let Some(member) = direct {
+            require_member_identity(member, member_name)?;
+            effective.insert(owner_def_id, Some(member));
+            continue;
+        }
+
+        let mut inherited = indexmap::IndexMap::<DefId, &ast::ClassDef>::new();
+        for extend in &owner.extends {
+            if inheritance::predefined_extend_name(tree, extend)?.is_some() {
+                continue;
             }
-            if let Some(member) = bc.classes.get(member_name) {
-                return Some(member);
-            }
-            for ext in &bc.extends {
-                let next_name = ext.base_name.to_string();
-                next_visit.push(
-                    ext.base_def_id
-                        .and_then(|def_id| tree.get_class_by_def_id(def_id))
-                        .or_else(|| find_class_in_tree(tree, &next_name)),
-                );
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .expect("member traversal admits only exact extends edges");
+            if let Some(Some(candidate)) = effective.get(&base_def_id) {
+                let candidate_def_id = require_member_identity(candidate, member_name)?;
+                inherited.entry(candidate_def_id).or_insert(candidate);
             }
         }
-        to_visit = next_visit;
+        if inherited.len() > 1 {
+            return Err(Box::new(InstantiateError::redeclare_error(
+                member_name,
+                format!(
+                    "inherited member selection is ambiguous across exact identities {:?}",
+                    inherited.keys().collect::<Vec<_>>()
+                ),
+                owner.location.span(),
+            )));
+        }
+        effective.insert(owner_def_id, inherited.into_values().next());
     }
 
-    None
+    let root_def_id = class
+        .def_id
+        .expect("member traversal admits only an identity-bearing root");
+    Ok(effective.get(&root_def_id).copied().flatten())
+}
+
+fn require_member_identity(member: &ast::ClassDef, member_name: &str) -> InstantiateResult<DefId> {
+    member.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("nested member `{member_name}`"),
+            member.location.span(),
+        ))
+    })
 }
 
 /// Check if inner and outer types are compatible using resolved identity.
@@ -173,19 +258,26 @@ pub(super) fn is_type_compatible_with_def_id(
     outer_def_id: Option<DefId>,
     inner_type: &str,
     inner_def_id: Option<DefId>,
-) -> bool {
-    // Fast path: If both have DefIds and they match, types are the same
-    if let (Some(outer_id), Some(inner_id)) = (outer_def_id, inner_def_id)
-        && outer_id == inner_id
-    {
-        return true;
-    }
-
-    if type_names_match(tree, outer_type, inner_type) {
-        return true;
-    }
-
-    is_type_subtype(tree, inner_type, outer_type)
+    span: rumoca_core::Span,
+) -> InstantiateResult<bool> {
+    let outer_id = outer_def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("outer type `{outer_type}`"),
+            span,
+        ))
+    })?;
+    let inner_id = inner_def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("inner type `{inner_type}`"),
+            span,
+        ))
+    })?;
+    inheritance::is_type_subtype_by_def_id(
+        tree,
+        inner_id,
+        outer_id,
+        &mut inheritance::SubtypeCache::default(),
+    )
 }
 
 /// Check if inner type is compatible with outer type (for tests and simple cases).
@@ -195,7 +287,7 @@ pub(super) fn is_type_compatible(
     tree: &ast::ClassTree,
     outer_type: &str,
     inner_type: &str,
-) -> bool {
+) -> InstantiateResult<bool> {
     is_type_subtype(tree, inner_type, outer_type)
 }
 
@@ -203,30 +295,65 @@ fn find_extends_redeclared_member_type<'a>(
     tree: &'a ast::ClassTree,
     class: &ast::ClassDef,
     member_name: &str,
-) -> Option<&'a ast::ClassDef> {
+) -> InstantiateResult<Option<&'a ast::ClassDef>> {
+    let mut selected = indexmap::IndexMap::<DefId, &ast::ClassDef>::new();
     for ext in &class.extends {
         for ext_mod in &ext.modifications {
             if !ext_mod.redeclare {
                 continue;
             }
-            let ast::Expression::Modification { target, value, .. } = &ext_mod.expr else {
-                continue;
+            let ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } = &ext_mod.expr
+            else {
+                return Err(Box::new(InstantiateError::redeclare_error(
+                    member_name,
+                    "extends redeclare has no exact modification target/value shape",
+                    ext_mod.expr.span(),
+                )));
             };
             let Some(first_target) = target.parts.first() else {
-                continue;
+                return Err(Box::new(InstantiateError::redeclare_error(
+                    member_name,
+                    "extends redeclare has an empty target",
+                    ext_mod.expr.span(),
+                )));
             };
             if first_target.ident.text.as_ref() != member_name {
                 continue;
             }
-            let Some(redeclared_def_id) = resolve_redeclare_value_def_id(tree, value, None) else {
-                continue;
+            let Some(redeclared_def_id) = resolve_redeclare_value_def_id(tree, value, None)? else {
+                return Err(Box::new(InstantiateError::redeclare_error(
+                    member_name,
+                    "extends redeclare value is not a class reference",
+                    value.span(),
+                )));
             };
-            if let Some(redeclared_class) = tree.get_class_by_def_id(redeclared_def_id) {
-                return Some(redeclared_class);
-            }
+            let redeclared_class =
+                tree.get_class_by_def_id(redeclared_def_id).ok_or_else(|| {
+                    Box::new(InstantiateError::missing_resolved_identity(
+                        format!("redeclared nested member `{member_name}` ({redeclared_def_id:?})"),
+                        value.span(),
+                    ))
+                })?;
+            selected
+                .entry(redeclared_def_id)
+                .or_insert(redeclared_class);
         }
     }
-    None
+    if selected.len() > 1 {
+        return Err(Box::new(InstantiateError::redeclare_error(
+            member_name,
+            format!(
+                "multiple redeclarations select conflicting identities {:?}",
+                selected.keys().collect::<Vec<_>>()
+            ),
+            class.location.span(),
+        )));
+    }
+    Ok(selected.into_values().next())
 }
 
 /// Look up type information for a component.
@@ -254,7 +381,7 @@ pub(super) fn lookup_type_info<'a>(
     if let Some(cd) = class_def
         && matches!(cd.class_type, rumoca_core::ClassType::Package)
         && let Some((_, member_name)) = path_utils::class_scope_split(type_name)
-        && let Some(member) = find_member_type_in_class(tree, cd, member_name)
+        && let Some(member) = find_member_type_in_class(tree, cd, member_name)?
     {
         class_def = Some(member);
     }
@@ -272,11 +399,14 @@ pub(super) fn lookup_type_info<'a>(
     }
 
     let is_primitive = builtin_type_id(tree, type_name).is_some()
-        || class_def.is_some_and(|c| inheritance::is_effectively_primitive_transitive(tree, c));
+        || match class_def {
+            Some(class) => inheritance::is_effectively_primitive_transitive(tree, class)?,
+            None => false,
+        };
 
     let is_discrete = predefined_type_id
         .is_some_and(|type_id| predefined_type_is_discrete(tree, type_id))
-        || inheritance::is_discrete_by_type(tree, type_name, class_def);
+        || inheritance::is_discrete_by_type(tree, type_name, class_def)?;
 
     Ok(TypeInfo {
         class_def,
@@ -313,6 +443,13 @@ mod tests {
         }
     }
 
+    fn insert_top(tree: &mut ast::ClassTree, name: &str, class: ast::ClassDef) {
+        let def_id = class.def_id.expect("test class identity");
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+        tree.definitions.classes.insert(name.to_string(), class);
+    }
+
     #[test]
     fn member_lookup_distinguishes_same_named_base_classes_by_def_id() {
         let first_foo = class("Foo", 2);
@@ -347,8 +484,88 @@ mod tests {
 
         let root = tree.get_class_by_def_id(DefId::new(6)).expect("root class");
         let found = find_member_type_in_class(&tree, root, "Wanted")
+            .expect("member lookup succeeds")
             .expect("the second same-named base remains searchable");
 
         assert_eq!(found.def_id, Some(DefId::new(5)));
+    }
+
+    #[test]
+    fn member_lookup_follows_more_than_the_old_limit() {
+        let mut tree = ast::ClassTree::new();
+        let mut base = class("Level0", 100);
+        base.classes
+            .insert("Wanted".to_string(), class("Wanted", 99));
+        tree.def_map
+            .insert(DefId::new(99), "Level0.Wanted".to_string());
+        insert_top(&mut tree, "Level0", base);
+        for index in 1..20_u32 {
+            let mut owner = class(&format!("Level{index}"), 100 + index);
+            owner
+                .extends
+                .push(extends(&format!("Level{}", index - 1), 99 + index));
+            insert_top(&mut tree, &format!("Level{index}"), owner);
+        }
+        let root = tree
+            .get_class_by_def_id(DefId::new(119))
+            .expect("long hierarchy root exists");
+        let found = find_member_type_in_class(&tree, root, "Wanted")
+            .expect("long acyclic hierarchy is valid")
+            .expect("inherited member is selected");
+        assert_eq!(found.def_id, Some(DefId::new(99)));
+    }
+
+    #[test]
+    fn member_lookup_rejects_ambiguous_same_spelling_identities() {
+        let mut tree = ast::ClassTree::new();
+        for (owner_name, owner_id, member_id) in [("A", 200, 201), ("B", 202, 203)] {
+            let mut owner = class(owner_name, owner_id);
+            owner
+                .classes
+                .insert("Wanted".to_string(), class("Wanted", member_id));
+            tree.def_map
+                .insert(DefId::new(member_id), format!("{owner_name}.Wanted"));
+            insert_top(&mut tree, owner_name, owner);
+        }
+        let mut root = class("Root", 204);
+        root.extends.push(extends("A", 200));
+        root.extends.push(extends("B", 202));
+        insert_top(&mut tree, "Root", root);
+        let root = tree.get_class_by_def_id(DefId::new(204)).expect("root");
+        assert!(find_member_type_in_class(&tree, root, "Wanted").is_err());
+    }
+
+    #[test]
+    fn member_lookup_rejects_missing_edge() {
+        let mut tree = ast::ClassTree::new();
+        let mut broken = class("Broken", 302);
+        broken.extends.push(extends("Missing", 399));
+        insert_top(&mut tree, "Broken", broken);
+        let broken = tree.get_class_by_def_id(DefId::new(302)).expect("Broken");
+        assert!(find_member_type_in_class(&tree, broken, "Wanted").is_err());
+    }
+
+    #[test]
+    fn exact_inner_outer_compatibility_accepts_alias_extending_predefined_type() {
+        let real_id = DefId::new(600);
+        let voltage_id = DefId::new(601);
+        let mut tree = ast::ClassTree::new();
+        tree.scope_tree
+            .add_predefined_member(rumoca_core::ComponentPath::from_flat_path("Real"), real_id);
+        let mut voltage = class("Voltage", 601);
+        voltage.extends.push(extends("Real", 600));
+        insert_top(&mut tree, "Voltage", voltage);
+
+        assert!(
+            is_type_compatible_with_def_id(
+                &tree,
+                "Real",
+                Some(real_id),
+                "Voltage",
+                Some(voltage_id),
+                rumoca_core::Span::DUMMY,
+            )
+            .expect("exact predefined edge is valid")
+        );
     }
 }

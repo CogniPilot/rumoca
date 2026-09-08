@@ -267,92 +267,49 @@ pub(crate) struct NavigationTimingEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub(crate) struct CompletionSessionCacheDelta {
-    #[serde(alias = "document_parse_calls")]
     pub(crate) document_parse_calls: u64,
-    #[serde(alias = "document_parse_total_nanos")]
     pub(crate) document_parse_total_nanos: u64,
-    #[serde(alias = "parsed_file_parse_calls")]
     pub(crate) parsed_file_parse_calls: u64,
-    #[serde(alias = "parsed_file_parse_total_nanos")]
     pub(crate) parsed_file_parse_total_nanos: u64,
-    #[serde(alias = "file_item_index_query_hits")]
     pub(crate) file_item_index_query_hits: u64,
-    #[serde(alias = "file_item_index_query_misses")]
     pub(crate) file_item_index_query_misses: u64,
-    #[serde(alias = "declaration_index_query_hits")]
     pub(crate) declaration_index_query_hits: u64,
-    #[serde(alias = "declaration_index_query_misses")]
     pub(crate) declaration_index_query_misses: u64,
-    #[serde(alias = "scope_query_hits")]
     pub(crate) scope_query_hits: u64,
-    #[serde(alias = "scope_query_misses")]
     pub(crate) scope_query_misses: u64,
-    #[serde(alias = "source_set_package_membership_query_hits")]
     pub(crate) source_set_package_membership_query_hits: u64,
-    #[serde(alias = "source_set_package_membership_query_misses")]
     pub(crate) source_set_package_membership_query_misses: u64,
-    #[serde(alias = "orphan_package_membership_query_hits")]
     pub(crate) orphan_package_membership_query_hits: u64,
-    #[serde(alias = "orphan_package_membership_query_misses")]
     pub(crate) orphan_package_membership_query_misses: u64,
-    #[serde(alias = "standard_resolved_builds")]
     pub(crate) standard_resolved_builds: u64,
-    #[serde(alias = "strict_resolved_builds")]
     pub(crate) strict_resolved_builds: u64,
-    #[serde(alias = "semantic_navigation_cache_hits")]
     pub(crate) semantic_navigation_cache_hits: u64,
-    #[serde(alias = "semantic_navigation_cache_misses")]
     pub(crate) semantic_navigation_cache_misses: u64,
-    #[serde(alias = "semantic_navigation_builds")]
     pub(crate) semantic_navigation_builds: u64,
-    #[serde(alias = "namespace_completion_cache_hits")]
     pub(crate) namespace_completion_cache_hits: u64,
-    #[serde(alias = "namespace_completion_cache_misses")]
     pub(crate) namespace_completion_cache_misses: u64,
-    #[serde(alias = "interface_semantic_diagnostics_cache_hits")]
     pub(crate) interface_semantic_diagnostics_cache_hits: u64,
-    #[serde(alias = "interface_semantic_diagnostics_cache_misses")]
     pub(crate) interface_semantic_diagnostics_cache_misses: u64,
-    #[serde(alias = "interface_semantic_diagnostics_builds")]
     pub(crate) interface_semantic_diagnostics_builds: u64,
-    #[serde(alias = "body_semantic_diagnostics_cache_hits")]
     pub(crate) body_semantic_diagnostics_cache_hits: u64,
-    #[serde(alias = "body_semantic_diagnostics_cache_misses")]
     pub(crate) body_semantic_diagnostics_cache_misses: u64,
-    #[serde(alias = "body_semantic_diagnostics_builds")]
     pub(crate) body_semantic_diagnostics_builds: u64,
-    #[serde(alias = "model_stage_semantic_diagnostics_cache_hits")]
     pub(crate) model_stage_semantic_diagnostics_cache_hits: u64,
-    #[serde(alias = "model_stage_semantic_diagnostics_cache_misses")]
     pub(crate) model_stage_semantic_diagnostics_cache_misses: u64,
-    #[serde(alias = "model_stage_semantic_diagnostics_builds")]
     pub(crate) model_stage_semantic_diagnostics_builds: u64,
-    #[serde(alias = "instantiated_model_cache_hits")]
     pub(crate) instantiated_model_cache_hits: u64,
-    #[serde(alias = "instantiated_model_cache_misses")]
     pub(crate) instantiated_model_cache_misses: u64,
-    #[serde(alias = "instantiated_model_builds")]
     pub(crate) instantiated_model_builds: u64,
-    #[serde(alias = "typed_model_cache_hits")]
     pub(crate) typed_model_cache_hits: u64,
-    #[serde(alias = "typed_model_cache_misses")]
     pub(crate) typed_model_cache_misses: u64,
-    #[serde(alias = "typed_model_builds")]
     pub(crate) typed_model_builds: u64,
-    #[serde(alias = "flat_model_cache_hits")]
     pub(crate) flat_model_cache_hits: u64,
-    #[serde(alias = "flat_model_cache_misses")]
     pub(crate) flat_model_cache_misses: u64,
-    #[serde(alias = "flat_model_builds")]
     pub(crate) flat_model_builds: u64,
-    #[serde(alias = "dae_model_cache_hits")]
     pub(crate) dae_model_cache_hits: u64,
-    #[serde(alias = "dae_model_cache_misses")]
     pub(crate) dae_model_cache_misses: u64,
-    #[serde(alias = "dae_model_builds")]
     pub(crate) dae_model_builds: u64,
 }
 

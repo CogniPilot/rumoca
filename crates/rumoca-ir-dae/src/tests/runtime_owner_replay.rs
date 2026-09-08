@@ -37,6 +37,7 @@ fn model_owner_fixture() -> Dae {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -308,6 +309,7 @@ fn an_unfinished_replay_cannot_reach_a_finalized_dae() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -349,6 +351,7 @@ fn replay_stages_enforce_source_order() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -479,6 +482,7 @@ fn mixed_owner_fixture() -> Dae {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -577,6 +581,7 @@ fn model_before_function_fixture() -> Dae {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),
@@ -694,6 +699,7 @@ fn two_live_replays_finish_out_of_order_by_exact_slot_identity() {
         let x = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 VariableAttributes::default(),

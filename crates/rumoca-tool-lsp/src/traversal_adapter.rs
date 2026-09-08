@@ -105,6 +105,9 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
         ast::Expression::ComponentReference(cr) => {
             visitor.visit_component_reference_ctx(cr, ComponentReferenceContext::Expression)
         }
+        ast::Expression::DerivativeCall { args, .. } => {
+            visitor.visit_each(args, V::visit_expression)
+        }
         ast::Expression::FunctionCall { comp, args, .. } => {
             visitor.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Expression)
         }
@@ -125,7 +128,10 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
                 target,
                 ComponentReferenceContext::ModificationTarget,
             )?;
-            visitor.visit_expression(value)
+            match value {
+                Some(value) => visitor.visit_expression(value),
+                None => ControlFlow::Continue(()),
+            }
         }
         ast::Expression::Array { elements, .. } | ast::Expression::Tuple { elements, .. } => {
             visitor.visit_each(elements, V::visit_expression)
@@ -165,5 +171,184 @@ pub(crate) fn walk_expression_default<V: ast::visitor::Visitor>(
             Continue(())
         }
         ast::Expression::FieldAccess { base, .. } => visitor.visit_expression(base),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rumoca_compile::parsing::ast::{
+        ComponentRefPart, ComponentReference, Expression, FunctionCallContext,
+    };
+    use rumoca_core::{Location, SourceId, Span, Token};
+    use std::ops::ControlFlow::Break;
+    use std::sync::Arc;
+
+    fn identifier(name: &str) -> Token {
+        Token {
+            text: Arc::from(name),
+            location: Location {
+                start_line: 1,
+                start_column: 1,
+                end_line: 1,
+                end_column: 1,
+                start: 0,
+                end: 0,
+                source: SourceId::DUMMY,
+            },
+            token_number: 0,
+            token_type: 0,
+        }
+    }
+
+    fn callee(name: &str) -> ComponentReference {
+        ComponentReference {
+            local: false,
+            span: Span::DUMMY,
+            qualified_display_name: None,
+            parts: vec![ComponentRefPart {
+                ident: identifier(name),
+                subs: None,
+                def_id: None,
+            }],
+        }
+    }
+
+    fn variable(name: &str) -> Expression {
+        Expression::ComponentReference(callee(name))
+    }
+
+    /// Build the reserved derivative node over `names`.
+    ///
+    /// Several arguments are used purely as a traversal witness: the walk must
+    /// visit each child in order and stop on the first `Break`. This says
+    /// nothing about how many arguments MLS permits `der` to take; argument
+    /// arity is a semantic question owned elsewhere.
+    fn derivative_of(names: &[&str]) -> Expression {
+        Expression::DerivativeCall {
+            args: names.iter().copied().map(variable).collect(),
+            span: Span::DUMMY,
+        }
+    }
+
+    /// Records each visited argument, optionally breaking at one.
+    ///
+    /// Any routing through the function-call callback is recorded as a failure:
+    /// the reserved derivative node must never be walked as an ordinary call,
+    /// because that is exactly how an invented `der` callee would slip in.
+    struct ArgumentRecorder {
+        seen: Vec<String>,
+        stop_at: Option<&'static str>,
+        function_call_callbacks: Vec<String>,
+    }
+
+    impl ArgumentRecorder {
+        fn new() -> Self {
+            Self {
+                seen: Vec::new(),
+                stop_at: None,
+                function_call_callbacks: Vec::new(),
+            }
+        }
+
+        fn stopping_at(name: &'static str) -> Self {
+            Self {
+                stop_at: Some(name),
+                ..Self::new()
+            }
+        }
+    }
+
+    impl ast::visitor::Visitor for ArgumentRecorder {
+        fn visit_expression(&mut self, expression: &Expression) -> ControlFlow<()> {
+            let Expression::ComponentReference(reference) = expression else {
+                return Continue(());
+            };
+            let name = reference.parts[0].ident.text.to_string();
+            let stop = self.stop_at.is_some_and(|wanted| wanted == name);
+            self.seen.push(name);
+            if stop { Break(()) } else { Continue(()) }
+        }
+
+        fn visit_expr_function_call_ctx(
+            &mut self,
+            comp: &ComponentReference,
+            args: &[Expression],
+            _ctx: FunctionCallContext,
+        ) -> ControlFlow<()> {
+            self.function_call_callbacks
+                .push(comp.parts[0].ident.text.to_string());
+            self.visit_each(args, Self::visit_expression)
+        }
+    }
+
+    /// Positive control for the recorder itself.
+    ///
+    /// Without this, the `function_call_callbacks.is_empty()` assertions in the
+    /// two tests below could pass vacuously: an unwired callback records
+    /// nothing no matter what the walk does.
+    #[test]
+    fn ordinary_function_call_does_reach_the_function_call_callback() {
+        let mut recorder = ArgumentRecorder::new();
+        let call = Expression::FunctionCall {
+            comp: callee("f"),
+            args: vec![variable("a")],
+            is_partial_application: false,
+            span: Span::DUMMY,
+        };
+        let outcome = walk_expression_default(&mut recorder, &call);
+        assert_eq!(outcome, Continue(()));
+        assert_eq!(
+            recorder.function_call_callbacks,
+            ["f"],
+            "an ordinary call must reach the function-call callback, so the \
+             derivative assertions are not vacuous"
+        );
+        assert_eq!(
+            recorder.seen,
+            ["a"],
+            "the callback must also delegate its argument visits, so a mutant \
+             routed through it still satisfies the traversal obligations"
+        );
+    }
+
+    #[test]
+    fn derivative_call_traversal_visits_every_argument_in_order() {
+        let mut recorder = ArgumentRecorder::new();
+        let outcome = walk_expression_default(&mut recorder, &derivative_of(&["a", "b", "c"]));
+        assert_eq!(outcome, Continue(()));
+        assert_eq!(
+            recorder.seen,
+            ["a", "b", "c"],
+            "every derivative argument must be visited, in source order"
+        );
+        assert!(
+            recorder.function_call_callbacks.is_empty(),
+            "the derivative node must not be routed through the function-call \
+             callback: {:?}",
+            recorder.function_call_callbacks
+        );
+    }
+
+    #[test]
+    fn derivative_call_traversal_propagates_early_stop() {
+        let mut recorder = ArgumentRecorder::stopping_at("b");
+        let outcome = walk_expression_default(&mut recorder, &derivative_of(&["a", "b", "c"]));
+        assert_eq!(
+            outcome,
+            Break(()),
+            "ControlFlow::Break must propagate out of the derivative arm"
+        );
+        assert_eq!(
+            recorder.seen,
+            ["a", "b"],
+            "traversal must stop before the argument following the break"
+        );
+        assert!(
+            recorder.function_call_callbacks.is_empty(),
+            "the derivative node must not be routed through the function-call \
+             callback: {:?}",
+            recorder.function_call_callbacks
+        );
     }
 }

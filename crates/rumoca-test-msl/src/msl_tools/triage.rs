@@ -186,13 +186,7 @@ fn build_report_from_paths(paths: &InputPaths, top: usize) -> Result<TriageRepor
     let rumoca = read_required_json(&paths.rumoca_results_file)?;
     let quality = read_optional_json(&paths.quality_file)?;
     let trace = read_optional_json(&paths.trace_file)?;
-    Ok(build_report(
-        paths,
-        &rumoca,
-        quality.as_ref(),
-        trace.as_ref(),
-        top,
-    ))
+    build_report(paths, &rumoca, quality.as_ref(), trace.as_ref(), top)
 }
 
 fn build_report(
@@ -201,7 +195,7 @@ fn build_report(
     quality: Option<&Value>,
     trace: Option<&Value>,
     top: usize,
-) -> TriageReport {
+) -> Result<TriageReport> {
     let model_results = model_results(rumoca);
     let compile_failures = collect_compile_failures(model_results);
     let balance_cohort = build_balance_cohort(model_results);
@@ -209,7 +203,7 @@ fn build_report(
     let simulation_failures = collect_simulation_failures(model_results);
     let worst_trace_models =
         trace.map_or_else(Vec::new, |payload| collect_worst_traces(payload, top));
-    let missing_trace_models = trace.map_or_else(Vec::new, collect_missing_traces);
+    let missing_trace_models = trace.map_or_else(|| Ok(Vec::new()), collect_missing_traces)?;
     let mut reason_counts = BTreeMap::new();
     add_reason_counts(&mut reason_counts, &compile_failures);
     add_reason_counts(&mut reason_counts, &balance_failures);
@@ -239,7 +233,7 @@ fn build_report(
                 .or_insert(0) += 1;
         }
     }
-    TriageReport {
+    Ok(TriageReport {
         generated_at_unix_seconds: unix_timestamp_seconds(),
         git_commit: get_git_commit(&MslPaths::current().repo_root),
         display_top: top,
@@ -255,7 +249,7 @@ fn build_report(
         simulation_failures,
         worst_trace_models,
         missing_trace_models,
-    }
+    })
 }
 
 fn input_summary(paths: &InputPaths) -> BTreeMap<String, String> {
@@ -733,7 +727,10 @@ fn trace_record(entry: &Value) -> TraceTriageRecord {
         mean_channel_bounded_normalized_l1: mean_l1,
         max_channel_bounded_normalized_l1: max_l1,
         bounded_normalized_l1_score: score,
-        compared_variables: get_u64(entry, "compared_variables"),
+        compared_variables: entry
+            .pointer("/channel_partition/compared")
+            .and_then(Value::as_array)
+            .and_then(|channels| u64::try_from(channels.len()).ok()),
         dominant_shapes: dominant_trace_shapes(entry),
         worst_channels: worst_channel_names(entry),
         rank_score: mean_l1.or(max_l1).or(score).unwrap_or_default(),
@@ -775,25 +772,25 @@ fn format_worst_channel(channel: &Value) -> Option<String> {
     Some(format!("{name} [{shape}]"))
 }
 
-fn collect_missing_traces(trace: &Value) -> Vec<MissingTraceRecord> {
+fn collect_missing_traces(trace: &Value) -> Result<Vec<MissingTraceRecord>> {
     let mut records = trace
         .get("missing_trace")
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-        .map(|(model_name, entry)| MissingTraceRecord {
-            model_name: model_name.clone(),
-            reason: "trace.missing_channel".to_string(),
-            // The comparator records `{kind, detail}`; older certifications
-            // carry a bare string. Both render the same operator text.
-            detail: Some(truncate_detail(&super::band_table::trace_exit_detail(
-                entry,
-            ))),
-            reproduction: reproduction_command(model_name),
+        .map(|(model_name, entry)| {
+            Ok(MissingTraceRecord {
+                model_name: model_name.clone(),
+                reason: "trace.missing_channel".to_string(),
+                detail: Some(truncate_detail(&super::band_table::trace_exit_detail(
+                    entry,
+                )?)),
+                reproduction: reproduction_command(model_name),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     records.sort_by(|lhs, rhs| lhs.model_name.cmp(&rhs.model_name));
-    records
+    Ok(records)
 }
 
 fn add_reason_counts(counts: &mut BTreeMap<String, usize>, records: &[TriageRecord]) {
@@ -1256,7 +1253,12 @@ mod tests {
                     "mean_channel_bounded_normalized_l1": 0.5,
                     "max_channel_bounded_normalized_l1": 0.9,
                     "bounded_normalized_l1_score": 0.4,
-                    "compared_variables": 3,
+                    "channel_partition": {
+                        "compared": ["x", "y", "z"],
+                        "shared_unmeasured": [],
+                        "rumoca_only": [],
+                        "reference_only": []
+                    },
                     "worst_variables": [
                         { "name": "x", "shape": "event_time_mismatch" },
                         { "name": "y", "shape": "constant_offset" }
@@ -1264,7 +1266,10 @@ mod tests {
                 }
             ],
             "missing_trace": {
-                "Modelica.MissingTrace": "missing rumoca trace"
+                "Modelica.MissingTrace": {
+                    "kind": "rumoca_trace_missing",
+                    "detail": "missing rumoca trace"
+                }
             }
         })
     }
@@ -1279,7 +1284,8 @@ mod tests {
             None,
             Some(&sample_trace_results()),
             20,
-        );
+        )
+        .expect("valid triage evidence");
 
         assert_eq!(report.compile_failures.len(), 1);
         assert_eq!(report.compile_failures[0].reason, "compile.instantiate");
@@ -1421,15 +1427,15 @@ mod tests {
         assert_eq!(record.reason, "sim.init");
         assert_eq!(record.error_code.as_deref(), Some("EX001"));
 
-        let table = serde_json::json!({
+        let solver = serde_json::json!({
             "model_name": "Modelica.C",
             "sim_status": "sim_solver_fail",
-            "sim_error": "solver error: combi table lookup out of range",
+            "sim_error": "solver error: nonlinear solve failed",
             "sim_error_code": "EX001",
             "failure_bucket": "SolverIntegration",
         });
         assert_eq!(
-            simulation_record(&table)
+            simulation_record(&solver)
                 .expect("simulation failure record")
                 .reason,
             "sim.solver"
@@ -1551,7 +1557,7 @@ mod tests {
             "sim_error": "solver error: the run did not complete",
             "failure_bucket": "RuntimeEventIteration",
         }));
-        let report = build_report(&paths, &results, None, None, 20);
+        let report = build_report(&paths, &results, None, None, 20).expect("valid triage evidence");
         assert_eq!(
             report.failure_bucket_counts.get("RuntimeEventIteration"),
             Some(&1)
@@ -1731,7 +1737,8 @@ mod tests {
             None,
             Some(&sample_trace_results()),
             20,
-        );
+        )
+        .expect("valid triage evidence");
 
         write_outputs(&paths, &report).expect("write reports");
 
@@ -1762,7 +1769,7 @@ mod tests {
                 }
             ]
         });
-        let report = build_report(&paths, &rumoca, None, None, 1);
+        let report = build_report(&paths, &rumoca, None, None, 1).expect("valid triage evidence");
 
         assert_eq!(report.simulation_failures.len(), 2);
         let markdown = render_markdown(&report);

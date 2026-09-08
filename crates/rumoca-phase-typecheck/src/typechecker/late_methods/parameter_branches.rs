@@ -54,7 +54,7 @@ impl TypeChecker {
     /// a translation-time value is then the evaluator's answer.
     fn condition_is_translation_time(&self, condition: &Expression) -> bool {
         let mut collector = ConditionReferences::default();
-        let _ = collector.visit_expression(condition);
+        let _visit_outcome = collector.visit_expression(condition);
         collector
             .references
             .iter()
@@ -74,7 +74,9 @@ impl TypeChecker {
                 | rumoca_eval_ast::eval::VariabilityLevel::Parameter,
             )
             | SemanticLookup::Missing => false,
-            SemanticLookup::Found(_) | SemanticLookup::Ambiguous => true,
+            SemanticLookup::Found(_)
+            | SemanticLookup::Ambiguous
+            | SemanticLookup::InvalidAstSubscript => true,
         }
     }
 }

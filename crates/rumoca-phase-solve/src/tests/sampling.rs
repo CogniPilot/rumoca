@@ -27,12 +27,14 @@ fn integrating_plant_output<'dae>(
     owner: dae::DaeProvenance,
     drive: dae::AlgebraicId<'dae>,
 ) -> Result<dae::AlgebraicId<'dae>, dae::DaeConstructionError> {
+    let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
     let state = model.variables(|variables| {
         variables.state(
             VarName::new("x"),
+            rumoca_core::InstanceId::new(1),
             real,
             declaration,
-            dae::VariableAttributes::default(),
+            state_attributes,
         )
     })?;
     let plant = model.expressions(|expressions| {
@@ -50,6 +52,7 @@ fn integrating_plant_output<'dae>(
     let sensed = model.variables(|variables| {
         variables.algebraic(
             VarName::new("w"),
+            rumoca_core::InstanceId::new(2),
             real,
             declaration,
             dae::VariableAttributes::default(),
@@ -118,6 +121,7 @@ fn clocked_hold_sample_model(
         let held = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("h"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -126,6 +130,7 @@ fn clocked_hold_sample_model(
         let sampled = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("s"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -134,6 +139,7 @@ fn clocked_hold_sample_model(
         let carrier = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -303,6 +309,7 @@ fn clocked_row_sampling_an_independent_continuous_value_stays_accepted() {
         let sampled = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("s"),
+                rumoca_core::InstanceId::new(6),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -311,6 +318,7 @@ fn clocked_row_sampling_an_independent_continuous_value_stays_accepted() {
         let carrier = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(7),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),

@@ -1,11 +1,69 @@
-//! Symbolic component dimension recovery: resolving declared `dims_expr`
-//! subscripts against evaluated parameters, enumeration ranges, and binding
-//! shapes so flat variables carry concrete dimensions (MLS §10.1).
+//! Discharge of deferred colon dimensions from binding shape (MLS §10.1).
+//!
+//! Typecheck resolves explicit-only declarations, while this bridge validates
+//! explicit axes inside mixed `[explicit, :]` declarations and discharges the
+//! remaining colon axes. Local declaration axes and structured-parent prefixes
+//! stay distinct until the final construction.
 
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalAxes(Vec<i64>);
+
+impl LocalAxes {
+    fn from_local(values: Vec<i64>) -> Self {
+        Self(values)
+    }
+
+    fn from_cached(
+        values: &[i64],
+        parent: &[i64],
+        expected_local_rank: usize,
+        var_name: &str,
+    ) -> Result<Self, FlattenError> {
+        if parent.is_empty() || values.len() == expected_local_rank {
+            return Ok(Self(values.to_vec()));
+        }
+        if values.len() == parent.len() + expected_local_rank {
+            if values[..parent.len()] != *parent {
+                return Err(FlattenError::internal(format!(
+                    "cached dimensions for `{var_name}` do not carry the issued parent prefix"
+                )));
+            }
+            return Ok(Self(values[parent.len()..].to_vec()));
+        }
+        Ok(Self(values.to_vec()))
+    }
+
+    fn values(&self) -> &[i64] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrefixedDims {
+    parent: Vec<i64>,
+    local: LocalAxes,
+}
+
+impl PrefixedDims {
+    fn from_parts(parent: &[i64], local: LocalAxes) -> Self {
+        Self {
+            parent: parent.to_vec(),
+            local,
+        }
+    }
+
+    fn into_values(self) -> Vec<i64> {
+        let mut values = Vec::with_capacity(self.parent.len() + self.local.0.len());
+        values.extend(self.parent);
+        values.extend(self.local.0);
+        values
+    }
+}
+
 impl Context {
-    pub(crate) fn recompute_symbolic_component_dimensions(
+    pub(crate) fn discharge_deferred_colon_dimensions(
         &mut self,
         flat: &mut Model,
         overlay: &InstanceOverlay,
@@ -13,26 +71,35 @@ impl Context {
     ) -> Result<bool, FlattenError> {
         let mut changed = false;
         for instance_data in overlay.components.values() {
-            if !instance_data.is_primitive || instance_data.dims_expr.is_empty() {
+            if !instance_data.is_primitive
+                || !instance_data
+                    .dims_expr
+                    .iter()
+                    .any(|subscript| matches!(subscript, ast::Subscript::Range { .. }))
+            {
                 continue;
             }
             let var_name = qualified_to_var_name(&instance_data.qualified_name);
-            let Some(flat_var) = flat.variables.get(&var_name) else {
+            let Some(flat_var) =
+                deferred_colon_flat_variable(flat, overlay, instance_data, &var_name)?
+            else {
                 continue;
             };
             let span = instance_source_span(instance_data, tree)?;
-            let resolved_dims = self.resolve_component_dims_expr(
+            let inherited_dims = unexpanded_structured_parent_dims(instance_data, overlay);
+            let local_dims = self.resolve_component_local_axes(
                 var_name.as_str(),
-                &instance_data.dims_expr,
+                instance_data,
                 flat_var,
+                &inherited_dims,
                 tree,
                 span,
             )?;
-            let inherited_dims = unexpanded_structured_parent_dims(instance_data, overlay);
-            let resolved_dims = normalize_inferred_dims_for_parent(&resolved_dims, &inherited_dims);
-            let Some(flat_var) = flat.variables.get_mut(&var_name) else {
-                continue;
-            };
+            let resolved_dims = PrefixedDims::from_parts(&inherited_dims, local_dims).into_values();
+            let flat_var = flat
+                .variables
+                .get_mut(&var_name)
+                .expect("the Flat variable was proved present above");
             if flat_var.dims != resolved_dims {
                 flat_var.dims.clone_from(&resolved_dims);
                 changed = true;
@@ -46,72 +113,73 @@ impl Context {
         Ok(changed)
     }
 
-    fn resolve_component_dims_expr(
+    fn resolve_component_local_axes(
         &self,
         var_name: &str,
-        dims_expr: &[ast::Subscript],
+        instance_data: &ast::InstanceData,
         flat_var: &flat::Variable,
+        inherited_dims: &[i64],
         tree: &ClassTree,
         span: rumoca_core::Span,
-    ) -> Result<Vec<i64>, FlattenError> {
+    ) -> Result<LocalAxes, FlattenError> {
+        let dims_expr = &instance_data.dims_expr;
+        let inferred_dims = match flat_var.binding.as_ref() {
+            Some(binding) => self.infer_binding_dimensions(var_name, binding, tree)?,
+            None => None,
+        };
+        let expected_local_rank = inferred_dims
+            .as_ref()
+            .map_or_else(|| instance_data.dims.len().max(dims_expr.len()), Vec::len);
+        let admitted_dims = self
+            .array_dimensions
+            .get(var_name)
+            .map(|dims| LocalAxes::from_cached(dims, inherited_dims, expected_local_rank, var_name))
+            .transpose()?;
+        let inferred_dims = inferred_dims.map(LocalAxes::from_local);
+        let candidate = reconcile_local_axes(var_name, admitted_dims, inferred_dims, span)?;
+
         let mut dims = Vec::with_capacity(dims_expr.len());
         for (index, subscript) in dims_expr.iter().enumerate() {
             let dim = match subscript {
                 ast::Subscript::Expression(_) => {
-                    self.eval_component_dim_subscript(var_name, subscript, tree, span)?
+                    let explicit =
+                        self.eval_component_dim_subscript(var_name, subscript, tree, span)?;
+                    refuse_conflicting_explicit_axis(
+                        var_name,
+                        index,
+                        explicit,
+                        candidate.as_ref(),
+                        span,
+                    )?;
+                    explicit
                 }
-                ast::Subscript::Range { .. } | ast::Subscript::Empty => {
-                    self.resolve_colon_component_dimension(var_name, flat_var, index, tree, span)?
+                ast::Subscript::Range { .. } => candidate
+                    .as_ref()
+                    .and_then(|axes| axes.values().get(index))
+                    .copied()
+                    .filter(|dimension| *dimension >= 0)
+                    .ok_or_else(|| {
+                        FlattenError::unresolved_component_dimension(
+                            var_name,
+                            ":".to_string(),
+                            span,
+                        )
+                    })?,
+                ast::Subscript::Empty => {
+                    return Err(FlattenError::invalid_ast_subscript(
+                        "empty recovery subscript cannot define a component dimension",
+                        span,
+                    ));
                 }
             };
             dims.push(dim);
         }
-        Ok(dims)
-    }
-
-    fn resolve_colon_component_dimension(
-        &self,
-        var_name: &str,
-        flat_var: &flat::Variable,
-        index: usize,
-        tree: &ClassTree,
-        span: rumoca_core::Span,
-    ) -> Result<i64, FlattenError> {
-        let inferred_dims = flat_var
-            .binding
-            .as_ref()
-            .and_then(|binding| self.infer_binding_dimensions(var_name, binding, tree));
-        let resolved_dims = best_dims(self.array_dimensions.get(var_name), inferred_dims.as_ref());
-
-        if let Some(dim) = resolved_dims
-            .as_ref()
-            .and_then(|dims| dims.get(index).copied())
-            .filter(|dim| *dim >= 0)
+        if let Some(candidate) = candidate
+            && candidate.values().len() > dims_expr.len()
         {
-            return Ok(dim);
+            dims.extend_from_slice(&candidate.values()[dims_expr.len()..]);
         }
-
-        if (flat_var.dims.len() > 1 || flat_var.dims.iter().any(|dim| *dim > 1))
-            && let Some(dim) = flat_var.dims.get(index).copied().filter(|dim| *dim >= 0)
-        {
-            return Ok(dim);
-        }
-
-        let Some(dim) = resolved_dims.and_then(|dims| dims.get(index).copied()) else {
-            return Err(FlattenError::unresolved_component_dimension(
-                var_name,
-                ":".to_string(),
-                span,
-            ));
-        };
-        if dim < 0 {
-            return Err(FlattenError::unresolved_component_dimension(
-                var_name,
-                ":".to_string(),
-                span,
-            ));
-        }
-        Ok(dim)
+        Ok(LocalAxes(dims))
     }
 
     fn infer_binding_dimensions(
@@ -119,21 +187,33 @@ impl Context {
         var_name: &str,
         binding: &Expression,
         tree: &ClassTree,
-    ) -> Option<Vec<i64>> {
-        infer_enum_range_dimensions(binding, tree).or_else(|| {
-            infer_array_dimensions_full_with_functions(
-                binding,
-                &ParamEvalContext::new(
-                    &self.parameter_values,
-                    &self.real_parameter_values,
-                    &self.boolean_parameter_values,
-                    &self.enum_parameter_values,
-                    &self.array_dimensions,
-                    &self.functions,
-                    Some(var_name),
+    ) -> Result<Option<Vec<i64>>, FlattenError> {
+        if let Some(dims) = infer_enum_range_dimensions(binding, tree) {
+            return Ok(Some(dims));
+        }
+        match infer_array_dimensions_full_with_functions(
+            binding,
+            &ParamEvalContext::new_resolved(
+                &self.parameter_values,
+                &self.real_parameter_values,
+                &self.boolean_parameter_values,
+                &self.array_dimensions,
+                &self.functions,
+                rumoca_eval_flat::phase_constant::ResolvedParamInventory::new(
+                    &self.parameter_values_by_identity,
+                    &self.array_dimensions_by_identity,
+                    &self.resolved_enum_catalog,
                 ),
-            )
-        })
+                Some(var_name),
+            ),
+        ) {
+            Ok(dims) => Ok(dims),
+            Err(error) => Err(crate::constant_eval::map_evaluation_error(
+                error,
+                "inferring a component binding shape",
+                binding.span(),
+            )?),
+        }
     }
 
     fn eval_component_dim_subscript(
@@ -157,30 +237,89 @@ impl Context {
             expr,
             crate::ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
-        let eval_ctx = ParamEvalContext {
-            known_ints: &self.parameter_values,
-            known_reals: &self.real_parameter_values,
-            known_bools: &self.boolean_parameter_values,
-            known_enums: &self.enum_parameter_values,
-            array_dims: &self.array_dimensions,
-            functions: &self.functions,
-            var_context: Some(var_name),
-        };
-        let Some(dim) = try_eval_integer_with_context(&lowered, &eval_ctx) else {
+        let eval_ctx = ParamEvalContext::new_resolved(
+            &self.parameter_values,
+            &self.real_parameter_values,
+            &self.boolean_parameter_values,
+            &self.array_dimensions,
+            &self.functions,
+            rumoca_eval_flat::phase_constant::ResolvedParamInventory::new(
+                &self.parameter_values_by_identity,
+                &self.array_dimensions_by_identity,
+                &self.resolved_enum_catalog,
+            ),
+            Some(var_name),
+        );
+        let evaluated = crate::constant_eval::map_optional_evaluation(
+            rumoca_eval_flat::phase_constant::try_eval_integer_with_context(&lowered, &eval_ctx),
+            "evaluating a required component dimension",
+            lowered.span().or(Some(span)),
+        )?;
+        let Some(dim) = evaluated.filter(|dim| *dim >= 0) else {
             return Err(FlattenError::unresolved_component_dimension(
                 var_name,
                 expr.to_string(),
                 span,
             ));
         };
-        if dim < 0 {
-            return Err(FlattenError::unresolved_component_dimension(
+        Ok(dim)
+    }
+}
+
+fn reconcile_local_axes(
+    var_name: &str,
+    admitted: Option<LocalAxes>,
+    inferred: Option<LocalAxes>,
+    span: rumoca_core::Span,
+) -> Result<Option<LocalAxes>, FlattenError> {
+    let (admitted, inferred) = match (admitted, inferred) {
+        (Some(admitted), Some(inferred)) => (admitted, inferred),
+        (admitted, None) => return Ok(admitted),
+        (None, inferred) => return Ok(inferred),
+    };
+    if admitted.values().len() == inferred.values().len()
+        && admitted.values().iter().all(|extent| *extent >= 0)
+        && inferred.values().iter().all(|extent| *extent >= 0)
+    {
+        if let Some((index, (&admitted_extent, &inferred_extent))) = admitted
+            .values()
+            .iter()
+            .zip(inferred.values())
+            .enumerate()
+            .find(|(_, (admitted_extent, inferred_extent))| admitted_extent != inferred_extent)
+        {
+            return Err(conflicting_component_dimension(
                 var_name,
-                expr.to_string(),
+                index,
+                admitted_extent,
+                inferred_extent,
                 span,
             ));
         }
-        Ok(dim)
+        return Ok(Some(admitted));
+    }
+    Ok(Some(
+        if dims_are_better(inferred.values(), admitted.values()) {
+            inferred
+        } else {
+            admitted
+        },
+    ))
+}
+
+fn conflicting_component_dimension(
+    var_name: &str,
+    zero_based_axis: usize,
+    admitted: i64,
+    inferred: i64,
+    span: rumoca_core::Span,
+) -> FlattenError {
+    FlattenError::ConflictingComponentDimension {
+        name: var_name.to_string(),
+        axis: zero_based_axis + 1,
+        admitted,
+        inferred,
+        span,
     }
 }
 
@@ -232,4 +371,53 @@ fn instance_source_span(
                 "source file `{file_name}` for symbolic component dimensions was not found"
             ))
         })
+}
+
+/// Resolve a deferred-colon component's Flat variable.
+///
+/// `Ok(None)` means the component belongs to a disabled branch and the caller
+/// should skip it; `Err` means a component that should exist does not. Naming
+/// the rule here keeps the disabled-component case ahead of the internal error,
+/// which is the order the loop relied on when this was inline.
+fn deferred_colon_flat_variable<'flat>(
+    flat: &'flat flat::Model,
+    overlay: &ast::InstanceOverlay,
+    instance_data: &ast::InstanceData,
+    var_name: &rumoca_core::VarName,
+) -> Result<Option<&'flat flat::Variable>, FlattenError> {
+    if let Some(variable) = flat.variables.get(var_name) {
+        return Ok(Some(variable));
+    }
+    if crate::is_in_disabled_component(&instance_data.qualified_name, &overlay.disabled_components)
+    {
+        return Ok(None);
+    }
+    Err(FlattenError::internal(format!(
+        "deferred colon component `{var_name}` has no Flat variable"
+    )))
+}
+
+/// Refuse an explicit axis that contradicts an already-inferred one.
+///
+/// A negative inferred extent means "not yet known" and never conflicts; only a
+/// non-negative inferred extent that differs from the written one is a conflict.
+/// Extracted so the rule is named rather than nested three deep inside the
+/// subscript match.
+fn refuse_conflicting_explicit_axis(
+    var_name: &str,
+    index: usize,
+    explicit: i64,
+    candidate: Option<&LocalAxes>,
+    span: rumoca_core::Span,
+) -> Result<(), FlattenError> {
+    if let Some(inferred) = candidate
+        .and_then(|axes| axes.values().get(index))
+        .copied()
+        .filter(|inferred| *inferred >= 0 && *inferred != explicit)
+    {
+        return Err(conflicting_component_dimension(
+            var_name, index, explicit, inferred, span,
+        ));
+    }
+    Ok(())
 }

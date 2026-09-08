@@ -653,3 +653,4 @@ fn an_unknown_classification_name_is_rejected_by_the_result_schema() {
 }
 
 mod balance_pipeline;
+mod compare_sinc_exp_sine_cone;

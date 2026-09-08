@@ -679,7 +679,7 @@ fn expression_references<'dae>(
 #[cfg(test)]
 mod tests {
     use rumoca_core::{
-        SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName,
+        InstanceId, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain, TypeId, VarName,
     };
 
     use super::*;
@@ -810,12 +810,14 @@ mod tests {
                 Ok((
                     variables.algebraic(
                         VarName::new("x"),
+                        InstanceId::new(1),
                         real,
                         provenance,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.algebraic(
                         VarName::new("y"),
+                        InstanceId::new(2),
                         real,
                         provenance,
                         dae::VariableAttributes::default(),
@@ -849,6 +851,7 @@ mod tests {
                 Ok((
                     variables.input(
                         VarName::new("u"),
+                        InstanceId::new(1),
                         array,
                         dae::InputVariability::Continuous,
                         provenance,
@@ -856,6 +859,7 @@ mod tests {
                     )?,
                     variables.algebraic(
                         VarName::new("x"),
+                        InstanceId::new(2),
                         array,
                         provenance,
                         dae::VariableAttributes::default(),
@@ -896,7 +900,7 @@ mod tests {
                 domains.structured(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
-                            id: 0,
+                            id: rumoca_core::StructuredIndexBinderId::new(0),
                             display_name: "i".to_owned(),
                             lower: 1,
                             upper: 2,
@@ -910,6 +914,7 @@ mod tests {
                 Ok((
                     variables.input(
                         VarName::new("u"),
+                        InstanceId::new(1),
                         array,
                         dae::InputVariability::Continuous,
                         provenance,
@@ -917,6 +922,7 @@ mod tests {
                     )?,
                     variables.algebraic(
                         VarName::new("x"),
+                        InstanceId::new(2),
                         array,
                         provenance,
                         dae::VariableAttributes::default(),
@@ -967,18 +973,21 @@ mod tests {
                 Ok((
                     variables.discrete_real(
                         VarName::new("z"),
+                        InstanceId::new(1),
                         real,
                         source_provenance,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.algebraic(
                         VarName::new("connectorValue"),
+                        InstanceId::new(2),
                         real,
                         source_provenance,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.algebraic(
                         VarName::new("outputValue"),
+                        InstanceId::new(3),
                         real,
                         source_provenance,
                         dae::VariableAttributes::default(),

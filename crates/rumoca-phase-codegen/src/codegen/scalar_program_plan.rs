@@ -244,7 +244,7 @@ fn temporary_count_after(op: &solve::LinearOp) -> Result<usize, CodegenError> {
     };
     let width = match op {
         solve::LinearOp::FunctionFold { program, .. }
-        | solve::LinearOp::GuardedFunctionFold { program, .. } => program.carried_count,
+        | solve::LinearOp::GuardedFunctionFold { program, .. } => program.carried_count(),
         _ => 1,
     };
     usize::try_from(dst)
@@ -366,17 +366,6 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
         {
             Some(Value::from(index))
         }
-        LinearOp::LoadIndexedP {
-            base, count, index, ..
-        }
-        | LinearOp::LoadIndexedSeed {
-            base, count, index, ..
-        } => match key {
-            "base" => Some(Value::from(base)),
-            "count" => Some(Value::from(count)),
-            "index_ref" => Some(Value::from(index as usize)),
-            _ => None,
-        },
         LinearOp::LoadIndexedRegister {
             base,
             stride,
@@ -422,11 +411,11 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
         } => match key {
             "initial_start" => Some(Value::from(initial_start as usize)),
             "capture_start" => Some(Value::from(capture_start as usize)),
-            "carried_count" => Some(Value::from(program.carried_count)),
-            "capture_count" => Some(Value::from(program.capture_count)),
-            "register_count" => Some(Value::from(program.register_count)),
-            "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "carried_count" => Some(Value::from(program.carried_count())),
+            "capture_count" => Some(Value::from(program.capture_count())),
+            "register_count" => Some(Value::from(program.register_count())),
+            "domain" => Some(Value::from_serialize(program.domain())),
+            "update" => Some(Value::from_serialize(program.update())),
             _ => None,
         },
         LinearOp::GuardedFunctionFold {
@@ -439,11 +428,11 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             "initial_start" => Some(Value::from(initial_start as usize)),
             "capture_start" => Some(Value::from(capture_start as usize)),
             "activation" => Some(Value::from(activation as usize)),
-            "carried_count" => Some(Value::from(program.carried_count)),
-            "capture_count" => Some(Value::from(program.capture_count)),
-            "register_count" => Some(Value::from(program.register_count)),
-            "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "carried_count" => Some(Value::from(program.carried_count())),
+            "capture_count" => Some(Value::from(program.capture_count())),
+            "register_count" => Some(Value::from(program.register_count())),
+            "domain" => Some(Value::from_serialize(program.domain())),
+            "update" => Some(Value::from_serialize(program.update())),
             _ => None,
         },
         LinearOp::FunctionConditional {
@@ -452,12 +441,12 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
             ..
         } => match key {
             "capture_start" => Some(Value::from(capture_start as usize)),
-            "capture_count" => Some(Value::from(program.capture_count)),
-            "target_widths" => Some(Value::from_serialize(&program.target_widths)),
-            "result_count" => Some(Value::from(program.result_count)),
-            "arms" => Some(Value::from_serialize(&program.arms)),
-            "fallback_register_count" => Some(Value::from(program.fallback_register_count)),
-            "fallback" => Some(Value::from_serialize(&program.fallback)),
+            "capture_count" => Some(Value::from(program.capture_count())),
+            "target_widths" => Some(Value::from_serialize(program.target_widths())),
+            "result_count" => Some(Value::from(program.result_count())),
+            "arms" => Some(Value::from_serialize(program.arms())),
+            "fallback_register_count" => Some(Value::from(program.fallback_register_count())),
+            "fallback" => Some(Value::from_serialize(program.fallback())),
             _ => None,
         },
         LinearOp::StoreOutputFoldTensorUpdate {
@@ -489,11 +478,11 @@ fn load_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
         } => match key {
             "initial" => Some(Value::from_serialize(initial)),
             "capture_start" => Some(Value::from(capture_start as usize)),
-            "carried_count" => Some(Value::from(program.carried_count)),
-            "capture_count" => Some(Value::from(program.capture_count)),
-            "register_count" => Some(Value::from(program.register_count)),
-            "domain" => Some(Value::from_serialize(&program.domain)),
-            "update" => Some(Value::from_serialize(&program.update)),
+            "carried_count" => Some(Value::from(program.carried_count())),
+            "capture_count" => Some(Value::from(program.capture_count())),
+            "register_count" => Some(Value::from(program.register_count())),
+            "domain" => Some(Value::from_serialize(program.domain())),
+            "update" => Some(Value::from_serialize(program.update())),
             "result_base" => Some(Value::from(result_base)),
             "count" => Some(Value::from(count)),
             "condition" => condition.map(|condition| Value::from(condition as usize)),
@@ -669,33 +658,6 @@ fn float_class(value: f64) -> &'static str {
 fn stateful_field(op: &solve::LinearOp, key: &str) -> Option<Value> {
     use solve::LinearOp;
     match *op {
-        LinearOp::TableBounds { table_id, max, .. } => match key {
-            "table_id" => Some(Value::from(table_id as usize)),
-            "max" => Some(Value::from(max)),
-            _ => None,
-        },
-        LinearOp::TableLookup {
-            table_id,
-            column,
-            input,
-            ..
-        }
-        | LinearOp::TableLookupSlope {
-            table_id,
-            column,
-            input,
-            ..
-        } => match key {
-            "table_id" => Some(Value::from(table_id as usize)),
-            "column" => Some(Value::from(column as usize)),
-            "input" => Some(Value::from(input as usize)),
-            _ => None,
-        },
-        LinearOp::TableNextEvent { table_id, time, .. } => match key {
-            "table_id" => Some(Value::from(table_id as usize)),
-            "time" => Some(Value::from(time as usize)),
-            _ => None,
-        },
         LinearOp::RandomInitialState {
             generator,
             local_seed,
@@ -823,9 +785,6 @@ fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         LinearOp::LoadFunctionConditionalCaptureRange { .. } => {
             &["kind", "dst", "index_start", "count"]
         }
-        LinearOp::LoadIndexedP { .. } | LinearOp::LoadIndexedSeed { .. } => {
-            &["kind", "dst", "base", "count", "index_ref"]
-        }
         LinearOp::LoadIndexedRegister { .. }
         | LinearOp::LoadIndexedFoldCarried { .. }
         | LinearOp::LoadIndexedFoldCapture { .. } => {
@@ -907,11 +866,6 @@ fn op_keys(op: &solve::LinearOp) -> &'static [&'static str] {
         LinearOp::StoreOutputRange { .. } => {
             &["kind", "start", "count", "stride", "output_indices"]
         }
-        LinearOp::TableBounds { .. } => &["kind", "dst", "table_id", "max"],
-        LinearOp::TableLookup { .. } | LinearOp::TableLookupSlope { .. } => {
-            &["kind", "dst", "table_id", "column", "input"]
-        }
-        LinearOp::TableNextEvent { .. } => &["kind", "dst", "table_id", "time"],
         LinearOp::RandomInitialState { .. } => &[
             "kind",
             "dst",

@@ -315,7 +315,7 @@ pub fn run_command_with_timeout(
             break false;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            let _already_exited = child.kill();
             break true;
         }
         thread::sleep(OMC_BATCH_TIMEOUT_POLL);

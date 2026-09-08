@@ -126,7 +126,7 @@ session = rm.Session(roots=["libs/Modelica"])
 written = session.codegen_file(
     "model.mo",
     "MyModel",
-    "galec-production",
+    "galec",
     "generated/galec",
 )
 ```
@@ -146,7 +146,7 @@ add_custom_command(
           "import pathlib, rumoca as rm; \
 session = rm.Session(roots=[r'${CMAKE_CURRENT_SOURCE_DIR}/libs/Modelica']); \
 session.codegen_file(r'${CMAKE_CURRENT_SOURCE_DIR}/model.mo', 'MyModel', \
-'galec-production', r'${CMAKE_CURRENT_BINARY_DIR}/generated/galec'); \
+'galec', r'${CMAKE_CURRENT_BINARY_DIR}/generated/galec'); \
 pathlib.Path(r'${CMAKE_CURRENT_BINARY_DIR}/rumoca-codegen.stamp').write_text('ok\\n')"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/model.mo"
   VERBATIM

@@ -14,16 +14,6 @@ pub enum OutputTimelineError {
     NonAdvancingInterval,
 }
 
-pub fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
-    try_build_output_times(t_start, t_end, dt).unwrap_or_else(|_| {
-        if t_start == t_end {
-            vec![t_start]
-        } else {
-            vec![t_start, t_end]
-        }
-    })
-}
-
 pub fn try_build_output_times(
     t_start: f64,
     t_end: f64,
@@ -581,9 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn build_output_times_handles_zero_span_and_invalid_dt() {
-        assert_eq!(build_output_times(1.0, 1.0, 0.0), vec![1.0]);
-        assert_eq!(build_output_times(1.0, 2.0, 0.0), vec![1.0, 2.0]);
+    fn try_build_output_times_handles_zero_span() {
         assert_eq!(try_build_output_times(1.0, 1.0, 0.0), Ok(vec![1.0]));
     }
 

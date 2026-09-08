@@ -1,0 +1,6 @@
+{%- macro attr(name, value) -%}{{ " " }}{{ name }}="{{ value | xml_escape }}"{%- endmacro -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<Content xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="schemas/efmiContainerManifest.xsd" xsdVersion="0.11.0" efmiVersion="1.0.0"{{ attr("id", "{" ~ __rumoca_artifact_identity_v1_content ~ "}") }}{{ attr("name", algorithm_code.presentation.manifest_name) }}{{ attr("generationDateAndTime", artifact.generated_at) }}{{ attr("generationTool", artifact.generation_tool) }}>
+  <ModelRepresentation{{ attr("name", algorithm_code.artifact_layout.algorithm_code_manifest.representation_name) }} kind="AlgorithmCode"{{ attr("manifest", algorithm_code.artifact_layout.algorithm_code_manifest.file_name) }}{{ attr("checksum", artifact.checksums.ac_manifest_sha1) }}{{ attr("manifestRefId", "{" ~ __rumoca_artifact_identity_v1_ac_manifest ~ "}") }}/>
+  <ModelRepresentation{{ attr("name", algorithm_code.artifact_layout.production_manifest.representation_name) }} kind="ProductionCode"{{ attr("manifest", algorithm_code.artifact_layout.production_manifest.file_name) }}{{ attr("checksum", artifact.checksums.pc_manifest_sha1) }}{{ attr("manifestRefId", "{" ~ __rumoca_artifact_identity_v1_pc_manifest ~ "}") }}/>
+</Content>

@@ -5,12 +5,11 @@ use rumoca_ir_solve as solve;
 
 /// Whether the checked DAE carries any MLS §12.9 external function interface.
 ///
-/// SEV-155: this probe used to return a hard-coded `false`, so the
-/// `external_functions == Some(false)` gate in
-/// [`super::validate_dae_target_capabilities`] could not fire at all. Phase DAE
-/// *does* construct external bodies (`FunctionBodyEntry::External`, built by
-/// `define_external`), so the checked function table is exactly the thing to
-/// interrogate, and the walk below reports it.
+/// Phase DAE constructs external bodies (`FunctionBodyEntry::External`, built
+/// by `define_external`), so the checked function table is exactly the thing
+/// to interrogate, and the walk below reports it. SEV-156 makes this fact a
+/// total refusal before Solve executable lowering; a target capability cannot
+/// admit syntax for which the Invoke/Effect grammar does not exist.
 ///
 /// There is no "unknown" arm to fail closed on, because a finalized `Dae`
 /// admits no unreadable function. Every identity below `function_count()`
@@ -23,9 +22,6 @@ use rumoca_ir_solve as solve;
 /// what licenses `FunctionView::is_external` to assert it rather than this
 /// caller re-deciding it.
 ///
-/// SEV-156 keeps the reject arm total: there is no invoke/effect grammar for an
-/// external call yet, so every external function must reject at the capability
-/// boundary.
 pub(super) fn dae_has_external_functions(model: &dae::Dae) -> bool {
     model.inspect(|view| {
         (0..view.function_count()).any(|index| {
@@ -34,31 +30,6 @@ pub(super) fn dae_has_external_functions(model: &dae::Dae) -> bool {
                 .expect("dense checked function identity resolves");
             let function = view.function(id).expect("checked function resolves");
             function.is_external()
-        })
-    })
-}
-
-pub(super) fn dae_uses_external_tables(model: &dae::Dae) -> bool {
-    model.inspect(|view| {
-        calls_named(view, |name| {
-            matches!(
-                rumoca_core::top_level_last_segment(name),
-                "ExternalCombiTimeTable"
-                    | "ExternalCombiTable1D"
-                    | "ExternalCombiTable2D"
-                    | "getTimeTableTmax"
-                    | "getTimeTableTmin"
-                    | "getTimeTableValueNoDer"
-                    | "getTimeTableValueNoDer2"
-                    | "getTimeTableValue"
-                    | "getTable1DAbscissaUmax"
-                    | "getTable1DAbscissaUmin"
-                    | "getTable1DValueNoDer"
-                    | "getTable1DValueNoDer2"
-                    | "getTable1DValue"
-                    | "getNextTimeEvent"
-                    | "isValidTable"
-            )
         })
     })
 }
@@ -105,12 +76,6 @@ pub(super) fn dae_has_clocks(model: &dae::Dae) -> bool {
     model.inspect(|view| view.clock_count() != 0)
 }
 
-pub(super) const fn dae_has_unlowered_source_temporal_operators(_: &dae::Dae) -> bool {
-    // The checked expression grammar has typed temporal coordinates and no
-    // source temporal-call variant.
-    false
-}
-
 pub(super) const fn dae_has_dynamic_ranges(_: &dae::Dae) -> bool {
     // Checked ranges store their integer start/step/stop values directly.
     false
@@ -153,10 +118,10 @@ pub(super) fn solve_requires_residual_equations(
     problem: &solve::SolveProblem,
     exact_algebraic_assignments: Option<bool>,
 ) -> bool {
-    let continuous = &problem.continuous;
-    let algebraic_count = problem.solve_layout.algebraic_scalar_count();
-    let has_algebraic_system = !continuous.implicit_rhs.is_empty()
-        || !continuous.algebraic_projection_plan.is_empty()
+    let continuous = problem.continuous();
+    let algebraic_count = problem.solve_layout().algebraic_scalar_count();
+    let has_algebraic_system = !continuous.implicit_rhs().is_empty()
+        || !continuous.algebraic_projection_plan().is_empty()
         || algebraic_count != 0;
     has_algebraic_system
         && (exact_algebraic_assignments != Some(true)

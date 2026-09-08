@@ -49,7 +49,7 @@ fn simulate_check() -> Check {
 
 fn compile_check() -> Check {
     Check::Compile {
-        target: "galec-production".to_string(),
+        target: "fixture-target".to_string(),
     }
 }
 
@@ -254,15 +254,24 @@ fn the_checked_in_manifest_is_admissible_and_covers_the_canary_roster() {
         .map(|entry| entry.model.as_str())
         .collect();
     for model in [
-        "Vehicles.Rdd2.NavigationEstimator",
-        "Vehicles.Rdd2.Controller",
+        "Vehicles.Rdd2.Test.WaypointMission",
+        "Vehicles.Cubs2.Test.Scenarios.Takeoff",
         "Vehicles.Cubs2.OuterLoop",
-        "Estimation.StrapdownINS.UKF.Estimator",
     ] {
         assert!(
             flight.contains(&model),
             "the corpus manifest does not gate flight model {model}"
         );
+    }
+    let retired = ["c-ode", "embedded-c-galec", "galec-production"];
+    for entry in &manifest.entries {
+        if let Check::Compile { target } = &entry.check {
+            assert!(
+                !retired.contains(&target.as_str()),
+                "retired target `{target}` remains an active corpus row: {}",
+                entry.id
+            );
+        }
     }
 }
 

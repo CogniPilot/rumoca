@@ -40,7 +40,7 @@ fn function_shape_uses_explicit_partial_application_identity() {
         span,
     };
     let model = flat::Model::new();
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the empty model has a valid shape environment");
 
     let partial = analysis
@@ -75,7 +75,7 @@ fn named_argument_shape_requires_generated_exact_marker_identity() {
     let mut model = flat::Model::new();
     model.type_ids_by_def_id.insert(enum_declaration, enum_type);
     model.enumeration_type_roots.insert(enum_type);
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the marker fixture has a valid shape environment");
     let marker_name = format!("{}x", rumoca_core::NAMED_FUNCTION_ARG_PREFIX);
 
@@ -180,7 +180,7 @@ fn explicit_cat_proves_matrix_concatenation_along_both_dimensions() {
         span,
     };
     let model = flat::Model::new();
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the empty model has a valid shape environment");
 
     assert_eq!(
@@ -223,7 +223,7 @@ fn ones_shape_is_constructed_from_exact_extents() {
         span,
     };
     let model = flat::Model::new();
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the empty model has a valid shape environment");
 
     assert_eq!(
@@ -239,7 +239,7 @@ fn size_of_specialized_array_is_one_proven_extent() {
     let mut sources = SourceMap::new();
     let source = sources.add("size_extent.mo", "size(element, 1)");
     let span = Span::from_offsets(source, 0, 16);
-    let mut values = ShapeEnvironment::with_capacity(1);
+    let mut values = ShapeEnvironment::with_capacity(1, Arc::new(RecordArrayFieldPlans::default()));
     values.insert(VarName::new("element"), vec![4]);
     let expression = Expression::BuiltinCall {
         function: BuiltinFunction::Size,
@@ -263,7 +263,11 @@ fn size_of_specialized_array_is_one_proven_extent() {
 fn real_param(name: &str, dimensions: Vec<i64>, span: Span) -> rumoca_core::FunctionParam {
     let value_type = EffectiveType::new(TypeId::new(1), TypeId::new(1), dimensions)
         .expect("fixture function type is resolved");
+    let identity = name.bytes().fold(63_500_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
     rumoca_core::FunctionParam::new(name, "Real", value_type, span)
+        .with_def_id(DefId::new(identity.max(1)))
 }
 
 fn vectorization_target(name: &str, span: Span) -> rumoca_core::ComponentReference {
@@ -429,7 +433,7 @@ fn enum_literal_shape_requires_catalog_and_enumeration_type_identity() {
     model
         .enum_literal_ordinals
         .insert(literal_name.to_string(), 1);
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("the fixture model has a valid shape environment");
     let exact = enumeration_reference(literal_name, enum_declaration, span);
     assert_eq!(
@@ -497,7 +501,7 @@ fn record_constructor_arity_remains_strict() {
         },
     ));
 
-    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) else {
+    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) else {
         panic!("record constructor with one missing field must be rejected");
     };
     assert!(matches!(
@@ -526,7 +530,7 @@ fn root_structural_constructor_keeps_its_aggregate_shape_proof() {
         },
     ));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("a root structural constructor owns no fabricated function result");
     assert!(analysis.certificates().is_empty());
     assert_eq!(
@@ -580,7 +584,7 @@ fn nested_structural_constructor_proves_a_field_inside_a_regular_call() {
         },
     ));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("a nested structural constructor proves its aggregate and selected field shape");
     let [read] = analysis.certificates() else {
         panic!("only the ordinary outer call owns a function specialization")
@@ -616,7 +620,7 @@ fn nested_fix_does_not_fabricate_a_result_for_a_regular_empty_function() {
         },
     ));
 
-    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) else {
+    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) else {
         panic!("a regular zero-output function must keep its named rejection")
     };
     assert!(matches!(
@@ -638,7 +642,7 @@ fn post_analysis_rejects_a_forged_constructor_occurrence() {
     let span = Span::from_offsets(source, 0, 10);
     let (mut model, _, _) = pair_constructor_model(span);
     let regular_instance = add_scalar_read(&mut model, span);
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("an unused regular function needs no specialization");
     let forged = Expression::FunctionCall {
         name: exact_function_reference("Pair", regular_instance),
@@ -667,7 +671,7 @@ fn post_analysis_rejects_an_unresolved_constructor_marker() {
     let source = sources.add("unresolved_constructor.mo", "Pair(1.0, 2.0);");
     let span = Span::from_offsets(source, 0, 15);
     let (model, _, _) = pair_constructor_model(span);
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new())
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty())
         .expect("an unused constructor needs no specialization");
     let unresolved = Expression::FunctionCall {
         name: Reference::new("Pair"),
@@ -708,7 +712,7 @@ fn discovery_rejects_a_constructor_name_with_a_regular_exact_instance() {
         },
     ));
 
-    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) else {
+    let Err(error) = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) else {
         panic!("discovery must reject a constructor spelling resolved to a regular function")
     };
     assert_constructor_identity_error(
@@ -732,7 +736,7 @@ fn reachable_calls_receive_distinct_concrete_shape_certificates() {
     model.add_equation(call(2, first));
     model.add_equation(call(3, second));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()).unwrap();
     let certificates = analysis.certificates();
     assert_eq!(certificates.len(), 2);
     assert_eq!(certificates[0].parameters, vec![vec![2]]);
@@ -750,7 +754,7 @@ fn empty_array_call_has_a_zero_extent_shape_certificate() {
     model.add_function(identity_function(span, true));
     model.add_equation(call(0, span));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()).unwrap();
     let [certificate] = analysis.certificates() else {
         panic!("empty array call should have one shape certificate");
     };
@@ -767,7 +771,7 @@ fn unresolved_result_axis_is_rejected_at_analysis() {
     model.add_function(identity_function(span, false));
     model.add_equation(call(2, span));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("an unresolved result axis must not produce a certificate"),
         Err(error) => error,
     };
@@ -841,7 +845,7 @@ fn scalar_function_vectorization_keeps_one_scalar_specialization() {
         span,
     ));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()).unwrap();
     let [certificate] = analysis.certificates() else {
         panic!("one vectorized call reuses one scalar specialization")
     };
@@ -878,7 +882,7 @@ fn array_formal_vectorization_preserves_trailing_element_shape() {
     let instance = model.functions[&VarName::new("f")].instance_id.unwrap();
     model.add_equation(exact_call("f", instance, vec![matrix(2, 3, span)], span));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()).unwrap();
     assert_eq!(analysis.certificates()[0].parameters, vec![vec![3]]);
     assert_eq!(
         analysis
@@ -906,7 +910,7 @@ fn multi_axis_vectorization_broadcasts_non_vectorized_inputs() {
         span,
     ));
 
-    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::new()).unwrap();
+    let analysis = FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()).unwrap();
     let Expression::FunctionCall { name, args, .. } = &model.equations[0].residual else {
         unreachable!()
     };
@@ -915,7 +919,10 @@ fn multi_axis_vectorization_broadcasts_non_vectorized_inputs() {
         .unwrap();
     assert_eq!(call.prefix, vec![2, 3]);
     assert_eq!(call.vectorized_inputs, vec![true, false]);
-    assert_eq!(analysis.certificates()[0].parameters, vec![vec![], vec![]]);
+    assert_eq!(
+        analysis.certificates()[0].parameters,
+        vec![Vec::<u32>::new(), vec![]]
+    );
     assert_eq!(
         analysis
             .expression_shape(&model.equations[0].residual, analysis.model_values())
@@ -942,7 +949,7 @@ fn vectorized_inputs_require_one_common_prefix() {
         span,
     ));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("inconsistent vectorization prefixes must be rejected"),
         Err(error) => error,
     };
@@ -977,7 +984,7 @@ fn vectorization_requires_an_exact_non_replaceable_owner() {
         },
     ));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("vectorization without an exact owner must be rejected"),
         Err(error) => error,
     };
@@ -1002,7 +1009,7 @@ fn vectorization_rejects_unknown_transitive_non_replaceability() {
     let instance = model.functions[&VarName::new("f")].instance_id.unwrap();
     model.add_equation(exact_call("f", instance, vec![array(2, span)], span));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("unknown non-replaceability must not mint vectorization"),
         Err(error) => error,
     };
@@ -1042,7 +1049,7 @@ fn vectorization_rejects_an_exact_instance_without_an_occurrence_proof() {
         },
     ));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("an exact instance must not substitute for its exposure-path proof"),
         Err(error) => error,
     };
@@ -1068,7 +1075,7 @@ fn vectorized_element_shape_must_equal_the_declared_shape() {
     let instance = model.functions[&VarName::new("f")].instance_id.unwrap();
     model.add_equation(exact_call("f", instance, vec![matrix(2, 4, span)], span));
 
-    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::new()) {
+    let error = match FunctionShapeAnalysis::analyze(&model, &EvalContext::resolved_empty()) {
         Ok(_) => panic!("a wrong vectorized element shape must be rejected"),
         Err(error) => error,
     };

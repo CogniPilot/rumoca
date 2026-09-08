@@ -375,7 +375,6 @@ pub(super) fn non_causal_assignment_operation(operation: &LinearOp) -> bool {
     matches!(
         operation,
         LinearOp::LoadSeed { .. }
-            | LinearOp::LoadIndexedSeed { .. }
             | LinearOp::RandomInitialState { .. }
             | LinearOp::RandomResult { .. }
             | LinearOp::RandomState { .. }

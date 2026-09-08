@@ -14,13 +14,9 @@
 //! `eval_row_output_with_scratch`), so the two paths cannot diverge in values,
 //! evaluation order, or singular/non-finite decline decisions.
 
-use rumoca_ir_solve::{LinearOp, ScalarProgramBlock, TargetAssignmentShape};
+use rumoca_ir_solve::TargetAssignmentShape;
 
-use super::support::non_causal_linear_op;
-use super::{
-    AssignmentProgramBuilder, PreparedScalarProgramBlock, RowOutputRequest,
-    TargetAssignmentScratchRequest,
-};
+use super::{PreparedScalarProgramBlock, RowOutputRequest, TargetAssignmentScratchRequest};
 use crate::{EvalSolveError, RowEvalContext};
 
 /// One causal back-substitution step resolved at prepare time.
@@ -39,23 +35,6 @@ pub struct PreparedTornSweep {
     /// with no scalar view, which the sweep reports as unevaluable exactly as
     /// the per-row path does.
     residuals: Vec<Option<(usize, usize)>>,
-}
-
-/// Backend-compilable form of one prepared torn sweep. The causal chain
-/// becomes an ordered assignment-schedule row list (each row's single output
-/// writes its solver-Y target, so later rows observe earlier writes exactly
-/// as back-substitution does) and the reduced residual rows become one
-/// expression block evaluated at the substituted point.
-pub struct TornSweepComposite {
-    /// One single-output isolator program per causal step, in order.
-    pub assignment_rows: Vec<Vec<LinearOp>>,
-    /// The solver-Y slot each assignment row writes.
-    pub assignment_targets: Vec<usize>,
-    /// The reduced residual rows as one expression block.
-    pub residual_block: ScalarProgramBlock,
-    /// Flat output index of each residual row in `residual_block`'s output
-    /// order; `None` marks a row with no scalar view.
-    pub residual_outputs: Vec<Option<usize>>,
 }
 
 /// Whether one batched sweep completed or declined at a causal step.
@@ -175,71 +154,5 @@ impl PreparedScalarProgramBlock {
             residual_out.push(Some(value));
         }
         Ok(TornSweepStatus::Completed)
-    }
-
-    /// Backend-compilable composite of one prepared sweep, or `None` when a
-    /// step cannot be expressed with the per-row path's exact decline
-    /// semantics (a constant singular coefficient declines on every call) or
-    /// a program is missing; the caller then keeps the interpreted sweep.
-    pub fn torn_sweep_composite(&self, sweep: &PreparedTornSweep) -> Option<TornSweepComposite> {
-        let mut assignment_rows = Vec::with_capacity(sweep.steps.len());
-        let mut assignment_targets = Vec::with_capacity(sweep.steps.len());
-        for step in &sweep.steps {
-            assignment_rows.push(self.torn_step_isolator_program(step)?);
-            assignment_targets.push(step.target_y_index);
-        }
-        let mut residual_programs = Vec::new();
-        let mut residual_spans = Vec::new();
-        let mut residual_outputs = Vec::with_capacity(sweep.residuals.len());
-        let mut next_output = 0usize;
-        for position in &sweep.residuals {
-            let Some((program_row, output_offset)) = *position else {
-                residual_outputs.push(None);
-                continue;
-            };
-            let program = self.block.programs().get(program_row)?.clone();
-            let span = self.block.program_span(program_row)?;
-            let output_count = ScalarProgramBlock::program_output_count(&program);
-            if output_offset >= output_count {
-                return None;
-            }
-            residual_outputs.push(Some(next_output.checked_add(output_offset)?));
-            next_output = next_output.checked_add(output_count)?;
-            residual_programs.push(program);
-            residual_spans.push(span);
-        }
-        let residual_block =
-            ScalarProgramBlock::with_program_spans(residual_programs, residual_spans).ok()?;
-        Some(TornSweepComposite {
-            assignment_rows,
-            assignment_targets,
-            residual_block,
-            residual_outputs,
-        })
-    }
-
-    /// Single-output isolator program for one causal step, poisoned so a
-    /// compiled schedule that cannot raise the per-row singular-coefficient
-    /// error still declines at exactly the same iterates.
-    fn torn_step_isolator_program(&self, step: &PreparedTornStep) -> Option<Vec<LinearOp>> {
-        let row = self.block.programs().get(step.program_row)?;
-        if row.iter().any(non_causal_linear_op) {
-            return None;
-        }
-        let mut program = row
-            .get(..step.shape.expr_eval_len())?
-            .iter()
-            .filter(|op| {
-                !matches!(
-                    op,
-                    LinearOp::StoreOutput { .. } | LinearOp::StoreOutputRange { .. }
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let result = AssignmentProgramBuilder::new(&mut program)?
-            .materialize_poisoning_singular(step.shape)?;
-        program.push(LinearOp::StoreOutput { src: result });
-        Some(program)
     }
 }

@@ -9,8 +9,7 @@
 //
 // Verifies: widgets mount with Monaco editors, Simulate produces a plot,
 // LSP diagnostics produce markers, Show DAE renders Modelica text, the
-// editable turkey visualization animates to "done", and the Wave2D GPU widget
-// renders a surface.
+// editable turkey visualization animates to "done".
 import { chromium } from "playwright-core";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -32,7 +31,7 @@ if (!browserExecutablePath) {
 const browser = await chromium.launch({
   executablePath: browserExecutablePath,
   headless: true,
-  args: ["--no-sandbox", "--enable-unsafe-webgpu"],
+  args: ["--no-sandbox"],
 });
 
 let failures = 0;
@@ -123,21 +122,6 @@ try {
     check(/t = /.test(label), `scrubbed to end: "${label}"`);
   }
 
-  const gpuStates = await page
-    .locator(".rumoca-live input[type='checkbox']")
-    .evaluateAll((nodes) => nodes.map((node) => node.checked));
-  const waveIndex = gpuStates.findIndex(Boolean);
-  check(waveIndex >= 0, "Wave2D GPU widget present");
-  if (waveIndex >= 0) {
-    const waveWidget = page.locator(".rumoca-live").nth(waveIndex);
-    await waveWidget.locator(".rumoca-live-run").click();
-    const surface = await waveWidget
-      .locator(".rumoca-live-surface canvas")
-      .waitFor({ timeout: 180000 })
-      .then(() => true)
-      .catch(() => false);
-    check(surface, "Wave2D GPU widget rendered a surface canvas");
-  }
 } finally {
   await browser.close();
 }

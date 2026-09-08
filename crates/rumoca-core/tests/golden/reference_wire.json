@@ -4,6 +4,7 @@
     "component_ref": null,
     "resolved_function": null,
     "instance_id": null,
+    "structured_binder": null,
     "generated": false
   },
   {
@@ -55,6 +56,7 @@
       "transitively_non_replaceable": true
     },
     "instance_id": 9,
+    "structured_binder": null,
     "generated": true
   }
 ]

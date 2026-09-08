@@ -17,6 +17,7 @@ pattern-fixtures = []
 
 [dependencies]
 rumoca-core = { workspace = true }
+rumoca-ir-galec = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 thiserror = { workspace = true }

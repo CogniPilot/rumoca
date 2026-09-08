@@ -84,7 +84,7 @@ impl SolveRuntime {
         tol: f64,
         max_iters: usize,
     ) -> EvalAtReport {
-        let names = &self.model.problem.solve_layout.solver_maps.names;
+        let names = &self.model().problem().solve_layout().solver_maps.names;
         let mut error = None;
 
         // `full_solver_y_into` seeds from the model's initial solver vector and
@@ -113,7 +113,7 @@ impl SolveRuntime {
         // values (see `eval_state_derivatives_with_solver_y`), so a failure
         // still leaves the offending `der(state)` values in place to name.
         let mut derivative_values =
-            match filled_f64_values(self.state_count, f64::NAN, "eval-at derivative values") {
+            match filled_f64_values(self.state_count(), f64::NAN, "eval-at derivative values") {
                 Ok(values) => values,
                 Err(err) => {
                     if error.is_none() {
@@ -122,7 +122,7 @@ impl SolveRuntime {
                     Vec::new()
                 }
             };
-        if derivative_values.len() == self.state_count
+        if derivative_values.len() == self.state_count()
             && let Err(err) = self.eval_state_derivatives_into(
                 t,
                 state,
@@ -149,7 +149,7 @@ impl SolveRuntime {
 
         EvalAtReport {
             t,
-            state_count: self.state_count,
+            state_count: self.state_count(),
             solver_y,
             derivatives,
             error,

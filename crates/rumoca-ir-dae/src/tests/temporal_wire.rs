@@ -23,6 +23,7 @@ fn sampled_clock_ownership_round_trips_as_typed_semantics() {
         let sampled = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("sampled"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 variable_at,
                 VariableAttributes::default(),
@@ -50,6 +51,65 @@ fn sampled_clock_ownership_round_trips_as_typed_semantics() {
         assert!(ownership.sampled());
         assert_eq!(ownership.variable().index(), 0);
     });
+}
+
+#[test]
+fn clock_transfer_source_validation_visits_shared_dag_nodes_once() {
+    let source = TestSource::new("discrete Real x; subSample(x, 2)");
+    let variable_at = source.source("discrete Real x", 0);
+    let transfer_at = source.source("subSample(x, 2)", 0);
+    Dae::construct(source.map, |dae| {
+        let real = dae.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                ValueType::scalar(ScalarType::Real),
+                variable_at,
+            )
+        })?;
+        let variable = dae.variables(|variables| {
+            variables.discrete_real(
+                VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
+                real,
+                variable_at,
+                VariableAttributes::default(),
+            )
+        })?;
+        let (source_clock, target_clock) = dae.clocks(|clocks| {
+            let source_clock = clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO).unwrap(),
+                transfer_at,
+            )?;
+            let target_clock = clocks.periodic(
+                ClockLattice::new(ClockRational::new(2, 1).unwrap(), ClockRational::ZERO).unwrap(),
+                transfer_at,
+            )?;
+            clocks.own_discrete_real(source_clock.into(), variable, variable_at)?;
+            Ok((source_clock, target_clock))
+        })?;
+        dae.expressions(|expressions| {
+            let mut shared = expressions
+                .at(variable_at)
+                .coordinate(CoordinateInput::DiscreteReal(variable))?;
+            // A tree walk expands this 48-level diamond to 2^48 visits. The
+            // checked DAG walk follows the 49 exact expression identities.
+            for _ in 0..48 {
+                shared = expressions
+                    .at(transfer_at)
+                    .binary(BinaryOperator::Add, shared, shared)?;
+            }
+            expressions
+                .at(transfer_at)
+                .clock_transfer(
+                    ClockTransferKind::SubSample { factor: 2 },
+                    shared,
+                    source_clock.into(),
+                    target_clock.into(),
+                )
+                .map(|_| ())
+        })
+    })
+    .expect("shared expression DAG validates in bounded time");
 }
 
 fn exact_clock_fixture() -> Dae {
@@ -80,12 +140,14 @@ fn exact_clock_fixture() -> Dae {
             Ok((
                 variables.discrete_real(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(1),
                     real,
                     z_at,
                     VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("m"),
+                    rumoca_core::InstanceId::new(2),
                     boolean,
                     m_at,
                     VariableAttributes::default(),
@@ -283,7 +345,13 @@ fn clock_guarded_b1b_fixture(with_ownership: bool) -> Result<Dae, DaeConstructio
             types.intern(TypeId::new(0), ValueType::scalar(ScalarType::Real), z_at)
         })?;
         let z = dae.variables(|variables| {
-            variables.discrete_real(VarName::new("z"), real, z_at, VariableAttributes::default())
+            variables.discrete_real(
+                VarName::new("z"),
+                rumoca_core::InstanceId::new(1),
+                real,
+                z_at,
+                VariableAttributes::default(),
+            )
         })?;
         let clock = dae.clocks(|clocks| {
             clocks.periodic(

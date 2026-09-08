@@ -49,7 +49,7 @@ fn hover_flat_preview_is_cached_across_repeated_hovers() {
             "the second hover must reuse the memoized preview, not recompile"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -95,7 +95,7 @@ end PreviewWhen;
             );
         }
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -137,7 +137,7 @@ end PreviewDiscreteReal;
             );
         }
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn hover_flat_preview_memoizes_models_that_do_not_compile() {
              every mouse move"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn hover_flat_preview_does_not_need_the_session_write_lock() {
             "hover preview should still render while a session reader is active"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }
 
 #[test]
@@ -214,5 +214,5 @@ fn hover_preview_cache_is_bounded() {
             "hover is unbounded user input, so the memo must stay bounded"
         );
     });
-    let _ = std::fs::remove_dir_all(&temp);
+    let _cleanup_error = std::fs::remove_dir_all(&temp);
 }

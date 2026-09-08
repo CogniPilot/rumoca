@@ -24,7 +24,9 @@
 //! generation-time numeric evaluation in this projection: every `start`,
 //! `min`, `max`, and `nominal` in the emitted block comes from it. The fold
 //! introduces no second evaluator and no second traversal. It emits the value
-//! the projection had already proven for this exact expression.
+//! the projection had already proven for this exact expression. That evaluator
+//! is constructed from the package's explicit arithmetic profile, so a folded
+//! matrix product cannot acquire a private signed-zero seed convention.
 //!
 //! Evaluating the Modelica function rather than its GALEC lowering also
 //! discharges the function's own preconditions at generation time:
@@ -40,8 +42,8 @@ use rumoca_ir_galec::ast as gast;
 use rumoca_ir_galec::package::ConstantFoldedParameter;
 
 use super::{
-    BlockLowering, ClassifiedVariable, ExpressionLowerer, ProjectionParts, VariableClass, coerce,
-    expression_span, state_reference, unsupported,
+    BlockLowering, ClassifiedVariable, ExpressionLowerer, ProjectionParts, TemporaryNamespace,
+    VariableClass, coerce, expression_span, state_reference, unsupported,
 };
 use crate::diagnostic::GalecTargetError;
 
@@ -316,7 +318,7 @@ pub(super) fn dependent_assignment<'dae>(
         definitions,
         by_id,
         pre_names,
-        emission,
+        arithmetic,
     } = lowering;
     let expression = classified
         .variable
@@ -336,8 +338,9 @@ pub(super) fn dependent_assignment<'dae>(
     // the number of updates rather than additively. Emitting a call keeps
     // Startup proportional to the function, and keeps the function's own
     // locals, which is also what makes the generated C worth embedding.
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
-        .with_emission(emission);
+    let mut lowerer =
+        ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names, arithmetic)
+            .with_temporary_namespace(TemporaryNamespace::Dependent(classified.id));
     let node = view
         .expression(expression)
         .expect("checked dependent-parameter expression resolves");

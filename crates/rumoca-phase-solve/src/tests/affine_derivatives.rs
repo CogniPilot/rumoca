@@ -39,10 +39,12 @@ fn builtin_valued_affine_coefficient_keeps_its_runtime_parameter_slot() {
                 .at(parameter_at)
                 .binary(dae::BinaryOperator::Multiply, two, asin)
         })?;
+        let state_attributes = real_state_attributes(model, state_at, 0.0, true)?;
         let (parameter, state) = model.variables(|variables| {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(1),
                     real,
                     parameter_at,
                     dae::VariableAttributes {
@@ -53,9 +55,10 @@ fn builtin_valued_affine_coefficient_keeps_its_runtime_parameter_slot() {
                 )?,
                 variables.state(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(2),
                     real,
                     state_at,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
             ))
         })?;
@@ -83,7 +86,7 @@ fn builtin_valued_affine_coefficient_keeps_its_runtime_parameter_slot() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -142,10 +145,12 @@ fn structural_inductor_model(guard_is_tunable: bool, guard_value: bool) -> dae::
                     .literal(dae::DaeLiteral::Real(2.0))?,
             ))
         })?;
+        let state_attributes = real_state_attributes(model, state_at, 0.0, true)?;
         let (guard, parameter, state) = model.variables(|variables| {
             Ok((
                 variables.parameter(
                     VarName::new("q"),
+                    rumoca_core::InstanceId::new(3),
                     boolean,
                     guard_at,
                     dae::VariableAttributes {
@@ -156,6 +161,7 @@ fn structural_inductor_model(guard_is_tunable: bool, guard_value: bool) -> dae::
                 )?,
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(4),
                     real,
                     parameter_at,
                     dae::VariableAttributes {
@@ -166,9 +172,10 @@ fn structural_inductor_model(guard_is_tunable: bool, guard_value: bool) -> dae::
                 )?,
                 variables.state(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(5),
                     real,
                     state_at,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
             ))
         })?;
@@ -206,7 +213,7 @@ fn structural_inductor_model(guard_is_tunable: bool, guard_value: bool) -> dae::
 #[test]
 fn translation_time_guard_selects_its_affine_derivative_branch() {
     let solve = lower_solve_problem(&structural_inductor_model(false, false)).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -275,22 +282,26 @@ fn derivative_alias_model(read_from_discrete: bool) -> dae::Dae {
                 state_at,
             )
         })?;
+        let state_attributes = real_state_attributes(model, state_at, 0.0, true)?;
         let (state, algebraic, discrete) = model.variables(|variables| {
             Ok((
                 variables.state(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(6),
                     real,
                     state_at,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
                 variables.algebraic(
                     VarName::new("a"),
+                    rumoca_core::InstanceId::new(7),
                     real,
                     algebraic_at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_real(
                     VarName::new("d"),
+                    rumoca_core::InstanceId::new(8),
                     real,
                     discrete_at,
                     dae::VariableAttributes::default(),
@@ -355,10 +366,10 @@ fn algebraic_row_reads_a_derivative_through_its_defining_equation() {
     let model = derivative_alias_model(false);
     let solve = lower_solve_problem(&model).unwrap();
     reseal_solve_problem(&solve).expect("the derivative alias satisfies the Solve shape contract");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!(
             "one algebraic residual block expected, got {:?}",
-            solve.continuous().residual.nodes
+            solve.continuous().residual().nodes
         );
     };
     let program = &rows.programs()[0];
@@ -413,10 +424,12 @@ fn scaled_state_model(source: TestSource, coefficient: f64) -> dae::Dae {
                 .at(parameter_at)
                 .literal(dae::DaeLiteral::Real(coefficient))
         })?;
+        let state_attributes = real_state_attributes(model, state_at, 0.0, true)?;
         let (parameter, state) = model.variables(|variables| {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(9),
                     real,
                     parameter_at,
                     dae::VariableAttributes {
@@ -426,9 +439,10 @@ fn scaled_state_model(source: TestSource, coefficient: f64) -> dae::Dae {
                 )?,
                 variables.state(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(10),
                     real,
                     state_at,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
             ))
         })?;
@@ -462,7 +476,7 @@ fn affine_state_equation_preserves_its_runtime_parameter_coefficient() {
     let model = scaled_state_model(source, 2.0);
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };

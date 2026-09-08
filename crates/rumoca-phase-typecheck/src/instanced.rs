@@ -5,28 +5,118 @@ impl TypeChecker {
     ///
     /// This builds an evaluation context from the overlay's parameter values
     /// and evaluates dimensions for components that have unevaluated dimensions.
-    pub fn check_instanced(
+    ///
+    /// The overlay arrives by value and becomes the checker's owned working
+    /// state; on zero errors it is sealed inside the minted proof, and on
+    /// failure it is dropped, so no caller ever observes a partially
+    /// annotated overlay.
+    pub(super) fn check_instanced(
+        self,
+        resolved: &ResolvedTree,
+        mut overlay: InstanceOverlay,
+        model_name: &str,
+    ) -> Result<crate::TypedInstancedTree, Diagnostics> {
+        let tree = resolved.inner();
+        let diagnostics = self.check_instanced_detached(
+            tree,
+            &mut overlay,
+            model_name,
+            resolved
+                .semantic_catalogs()
+                .clone_for_typecheck_publication(),
+        );
+        if diagnostics.has_errors() {
+            Err(diagnostics)
+        } else {
+            Ok(crate::TypedInstancedTree::mint(
+                resolved.project_for_typecheck(),
+                overlay,
+                model_name.to_string(),
+            ))
+        }
+    }
+
+    /// Exercise the instanced checker from unit fixtures that intentionally
+    /// build or mutate a raw class tree. This issuer does not exist in
+    /// production builds and does not construct the Resolve-branded catalog.
+    #[cfg(test)]
+    pub(super) fn check_instanced_test_projection(
+        mut self,
+        tree: &ClassTree,
+        overlay: &mut InstanceOverlay,
+        model_name: &str,
+    ) -> Diagnostics {
+        let mut candidate = overlay.clone();
+        if matches!(
+            candidate.finalized_overconstrained(),
+            Err(rumoca_ir_ast::EqualityConstraintOccurrenceError::OwnerCatalogNotFinalized)
+        ) && let Err(error) = candidate.finalize_overconstrained_record_owners()
+        {
+            self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
+                "cannot finalize test overconstrained owner catalogs: {error:?}",
+            )));
+            return self.diagnostics;
+        }
+        let semantic_catalogs = match crate::semantic_catalog_projection_for_test(tree) {
+            Ok(catalogs) => catalogs,
+            Err(error) => {
+                self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
+                    "cannot project test semantic catalogs: {error}",
+                )));
+                return self.diagnostics;
+            }
+        };
+        let diagnostics =
+            self.check_instanced_detached(tree, &mut candidate, model_name, semantic_catalogs);
+        if !diagnostics.has_errors() {
+            *overlay = candidate;
+        }
+        diagnostics
+    }
+
+    fn check_instanced_detached(
+        mut self,
+        tree: &ClassTree,
+        overlay: &mut InstanceOverlay,
+        model_name: &str,
+        semantic_catalogs: rumoca_ir_ast::SemanticCatalogProjection,
+    ) -> Diagnostics {
+        self.check_instanced_with_semantic_projection(tree, overlay, model_name, semantic_catalogs);
+        self.diagnostics
+    }
+
+    fn check_instanced_with_semantic_projection(
         &mut self,
         tree: &ClassTree,
         overlay: &mut InstanceOverlay,
         model_name: &str,
+        semantic_catalogs: rumoca_ir_ast::SemanticCatalogProjection,
     ) {
-        let Some(type_table) = self.initialize_instanced_context(tree) else {
+        let Some((type_table, type_root_catalog)) = self.initialize_instanced_context(tree) else {
             return;
         };
-        let mut type_ids = self
-            .type_ids_by_def_id
-            .iter()
-            .map(|(&def_id, &type_id)| (def_id, type_id))
-            .collect::<Vec<_>>();
-        type_ids.sort_unstable_by_key(|(def_id, _)| def_id.index());
-        overlay.type_ids_by_def_id = type_ids.into_iter().collect();
-        self.populate_overlay_type_roots(tree, overlay, &type_table);
-        self.resolve_overlay_component_types(tree, overlay, &type_table);
-        if !self.initialize_instanced_modifier_member_types(tree, overlay, model_name, &type_table)
-        {
+        let used_functions = match collect_overlay_function_declarations(overlay) {
+            Ok(used) => used,
+            Err(error) => {
+                self.emit_typecheck_error(*missing_checked_call_identity(error));
+                self.flush_eval_warnings();
+                return;
+            }
+        };
+        if let Err(error) = self.populate_overlay_type_roots_from_catalog(
+            tree,
+            overlay,
+            &type_table,
+            used_functions,
+            &semantic_catalogs,
+            type_root_catalog,
+        ) {
+            self.emit_typecheck_error(*error);
+            self.flush_eval_warnings();
             return;
         }
+        self.resolve_overlay_component_types(tree, overlay, &type_table);
+        self.initialize_instanced_modifier_member_types(tree);
         self.collect_overlay_eval_values(overlay);
         if !self.collect_instanced_eval_constants(tree, overlay, model_name) {
             return;
@@ -39,8 +129,9 @@ impl TypeChecker {
         self.evaluate_all_dimensions_multi_pass(tree, overlay, &record_aliases);
         self.validate_dimensions(overlay);
         self.check_instanced_equations(tree, overlay, model_name, &type_table);
-        if !self.has_errors() {
-            self.finalize_effective_types(overlay, &type_table);
+        if !self.has_errors() && !self.finalize_effective_types(overlay, semantic_catalogs) {
+            self.flush_eval_warnings();
+            return;
         }
         self.flush_eval_warnings();
     }
@@ -50,53 +141,71 @@ impl TypeChecker {
     /// This is deliberately the final typecheck transition: equation checking
     /// still addresses the nominal `TypeTable`, while successful consumers see
     /// only concrete effective identities.
-    fn finalize_effective_types(&mut self, overlay: &mut InstanceOverlay, type_table: &TypeTable) {
-        overlay.effective_types.clear();
-        overlay.enumeration_types.clear();
-        let mut interned = HashMap::<EffectiveType, TypeId>::new();
-        let mut catalog = rumoca_ir_ast::AstIndexMap::<TypeId, EffectiveType>::default();
-        let mut assignments = Vec::with_capacity(overlay.components.len());
-        let nominal_type_count = type_table.len();
-
-        for (instance_id, data) in &overlay.components {
-            let canonical_type = overlay
-                .type_roots
-                .get(&data.type_id)
-                .copied()
-                .unwrap_or(data.type_id);
-            let effective =
-                match EffectiveType::new(data.type_id, canonical_type, data.dims.clone()) {
-                    Ok(effective) => effective,
-                    Err(error) => {
-                        self.emit_effective_type_error(data, error.to_string());
-                        return;
-                    }
-                };
-            let Some(effective_id) =
-                intern_effective_type(effective, nominal_type_count, &mut interned, &mut catalog)
-            else {
-                self.emit_effective_type_error(
-                    data,
-                    "the effective type identity arena exceeded the u32 domain",
-                );
-                return;
-            };
-            if matches!(type_table.get(canonical_type), Some(Type::Enumeration(_))) {
-                overlay.enumeration_types.insert(effective_id);
+    pub(super) fn finalize_effective_types(
+        &mut self,
+        overlay: &mut InstanceOverlay,
+        semantic_catalogs: rumoca_ir_ast::SemanticCatalogProjection,
+    ) -> bool {
+        match overlay.finalize_effective_type_publication(semantic_catalogs) {
+            Ok(()) => true,
+            Err(rumoca_ir_ast::EffectiveTypePublicationError::EqualityConstraint(reason)) => {
+                self.emit_equality_constraint_effective_type_error(overlay, reason);
+                false
             }
-            assignments.push((*instance_id, effective_id));
+            Err(error) => {
+                self.emit_effective_type_publication_error(overlay, error);
+                false
+            }
         }
+    }
 
-        for (instance_id, effective_id) in assignments {
-            let data = overlay
-                .components
-                .get_mut(&instance_id)
-                .expect("effective type input came from this overlay");
-            data.type_id = effective_id;
-            let canonical_type = catalog[&effective_id].canonical_type();
-            overlay.type_roots.insert(effective_id, canonical_type);
+    fn emit_equality_constraint_effective_type_error(
+        &mut self,
+        overlay: &InstanceOverlay,
+        reason: rumoca_ir_ast::EqualityConstraintOccurrenceError,
+    ) {
+        let data = reason
+            .occurrence()
+            .and_then(|occurrence| overlay.components.get(&occurrence))
+            .or_else(|| overlay.components.values().next());
+        let Some(data) = data else {
+            self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
+                "cannot construct the effective equalityConstraint catalog: {reason}",
+            )));
+            return;
+        };
+        let Some(span) = self.diagnostic_location_span(
+            &data.source_location,
+            "effective equalityConstraint exposure",
+        ) else {
+            return;
+        };
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET013",
+            format!(
+                "cannot construct the effective equalityConstraint exposure of `{}`: {reason}",
+                data.qualified_name.to_flat_string(),
+            ),
+            "effective record occurrence declared here",
+            span,
+        ));
+    }
+
+    fn emit_effective_type_publication_error(
+        &mut self,
+        overlay: &InstanceOverlay,
+        error: rumoca_ir_ast::EffectiveTypePublicationError,
+    ) {
+        if let Some(data) = error
+            .occurrence()
+            .and_then(|occurrence| overlay.components.get(&occurrence))
+        {
+            self.emit_effective_type_error(data, error.to_string());
+        } else {
+            self.emit_typecheck_error(TypeCheckError::missing_source_context(format!(
+                "cannot publish the effective type catalog: {error}",
+            )));
         }
-        overlay.effective_types = catalog;
     }
 
     fn emit_effective_type_error(
@@ -121,7 +230,10 @@ impl TypeChecker {
         ));
     }
 
-    fn initialize_instanced_context(&mut self, tree: &ClassTree) -> Option<TypeTable> {
+    pub(super) fn initialize_instanced_context(
+        &mut self,
+        tree: &ClassTree,
+    ) -> Option<(TypeTable, ResolvedTypeRootCatalog)> {
         self.source_map = tree.source_map.clone();
         self.def_qualified_names = tree
             .def_map
@@ -131,7 +243,8 @@ impl TypeChecker {
         self.populate_nominal_class_context(tree);
         self.populate_operator_record_capabilities(tree);
         self.function_signatures = function_signatures::build_function_signatures(tree);
-        self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::new();
+        self.eval_ctx = rumoca_eval_ast::eval::TypeCheckEvalContext::for_resolved_identities();
+        register_predefined_eval_functions(tree, &mut self.eval_ctx);
         let (type_table, type_ids_by_def_id) = match self.build_type_context(tree) {
             Ok(context) => context,
             Err(error) => {
@@ -140,91 +253,20 @@ impl TypeChecker {
             }
         };
         self.type_ids_by_def_id = type_ids_by_def_id;
-        self.rebuild_type_roots(tree, &type_table);
-        self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
-        Some(type_table)
+        let type_root_catalog = match self.construct_type_root_catalog(tree, &type_table) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                self.emit_typecheck_error(*error);
+                return None;
+            }
+        };
+        self.type_roots = type_root_catalog.roots.clone();
+        Some((type_table, type_root_catalog))
     }
 
-    fn initialize_instanced_modifier_member_types(
-        &mut self,
-        tree: &ClassTree,
-        overlay: &InstanceOverlay,
-        model_name: &str,
-        type_table: &TypeTable,
-    ) -> bool {
-        let root_def_ids =
-            self.instanced_modifier_member_type_roots(tree, overlay, model_name, type_table);
-        self.component_modifier_member_types =
-            match modifier_targets::build_component_modifier_member_types_for_def_ids(
-                tree,
-                type_table,
-                &self.type_ids_by_def_id,
-                &self.source_map,
-                root_def_ids,
-            ) {
-                Ok(member_types) => member_types,
-                Err(error) => {
-                    self.emit_typecheck_error(*error);
-                    return false;
-                }
-            };
-        true
-    }
-
-    fn instanced_modifier_member_type_roots(
-        &self,
-        tree: &ClassTree,
-        overlay: &InstanceOverlay,
-        model_name: &str,
-        type_table: &TypeTable,
-    ) -> HashSet<DefId> {
-        let mut roots = HashSet::new();
-        if let Some(class) = tree.get_class_by_qualified_name(model_name)
-            && let Some(def_id) = class.def_id
-        {
-            roots.insert(def_id);
-        }
-        for data in overlay.components.values() {
-            if let Some(def_id) = data.type_def_id {
-                roots.insert(def_id);
-            }
-            let root_type = self.resolve_type_root(type_table, data.type_id);
-            if let Some(Type::Class(class_type)) = type_table.get(root_type) {
-                roots.insert(class_type.def_id);
-            }
-        }
-        self.expand_component_type_root_closure(tree, type_table, &mut roots);
-        roots
-    }
-
-    fn expand_component_type_root_closure(
-        &self,
-        tree: &ClassTree,
-        type_table: &TypeTable,
-        roots: &mut HashSet<DefId>,
-    ) {
-        let mut pending = roots.iter().copied().collect::<Vec<_>>();
-        while let Some(def_id) = pending.pop() {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-            for extend in &class.extends {
-                queue_new_type_root(extend.base_def_id, roots, &mut pending);
-            }
-            for component in class.components.values() {
-                let type_name = component.type_name.to_string();
-                let type_id = self.resolve_type_name(&type_name, component.type_def_id, type_table);
-                let root_type = self.resolve_type_root(type_table, type_id);
-                let component_def_id = match type_table.get(root_type) {
-                    Some(Type::Class(class_type)) => Some(class_type.def_id),
-                    _ => None,
-                };
-                queue_new_type_root(component_def_id, roots, &mut pending);
-            }
-            for nested in class.classes.values() {
-                queue_new_type_root(nested.def_id, roots, &mut pending);
-            }
-        }
+    fn initialize_instanced_modifier_member_types(&mut self, tree: &ClassTree) {
+        self.class_members =
+            modifier_targets::build_modifier_member_catalog(tree, &self.type_ids_by_def_id);
     }
 
     fn collect_overlay_eval_values(&mut self, overlay: &InstanceOverlay) {
@@ -347,6 +389,17 @@ impl TypeChecker {
         let Some(model_class) = model_class else {
             return;
         };
+
+        self.validate_reachable_modifier_targets(tree, model_class, type_table);
+        for data in overlay.components.values() {
+            let root = self.resolve_type_root(data.type_id);
+            let Some(Type::Class(class_type)) = type_table.get(root) else {
+                continue;
+            };
+            if let Some(class) = tree.get_class_by_def_id(class_type.def_id) {
+                self.validate_reachable_modifier_targets(tree, class, type_table);
+            }
+        }
 
         let previous_declarations = std::mem::take(&mut self.current_declaration_semantics);
         let previous_semantics = std::mem::take(&mut self.current_instance_semantics);
@@ -485,7 +538,7 @@ impl TypeChecker {
             .values()
             .filter(|data| !data.is_primitive)
         {
-            let root_type = self.resolve_type_root(type_table, data.type_id);
+            let root_type = self.resolve_type_root(data.type_id);
             let Some(Type::Class(class_type)) = type_table.get(root_type) else {
                 continue;
             };
@@ -603,14 +656,6 @@ impl TypeChecker {
                 ComponentSemantics::from_declaration_with_type(component, type_id),
             );
         }
-        for (name, component) in &class.components {
-            let Some(type_id) =
-                self.instanced_declaration_type(component, class_instance_id, type_table)
-            else {
-                continue;
-            };
-            self.validate_component_modifier_names(name, component, type_table, type_id);
-        }
         self.check_component_modifier_types_in_class(class, type_table);
         self.validate_variability_constraints(class);
     }
@@ -630,6 +675,9 @@ impl TypeChecker {
                 SemanticLookup::Ambiguous => {
                     self.emit_ambiguous_occurrence_type(component, def_id);
                     return None;
+                }
+                SemanticLookup::InvalidAstSubscript => {
+                    unreachable!("declaration lookup has no subscript input")
                 }
                 SemanticLookup::Missing => {}
             }
@@ -706,7 +754,10 @@ impl TypeChecker {
             self.current_call_type_overrides =
                 call_type_overrides_for_instance_scope(tree, overlay, &self.current_instance_scope);
             walk_expression(self, binding_to_check, type_table);
-            if let Some(found) = self.infer_expression_type(binding_to_check, type_table) {
+            if let Some(found) = self
+                .infer_expression_type(binding_to_check, type_table)
+                .value_identity()
+            {
                 self.check_expected_expression_type(
                     data.type_id,
                     found,
@@ -723,27 +774,6 @@ impl TypeChecker {
             self.current_call_type_overrides = previous_call_type_overrides;
         }
     }
-}
-
-fn allocate_effective_type_id(nominal_type_count: usize, effective_count: usize) -> Option<TypeId> {
-    let index = nominal_type_count.checked_add(effective_count)?;
-    let index = u32::try_from(index).ok()?;
-    (index != TypeId::UNKNOWN.index()).then(|| TypeId::new(index))
-}
-
-fn intern_effective_type(
-    effective: EffectiveType,
-    nominal_type_count: usize,
-    interned: &mut HashMap<EffectiveType, TypeId>,
-    catalog: &mut rumoca_ir_ast::AstIndexMap<TypeId, EffectiveType>,
-) -> Option<TypeId> {
-    if let Some(id) = interned.get(&effective) {
-        return Some(*id);
-    }
-    let id = allocate_effective_type_id(nominal_type_count, catalog.len())?;
-    interned.insert(effective.clone(), id);
-    catalog.insert(id, effective);
-    Some(id)
 }
 
 pub(super) fn overlay_component_type_specializations(
@@ -810,17 +840,4 @@ fn call_type_overrides_for_instance_scope(
         candidate = path.parent();
     }
     function_signatures::CallTypeOverrides::default()
-}
-
-fn queue_new_type_root(
-    candidate: Option<DefId>,
-    roots: &mut HashSet<DefId>,
-    pending: &mut Vec<DefId>,
-) {
-    let Some(def_id) = candidate else {
-        return;
-    };
-    if roots.insert(def_id) {
-        pending.push(def_id);
-    }
 }

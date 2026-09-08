@@ -228,6 +228,6 @@ fn check_input_assignment(
 
     let mut visitor = InputAssignmentVisitor { input_names, diags };
     for stmt in stmts {
-        let _ = visitor.visit_statement(stmt);
+        let _visit_outcome = visitor.visit_statement(stmt);
     }
 }

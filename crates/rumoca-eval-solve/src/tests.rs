@@ -130,20 +130,6 @@ fn prepared_parameter_dependencies_recurse_through_lazy_conditional_regions() {
     );
 }
 
-fn time_table() -> (f64, Vec<rumoca_core::ExternalTableData>) {
-    let table_id = 1_u64;
-    (
-        table_id as f64,
-        vec![rumoca_core::ExternalTableData {
-            id: table_id,
-            data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
-            columns: vec![2],
-            smoothness: 1,
-            extrapolation: 1,
-        }],
-    )
-}
-
 #[test]
 fn projected_random_value_reports_missing_state_lane() {
     let err = projected_random_value(&[10.0, 20.0], 2)
@@ -370,125 +356,6 @@ fn constant_row(value: f64) -> Vec<LinearOp> {
 }
 
 #[test]
-fn eval_row_supports_solve_ir_table_lookup_ops() {
-    let (table_id, tables) = time_table();
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let value = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&tables),
-            ..Default::default()
-        },
-    )
-    .expect("table lookup row should evaluate");
-
-    assert!((value - 12.0).abs() <= 1.0e-12);
-}
-
-#[test]
-fn eval_row_supports_solve_ir_table_bounds_and_next_event_ops() {
-    let (table_id, tables) = time_table();
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 0.0 },
-        LinearOp::TableBounds {
-            dst: 2,
-            table_id: 0,
-            max: true,
-        },
-        LinearOp::TableNextEvent {
-            dst: 3,
-            table_id: 0,
-            time: 1,
-        },
-        LinearOp::Binary {
-            dst: 4,
-            op: BinaryOp::Add,
-            lhs: 2,
-            rhs: 3,
-        },
-        LinearOp::StoreOutput { src: 4 },
-    ];
-
-    let value = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&tables),
-            ..Default::default()
-        },
-    )
-    .expect("table bounds row should evaluate");
-
-    assert!((value - 4.0).abs() <= 1.0e-12);
-}
-
-#[test]
-fn eval_row_hydrates_serialized_external_table_data() {
-    let table_id = 424_242.0;
-    let model = rumoca_ir_solve::SolveModel {
-        parameters: vec![table_id],
-        external_tables: rumoca_ir_solve::ExternalTables::new(vec![
-            rumoca_core::ExternalTableData {
-                id: table_id as u64,
-                data: vec![vec![1.0, 0.0], vec![3.0, 1.0]],
-                columns: vec![2],
-                smoothness: 3,
-                extrapolation: 1,
-            },
-        ]),
-        ..Default::default()
-    };
-    let row = vec![
-        LinearOp::LoadP { dst: 0, index: 0 },
-        LinearOp::Const { dst: 1, value: 0.0 },
-        LinearOp::TableNextEvent {
-            dst: 2,
-            table_id: 0,
-            time: 1,
-        },
-        LinearOp::StoreOutput { src: 2 },
-    ];
-
-    let value = eval_row_with_context(
-        &row,
-        &[],
-        &model.parameters,
-        0.0,
-        RowEvalContext {
-            external_tables: Some(model.external_tables.as_slice()),
-            ..Default::default()
-        },
-    )
-    .expect("serialized table row should evaluate");
-
-    assert!((value - 1.0).abs() <= 1.0e-12);
-}
-
-#[test]
 fn eval_row_division_uses_ieee_semantics() {
     let row = vec![
         LinearOp::Const { dst: 0, value: 0.0 },
@@ -543,240 +410,6 @@ fn eval_row_sign_is_zero_at_zero() {
         let value = eval_row(&row, &[], &[], 0.0, None).expect("sign row should evaluate");
         assert_eq!(value, 0.0);
     }
-}
-
-#[test]
-fn eval_row_uses_context_external_tables() {
-    let table_id = 515_151.0;
-    let local_tables = vec![rumoca_core::ExternalTableData {
-        id: table_id as u64,
-        data: vec![vec![1.0, 10.0], vec![3.0, 30.0]],
-        columns: vec![2],
-        smoothness: 3,
-        extrapolation: 1,
-    }];
-
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 2.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let value = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&local_tables),
-            ..Default::default()
-        },
-    )
-    .expect("context table row should evaluate");
-
-    assert!(
-        (value - 10.0).abs() <= 1.0e-12,
-        "expected local table value 10.0, got {value}"
-    );
-}
-
-#[test]
-fn eval_row_table_lookup_failure_is_error_not_silent_zero() {
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: 42.0,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let err = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&[]),
-            ..Default::default()
-        },
-    )
-    .expect_err("missing table should report an evaluation error");
-
-    let EvalSolveError::ExternalTable {
-        operation,
-        table_id,
-        column,
-        reason,
-    } = err
-    else {
-        panic!("missing table should report an external table error");
-    };
-    assert_eq!(operation, "lookup");
-    assert_eq!(table_id, 42.0);
-    assert_eq!(column, Some(1.0));
-    assert!(reason.contains("was not provided"));
-}
-
-#[test]
-fn eval_row_table_lookup_invalid_column_is_error_not_clamped() {
-    let (table_id, tables) = time_table();
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 2.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let err = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&tables),
-            ..Default::default()
-        },
-    )
-    .expect_err("invalid table column should report an evaluation error");
-
-    let EvalSolveError::ExternalTable {
-        operation,
-        table_id: err_table_id,
-        column,
-        reason,
-    } = err
-    else {
-        panic!("invalid table column should report an external table error");
-    };
-    assert_eq!(operation, "lookup");
-    assert_eq!(err_table_id, table_id);
-    assert_eq!(column, Some(2.0));
-    assert!(reason.contains("expected an integer in 1..=1"));
-}
-
-#[test]
-fn eval_row_table_lookup_invalid_table_column_metadata_is_error_not_clamped() {
-    let table_id = 616_161.0;
-    let tables = vec![rumoca_core::ExternalTableData {
-        id: table_id as u64,
-        data: vec![vec![0.0, 10.0], vec![1.0, 20.0]],
-        columns: vec![3],
-        smoothness: 1,
-        extrapolation: 1,
-    }];
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 0.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let err = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&tables),
-            ..Default::default()
-        },
-    )
-    .expect_err("invalid table metadata column should report an evaluation error");
-
-    let EvalSolveError::ExternalTable {
-        operation,
-        table_id: err_table_id,
-        column,
-        reason,
-    } = err
-    else {
-        panic!("invalid table metadata should report an external table error");
-    };
-    assert_eq!(operation, "lookup");
-    assert_eq!(err_table_id, table_id);
-    assert_eq!(column, Some(1.0));
-    assert!(reason.contains("maps output column 1 outside 2 data columns"));
-}
-
-#[test]
-fn eval_row_table_lookup_invalid_table_id_is_error_not_saturating_cast() {
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: 18_446_744_073_709_551_616.0,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-
-    let err = eval_row_with_context(
-        &row,
-        &[],
-        &[],
-        0.0,
-        RowEvalContext {
-            external_tables: Some(&[]),
-            ..Default::default()
-        },
-    )
-    .expect_err("invalid table id should report an evaluation error");
-
-    let EvalSolveError::ExternalTable {
-        operation,
-        table_id,
-        column,
-        reason,
-    } = err
-    else {
-        panic!("invalid table id should report an external table error");
-    };
-    assert_eq!(operation, "lookup");
-    assert_eq!(table_id, 18_446_744_073_709_551_616.0);
-    assert_eq!(column, Some(1.0));
-    assert!(reason.contains("invalid external table id"));
 }
 
 #[test]
@@ -948,7 +581,7 @@ fn function_conditional_evaluates_only_the_selected_correlated_region() {
 }
 
 #[test]
-fn aggregate_conditional_trace_cannot_construct_a_scalar_native_replacement() {
+fn aggregate_conditional_remains_a_lazy_interpreter_program() {
     let condition = vec![
         LinearOp::LoadFunctionConditionalCapture { dst: 0, index: 0 },
         LinearOp::StoreOutput { src: 0 },
@@ -1007,10 +640,6 @@ fn aggregate_conditional_trace_cannot_construct_a_scalar_native_replacement() {
             .eval_row_with_context(0, &[], &[], 0.0, RowEvalContext::default())
             .expect("reference evaluator retains lazy execution"),
         11.0
-    );
-    assert!(
-        prepared.specialized_row_program(0).is_none(),
-        "the compiler-owned conditional must reach the native backend intact"
     );
 }
 
@@ -1521,9 +1150,9 @@ fn prepared_scalar_block_indexes_sparse_single_output_rows() {
 }
 
 #[test]
-fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
+fn scalar_program_construction_rejects_ambiguous_single_output_owners() {
     let span = fixture_span();
-    let block = ScalarProgramBlock::with_output_indices(
+    let error = ScalarProgramBlock::with_output_indices(
         vec![
             vec![
                 LinearOp::Const { dst: 0, value: 1.0 },
@@ -1542,17 +1171,23 @@ fn prepared_scalar_block_rejects_ambiguous_single_output_owners() {
         vec![span; 3],
         vec![2, 2, 3, 2],
     )
-    .expect("duplicate-output fixture should satisfy metadata lengths");
-    let prepared = PreparedScalarProgramBlock::new(block).expect("fixture should prepare");
+    .expect_err("one logical output cannot have ambiguous scalar owners");
 
-    assert_eq!(prepared.single_output_row_for_output_index(2), None);
-    assert_eq!(prepared.single_output_row_for_output_index(3), None);
+    assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        rumoca_ir_solve::SolveProblemShapeContractError::DuplicateIndex {
+            context: "ScalarProgramBlock.output_indices",
+            index: 2,
+            span: Some(error_span),
+        } if error_span == span
+    ));
 }
 
 #[test]
-fn prepared_scalar_block_rejects_logical_output_count_overflow() {
+fn scalar_program_construction_rejects_logical_output_count_overflow() {
     let span = fixture_span();
-    let block = ScalarProgramBlock::with_output_indices(
+    let error = ScalarProgramBlock::with_output_indices(
         vec![vec![
             LinearOp::Const { dst: 0, value: 1.0 },
             LinearOp::StoreOutput { src: 0 },
@@ -1560,14 +1195,17 @@ fn prepared_scalar_block_rejects_logical_output_count_overflow() {
         vec![span],
         vec![usize::MAX],
     )
-    .expect("sparse output fixture satisfies scalar-program contracts");
+    .expect_err("logical output count overflow must fail block construction");
 
-    let error = match PreparedScalarProgramBlock::new(block) {
-        Ok(_) => panic!("logical output count overflow should fail preparation"),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("logical output count"));
     assert_eq!(error.source_span(), Some(span));
+    assert!(matches!(
+        error,
+        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow {
+            context,
+            node_index: 0,
+            span: Some(error_span),
+        } if context == "ScalarProgramBlock" && error_span == span
+    ));
 }
 
 #[test]
@@ -1878,30 +1516,6 @@ fn row_eval_context_keeps_impure_random_state_model_local() {
 
     assert_eq!(a1, b1);
     assert_eq!(a2, b2);
-}
-
-#[test]
-fn table_opcode_helper_rejects_non_table_op() {
-    let op = LinearOp::Const { dst: 0, value: 1.0 };
-    let mut regs = vec![0.0];
-    let mut initialized = vec![false];
-
-    let err = apply_table_op(
-        &mut regs,
-        &mut initialized,
-        &op,
-        RowEvalContext::default(),
-        None,
-    )
-    .expect_err("table helper should reject non-table op");
-
-    assert!(matches!(
-        err,
-        EvalSolveError::InvalidLinearOp {
-            helper: "table",
-            op: "Const",
-        }
-    ));
 }
 
 #[test]

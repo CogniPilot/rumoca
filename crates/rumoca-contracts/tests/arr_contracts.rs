@@ -1389,17 +1389,14 @@ fn arr_026_redeclared_record_member_array_uses_its_redeclared_extent() {
 }
 
 #[test]
-fn arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_named() {
+fn arr_026_over_subscripted_record_member_is_rejected_before_equation_erasure() {
     // PINS A DIVERGENCE, not a rule. This is the witness for FS-ARR-009.
     //
     // `c.i[1, 2]` spends two subscripts on a member declared with one
-    // dimension. omc names it: "Wrong number of subscripts in c.i[1, 2]
-    // (2 subscripts for 1 dimensions)". rumoca abstains at the subscript walk
-    // (the literal subscripts select no expanded element, so the shape lookup
-    // reports absence) and the binding equation is then dropped from the DAE
-    // altogether, surfacing as an unbalanced model blamed on `M` rather than
-    // on the subscript. The model is still rejected, but the count rule is not
-    // what rejects it and the span is not where the error is.
+    // dimension. The typechecker still abstains instead of issuing ARR-026's
+    // precise rank diagnostic, but flattening must reject the dangling target
+    // rather than silently erase its binding and surface an unrelated DAE
+    // balance error.
     expect_failure_in_phase_with_detail(
         r#"
         package P
@@ -1420,9 +1417,9 @@ fn arr_026_over_subscripted_record_member_loses_its_equation_instead_of_being_na
         end P;
     "#,
         "P.M",
-        FailedPhase::ToDae,
-        "ED001",
-        "unbalanced model: 3 equations, 4 unknowns",
+        FailedPhase::Flatten,
+        "EF001",
+        "undefined variable: c.i[1,2].re",
     );
 }
 

@@ -444,7 +444,7 @@ class SemanticArrayOutput
 end SemanticArrayOutput;
 "#;
 
-    let mut tree = resolve_tree_source(source).into_inner();
+    let mut tree = resolve_tree_source(source).inner().clone();
     tree.definitions.classes["SemanticArrayOutput"].classes["constructor"].components["object"]
         .shape = vec![1];
     let diagnostics = semantic_checks::check_resolved_semantics(&tree);

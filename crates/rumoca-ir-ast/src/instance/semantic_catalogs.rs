@@ -13,8 +13,8 @@ pub struct ConnectionOperatorCatalog {
 /// Exact ExternalObject identities accumulated by Resolve's single lifecycle
 /// traversal. The owner index prevents final projection assembly from
 /// introducing a second identity relation or repeating the lifecycle query.
-/// The mechanically public cross-crate issuer remains AS-025 migration debt;
-/// architecture tests pin its production callsites to Resolve.
+/// The mechanically public cross-crate issuer remains SPEC_0036 migration
+/// debt; architecture tests pin its production callsites to Resolve.
 #[derive(Debug, Clone)]
 pub struct ExternalObjectLifecycleCatalog {
     by_owner: FastIndexMap<DefId, ExternalObjectLifecycleIdentity>,
@@ -122,8 +122,8 @@ impl ExternalObjectLifecycleIdentity {
 ///
 /// This projection does not prove that Resolve's MLS semantic checks passed;
 /// only `rumoca_phase_resolve::ResolvedSemanticCatalogs` brands that fact.
-/// Its mechanically public cross-crate assembly remains AS-025 migration debt;
-/// architecture tests pin production assembly to successful Resolve.
+/// Its mechanically public cross-crate assembly remains SPEC_0036 migration
+/// debt; architecture tests pin production assembly to successful Resolve.
 #[derive(Debug, Clone)]
 pub struct SemanticCatalogProjection {
     connections: ConnectionOperatorCatalog,

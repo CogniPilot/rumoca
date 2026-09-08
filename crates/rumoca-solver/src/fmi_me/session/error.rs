@@ -107,6 +107,18 @@ pub enum MeSessionError {
         attempted: Option<Box<MeSessionError>>,
     },
 
+    /// A fallible host or plugin construction failed and the component could
+    /// not be returned to the retained component's pristine snapshot.
+    ///
+    /// Restoration is the failure-atomicity boundary, so its failure outranks
+    /// the attempted construction failure while retaining that failure as
+    /// typed data.
+    #[error("the retained component could not be restored to its pristine snapshot: {restoration}")]
+    PristineRestoreFailed {
+        restoration: Box<MeError>,
+        attempted: Box<MeSessionError>,
+    },
+
     /// A mutating or evaluating call on a session that stopped being usable.
     ///
     /// A mutating step that failed after one correlated owner had already moved

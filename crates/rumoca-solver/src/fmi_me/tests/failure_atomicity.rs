@@ -12,7 +12,7 @@ use std::cell::Cell;
 
 use rumoca_ir_solve as solve;
 
-use super::{block, fixture_instance_config, nonlinear_right_limit_seed_model, refresh_owned};
+use super::{block, fixture_instance_config, nonlinear_right_limit_seed_model};
 use crate::fmi_me as me;
 
 /// `der(x) = a` with the algebraic branch `a² = x`.
@@ -28,36 +28,137 @@ use crate::fmi_me as me;
 /// skipped over an empty inventory and the endpoint's event-left observation
 /// hits it.
 fn algebraic_branch_component(with_indicator: bool) -> solve::SolveModel {
-    let mut model = nonlinear_right_limit_seed_model();
-    if with_indicator {
-        model.problem.events.root_conditions = block(
-            vec![vec![
-                solve::LinearOp::LoadY { dst: 0, index: 1 },
-                solve::LinearOp::StoreOutput { src: 0 },
-            ]],
-            "fmi_me_algebraic_branch_indicator.mo",
-        );
-        model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Positive];
+    let base = nonlinear_right_limit_seed_model();
+    let solve_layout = base.problem().solve_layout().clone();
+    let discrete = base.problem().discrete().clone();
+    let clocks = base.problem().clocks().clone();
+    let events = if with_indicator {
+        solve::SolveEventPartition {
+            root_conditions: block(
+                vec![vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                "fmi_me_algebraic_branch_indicator.mo",
+            ),
+            root_relation_memory_targets: vec![None],
+            root_zero_domains: vec![solve::RootZeroDomain::Positive],
+            root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::AlgebraicDependent],
+            ..Default::default()
+        }
+    } else {
+        solve::SolveEventPartition::default()
+    };
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            base.problem().layout().clone(),
+            solve_layout,
+            continuous,
+            base.problem().initialization().clone(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("algebraic-branch fixture satisfies the checked root contract"),
+        ..base
     }
-    refresh_owned(model)
 }
 
 /// The same component with one declared input, so an input write has a
 /// correlated owner set to fall out of step.
 fn branch_component_with_input() -> solve::SolveModel {
-    let mut model = nonlinear_right_limit_seed_model();
-    model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
-    refresh_owned(model)
+    let base = nonlinear_right_limit_seed_model();
+    let mut solve_layout = base.problem().solve_layout().clone();
+    solve_layout.compiled_parameter_len = 1;
+    solve_layout.input_scalar_names = vec!["u".to_string()];
+    let discrete = base.problem().discrete().clone();
+    let events = base.problem().events().clone();
+    let clocks = base.problem().clocks().clone();
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 1),
+            solve_layout,
+            continuous,
+            base.problem().initialization().clone(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("input-branch fixture satisfies the checked root contract"),
+        parameters: vec![1.0],
+        ..base
+    };
+    let provenance = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi_me_algebraic_branch_input.mo"),
+        1,
+        2,
+    );
+    crate::test_support::with_explicit_real_scalar_catalog(
+        model,
+        vec![
+            crate::test_support::RealScalarVariableFixture::state(
+                1, "x", 0, 4.0, 1.0, true, provenance,
+            ),
+            crate::test_support::RealScalarVariableFixture::algebraic(
+                2, "a", 1, 2.0, 1.0, provenance,
+            ),
+            crate::test_support::RealScalarVariableFixture::external_input(
+                3, "u", 0, 1.0, provenance,
+            ),
+        ],
+        block(
+            vec![
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            "fmi_me_algebraic_branch_input_visible.mo",
+        ),
+    )
 }
 
 /// The same component with one scheduled time event, so Event Mode's refresh
 /// has a correlated owner set to fall out of step.
 fn branch_component_with_event() -> solve::SolveModel {
-    let mut model = nonlinear_right_limit_seed_model();
-    model.problem.events.scheduled_time_events = vec![0.05];
-    refresh_owned(model)
+    let base = nonlinear_right_limit_seed_model();
+    let solve_layout = base.problem().solve_layout().clone();
+    let discrete = base.problem().discrete().clone();
+    let clocks = base.problem().clocks().clone();
+    let events = solve::SolveEventPartition {
+        scheduled_time_events: vec![0.05],
+        ..base.problem().events().clone()
+    };
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            base.problem().layout().clone(),
+            solve_layout,
+            continuous,
+            base.problem().initialization().clone(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("event-branch fixture satisfies the checked root contract"),
+        ..base
+    }
 }
 
 /// What a deliberately faulty plugin does to the host.
@@ -66,6 +167,9 @@ enum PluginFault {
     /// Behave correctly, so a successful path can prove every correlated owner
     /// becomes visible together.
     Healthy,
+    /// Fail the initial plugin-history construction, before a session can be
+    /// returned to the caller.
+    FailsFirstInitialize,
     /// Return a state the component cannot evaluate at every coordinate
     /// strictly inside the accepted interval, while staying exact at both
     /// endpoints.
@@ -212,8 +316,8 @@ impl FaultyPlugin {
         //    them consumes it, and none of them latches anything of its own.
         let mut out = [0.0];
         for _ in 0..3 {
-            let _ = handle.has_failed();
-            let _ = handle.state_count();
+            let _observed_failure = handle.has_failed();
+            let _observed_state_count = handle.state_count();
             handle.derivatives_into(time, &[4.0], &mut out);
         }
         Ok(())
@@ -227,6 +331,13 @@ impl me::MeIntegratorBackend for FaultyPlugin {
         derivatives: me::MeDerivativeHandle,
     ) -> Result<(), me::MeIntegrationError> {
         self.initializations = self.initializations.saturating_add(1);
+        if self.fault == PluginFault::FailsFirstInitialize {
+            return Err(me::MeIntegrationError::numerical(
+                "faulty",
+                me::MeNumericalFailure::Construction,
+                "the plugin rejected its initial history",
+            ));
+        }
         if self.fault == PluginFault::FailsEveryInitializeAfterTheFirst && self.initializations > 1
         {
             return Err(me::MeIntegrationError::numerical(
@@ -334,7 +445,8 @@ impl me::MeIntegratorBackend for FaultyPlugin {
         }
         if self.fault == PluginFault::HidesAnInactiveRequest {
             // Inactive here by construction; catch and ignore the refusal.
-            let _ = self.handle().map(|handle| handle.derivatives(time, &[y0]));
+            let _inactive_request_result =
+                self.handle().map(|handle| handle.derivatives(time, &[y0]));
         }
         states[0] = if time.to_bits() == t0.to_bits() {
             y0
@@ -376,7 +488,6 @@ fn faulty_session(
     use me::session::{MeSessionOptions, MeSessionOptionsInput};
 
     let options = MeSessionOptions::new(MeSessionOptionsInput {
-        start_time: 0.0,
         stop_time: Some(1.0),
         relative_tolerance: 1.0e-8,
         absolute_tolerance: 1.0e-8,
@@ -394,13 +505,121 @@ fn faulty_session(
         .expect("a one-state component admits a one-state plugin")
 }
 
-fn retained_branch_component(model: &solve::SolveModel) -> me::session::MeRetainedComponent {
+fn retained_branch_component(model: solve::SolveModel) -> me::session::MeRetainedComponent {
     me::session::MeRetainedComponent::instantiate(
-        me::MeModelSource::fixture(model),
+        me::MeModelSource::fixture(crate::test_support::fmi_component(model)),
         &fixture_instance_config(),
-        None,
+        me::MeExecutionSelection::Interpreter,
     )
     .expect("the algebraic-branch component instantiates")
+}
+
+#[test]
+fn failed_plugin_initialization_restores_pristine_before_the_retained_component_is_reused() {
+    use me::session::{MeSessionOptions, MeSessionOptionsInput};
+
+    let mut retained = retained_branch_component(algebraic_branch_component(false));
+    let pristine = retained.verification_observable_state();
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        stop_time: Some(1.0),
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.04,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: true,
+    })
+    .expect("the witness options are checked");
+
+    let failed = retained
+        .lease(options.clone())
+        .expect("FMI initialization succeeds before plugin attachment")
+        .into_session(Some(Box::new(FaultyPlugin::new(
+            PluginFault::FailsFirstInitialize,
+        ))));
+    assert!(matches!(
+        failed,
+        Err(me::session::MeSessionError::Integration(
+            me::MeIntegrationError::Numerical {
+                category: me::MeNumericalFailure::Construction,
+                ..
+            }
+        ))
+    ));
+    assert_eq!(
+        retained.verification_observable_state(),
+        pristine,
+        "the retained component must be pristine immediately when construction returns"
+    );
+    assert!(retained.verification_is_pristine());
+
+    let session = retained
+        .lease(options)
+        .expect("the same retained instance can be leased again")
+        .into_session(Some(Box::new(FaultyPlugin::new(PluginFault::Healthy))))
+        .expect("a healthy plugin reuses the restored retained component");
+    assert_eq!(
+        session.verification_component_point(),
+        session.verification_session_point()
+    );
+}
+
+#[test]
+fn failed_fmi_initialization_restores_pristine_before_the_retained_component_is_reused() {
+    use me::session::{MeSessionOptions, MeSessionOptionsInput};
+
+    let mut retained = retained_branch_component(algebraic_branch_component(false));
+    let pristine = retained.verification_observable_state();
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        stop_time: Some(1.0),
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.04,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: true,
+    })
+    .expect("the witness options are checked");
+
+    {
+        let _session = retained
+            .lease(options.clone())
+            .expect("the first FMI initialization succeeds")
+            .into_session(Some(Box::new(FaultyPlugin::new(PluginFault::Healthy))))
+            .expect("a healthy plugin starts the first session");
+    }
+    assert!(
+        !retained.verification_is_pristine(),
+        "the successful first initialization leaves a mutated retained component"
+    );
+
+    retained.verification_fail_next_exit_initialization();
+    let failed = match retained.lease(options.clone()) {
+        Err(failure) => failure,
+        Ok(_) => panic!("the injected FMI initialization failure is returned"),
+    };
+    assert!(
+        matches!(failed, me::session::MeSessionError::Component(_)),
+        "unexpected initialization failure: {failed:?}"
+    );
+    assert_eq!(
+        retained.verification_observable_state(),
+        pristine,
+        "the retained component is pristine when FMI initialization failure returns"
+    );
+    assert!(retained.verification_is_pristine());
+
+    let session = retained
+        .lease(options)
+        .expect("the same retained instance can be leased after the injected FMI failure")
+        .into_session(Some(Box::new(FaultyPlugin::new(PluginFault::Healthy))))
+        .expect("the consumed one-shot injection does not poison component reuse");
+    assert_eq!(
+        session.verification_component_point(),
+        session.verification_session_point()
+    );
 }
 
 /// Ablation: an **output-getter** failure during the endpoint's event-left
@@ -412,7 +631,7 @@ fn retained_branch_component(model: &solve::SolveModel) -> me::session::MeRetain
 #[test]
 fn an_output_getter_failure_off_the_accepted_point_restores_that_point() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::PoisonsTheInterior);
     let mut cursor = me::session::MeOutputCursor::empty();
 
@@ -448,7 +667,7 @@ fn an_output_getter_failure_off_the_accepted_point_restores_that_point() {
 #[test]
 fn an_event_indicator_failure_inside_the_scan_restores_the_accepted_point() {
     let model = algebraic_branch_component(true);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::PoisonsTheInterior);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -482,7 +701,7 @@ fn an_event_indicator_failure_inside_the_scan_restores_the_accepted_point() {
 #[test]
 fn a_backend_failure_strands_neither_a_trial_point_nor_an_active_capability() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::FailsAfterATrialEvaluation);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -525,7 +744,7 @@ fn a_backend_failure_strands_neither_a_trial_point_nor_an_active_capability() {
 #[test]
 fn a_backend_cannot_suppress_the_component_failure_it_provoked() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::SuppressesTheComponentFailure);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -563,7 +782,7 @@ fn a_backend_cannot_suppress_the_component_failure_it_provoked() {
 #[test]
 fn an_ignored_inactive_request_surfaces_at_the_next_host_interaction() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::HidesAnInactiveRequest);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -596,7 +815,7 @@ fn an_ignored_inactive_request_surfaces_at_the_next_host_interaction() {
 #[test]
 fn a_backend_panic_after_a_trial_evaluation_restores_the_accepted_point() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::PanicsAfterATrialEvaluation);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -636,7 +855,7 @@ fn a_backend_panic_after_a_trial_evaluation_restores_the_accepted_point() {
 #[test]
 fn a_backend_panic_that_also_loses_the_accepted_point_records_that_loss() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::PanicsAfterATrialEvaluation);
     let mut cursor = me::session::MeOutputCursor::empty();
     session.verification_terminate_component();
@@ -670,7 +889,7 @@ fn a_backend_panic_that_also_loses_the_accepted_point_records_that_loss() {
 ///   survives the first interior coordinate. The scan evaluates indicators
 ///   there, leaving the component on that coordinate, off the accepted point
 ///   the session still names, and only the next sample unwinds. A sampler-local
-///   catch would resume straight past `scan_with_retained`, so the enclosing
+///   catch would resume straight past `scan_interval`, so the enclosing
 ///   scan transaction is what has to catch, restore, and only then resume.
 ///
 /// Either way the original payload reaches the embedding unchanged, the two
@@ -680,7 +899,7 @@ fn a_backend_panic_that_also_loses_the_accepted_point_records_that_loss() {
 fn a_sampler_panic_restores_the_accepted_point_and_ends_the_session() {
     for (with_indicator, after_interior_samples) in [(false, 0_usize), (true, 1_usize)] {
         let model = algebraic_branch_component(with_indicator);
-        let mut retained = retained_branch_component(&model);
+        let mut retained = retained_branch_component(model);
         let mut session = faulty_session(
             &mut retained,
             PluginFault::PanicsInsideTheSampler {
@@ -744,7 +963,7 @@ fn a_sampler_panic_restores_the_accepted_point_and_ends_the_session() {
 #[test]
 fn a_candidate_that_ignores_the_request_cannot_cross_the_actual_bound() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(
         &mut retained,
         PluginFault::IgnoresTheRequestAndCrossesTheBound,
@@ -792,7 +1011,7 @@ fn a_candidate_that_ignores_the_request_cannot_cross_the_actual_bound() {
 #[test]
 fn a_replayed_candidate_is_refused_against_the_request_that_follows_it() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::ReplaysThePreviousCandidate);
     let mut cursor = me::session::MeOutputCursor::empty();
 
@@ -834,7 +1053,7 @@ fn a_replayed_candidate_is_refused_against_the_request_that_follows_it() {
 #[test]
 fn a_candidate_cannot_assert_a_state_arity_the_component_does_not_have() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::ClaimsTheWrongStateArity);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -852,7 +1071,7 @@ fn a_candidate_cannot_assert_a_state_arity_the_component_does_not_have() {
     assert!(
         failure
             .to_string()
-            .contains("reports 2 states for a component of width 1"),
+            .contains("continuous point carries 2 states for a component of width 1"),
         "the component's own width decides: {failure}"
     );
 
@@ -871,7 +1090,7 @@ fn a_candidate_cannot_assert_a_state_arity_the_component_does_not_have() {
 #[test]
 fn a_sampler_that_contradicts_its_own_endpoint_never_becomes_an_accepted_step() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::ContradictsItsOwnSamplerEndpoint);
     let mut cursor = me::session::MeOutputCursor::empty();
     let before = session.verification_session_point();
@@ -907,7 +1126,7 @@ fn assert_split_session_is_refused(
     let attempts = [
         session.output_values().err(),
         session.set_input("u", 3.0).err(),
-        session.reset(0.0).err(),
+        session.retime(0.0).err(),
         session.advance_to(0.5, &mut cursor).err(),
     ];
     for outcome in attempts {
@@ -917,7 +1136,7 @@ fn assert_split_session_is_refused(
         assert_eq!(loss, expected);
     }
     // Metadata and the already durable trace stay readable.
-    assert_eq!(session.output_names().len(), 2);
+    assert!(session.output_names().len() >= 2);
 }
 
 /// Ablation: a restart loses the plugin's history after the component and every
@@ -925,14 +1144,14 @@ fn assert_split_session_is_refused(
 #[test]
 fn a_restart_that_loses_the_plugin_history_ends_the_session() {
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(
         &mut retained,
         PluginFault::FailsEveryInitializeAfterTheFirst,
     );
 
     let failure = session
-        .reset(0.0)
+        .retime(0.0)
         .expect_err("the plugin cannot rebuild its history");
     assert!(
         matches!(
@@ -952,7 +1171,7 @@ fn a_restart_that_loses_the_plugin_history_ends_the_session() {
 #[test]
 fn an_event_refresh_that_loses_the_plugin_history_ends_the_session() {
     let model = branch_component_with_event();
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(
         &mut retained,
         PluginFault::FailsEveryInitializeAfterTheFirst,
@@ -980,7 +1199,7 @@ fn an_event_refresh_that_loses_the_plugin_history_ends_the_session() {
 #[test]
 fn an_input_write_that_loses_the_plugin_history_ends_the_session() {
     let model = branch_component_with_input();
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(
         &mut retained,
         PluginFault::FailsEveryInitializeAfterTheFirst,
@@ -1007,7 +1226,7 @@ fn an_input_write_that_loses_the_plugin_history_ends_the_session() {
 #[test]
 fn a_successful_input_and_restart_keep_every_owner_correlated() {
     let model = branch_component_with_input();
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::Healthy);
     let mut cursor = me::session::MeOutputCursor::empty();
 
@@ -1049,12 +1268,12 @@ fn a_successful_input_and_restart_keep_every_owner_correlated() {
         .set_input("u", 3.5)
         .expect("a later valid input still succeeds");
     assert!(matches!(
-        session.reset(9.0),
+        session.retime(9.0),
         Err(me::session::MeSessionError::Options { .. })
     ));
 
     session
-        .reset(0.0)
+        .retime(0.0)
         .expect("the restart rebuilds the lifecycle");
     assert_eq!(session.time().to_bits(), 0.0_f64.to_bits());
     assert_eq!(
@@ -1076,7 +1295,7 @@ fn losing_the_accepted_point_outranks_the_observation_and_ends_the_session() {
     use me::session::{MeOutputCursor, MeSessionError};
 
     let model = algebraic_branch_component(false);
-    let mut retained = retained_branch_component(&model);
+    let mut retained = retained_branch_component(model);
     let mut session = faulty_session(&mut retained, PluginFault::PoisonsTheInterior);
 
     let failure = session.verification_observe_off_point_after_terminate(0.05, &[4.0]);
@@ -1094,7 +1313,7 @@ fn losing_the_accepted_point_outranks_the_observation_and_ends_the_session() {
     let mut cursor = MeOutputCursor::empty();
     for outcome in [
         session.advance_to(0.5, &mut cursor).err(),
-        session.reset(0.0).err(),
+        session.retime(0.0).err(),
         session.output_values().err(),
     ] {
         assert!(

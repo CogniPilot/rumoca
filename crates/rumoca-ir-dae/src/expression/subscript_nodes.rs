@@ -132,12 +132,19 @@ fn pack_subscripts(
     let mut variability = storage.expr_variability(base, provenance)?;
     let mut binder_domain = storage.expr_binder_domain(base, provenance)?;
     for (axis, subscript) in subscripts.into_iter().enumerate() {
-        crate::model::check_provenance(source_map, subscript.provenance())?;
+        let subscript_provenance = subscript.provenance();
+        crate::model::check_provenance(source_map, subscript_provenance)?;
         let axis_extent = base_type.dimensions()[axis];
         let kind = match subscript {
             Subscript::Value { expression, .. } => {
                 let ty = storage.expr_type(expression, provenance)?.clone();
                 validate_subscript(storage, expression, ty.is_scalar(), provenance)?;
+                validate_constructor_known_subscript_bounds(
+                    storage,
+                    expression,
+                    axis_extent,
+                    subscript_provenance,
+                )?;
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
                 binder_domain = merge_binder_domain(
                     storage,
@@ -149,6 +156,12 @@ fn pack_subscripts(
             }
             Subscript::Index { expression, .. } => {
                 validate_subscript(storage, expression, true, provenance)?;
+                validate_constructor_known_subscript_bounds(
+                    storage,
+                    expression,
+                    axis_extent,
+                    subscript_provenance,
+                )?;
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
                 binder_domain = merge_binder_domain(
                     storage,
@@ -164,6 +177,12 @@ fn pack_subscripts(
             }
             Subscript::Slice { expression, .. } => {
                 validate_subscript(storage, expression, false, provenance)?;
+                validate_constructor_known_subscript_bounds(
+                    storage,
+                    expression,
+                    axis_extent,
+                    subscript_provenance,
+                )?;
                 dimensions
                     .extend_from_slice(storage.expr_type(expression, provenance)?.dimensions());
                 variability = variability.max(storage.expr_variability(expression, provenance)?);
@@ -194,6 +213,78 @@ fn pack_subscripts(
         binder_domain,
     })
 }
+
+/// Prove every constructor-known Integer coordinate lies inside its base axis.
+///
+/// Scalar literals and parameter bindings are checked directly. A checked DAE
+/// range is monotone and owns a finite `u32` extent, so its first and actual
+/// last coordinate prove every selected coordinate without enumeration. An
+/// empty range performs no access. Literal array selectors are checked element
+/// by element. Dynamic selectors remain explicit for checked consumers.
+fn validate_constructor_known_subscript_bounds(
+    storage: &mut Storage,
+    expression: ExprId<'_>,
+    axis_extent: u32,
+    at: DaeProvenance,
+) -> Result<(), DaeConstructionError> {
+    let value_type = storage.expr_type(expression, at)?.clone();
+    if value_type.scalar_type() != ScalarType::Integer {
+        return Ok(());
+    }
+    let node = storage
+        .expressions
+        .nodes
+        .get(expression.index() as usize)
+        .cloned()
+        .ok_or_else(|| crate::model::unknown("expression", expression.index(), at))?;
+    let upper = i128::from(axis_extent);
+    let in_bounds = |coordinate: i128| coordinate >= 1 && coordinate <= upper;
+    if value_type.is_scalar() {
+        return storage.check_or_defer_integer_subscript_bound(expression, axis_extent, at);
+    }
+    match node {
+        ExprNode::Range {
+            start,
+            explicit_step,
+            ..
+        } => {
+            let extent = value_type.dimensions()[0];
+            if extent == 0 {
+                return Ok(());
+            }
+            let start = storage
+                .static_integer(ExprId::from_raw(start))
+                .ok_or(DaeConstructionError::InvalidSubscript { span: at.span() })?;
+            let step = match explicit_step {
+                Some(step) => storage
+                    .static_integer(ExprId::from_raw(step))
+                    .ok_or(DaeConstructionError::InvalidSubscript { span: at.span() })?,
+                None => 1,
+            };
+            let last = i128::from(extent)
+                .checked_sub(1)
+                .and_then(|ordinal| ordinal.checked_mul(i128::from(step)))
+                .and_then(|offset| i128::from(start).checked_add(offset))
+                .ok_or(DaeConstructionError::InvalidSubscript { span: at.span() })?;
+            if !in_bounds(i128::from(start)) || !in_bounds(last) {
+                return Err(DaeConstructionError::InvalidSubscript { span: at.span() });
+            }
+        }
+        ExprNode::Array { operands } => {
+            for index in operands.indices() {
+                let operand = storage.expressions.operands[index];
+                storage.check_or_defer_integer_subscript_bound(
+                    ExprId::from_raw(operand),
+                    axis_extent,
+                    at,
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn packed_value_subscript(
     ty: &ValueType,
     expression: ExprId<'_>,

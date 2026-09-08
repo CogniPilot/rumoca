@@ -212,7 +212,7 @@ fn multi_result_call_defines_every_receiving_variable() {
 
     let dae =
         construct(&model, source.map).expect("a multi-result call statement is constructible");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let caller = constructed_function(view, "caller");
         // `p` and `q` are both defined, so both locals survive with the
         // statement that owns them.
@@ -260,7 +260,7 @@ fn omitted_receiving_variable_defines_nothing() {
     add_caller_equation(&mut model, &source);
 
     let dae = construct(&model, source.map).expect("an omitted receiver is constructible");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let caller = constructed_function(view, "caller");
         // Only the bound receiver and the result assignment: the omitted slot
         // adds no statement.
@@ -280,7 +280,7 @@ fn fewer_receivers_than_results_reads_the_leading_results() {
     add_caller_equation(&mut model, &source);
 
     let dae = construct(&model, source.map).expect("m < n receivers is constructible");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let caller = constructed_function(view, "caller");
         assert_eq!(caller.statements().count(), 2);
     });
@@ -415,7 +415,8 @@ fn initial_multi_result_equation_owns_each_receiving_parameter() {
 
     let dae = construct(&model, source.map)
         .expect("an initial result tuple has one checked equation per received value");
-    dae.inspect(|view| assert_eq!(view.initialization_owner_count(), 2));
+    dae.dae()
+        .inspect(|view| assert_eq!(view.initialization_owner_count(), 2));
 }
 
 // ===========================================================================
@@ -494,7 +495,7 @@ fn matrix_row_of_scalars_proves_rank_two() {
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("a `[ ]` row of scalars is the rank-2 argument MLS §10.4.2.1 gives it");
 }
 
@@ -666,7 +667,7 @@ fn semicolon_matrix_of_vectors_constructs_with_promoted_shape() {
         span: source.span("[0, 1, 1, 0, 0]", 0),
     };
     let model = rank2_call_model(&source, argument);
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("two promoted length-2 columns concatenate to a checked 4 x 1 matrix");
 }
 
@@ -711,6 +712,6 @@ fn model_scope_matrix_row_of_vectors_uses_checked_promotion() {
         },
     ));
 
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("the DAE constructor proves the promoted 3 x 2 concatenation");
 }

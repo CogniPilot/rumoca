@@ -1,19 +1,49 @@
 //! Lexical context assembly for a callable class: inherited members, algorithm
-//! sections, and the import/alias map its body is lowered against.
+//! sections, and the origin scope each of them resolves imports in.
 //!
 //! A function body is converted from the class tree rather than instantiated,
 //! so the names it may see must be rebuilt here: `extends`-inherited components
-//! and algorithms (MLS §7.1), import clauses in the class and every lexical
-//! ancestor (MLS §13.2.1), and the enclosing-scope constants and package
-//! parameters a body may reference unqualified (MLS §5.3.2).
+//! and algorithms (MLS §7.1) keep the scope of the class that textually
+//! declares them, import clauses are decided by the one lookup authority for
+//! that scope alone (MLS §13.2: imports are never inherited), and the
+//! enclosing-scope constants and package parameters a body may reference
+//! unqualified (MLS §5.3.2) flow through the declaration-backed alias
+//! channels.
 
 use super::*;
 
+/// The scope a collected member or algorithm section resolves imports in:
+/// the scope of the class that textually declares it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum ImportOrigin {
+    /// The declaring class's resolved scope.
+    Scope(rumoca_core::ScopeId),
+    /// The declaring class was synthesized after resolve and declares no
+    /// import clauses, so there is no scope to seed imports from.
+    Unscoped,
+}
+
+/// A component together with the scope of the class that declares it.
+pub(super) struct OriginComponent {
+    pub(super) origin: ImportOrigin,
+    pub(super) component: ast::Component,
+}
+
+/// An algorithm section together with the scope of the class that declares it.
+pub(super) struct OriginAlgorithmSection {
+    pub(super) origin: ImportOrigin,
+    pub(super) statements: Vec<ast::Statement>,
+}
+
 #[derive(Default)]
 pub(super) struct FunctionClassContext {
-    pub(super) components: IndexMap<String, ast::Component>,
-    pub(super) algorithms: Vec<Vec<ast::Statement>>,
-    pub(super) imports: qualify::ImportMap,
+    pub(super) components: IndexMap<String, OriginComponent>,
+    pub(super) algorithms: Vec<OriginAlgorithmSection>,
+    /// Declaration-backed alias channels (lexical package and class aliases,
+    /// enclosing constants) of every class contributing members, merged.
+    /// Import clauses never flow through here: the lookup authority decides
+    /// them per origin scope.
+    pub(super) aliases: qualify::ImportMap,
 }
 
 pub(super) fn collect_function_context<'tree>(
@@ -21,7 +51,7 @@ pub(super) fn collect_function_context<'tree>(
     class_index: &ast::ClassDefIndex<'tree>,
     class_def: &'tree ast::ClassDef,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
-) -> FunctionClassContext {
+) -> Result<FunctionClassContext, FlattenError> {
     let mut visited = HashSet::new();
     let mut context = FunctionClassContext::default();
     collect_function_context_recursive(
@@ -31,8 +61,8 @@ pub(super) fn collect_function_context<'tree>(
         &mut visited,
         &mut context,
         member_cache,
-    );
-    context
+    )?;
+    Ok(context)
 }
 
 fn collect_function_context_recursive<'tree>(
@@ -42,10 +72,10 @@ fn collect_function_context_recursive<'tree>(
     visited: &mut HashSet<usize>,
     context: &mut FunctionClassContext,
     member_cache: &mut qualify::MemberDefIdCache<'tree>,
-) {
+) -> Result<(), FlattenError> {
     let class_key = class_def as *const ast::ClassDef as usize;
     if !visited.insert(class_key) {
-        return;
+        return Ok(());
     }
 
     for extend in &class_def.extends {
@@ -64,24 +94,23 @@ fn collect_function_context_recursive<'tree>(
                 visited,
                 context,
                 member_cache,
-            );
+            )?;
         }
     }
 
     if let Some(class_def_id) = class_def.def_id {
-        collect_lexical_ancestor_imports(class_index, class_def_id, &mut context.imports);
         qualify::collect_lexical_package_aliases_for_def_id_with_member_cache(
             tree,
             class_index,
             class_def_id,
-            &mut context.imports,
+            &mut context.aliases,
             Some(member_cache),
         );
         qualify::collect_lexical_class_aliases_for_def_id_with_member_cache(
             tree,
             class_index,
             class_def_id,
-            &mut context.imports,
+            &mut context.aliases,
             Some(member_cache),
         );
         qualify::collect_lexical_constant_aliases_for_def_id_with_packages_and_member_cache(
@@ -89,71 +118,52 @@ fn collect_function_context_recursive<'tree>(
             class_index,
             class_def_id,
             &[],
-            &mut context.imports,
+            &mut context.aliases,
             Some(member_cache),
         );
     }
-    resolve_import_pairs(&class_def.imports, class_index, &mut context.imports);
-    context.algorithms.extend(class_def.algorithms.clone());
-    context.components.extend(class_def.components.clone());
+    let origin = import_origin_for(class_def)?;
+    context
+        .algorithms
+        .extend(
+            class_def
+                .algorithms
+                .iter()
+                .map(|statements| OriginAlgorithmSection {
+                    origin,
+                    statements: statements.clone(),
+                }),
+        );
+    for (name, component) in &class_def.components {
+        context.components.insert(
+            name.clone(),
+            OriginComponent {
+                origin,
+                component: component.clone(),
+            },
+        );
+    }
+    Ok(())
 }
 
-fn collect_lexical_ancestor_imports(
-    class_index: &ast::ClassDefIndex<'_>,
-    class_def_id: rumoca_core::DefId,
-    map: &mut qualify::ImportMap,
-) {
-    let mut ancestor_def_ids = Vec::new();
-    let mut current = class_index.parent_def_id(class_def_id);
-    while let Some(def_id) = current {
-        ancestor_def_ids.push(def_id);
-        current = class_index.parent_def_id(def_id);
-    }
-    for ancestor_def_id in ancestor_def_ids.into_iter().rev() {
-        let Some(ancestor_class) = class_index.get(ancestor_def_id) else {
-            continue;
-        };
-        resolve_import_pairs(&ancestor_class.imports, class_index, map);
-    }
-}
-
-pub(super) fn resolve_import_pairs(
-    imports: &[ast::Import],
-    class_index: &ast::ClassDefIndex<'_>,
-    map: &mut qualify::ImportMap,
-) {
-    for import in imports {
-        match import {
-            ast::Import::Qualified { path, .. } => {
-                let fqn = path.to_string();
-                map.insert(path_utils::leaf_segment(&fqn).to_string(), fqn);
-            }
-            ast::Import::Renamed { alias, path, .. } => {
-                map.insert(alias.text.to_string(), path.to_string());
-            }
-            ast::Import::Unqualified { path, .. } => {
-                let pkg_name = path.to_string();
-                let Some(class_def) = class_index.get_by_qualified_name(&pkg_name) else {
-                    continue;
-                };
-                for name in class_def.components.keys() {
-                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
-                }
-                for name in class_def.classes.keys() {
-                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
-                }
-            }
-            ast::Import::Selective { path, names, .. } => {
-                let pkg_name = path.to_string();
-                for name_tok in names {
-                    let name = name_tok.text.to_string();
-                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
-                }
-            }
-        }
+/// The import origin of a class definition: its resolved scope, or the
+/// explicit absence of one for a synthesized class. A class that declares
+/// import clauses without a resolved scope is an invalid state and is
+/// refused rather than having its imports silently dropped.
+pub(super) fn import_origin_for(class_def: &ast::ClassDef) -> Result<ImportOrigin, FlattenError> {
+    match class_def.scope_id {
+        Some(scope_id) => Ok(ImportOrigin::Scope(scope_id)),
+        None if class_def.imports.is_empty() => Ok(ImportOrigin::Unscoped),
+        None => Err(FlattenError::internal(format!(
+            "class {} declares imports but carries no resolved scope id",
+            class_def.name.text
+        ))),
     }
 }
 
+/// Declaration-backed alias channels of the function's own lexical position:
+/// enclosing package and class aliases plus enclosing-scope constants.
+/// Import clauses are not collected here; the lookup authority decides them.
 pub(super) fn function_initial_import_map<'tree>(
     tree: &ast::ClassTree,
     class_index: &ast::ClassDefIndex<'tree>,
@@ -178,7 +188,6 @@ pub(super) fn function_initial_import_map<'tree>(
             Some(member_cache),
         );
         collect_lexical_constant_aliases(tree, class_index, class_def_id, &mut import_map, false);
-        collect_lexical_ancestor_imports(class_index, class_def_id, &mut import_map);
     } else {
         qualify::collect_lexical_package_aliases(
             tree,
@@ -193,10 +202,12 @@ pub(super) fn function_initial_import_map<'tree>(
 
 pub(super) fn extend_imports_if_absent(
     imports: &mut qualify::ImportMap,
-    aliases: qualify::ImportMap,
+    aliases: &qualify::ImportMap,
 ) {
     for (name, target) in aliases {
-        imports.entry(name).or_insert(target);
+        imports
+            .entry(name.clone())
+            .or_insert_with(|| target.clone());
     }
 }
 

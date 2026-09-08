@@ -40,21 +40,21 @@ fn function_output<'storage>(
         .definition
         .as_ref()
         .expect("finalized function has a body");
-    let (statements, external) = match definition {
-        FunctionBodyEntry::Modelica(body) => {
-            (project_statements(function, folds, &body.statements), None)
-        }
-        FunctionBodyEntry::External(body) => (
-            Vec::new(),
-            Some(ExternalBodyInput {
+    let body = match definition {
+        FunctionBodyEntry::Modelica(body) => FunctionBodyInput::Modelica {
+            statements: project_statements(function, folds, &body.statements),
+        },
+        FunctionBodyEntry::External(body) => FunctionBodyInput::External {
+            body: ExternalBodyInput {
                 purity: body.purity,
                 language: body.language,
                 symbol: &body.symbol,
                 arguments: body.arguments.clone(),
                 result: body.result,
                 linkage: body.linkage.clone(),
-            }),
-        ),
+                provenance: body.provenance,
+            },
+        },
     };
     FunctionEntryWire {
         name: &function.name,
@@ -69,8 +69,7 @@ fn function_output<'storage>(
             .collect(),
         outputs: named_values(outputs),
         locals: named_values(locals),
-        statements,
-        external,
+        body,
         declaration: function.declaration,
     }
 }
@@ -400,25 +399,25 @@ fn begin_functions<'wire, 'group, 'dae>(
                 function_index,
                 function_declaration(wire, function_index),
             )?;
-            if function.external.is_some() {
-                if !function.statements.is_empty() {
-                    return Err(malformed("functions.external"));
-                }
-                return Ok(FunctionReplay {
+            match &function.body {
+                FunctionBodyInput::External { .. } => Ok(FunctionReplay {
                     function_index,
                     operations: Vec::new(),
                     next_operation: 0,
                     capability: Some(ReplayCapability::External(reservation)),
-                });
+                }),
+                FunctionBodyInput::Modelica { statements } => {
+                    let body = dae.functions(|functions| {
+                        functions.begin(reservation, function.declaration)
+                    })?;
+                    Ok(FunctionReplay {
+                        function_index,
+                        operations: flatten_operations(statements)?,
+                        next_operation: 0,
+                        capability: Some(ReplayCapability::Body(body)),
+                    })
+                }
             }
-            let body =
-                dae.functions(|functions| functions.begin(reservation, function.declaration))?;
-            Ok(FunctionReplay {
-                function_index,
-                operations: flatten_operations(&function.statements)?,
-                next_operation: 0,
-                capability: Some(ReplayCapability::Body(body)),
-            })
         })
         .collect()
 }
@@ -1133,10 +1132,12 @@ fn replay_external_body<'group, 'dae>(
 ) -> Result<(), DaeConstructionError> {
     let declaration = function_declaration(wire, function_index);
     let function = function_wire(wire, function_index, declaration)?;
-    let external = function
-        .external
-        .as_ref()
-        .ok_or_else(|| malformed("functions.external"))?;
+    let external = match &function.body {
+        FunctionBodyInput::External { body } => body,
+        FunctionBodyInput::Modelica { .. } => {
+            return Err(malformed("functions.body.external"));
+        }
+    };
     let function_raw = checked_u32(function_index, "function", declaration)?;
     let mut arguments = Vec::with_capacity(external.arguments.len());
     for argument in &external.arguments {
@@ -1165,7 +1166,7 @@ fn replay_external_body<'group, 'dae>(
         result,
         external.linkage.clone(),
     );
-    dae.functions(|functions| functions.define_external(reservation, body, declaration))
+    dae.functions(|functions| functions.define_external(reservation, body, external.provenance))
 }
 
 #[derive(Clone, Copy)]

@@ -1,7 +1,7 @@
 use super::*;
 use rumoca_eval_ast::eval_instantiate::{
-    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_bool, expr_to_string,
-    parse_state_select,
+    InstantiateEvalCtx, eval_state_select_expr_with_source_scope, expr_to_string,
+    parse_state_select, try_eval_structural_boolean,
 };
 
 pub(super) struct ComponentAttrsAndBinding {
@@ -17,7 +17,7 @@ pub(super) fn extract_component_attrs_and_binding(
     comp: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
     eval_ctx: &InstantiateEvalCtx<'_>,
-    imports: &[(String, String)],
+    imports: crate::dims::ImportRewrite<'_>,
 ) -> InstantiateResult<ComponentAttrsAndBinding> {
     // Pass component name so mod_env can be checked for outer modifications.
     let mut attrs = extract_attributes(comp, mod_env, &comp.name, eval_ctx, imports)?;
@@ -81,7 +81,7 @@ fn attribute_needs_written_scope(
     expr: &ast::Expression,
     declaration_scope: Option<&ast::QualifiedName>,
 ) -> bool {
-    let Some(written_scope) = expression_source_scope(ctx, expr) else {
+    let Some((written_scope, _)) = expression_source_scope(ctx, expr) else {
         return false;
     };
     Some(&written_scope) != declaration_scope
@@ -113,7 +113,7 @@ fn insert_attribute_source_scope(
     if source_scopes.contains_key(attr_name) {
         return;
     }
-    if let Some(scope) = expression_source_scope(ctx, expr) {
+    if let Some((scope, _)) = expression_source_scope(ctx, expr) {
         source_scopes.insert(attr_name.to_string(), scope);
     }
 }
@@ -126,7 +126,7 @@ fn extract_string_attr_value_from_modification_expr(
         ast::Expression::Modification { target, value, .. } => {
             let target_name = target.parts.last()?.ident.text.as_ref();
             if target_name == attr_name {
-                expr_to_string(value)
+                value.as_deref().and_then(expr_to_string)
             } else {
                 None
             }
@@ -326,13 +326,18 @@ pub(super) fn extract_attributes(
     mod_env: &ast::ModificationEnvironment,
     comp_name: &str,
     eval_ctx: &InstantiateEvalCtx<'_>,
-    imports: &[(String, String)],
+    imports: crate::dims::ImportRewrite<'_>,
 ) -> InstantiateResult<ExtractedAttributes> {
     let mut source_scopes = IndexMap::default();
+    // Modification-environment source scopes are instance occurrences in the
+    // catalog namespace; record them separately so attribute expressions can be
+    // resolved at the writing instance without ever consuming a class scope.
+    let mut attribute_instance_scopes = IndexMap::default();
     let start_path = ast::QualifiedName::from_ident(comp_name).child("start");
     let start_from_mod_env = mod_env.get(&start_path).map(|value| {
         if let Some(scope) = value.source_scope.clone() {
-            source_scopes.insert("start".to_string(), scope);
+            source_scopes.insert("start".to_string(), scope.clone());
+            attribute_instance_scopes.insert("start".to_string(), scope);
         }
         value.value.clone()
     });
@@ -340,7 +345,8 @@ pub(super) fn extract_attributes(
         let path = ast::QualifiedName::from_ident(comp_name).child(attr_name);
         let value = mod_env.get(&path)?;
         if let Some(scope) = value.source_scope.clone() {
-            source_scopes.insert(attr_name.to_string(), scope);
+            source_scopes.insert(attr_name.to_string(), scope.clone());
+            attribute_instance_scopes.insert(attr_name.to_string(), scope);
         }
         Some(value.value.clone())
     };
@@ -357,14 +363,19 @@ pub(super) fn extract_attributes(
         None => None,
     };
     let has_outer_state_select = outer_state_select.is_some();
+    let outer_fixed = mod_env.get_attr(comp_name, "fixed");
+    let has_outer_fixed = outer_fixed.is_some();
     let mut attrs = ExtractedAttributes {
         start_is_explicit: start_from_mod_env.is_some(),
         start: start_from_mod_env,
-        fixed: mod_env.get_attr(comp_name, "fixed").and_then(expr_to_bool),
+        fixed: outer_fixed
+            .map(|value| parse_required_fixed(value, eval_ctx))
+            .transpose()?,
         min: attr_from_mod_env("min"),
         max: attr_from_mod_env("max"),
         nominal: attr_from_mod_env("nominal"),
         source_scopes,
+        attribute_instance_scopes,
         quantity: mod_env
             .get_attr(comp_name, "quantity")
             .and_then(expr_to_string),
@@ -372,7 +383,10 @@ pub(super) fn extract_attributes(
         display_unit: mod_env
             .get_attr(comp_name, "displayUnit")
             .and_then(expr_to_string),
-        state_select: outer_state_select.unwrap_or_default(),
+        state_select: match outer_state_select {
+            Some(state_select) => state_select,
+            None => rumoca_core::StateSelect::Default,
+        },
     };
 
     for (name, value) in &comp.modifications {
@@ -381,7 +395,9 @@ pub(super) fn extract_attributes(
                 attrs.start = Some(value.clone());
                 attrs.start_is_explicit = true;
             }
-            "fixed" if attrs.fixed.is_none() => attrs.fixed = expr_to_bool(value),
+            "fixed" if !has_outer_fixed => {
+                attrs.fixed = Some(parse_required_fixed(value, eval_ctx)?)
+            }
             "min" if attrs.min.is_none() => attrs.min = Some(value.clone()),
             "max" if attrs.max.is_none() => attrs.max = Some(value.clone()),
             "nominal" if attrs.nominal.is_none() => attrs.nominal = Some(value.clone()),
@@ -405,26 +421,41 @@ pub(super) fn extract_attributes(
     Ok(attrs)
 }
 
+fn parse_required_fixed(
+    value: &ast::Expression,
+    eval_ctx: &InstantiateEvalCtx<'_>,
+) -> InstantiateResult<bool> {
+    try_eval_structural_boolean(eval_ctx, value).ok_or_else(|| {
+        Box::new(InstantiateError::InvalidTypeAttribute {
+            attribute: "fixed".to_string(),
+            value: value.to_string(),
+            span: value.span(),
+        })
+    })
+}
+
 fn parse_required_state_select(
     value: &ast::Expression,
     eval_ctx: &InstantiateEvalCtx<'_>,
-    imports: &[(String, String)],
+    imports: crate::dims::ImportRewrite<'_>,
     source_scope: Option<&ast::QualifiedName>,
 ) -> InstantiateResult<rumoca_core::StateSelect> {
-    parse_state_select(value)
-        .or_else(|| eval_state_select_expr_with_source_scope(eval_ctx, value, source_scope))
-        .or_else(|| {
-            // Enclosing-scope constants (MLS §5.3.2) appear unqualified in
-            // declaration-side attributes; qualify them through the package
-            // constant aliases and retry before failing.
-            let qualified = crate::dims::qualify_shape_expr_imports(eval_ctx.tree, value, imports);
-            eval_state_select_expr_with_source_scope(eval_ctx, &qualified, source_scope)
+    if let Some(parsed) = parse_state_select(value) {
+        return Ok(parsed);
+    }
+    if let Some(evaluated) = eval_state_select_expr_with_source_scope(eval_ctx, value, source_scope)
+    {
+        return Ok(evaluated);
+    }
+    // Imported and enclosing-scope constants (MLS §13.2, §5.3.2) appear
+    // unqualified in declaration-side attributes; qualify them and retry
+    // before failing.
+    let qualified = crate::dims::qualify_shape_expr_imports(eval_ctx.tree, value, imports)?;
+    eval_state_select_expr_with_source_scope(eval_ctx, &qualified, source_scope).ok_or_else(|| {
+        Box::new(InstantiateError::InvalidTypeAttribute {
+            attribute: "stateSelect".to_string(),
+            value: value.to_string(),
+            span: value.span(),
         })
-        .ok_or_else(|| {
-            Box::new(InstantiateError::InvalidTypeAttribute {
-                attribute: "stateSelect".to_string(),
-                value: value.to_string(),
-                span: value.span(),
-            })
-        })
+    })
 }

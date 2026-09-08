@@ -3,7 +3,8 @@
 
 use super::super::*;
 use super::{
-    ClassContext, first_expression_token, is_input, reference_text, resolve_local_class_path,
+    ClassContext, ComponentEvaluabilityIndex, first_expression_token, is_input, reference_text,
+    resolve_local_class_path,
 };
 
 /// MLS §7.1.3 / INST-024 (conservative subset): functions may only take part
@@ -229,115 +230,6 @@ fn resolve_extend_type_root<'a>(
     def: &'a StoredDefinition,
 ) -> Option<ResolvedTypeRoot<'a>> {
     resolve_named_type_root(ext.base_def_id, &ext.base_name, def)
-}
-
-/// MLS §5.3.1 / INST-050: a name provided by more than one unqualified
-/// (wildcard) import is ambiguous; using it is an error.
-pub(super) fn check_ambiguous_unqualified_imports(
-    class: &ClassDef,
-    def: &StoredDefinition,
-    diags: &mut Vec<Diagnostic>,
-) {
-    let mut export_sets: Vec<(String, HashSet<String>)> = Vec::new();
-    for import in &class.imports {
-        let Import::Unqualified { path, .. } = import else {
-            continue;
-        };
-        let Some(target) = path
-            .def_id
-            .and_then(|def_id| find_class_by_def_id(def, def_id))
-            .or_else(|| find_class_by_absolute_path(def, path))
-        else {
-            continue;
-        };
-        let mut names: HashSet<String> = HashSet::new();
-        for (name, comp) in &target.components {
-            if !comp.is_protected {
-                names.insert(name.clone());
-            }
-        }
-        for (name, nested) in &target.classes {
-            if !nested.is_protected {
-                names.insert(name.clone());
-            }
-        }
-        export_sets.push((path.to_string(), names));
-    }
-    if export_sets.len() < 2 {
-        return;
-    }
-
-    let mut ambiguous: HashSet<&str> = HashSet::new();
-    for (i, (_, left)) in export_sets.iter().enumerate() {
-        for (_, right) in export_sets.iter().skip(i + 1) {
-            ambiguous.extend(left.intersection(right).map(String::as_str));
-        }
-    }
-    if ambiguous.is_empty() {
-        return;
-    }
-
-    let mut used = SinglePartRefCollector { found: Vec::new() };
-    for (_, comp) in &class.components {
-        if let Some(binding) = comp.binding.as_ref() {
-            let _ = used.visit_expression(binding);
-        }
-    }
-    for eq in class.equations.iter().chain(class.initial_equations.iter()) {
-        let _ = used.visit_equation(eq);
-    }
-    for (name, token) in used.found {
-        // Locally declared names shadow imports and are unambiguous.
-        if class.components.contains_key(name.as_str()) || class.classes.contains_key(name.as_str())
-        {
-            continue;
-        }
-        if ambiguous.contains(name.as_str()) {
-            diags.push(semantic_error(
-                ER112_AMBIGUOUS_UNQUALIFIED_IMPORT,
-                format!(
-                    "'{name}' is provided by more than one unqualified import and is ambiguous (MLS §5.3.1)"
-                ),
-                label_from_token(
-                    &token,
-                    "restrictions/ambiguous_unqualified_import",
-                    "qualify the name or use a selective import",
-                ),
-            ));
-            return;
-        }
-    }
-}
-
-/// Walk a dotted name from the top-level classes of the stored definition.
-fn find_class_by_absolute_path<'a>(
-    def: &'a StoredDefinition,
-    path: &ast::Name,
-) -> Option<&'a ClassDef> {
-    let mut segments = path.name.iter().map(|token| token.text.as_ref());
-    let mut current = def.classes.get(segments.next()?)?;
-    for segment in segments {
-        current = current.classes.get(segment)?;
-    }
-    Some(current)
-}
-
-/// Collects single-part component references (name + token).
-struct SinglePartRefCollector {
-    found: Vec<(String, Token)>,
-}
-
-impl ast::Visitor for SinglePartRefCollector {
-    fn visit_component_reference(
-        &mut self,
-        comp: &ComponentReference,
-    ) -> std::ops::ControlFlow<()> {
-        if let [part] = comp.parts.as_slice() {
-            self.found
-                .push((part.ident.text.to_string(), part.ident.clone()));
-        }
-        ast::visitor::walk_component_reference_default(self, comp)
-    }
 }
 
 /// Collects unqualified calls to a specific builtin name (token cloned).
@@ -625,11 +517,11 @@ pub(super) fn check_enum_conversion_ranges(
     let mut collector = EnumConversionCollector { class, def, diags };
     for (_, comp) in &class.components {
         if let Some(binding) = comp.binding.as_ref() {
-            let _ = collector.visit_expression(binding);
+            let _visit_outcome = collector.visit_expression(binding);
         }
     }
     for eq in class.equations.iter().chain(class.initial_equations.iter()) {
-        let _ = collector.visit_equation(eq);
+        let _visit_outcome = collector.visit_equation(eq);
     }
 }
 
@@ -895,11 +787,11 @@ pub(super) fn check_event_generating_iterators(
     let mut collector = ComprehensionCollector { found: Vec::new() };
     for (_, comp) in &class.components {
         if let Some(binding) = comp.binding.as_ref() {
-            let _ = collector.visit_expression(binding);
+            let _visit_outcome = collector.visit_expression(binding);
         }
     }
     for eq in class.equations.iter().chain(class.initial_equations.iter()) {
-        let _ = collector.visit_equation(eq);
+        let _visit_outcome = collector.visit_equation(eq);
     }
     for (body, iterator_names, ranges) in collector.found {
         // Iterator variables bound to continuous ranges make relations in the
@@ -1072,16 +964,49 @@ fn check_event_while_statement(
     }
 }
 
-/// MLS §9.4.1 / CONN-024, CONN-025: the `equalityConstraint` function of an
-/// overconstrained type must take two inputs of the enclosing type and return
-/// one Real output whose dimension is a literal constant n >= 0.
-pub(super) fn check_equality_constraint_prototype(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    let Some(func) = class.classes.get("equalityConstraint") else {
-        return;
-    };
-    if func.class_type != ClassType::Function {
+/// MLS §9.4.1 / CONN-024, CONN-025: check the exact resolved declaration
+/// identities of a record's direct `equalityConstraint` exposure. Effective
+/// inherited/redeclared selection and the final occurrence-specific extent are
+/// owned by Instantiate.
+pub(super) fn check_equality_constraint_prototype(
+    tree: &ast::ClassTree,
+    class: &ClassDef,
+    declarations: &ast::EqualityConstraintDeclarationIndex,
+    evaluability: &ComponentEvaluabilityIndex<'_>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if class.class_type != ClassType::Record {
         return;
     }
+    let Some(record_type_def_id) = class.def_id else {
+        return;
+    };
+    let selection = match declarations.prove_equality_constraint_selection(tree, record_type_def_id)
+    {
+        Ok(Some(selection)) => selection,
+        Ok(None) => return,
+        Err(reason) => {
+            diags.push(semantic_error(
+                ER117_EQUALITY_CONSTRAINT_PROTOTYPE,
+                format!(
+                    "equalityConstraint exposure of '{}' is invalid (MLS §9.4.1): {reason}",
+                    class.name.text
+                ),
+                label_from_token(
+                    &class.name,
+                    "restrictions/equality_constraint_selection",
+                    "fix the exact equalityConstraint inheritance/redeclare selection",
+                ),
+            ));
+            return;
+        }
+    };
+    let func = declarations
+        .selected_equality_constraint_function(tree, selection)
+        .expect("a checked equalityConstraint selection retains its callable");
+    let slot = declarations
+        .equality_constraint_slot(tree, selection)
+        .expect("a checked equalityConstraint selection retains its slot");
     // MLS §9.4.1 / CONN-022: an overdetermined type/record may not have flow
     // components.
     for (name, comp) in &class.components {
@@ -1100,43 +1025,44 @@ pub(super) fn check_equality_constraint_prototype(class: &ClassDef, diags: &mut 
             ));
         }
     }
-    let inputs: Vec<&ast::Component> = func
-        .components
-        .iter()
-        .filter(|(_, comp)| matches!(comp.causality, Causality::Input(_)))
-        .map(|(_, comp)| comp)
-        .collect();
-    let outputs: Vec<&ast::Component> = func
-        .components
-        .iter()
-        .filter(|(_, comp)| matches!(comp.causality, Causality::Output(_)))
-        .map(|(_, comp)| comp)
-        .collect();
-
     let enclosing = class.name.text.as_ref();
-    let inputs_ok = inputs.len() == 2
-        && inputs.iter().all(|comp| {
-            let type_name = comp.type_name.to_string();
-            type_name == enclosing || type_name.ends_with(&format!(".{enclosing}"))
-        });
-    let outputs_ok = outputs.len() == 1
-        && outputs[0].type_name.to_string() == "Real"
-        && outputs[0].shape_expr.len() == 1
-        && match outputs[0].shape_expr.first() {
-            Some(Subscript::Expression(expr)) => {
-                integer_literal_value_restrictions(expr).is_some_and(|n| n >= 0)
+    let result = match declarations.check_equality_constraint_prototype(tree, selection) {
+        Err(reason) => Some(Err(reason)),
+        Ok(prototype) => {
+            let output = func
+                .components
+                .values()
+                .find(|component| matches!(component.causality, Causality::Output(_)))
+                .expect("a checked equalityConstraint prototype has one output");
+            let Subscript::Expression(extent) = &output.shape_expr[0] else {
+                unreachable!("a checked equalityConstraint prototype has one expression extent")
+            };
+            match declarations.check_equality_constraint_cardinality(tree, prototype) {
+                Err(
+                    ast::EqualityConstraintExposureError::SymbolicExtentCertificateNotImplemented,
+                ) if evaluability.expression_is_definitively_nonevaluable(extent) => Some(Err(
+                    ast::EqualityConstraintExposureError::OutputExtentIsNotConstant,
+                )),
+                // Resolve has not yet applied occurrence modifiers/redeclares.
+                // A symbolic constant can only become authoritative after an
+                // independently replayable certificate exists. Instantiate fails
+                // EI036 for it during this literal-only cutover.
+                Err(
+                    ast::EqualityConstraintExposureError::SymbolicExtentCertificateNotImplemented,
+                ) => None,
+                result => Some(result),
             }
-            _ => false,
-        };
+        }
+    };
 
-    if !inputs_ok || !outputs_ok {
+    if let Some(Err(reason)) = result {
         diags.push(semantic_error(
             ER117_EQUALITY_CONSTRAINT_PROTOTYPE,
             format!(
-                "equalityConstraint of '{enclosing}' must be `function equalityConstraint(input {enclosing} a, input {enclosing} b) output Real residue[n]` with literal n >= 0 (MLS §9.4.1)"
+                "equalityConstraint of '{enclosing}' must be `function equalityConstraint(input {enclosing} a, input {enclosing} b) output Real residue[n]` with constant Integer n >= 0 (MLS §9.4.1): {reason}"
             ),
             label_from_token(
-                &func.name,
+                &slot.name,
                 "restrictions/equality_constraint_prototype",
                 "fix the equalityConstraint signature",
             ),
@@ -1155,9 +1081,7 @@ pub(super) fn check_derivative_annotations(
 ) {
     for entry in &class.annotation {
         let (target, value, modifications) = match entry {
-            Expression::Modification { target, value, .. } => {
-                (target, Some(value.as_ref()), &[][..])
-            }
+            Expression::Modification { target, value, .. } => (target, value.as_deref(), &[][..]),
             Expression::ClassModification {
                 target,
                 modifications,
@@ -1213,7 +1137,7 @@ pub(super) fn check_derivative_annotations(
         for modification in modifications {
             let Expression::Modification {
                 target: mod_target,
-                value: mod_value,
+                value: Some(mod_value),
                 ..
             } = modification
             else {
@@ -1270,133 +1194,40 @@ fn resolve_sibling_class<'a>(
     def.classes.get(name)
 }
 
-/// MLS §11.2 / ALG-004: inside a for-loop, assigning the entire array is not
-/// allowed when the same array is also subscripted with the loop variable.
-pub(super) fn check_whole_array_assignment_in_for(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
-    for section in class
-        .algorithms
-        .iter()
-        .chain(class.initial_algorithms.iter())
-    {
-        for stmt in section {
-            scan_for_whole_array_assignment(stmt, class, diags);
-        }
-    }
-}
-
-fn scan_for_whole_array_assignment(
-    stmt: &Statement,
-    class: &ClassDef,
+/// Fail closed until implicit iterator-range inference is represented and
+/// implemented for each owning syntax. This prevents a forged or deserialized
+/// `ParsedTree` from receiving a `ResolvedTree` proof over an absent range.
+/// The root visitor covers statement loops, equation loops, comprehensions,
+/// modifiers, bindings, and nested classes through one traversal.
+pub(super) fn check_unsupported_implicit_for_ranges(
+    def: &StoredDefinition,
     diags: &mut Vec<Diagnostic>,
 ) {
-    match stmt {
-        Statement::For {
-            indices, equations, ..
-        } => {
-            let loop_vars: HashSet<&str> = indices
-                .iter()
-                .map(|index| index.ident.text.as_ref())
-                .collect();
-            // Arrays subscripted with a loop variable anywhere in the body.
-            let mut indexed: HashSet<String> = HashSet::new();
-            for inner in equations {
-                collect_loop_indexed_arrays(inner, &loop_vars, &mut indexed);
-            }
-            for inner in equations {
-                flag_whole_array_assignments(inner, class, &indexed, diags);
-            }
-            for inner in equations {
-                scan_for_whole_array_assignment(inner, class, diags);
-            }
-        }
-        Statement::While(block) => {
-            for inner in &block.stmts {
-                scan_for_whole_array_assignment(inner, class, diags);
-            }
-        }
-        Statement::If {
-            cond_blocks,
-            else_block,
-        } => {
-            for block in cond_blocks {
-                for inner in &block.stmts {
-                    scan_for_whole_array_assignment(inner, class, diags);
-                }
-            }
-            for inner in else_block.iter().flatten() {
-                scan_for_whole_array_assignment(inner, class, diags);
-            }
-        }
-        Statement::When(blocks) => {
-            for block in blocks {
-                for inner in &block.stmts {
-                    scan_for_whole_array_assignment(inner, class, diags);
-                }
-            }
-        }
-        _ => {}
+    struct ImplicitRangeVisitor<'a> {
+        diags: &'a mut Vec<Diagnostic>,
     }
-}
 
-fn collect_loop_indexed_arrays(
-    stmt: &Statement,
-    loop_vars: &HashSet<&str>,
-    indexed: &mut HashSet<String>,
-) {
-    if let Statement::Assignment { comp, .. } = stmt
-        && let [part] = comp.parts.as_slice()
-        && part.subs.as_ref().is_some_and(|subs| {
-            subs.iter().any(|sub| {
-                matches!(
-                    sub,
-                    Subscript::Expression(Expression::ComponentReference(cref))
-                        if matches!(cref.parts.as_slice(), [p] if loop_vars.contains(p.ident.text.as_ref()))
-                )
-            })
-        })
-    {
-        indexed.insert(part.ident.text.to_string());
-    }
-    if let Statement::For { equations, .. } = stmt {
-        for inner in equations {
-            collect_loop_indexed_arrays(inner, loop_vars, indexed);
+    impl ast::Visitor for ImplicitRangeVisitor<'_> {
+        fn enter_for_index(&mut self, index: &ast::ForIndex) -> std::ops::ControlFlow<()> {
+            if matches!(index.range, Expression::Empty { .. }) {
+                self.diags.push(semantic_error(
+                    ER129_IMPLICIT_FOR_RANGE_UNSUPPORTED,
+                    format!(
+                        "implicit range inference for iterator '{}' is not yet supported at the resolved-AST boundary",
+                        index.ident.text
+                    ),
+                    label_from_token(
+                        &index.ident,
+                        "restrictions/implicit_for_range_unsupported",
+                        "provide an explicit iterator range",
+                    ),
+                ));
+            }
+            std::ops::ControlFlow::Continue(())
         }
     }
-}
 
-fn flag_whole_array_assignments(
-    stmt: &Statement,
-    class: &ClassDef,
-    indexed: &HashSet<String>,
-    diags: &mut Vec<Diagnostic>,
-) {
-    let Statement::Assignment { comp, .. } = stmt else {
-        return;
-    };
-    let [part] = comp.parts.as_slice() else {
-        return;
-    };
-    if part.subs.as_ref().is_some_and(|subs| !subs.is_empty()) {
-        return;
-    }
-    let name = part.ident.text.as_ref();
-    let is_array = class
-        .components
-        .get(name)
-        .is_some_and(|component| !component.shape.is_empty() || !component.shape_expr.is_empty());
-    if is_array && indexed.contains(name) {
-        diags.push(semantic_error(
-            ER121_WHOLE_ARRAY_IN_FOR,
-            format!(
-                "assignment to the entire array '{name}' inside a for-loop that also subscripts it with the loop variable (MLS §11.2)"
-            ),
-            label_from_token(
-                &part.ident,
-                "restrictions/whole_array_in_for",
-                "assign elements individually or move the whole-array assignment out of the loop",
-            ),
-        ));
-    }
+    let _visit_outcome = ImplicitRangeVisitor { diags }.visit_stored_definition(def);
 }
 
 pub(super) fn check_annotation_advisories(
@@ -1489,10 +1320,13 @@ pub(super) fn check_evaluate_annotations(class: &ClassDef, diags: &mut Vec<Diagn
         let has_evaluate = comp.annotation.iter().any(|entry| {
             matches!(
                 entry,
-                Expression::Modification { target, value, .. }
-                    if target.parts.first().map(|p| p.ident.text.as_ref()) == Some("Evaluate")
-                        && matches!(
-                            value.as_ref(),
+                Expression::Modification {
+                    target,
+                    value: Some(value),
+                    ..
+                } if target.parts.first().map(|p| p.ident.text.as_ref()) == Some("Evaluate")
+                    && matches!(
+                        value.as_ref(),
                             Expression::Terminal { token, .. } if token.text.as_ref() == "true"
                         )
             )

@@ -669,12 +669,14 @@ fn zero_cardinality_variables_have_the_unique_empty_value() {
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(1),
                 empty,
                 at("parameter Real p[0]"),
                 rumoca_ir_dae::VariableAttributes::default(),
             )?;
             variables.algebraic(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(2),
                 empty,
                 at("Real z[0]"),
                 rumoca_ir_dae::VariableAttributes::default(),
@@ -708,6 +710,7 @@ fn size_reads_checked_shape_without_evaluating_runtime_array() {
         let lines = dae.variables(|variables| {
             variables.algebraic(
                 VarName::new("lines"),
+                rumoca_core::InstanceId::new(3),
                 matrix,
                 at,
                 rumoca_ir_dae::VariableAttributes::default(),
@@ -750,6 +753,7 @@ fn runtime_inputs_require_an_override_or_use_their_checked_default() {
         dae.variables(|variables| {
             variables.input(
                 VarName::new("defaulted"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 rumoca_ir_dae::InputVariability::Continuous,
                 at("input Real defaulted"),
@@ -761,6 +765,7 @@ fn runtime_inputs_require_an_override_or_use_their_checked_default() {
             )?;
             variables.input(
                 VarName::new("supplied"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 rumoca_ir_dae::InputVariability::Continuous,
                 at("input Real supplied"),
@@ -809,7 +814,7 @@ fn nested_comprehensions_evaluate_with_lexically_scoped_binders() {
     };
     let singleton_domain = |name: &str, upper| StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: name.to_string(),
             lower: 1,
             upper,
@@ -1012,7 +1017,7 @@ fn construct_sum3_function<'dae>(
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "k".to_string(),
                         lower: 1,
                         upper: 3,

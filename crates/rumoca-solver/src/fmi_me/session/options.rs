@@ -6,15 +6,26 @@
 //! constructor, so an unproven host option can never enter the session
 
 use super::MeSessionError;
+use crate::fmi_me::{MeSolverTolerances, MeToleranceError};
 
 /// The plain host request a checked [`MeSessionOptions`] is built from.
 ///
 /// Public fields make the request ordinary data; the aggregate below is the
 /// only thing the master algorithm ever reads, and it exists only after every
 /// value has been proven.
+///
+/// A session request deliberately has no start-time author; the retained FMI
+/// component supplies that coordinate when the combined host is constructed.
+///
+/// ```compile_fail,E0026
+/// use rumoca_solver::fmi_me::session::MeSessionOptionsInput;
+///
+/// fn no_second_start_author(input: MeSessionOptionsInput) {
+///     let MeSessionOptionsInput { start_time: _, .. } = input;
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct MeSessionOptionsInput {
-    pub start_time: f64,
     /// The defined experiment end, or `None` for an open live session.
     pub stop_time: Option<f64>,
     pub relative_tolerance: f64,
@@ -36,10 +47,8 @@ pub struct MeSessionOptionsInput {
 /// Checked host options the session derives its policies from.
 #[derive(Debug, Clone)]
 pub struct MeSessionOptions {
-    start_time: f64,
     stop_time: Option<f64>,
-    relative_tolerance: f64,
-    absolute_tolerance: f64,
+    tolerances: MeSolverTolerances,
     output_interval: f64,
     root_scan_resolution: f64,
     root_location_tolerance: f64,
@@ -51,24 +60,17 @@ impl MeSessionOptions {
     /// Prove every host option before a session can exist.
     pub fn new(input: MeSessionOptionsInput) -> Result<Self, MeSessionError> {
         let reject = |reason: String| MeSessionError::Options { reason };
-        if !input.start_time.is_finite() {
-            return Err(reject(format!(
-                "the experiment start {} must be finite",
-                input.start_time
-            )));
-        }
+        let tolerances =
+            MeSolverTolerances::check(input.relative_tolerance, input.absolute_tolerance)
+                .map_err(|error: MeToleranceError| reject(error.to_string()))?;
         if let Some(stop) = input.stop_time
-            && (!stop.is_finite() || stop < input.start_time)
+            && !stop.is_finite()
         {
             return Err(reject(format!(
-                "the defined experiment end {stop} must be finite and must not precede the \
-                 start {}",
-                input.start_time
+                "the defined experiment end {stop} must be finite"
             )));
         }
         for (label, value) in [
-            ("relative tolerance", input.relative_tolerance),
-            ("absolute tolerance", input.absolute_tolerance),
             ("output interval", input.output_interval),
             ("root scan resolution", input.root_scan_resolution),
             ("root location tolerance", input.root_location_tolerance),
@@ -93,10 +95,8 @@ impl MeSessionOptions {
             )));
         }
         Ok(Self {
-            start_time: input.start_time,
             stop_time: input.stop_time,
-            relative_tolerance: input.relative_tolerance,
-            absolute_tolerance: input.absolute_tolerance,
+            tolerances,
             output_interval: input.output_interval,
             root_scan_resolution: input.root_scan_resolution,
             root_location_tolerance: input.root_location_tolerance,
@@ -106,23 +106,23 @@ impl MeSessionOptions {
     }
 
     #[must_use]
-    pub fn start_time(&self) -> f64 {
-        self.start_time
-    }
-
-    #[must_use]
     pub fn stop_time(&self) -> Option<f64> {
         self.stop_time
     }
 
     #[must_use]
     pub fn relative_tolerance(&self) -> f64 {
-        self.relative_tolerance
+        self.tolerances.relative()
     }
 
     #[must_use]
     pub fn absolute_tolerance(&self) -> f64 {
-        self.absolute_tolerance
+        self.tolerances.absolute()
+    }
+
+    #[must_use]
+    pub(in crate::fmi_me) const fn tolerances(&self) -> MeSolverTolerances {
+        self.tolerances
     }
 
     #[must_use]
@@ -152,19 +152,25 @@ impl MeSessionOptions {
         self.records_trace
     }
 
-    /// Re-anchor a defined experiment at a new start, re-proving the ordering.
-    pub(super) fn restarted_at(&self, start_time: f64) -> Result<Self, MeSessionError> {
-        Self::new(MeSessionOptionsInput {
-            start_time,
-            stop_time: self.stop_time,
-            relative_tolerance: self.relative_tolerance,
-            absolute_tolerance: self.absolute_tolerance,
-            output_interval: self.output_interval,
-            root_scan_resolution: self.root_scan_resolution,
-            root_location_tolerance: self.root_location_tolerance,
-            max_wall_seconds: self.max_wall_seconds,
-            records_trace: self.records_trace,
-        })
+    /// Prove the sole component-owned start coordinate is compatible with the
+    /// host policy before the combined session aggregate exists.
+    pub(super) fn admit_start_time(&self, start_time: f64) -> Result<(), MeSessionError> {
+        if !start_time.is_finite() {
+            return Err(MeSessionError::Options {
+                reason: format!("the component start {start_time} must be finite"),
+            });
+        }
+        if let Some(stop) = self.stop_time
+            && stop < start_time
+        {
+            return Err(MeSessionError::Options {
+                reason: format!(
+                    "the defined experiment end {stop} must not precede the component start \
+                     {start_time}"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -181,7 +187,22 @@ pub enum MeAdvanceOutcome {
 
 /// The soft output schedule a batch call hands to the same incremental
 /// session. It is a cursor, not a second loop: SPEC_0044 §6 ME-HOST-002.
-#[derive(Debug, Clone)]
+/// Construction belongs only to the live driver or an admitted batch.
+///
+/// ```compile_fail,E0624
+/// use rumoca_solver::fmi_me::session::MeOutputCursor;
+///
+/// let _forged = MeOutputCursor::empty();
+/// ```
+///
+/// ```compile_fail,E0599
+/// use rumoca_solver::fmi_me::session::MeOutputCursor;
+///
+/// fn cannot_clone(cursor: MeOutputCursor) {
+///     let _duplicate = cursor.clone();
+/// }
+/// ```
+#[derive(Debug)]
 pub struct MeOutputCursor {
     times: Vec<f64>,
     next: usize,
@@ -190,7 +211,7 @@ pub struct MeOutputCursor {
 impl MeOutputCursor {
     /// Build the cursor, proving the schedule is a finite strictly increasing
     /// coordinate sequence.
-    pub fn new(times: Vec<f64>) -> Result<Self, MeSessionError> {
+    pub(in crate::fmi_me) fn new(times: Vec<f64>) -> Result<Self, MeSessionError> {
         for (index, time) in times.iter().copied().enumerate() {
             if !time.is_finite() {
                 return Err(MeSessionError::Options {
@@ -210,7 +231,7 @@ impl MeOutputCursor {
     }
 
     #[must_use]
-    pub fn empty() -> Self {
+    pub(in crate::fmi_me) fn empty() -> Self {
         Self {
             times: Vec::new(),
             next: 0,
@@ -228,24 +249,26 @@ impl MeOutputCursor {
 
     /// Restart the schedule, so a reset session replays the same soft
     /// observation coordinates it was built with.
-    pub fn rewind(&mut self) {
+    #[cfg(test)]
+    fn rewind(&mut self) {
         self.next = 0;
     }
 
     #[must_use]
-    pub fn remaining(&self) -> usize {
+    #[cfg(test)]
+    fn remaining(&self) -> usize {
         self.times.len().saturating_sub(self.next)
     }
 }
 
-pub(super) fn trace_capacity(options: &MeSessionOptions) -> usize {
+pub(super) fn trace_capacity(options: &MeSessionOptions, start_time: f64) -> usize {
     if !options.records_trace() {
         return 0;
     }
     let Some(stop) = options.stop_time() else {
         return 0;
     };
-    let width = (stop - options.start_time()).abs();
+    let width = (stop - start_time).abs();
     let interval = options.output_interval();
     let estimate = (width / interval).ceil();
     if !estimate.is_finite() || estimate < 0.0 {
@@ -260,7 +283,6 @@ mod tests {
 
     fn input(stop_time: Option<f64>, records_trace: bool) -> MeSessionOptionsInput {
         MeSessionOptionsInput {
-            start_time: 0.0,
             stop_time,
             relative_tolerance: 1.0e-6,
             absolute_tolerance: 1.0e-6,
@@ -303,10 +325,6 @@ mod tests {
 
     #[test]
     fn host_options_prove_ordering_positivity_and_a_legal_budget() {
-        let mut backward = input(Some(1.0), true);
-        backward.stop_time = Some(-1.0);
-        assert!(MeSessionOptions::new(backward).is_err());
-
         let mut zero_interval = input(Some(1.0), true);
         zero_interval.output_interval = 0.0;
         assert!(MeSessionOptions::new(zero_interval).is_err());
@@ -319,20 +337,20 @@ mod tests {
         bad_budget.max_wall_seconds = Some(0.0);
         assert!(MeSessionOptions::new(bad_budget).is_err());
 
-        let mut infinite_start = input(Some(1.0), true);
-        infinite_start.start_time = f64::INFINITY;
-        assert!(MeSessionOptions::new(infinite_start).is_err());
+        let mut infinite_stop = input(Some(1.0), true);
+        infinite_stop.stop_time = Some(f64::INFINITY);
+        assert!(MeSessionOptions::new(infinite_stop).is_err());
     }
 
     #[test]
     fn an_initialization_only_experiment_has_equal_finite_bounds() {
         let checked = MeSessionOptions::new(input(Some(0.0), true))
             .expect("equal bounds request one settled initialization observation");
-        assert_eq!(
-            checked.start_time(),
-            checked.stop_time().expect("defined stop")
-        );
-        assert_eq!(trace_capacity(&checked), 1);
+        assert_eq!(checked.stop_time(), Some(0.0));
+        checked
+            .admit_start_time(0.0)
+            .expect("the component start equals the defined stop");
+        assert_eq!(trace_capacity(&checked, 0.0), 1);
     }
 
     #[test]
@@ -347,12 +365,12 @@ mod tests {
 
     #[test]
     fn a_live_session_reserves_no_trace_capacity() {
-        assert_eq!(trace_capacity(&options(None, false)), 0);
+        assert_eq!(trace_capacity(&options(None, false), 0.0), 0);
     }
 
     #[test]
     fn a_batch_session_reserves_one_row_per_output_interval() {
-        assert_eq!(trace_capacity(&options(Some(1.0), true)), 11);
+        assert_eq!(trace_capacity(&options(Some(1.0), true), 0.0), 11);
     }
 
     #[test]
@@ -360,13 +378,14 @@ mod tests {
         let mut unbounded = input(Some(1.0e300), true);
         unbounded.output_interval = f64::MIN_POSITIVE;
         let checked = MeSessionOptions::new(unbounded).expect("checked options");
-        assert!(trace_capacity(&checked) <= 1 << 22);
+        assert!(trace_capacity(&checked, 0.0) <= 1 << 22);
     }
 
     #[test]
-    fn restarting_re_proves_the_experiment_ordering() {
+    fn component_start_admission_proves_the_experiment_ordering_once() {
         let checked = options(Some(1.0), true);
-        assert!(checked.restarted_at(0.5).is_ok());
-        assert!(checked.restarted_at(2.0).is_err());
+        assert!(checked.admit_start_time(0.5).is_ok());
+        assert!(checked.admit_start_time(2.0).is_err());
+        assert!(checked.admit_start_time(f64::INFINITY).is_err());
     }
 }

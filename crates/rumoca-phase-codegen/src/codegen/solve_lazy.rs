@@ -5,8 +5,7 @@
 //! model. These wrappers expose the IR to templates *lazily*: structural fields
 //! are produced on demand and op lists materialize one op at a time during
 //! iteration, so peak memory is O(one program) instead of O(whole problem).
-//! Targets that never access a field (e.g. c-ode never touches
-//! `solve.continuous`) pay nothing for it. The Rust render functions can also
+//! Targets that never access a structural field pay nothing for it. The Rust render functions can also
 //! `downcast_object_ref` to [`SolveProgramsObject`] / [`SolveOpListObject`] to
 //! iterate the typed ops directly with zero materialization.
 
@@ -23,26 +22,19 @@ use crate::errors::CodegenError;
 
 /// One correlated, read-only owner for everything a lazy Solve renderer reads.
 ///
-/// Keeping the problem and artifacts in one handle makes it impossible for an
-/// internal caller to pair an FMI problem with artifacts from another model.
-/// Standalone renderers retain their existing pair of separately lowered
-/// values, while the FMI variant retains the complete correlated codegen view
-/// in its proved event-free type-state.
+/// Keeping one complete model in the standalone arm makes it impossible to
+/// pair a problem, pure-call table, runtime values, or artifacts from different
+/// lowerings. The FMI variant retains its complete correlated codegen view in
+/// the existing proved event-free type-state.
 #[derive(Clone)]
 pub(super) enum SolveRenderHandle {
-    Standalone {
-        problem: Arc<solve::SolveProblem>,
-        artifacts: Arc<solve::SolveArtifacts>,
-    },
+    Standalone(Arc<solve::SolveModel>),
     Fmi(Arc<solve::fmi::FmiEventFreeCodegenView>),
 }
 
 impl SolveRenderHandle {
-    pub(super) fn standalone(
-        problem: Arc<solve::SolveProblem>,
-        artifacts: Arc<solve::SolveArtifacts>,
-    ) -> Self {
-        Self::Standalone { problem, artifacts }
+    pub(super) fn standalone(model: Arc<solve::SolveModel>) -> Self {
+        Self::Standalone(model)
     }
 
     pub(super) fn fmi(component: solve::fmi::FmiEventFreeCodegenView) -> Self {
@@ -51,15 +43,22 @@ impl SolveRenderHandle {
 
     pub(super) fn problem(&self) -> &solve::SolveProblem {
         match self {
-            Self::Standalone { problem, .. } => problem,
+            Self::Standalone(model) => model.problem(),
             Self::Fmi(component) => component.problem(),
         }
     }
 
     pub(super) fn artifacts(&self) -> &solve::SolveArtifacts {
         match self {
-            Self::Standalone { artifacts, .. } => artifacts,
+            Self::Standalone(model) => model.artifacts(),
             Self::Fmi(component) => component.artifacts(),
+        }
+    }
+
+    fn standalone_model(&self) -> Option<&solve::SolveModel> {
+        match self {
+            Self::Standalone(model) => Some(model),
+            Self::Fmi(_) => None,
         }
     }
 
@@ -71,10 +70,10 @@ impl SolveRenderHandle {
     /// construction already guarantees the inventory shape; the renderer
     /// constructor checks its remaining capability domain before this handle
     /// exists, so there is no case to reject here.
-    pub(super) fn fmi_value(&self) -> Value {
+    pub(super) fn fmi_value(&self) -> Option<Value> {
         match self {
-            Self::Standalone { .. } => Value::default(),
-            Self::Fmi(component) => Value::from_serialize(component.as_ref()),
+            Self::Standalone(_) => None,
+            Self::Fmi(component) => Some(Value::from_serialize(component.as_ref())),
         }
     }
 }
@@ -414,11 +413,11 @@ pub(super) fn compute_block_value(block: Arc<solve::ComputeBlock>) -> Result<Val
 
 fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let problem = handle.problem();
-    let implicit_rhs = compute_block_value(Arc::new(problem.continuous.implicit_rhs.clone()))?;
-    let derivative_rhs = compute_block_value(Arc::new(problem.continuous.derivative_rhs.clone()))?;
-    let residual = compute_block_value(Arc::new(problem.continuous.residual.clone()))?;
-    let (algebraic_assignment_plan, algebraic_assignment_complete) =
-        algebraic_assignment_plan(problem)?;
+    let implicit_rhs = compute_block_value(Arc::new(problem.continuous().implicit_rhs().clone()))?;
+    let derivative_rhs =
+        compute_block_value(Arc::new(problem.continuous().derivative_rhs().clone()))?;
+    let residual = compute_block_value(Arc::new(problem.continuous().residual().clone()))?;
+    let algebraic_assignment_plan = algebraic_assignment_plan(problem)?;
     Ok(lazy_map(
         &[
             "implicit_rhs",
@@ -427,19 +426,17 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             "residual",
             "derivative_rhs",
             "algebraic_assignment_plan",
-            "algebraic_assignment_complete",
         ],
         move |k| {
-            let c = &handle.problem().continuous;
+            let c = handle.problem().continuous();
             match k {
                 "implicit_rhs" => Some(implicit_rhs.clone()),
                 "derivative_rhs" => Some(derivative_rhs.clone()),
                 "residual" => Some(residual.clone()),
                 "algebraic_assignment_plan" => Some(algebraic_assignment_plan.clone()),
-                "algebraic_assignment_complete" => Some(Value::from(algebraic_assignment_complete)),
-                "implicit_row_targets" => Some(Value::from_serialize(&c.implicit_row_targets)),
+                "implicit_row_targets" => Some(Value::from_serialize(c.implicit_row_targets())),
                 "algebraic_projection_plan" => {
-                    Some(Value::from_serialize(&c.algebraic_projection_plan))
+                    Some(Value::from_serialize(c.algebraic_projection_plan()))
                 }
                 _ => None,
             }
@@ -447,22 +444,20 @@ fn continuous_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     ))
 }
 
-fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bool), CodegenError> {
-    let owners = &problem.continuous.refresh_owners;
+fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<Value, CodegenError> {
+    let owners = problem.continuous().refresh_owners();
     let mut programs = Vec::new();
     let mut spans = Vec::new();
     let mut targets = Vec::new();
-    let complete = explicit_algebraic_assignment_complete(problem);
-    for stage in &owners.algebraic().value_stages {
+    for stage in owners.algebraic().value_stages() {
         match stage {
-            solve::RefreshStage::CausalSeedSweep { .. } => {}
-            solve::RefreshStage::ExactAssignments {
+            solve::IssuedRefreshStage::CausalSeedSweep { .. } => {}
+            solve::IssuedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 ..
             } => {
                 append_issued_assignment_sequence(
-                    &problem.continuous.implicit_rhs,
                     owners,
                     *static_sequence,
                     &mut programs,
@@ -470,7 +465,6 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
                     &mut targets,
                 )?;
                 append_issued_assignment_sequence(
-                    &problem.continuous.implicit_rhs,
                     owners,
                     *dynamic_sequence,
                     &mut programs,
@@ -478,7 +472,7 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
                     &mut targets,
                 )?;
             }
-            solve::RefreshStage::ProjectionBlock { .. } => {}
+            solve::IssuedRefreshStage::ProjectionBlock { .. } => {}
         }
     }
     let assignments = solve::ScalarProgramBlock::with_output_indices(programs, spans, targets)
@@ -486,7 +480,7 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
     let plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
         Arc::new(assignments),
     )?);
-    Ok((plan, complete))
+    Ok(plan)
 }
 
 /// Target-local explicit algebraic execution profile.
@@ -496,18 +490,15 @@ fn algebraic_assignment_plan(problem: &solve::SolveProblem) -> Result<(Value, bo
 /// when the Solve owner was constructed or replayed from wire.
 #[must_use]
 pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> bool {
-    if problem.validate().is_err() {
-        return false;
-    }
-    let continuous = &problem.continuous;
-    let state_count = problem.solve_layout.state_scalar_count();
+    let continuous = problem.continuous();
+    let state_count = problem.solve_layout().state_scalar_count();
     let Some(required_algebraic_end) =
-        state_count.checked_add(problem.solve_layout.algebraic_scalar_count())
+        state_count.checked_add(problem.solve_layout().algebraic_scalar_count())
     else {
         return false;
     };
     let expected_targets = continuous
-        .algebraic_projection_plan
+        .algebraic_projection_plan()
         .blocks
         .iter()
         .flat_map(|block| block.y_indices.iter().copied())
@@ -516,12 +507,12 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
         return false;
     }
     if expected_targets.is_empty() {
-        return continuous.implicit_rhs.is_empty();
+        return continuous.implicit_rhs().is_empty();
     }
-    let owners = &continuous.refresh_owners;
-    if owners.algebraic().simultaneous_plan != continuous.algebraic_projection_plan
-        || owners.algebraic().simultaneous_block_indices
-            != (0..continuous.algebraic_projection_plan.blocks.len()).collect::<Vec<_>>()
+    let owners = continuous.refresh_owners();
+    if owners.algebraic().simultaneous_plan() != continuous.algebraic_projection_plan()
+        || owners.algebraic().simultaneous_block_indices()
+            != (0..continuous.algebraic_projection_plan().blocks.len()).collect::<Vec<_>>()
         || !owners.algebraic_exact_assignment_stages_cover()
     {
         return false;
@@ -556,7 +547,8 @@ pub fn explicit_algebraic_assignment_complete(problem: &solve::SolveProblem) -> 
         }
         rows.extend(program.row_owners().iter().copied());
     }
-    assigned == expected_targets && rows.len() == continuous.algebraic_projection_plan.blocks.len()
+    assigned == expected_targets
+        && rows.len() == continuous.algebraic_projection_plan().blocks.len()
 }
 
 fn supported_explicit_assignment_shape(shape: solve::TargetAssignmentShape) -> bool {
@@ -575,15 +567,15 @@ fn ordered_exact_algebraic_assignments(
     owners: &solve::ContinuousRefreshOwners,
 ) -> Option<Vec<(&solve::ExactRefreshAssignmentProgram, usize)>> {
     let mut assignments = Vec::new();
-    for stage in &owners.algebraic().value_stages {
+    for stage in owners.algebraic().value_stages() {
         let (static_sequence, dynamic_sequence) = match stage {
-            solve::RefreshStage::CausalSeedSweep { .. } => continue,
-            solve::RefreshStage::ExactAssignments {
+            solve::IssuedRefreshStage::CausalSeedSweep { .. } => continue,
+            solve::IssuedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 ..
             } => (*static_sequence, *dynamic_sequence),
-            solve::RefreshStage::ProjectionBlock { .. } => return None,
+            solve::IssuedRefreshStage::ProjectionBlock { .. } => return None,
         };
         for sequence in [static_sequence, dynamic_sequence] {
             let Some(schedule) = owners.exact_assignment_schedule(sequence) else {
@@ -600,7 +592,6 @@ fn ordered_exact_algebraic_assignments(
 }
 
 fn append_issued_assignment_sequence(
-    source: &solve::ComputeBlock,
     owners: &solve::ContinuousRefreshOwners,
     sequence: solve::RefreshSequenceId,
     programs: &mut Vec<Vec<solve::LinearOp>>,
@@ -616,9 +607,7 @@ fn append_issued_assignment_sequence(
             .ok_or_else(|| {
                 CodegenError::template("issued algebraic assignment schedule has no program owner")
             })?;
-        let block = program
-            .final_scalar_program(source)
-            .map_err(|error| CodegenError::template(error.to_string()))?;
+        let block = program.final_program();
         let [operations] = block.programs() else {
             return Err(CodegenError::template(
                 "issued algebraic assignment owner is not one correlated program",
@@ -636,7 +625,7 @@ fn append_issued_assignment_sequence(
 
 fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let scalar =
-        super::discrete_render_view::DiscreteRenderView::checked(&handle.problem().discrete)?;
+        super::discrete_render_view::DiscreteRenderView::checked(handle.problem().discrete())?;
     let rhs = scalar_program_block_value(Arc::new(scalar.rhs));
     let targets = scalar.targets;
     let pre_modes = scalar.pre_modes;
@@ -655,7 +644,7 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             "observation_refresh",
         ],
         move |k| {
-            let d = &handle.problem().discrete;
+            let d = handle.problem().discrete();
             match k {
                 "rhs" => Some(rhs.clone()),
                 "runtime_assignment_rhs" => Some(scalar_program_block_value(Arc::new(
@@ -688,10 +677,10 @@ fn discrete_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
 fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let problem = handle.problem();
     let root_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-        Arc::new(problem.events.root_conditions.clone()),
+        Arc::new(problem.events().root_conditions.clone()),
     )?);
     let action_plan = Value::from_object(super::scalar_program_plan::ScalarProgramPlan::new(
-        Arc::new(problem.events.action_conditions.clone()),
+        Arc::new(problem.events().action_conditions.clone()),
     )?);
     Ok(lazy_map(
         &[
@@ -709,7 +698,7 @@ fn events_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
             "actions",
         ],
         move |k| {
-            let e = &handle.problem().events;
+            let e = handle.problem().events();
             match k {
                 "root_conditions" => Some(scalar_program_block_value(Arc::new(
                     e.root_conditions.clone(),
@@ -755,12 +744,12 @@ pub(super) fn artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
 /// nothing for materializing op-heavy blocks.
 fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let implicit_jacobian_v = compute_block_value(Arc::new(
-        handle.artifacts().continuous.implicit_jacobian_v.clone(),
+        handle.artifacts().continuous().implicit_jacobian_v.clone(),
     ))?;
     Ok(lazy_map(
         &["mass_matrix", "implicit_jacobian_v", "full_jacobian_v"],
         move |k| {
-            let c = &handle.artifacts().continuous;
+            let c = handle.artifacts().continuous();
             match k {
                 "implicit_jacobian_v" => Some(implicit_jacobian_v.clone()),
                 "full_jacobian_v" => Some(scalar_program_block_value(Arc::new(
@@ -773,40 +762,70 @@ fn continuous_artifacts_value(handle: SolveRenderHandle) -> Result<Value, Codege
     ))
 }
 
-/// Lazy `solve` context object: the `SolveProblem` fields plus an embedded
-/// `artifacts` field (templates access `solve.artifacts.*`). Structural fields
-/// (`layout`, `solve_layout`, targets) serialize eagerly (small); op-heavy
-/// sub-systems are produced lazily.
+/// Lazy `solve` context object. A standalone context is one complete checked
+/// `SolveModel`; the FMI context keeps its existing problem/artifact view.
+/// Structural fields serialize eagerly (small); op-heavy sub-systems are
+/// produced lazily.
 pub(super) fn solve_value(handle: SolveRenderHandle) -> Result<Value, CodegenError> {
     let continuous = continuous_value(handle.clone())?;
     let discrete = discrete_value(handle.clone())?;
     let events = events_value(handle.clone())?;
     let artifacts_value = artifacts_value(handle.clone())?;
-    Ok(lazy_map(
-        &[
-            "schema_version",
-            "layout",
-            "solve_layout",
-            "continuous",
-            "initialization",
-            "discrete",
-            "events",
-            "clocks",
-            "artifacts",
-        ],
-        move |k| match k {
-            "schema_version" => Some(Value::from(handle.problem().schema_version)),
-            "layout" => Some(Value::from_serialize(&handle.problem().layout)),
-            "solve_layout" => Some(Value::from_serialize(&handle.problem().solve_layout)),
-            "continuous" => Some(continuous.clone()),
-            "discrete" => Some(discrete.clone()),
-            "events" => Some(events.clone()),
-            "initialization" => Some(Value::from_serialize(&handle.problem().initialization)),
-            "clocks" => Some(Value::from_serialize(&handle.problem().clocks)),
-            "artifacts" => Some(artifacts_value.clone()),
-            _ => None,
-        },
-    ))
+    const PROBLEM_KEYS: &[&str] = &[
+        "schema_version",
+        "layout",
+        "solve_layout",
+        "continuous",
+        "initialization",
+        "discrete",
+        "events",
+        "clocks",
+        "artifacts",
+    ];
+    const MODEL_KEYS: &[&str] = &[
+        "schema_version",
+        "layout",
+        "solve_layout",
+        "continuous",
+        "initialization",
+        "discrete",
+        "events",
+        "clocks",
+        "artifacts",
+        "state_names",
+        "initial_state_values",
+        "static_parameter_names",
+        "static_parameter_values",
+    ];
+    let keys = if handle.standalone_model().is_some() {
+        MODEL_KEYS
+    } else {
+        PROBLEM_KEYS
+    };
+    Ok(lazy_map(keys, move |k| match k {
+        "state_names" => handle
+            .standalone_model()
+            .map(|model| Value::from_serialize(model.state_names())),
+        "initial_state_values" => handle
+            .standalone_model()
+            .map(|model| Value::from_serialize(model.initial_state_values())),
+        "static_parameter_names" => handle
+            .standalone_model()
+            .map(|model| Value::from_serialize(model.static_parameter_names())),
+        "static_parameter_values" => handle
+            .standalone_model()
+            .map(|model| Value::from_serialize(model.static_parameter_values())),
+        "schema_version" => Some(Value::from(handle.problem().schema_version())),
+        "layout" => Some(Value::from_serialize(handle.problem().layout())),
+        "solve_layout" => Some(Value::from_serialize(handle.problem().solve_layout())),
+        "continuous" => Some(continuous.clone()),
+        "discrete" => Some(discrete.clone()),
+        "events" => Some(events.clone()),
+        "initialization" => Some(Value::from_serialize(handle.problem().initialization())),
+        "clocks" => Some(Value::from_serialize(handle.problem().clocks())),
+        "artifacts" => Some(artifacts_value.clone()),
+        _ => None,
+    }))
 }
 
 /// Lazy `nodes` Seq of a `ComputeBlock` (each `ComputeNode` materialized on

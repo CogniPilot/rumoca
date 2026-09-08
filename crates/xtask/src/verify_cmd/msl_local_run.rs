@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use super::MSL_FULL_TEST_FEATURE;
 
 const MODEL_WORKER: &str = "rumoca-worker";
-const SIM_WORKER: &str = "rumoca-sim-worker";
 const MSL_TOOLS: &str = "rumoca-msl-tools";
 const MSL_TESTS: &str = "msl_tests";
 pub(super) const MSL_BUILD_PROFILE: &str = "msl-fast";
@@ -16,7 +15,6 @@ pub(super) const MSL_BUILD_PROFILE: &str = "msl-fast";
 pub(super) struct MslRuntimeArtifacts {
     test_binary: PathBuf,
     model_worker: PathBuf,
-    sim_worker: PathBuf,
     msl_tools: PathBuf,
 }
 
@@ -25,7 +23,6 @@ impl MslRuntimeArtifacts {
         MslTestBinaries {
             test_binary: &self.test_binary,
             model_worker: Some(&self.model_worker),
-            sim_worker: Some(&self.sim_worker),
             msl_tools: Some(&self.msl_tools),
         }
     }
@@ -35,7 +32,6 @@ impl MslRuntimeArtifacts {
 pub(super) struct MslTestBinaries<'a> {
     pub(super) test_binary: &'a Path,
     pub(super) model_worker: Option<&'a Path>,
-    pub(super) sim_worker: Option<&'a Path>,
     pub(super) msl_tools: Option<&'a Path>,
 }
 
@@ -54,8 +50,6 @@ pub(super) fn optimized_msl_artifact_build(root: &Path) -> Command {
         .arg(format!("rumoca-test-msl/{MSL_FULL_TEST_FEATURE}"))
         .arg("--bin")
         .arg(MODEL_WORKER)
-        .arg("--bin")
-        .arg(SIM_WORKER)
         .arg("--bin")
         .arg(MSL_TOOLS)
         .arg("--test")
@@ -106,11 +100,6 @@ pub(super) fn msl_test_binary_command(
         ensure_artifact(worker, MODEL_WORKER)?;
         command.env("CARGO_BIN_EXE_rumoca-worker", worker);
     }
-    if let Some(worker) = binaries.sim_worker {
-        ensure_artifact(worker, SIM_WORKER)?;
-        command.env("CARGO_BIN_EXE_rumoca-sim-worker", worker);
-        command.env("CARGO_BIN_EXE_rumoca_sim_worker", worker);
-    }
     if let Some(tools) = binaries.msl_tools {
         ensure_artifact(tools, MSL_TOOLS)?;
         command.env("CARGO_BIN_EXE_rumoca-msl-tools", tools);
@@ -132,7 +121,6 @@ fn ensure_artifact(path: &Path, name: &str) -> Result<()> {
 struct CargoArtifacts {
     test_binary: Vec<PathBuf>,
     model_worker: Vec<PathBuf>,
-    sim_worker: Vec<PathBuf>,
     msl_tools: Vec<PathBuf>,
 }
 
@@ -151,7 +139,6 @@ fn parse_cargo_artifacts(
     Ok(MslRuntimeArtifacts {
         test_binary: unique_artifact(MSL_TESTS, artifacts.test_binary)?,
         model_worker: unique_artifact(MODEL_WORKER, artifacts.model_worker)?,
-        sim_worker: unique_artifact(SIM_WORKER, artifacts.sim_worker)?,
         msl_tools: unique_artifact(MSL_TOOLS, artifacts.msl_tools)?,
     })
 }
@@ -186,7 +173,6 @@ fn collect_cargo_artifact(message: &Value, artifacts: &mut CargoArtifacts) {
     match (name, is_test, is_binary) {
         (MSL_TESTS, true, _) => artifacts.test_binary.push(executable.into()),
         (MODEL_WORKER, _, true) => artifacts.model_worker.push(executable.into()),
-        (SIM_WORKER, _, true) => artifacts.sim_worker.push(executable.into()),
         (MSL_TOOLS, _, true) => artifacts.msl_tools.push(executable.into()),
         _ => {}
     }
@@ -221,7 +207,6 @@ mod tests {
     fn complete_artifact_json(test_executable: &str) -> String {
         [
             artifact(MODEL_WORKER, "bin", "/target/msl-fast/rumoca-worker"),
-            artifact(SIM_WORKER, "bin", "/target/msl-fast/rumoca-sim-worker"),
             artifact(MSL_TOOLS, "bin", "/target/msl-fast/rumoca-msl-tools"),
             artifact(MSL_TESTS, "test", test_executable),
         ]
@@ -249,8 +234,6 @@ mod tests {
                 "rumoca-test-msl/msl-full-test",
                 "--bin",
                 "rumoca-worker",
-                "--bin",
-                "rumoca-sim-worker",
                 "--bin",
                 "rumoca-msl-tools",
                 "--test",
@@ -312,16 +295,14 @@ mod tests {
     #[test]
     fn direct_test_command_sets_runtime_paths_and_libtest_args() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let paths =
-            [MSL_TESTS, MODEL_WORKER, SIM_WORKER, MSL_TOOLS].map(|name| temp.path().join(name));
+        let paths = [MSL_TESTS, MODEL_WORKER, MSL_TOOLS].map(|name| temp.path().join(name));
         for path in &paths {
             std::fs::write(path, "").expect("create artifact");
         }
         let binaries = MslTestBinaries {
             test_binary: &paths[0],
             model_worker: Some(&paths[1]),
-            sim_worker: Some(&paths[2]),
-            msl_tools: Some(&paths[3]),
+            msl_tools: Some(&paths[2]),
         };
         let command = msl_test_binary_command(temp.path(), binaries, "suite::test_msl_all")
             .expect("direct test command");
@@ -339,21 +320,12 @@ mod tests {
             Some(&Some(paths[1].as_os_str().to_owned()))
         );
         for key in [
-            "CARGO_BIN_EXE_rumoca-sim-worker",
-            "CARGO_BIN_EXE_rumoca_sim_worker",
-        ] {
-            assert_eq!(
-                envs.get(OsStr::new(key)),
-                Some(&Some(paths[2].as_os_str().to_owned()))
-            );
-        }
-        for key in [
             "CARGO_BIN_EXE_rumoca-msl-tools",
             "CARGO_BIN_EXE_rumoca_msl_tools",
         ] {
             assert_eq!(
                 envs.get(OsStr::new(key)),
-                Some(&Some(paths[3].as_os_str().to_owned()))
+                Some(&Some(paths[2].as_os_str().to_owned()))
             );
         }
     }

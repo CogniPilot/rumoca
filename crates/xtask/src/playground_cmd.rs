@@ -58,7 +58,6 @@ fn check_playground_js_syntax(root: &Path) -> Result<()> {
         "packages/rumoca-web/runtime/rumoca_interactive.js",
         "packages/rumoca-web/runtime/modelica_language.js",
         "packages/rumoca-web/runtime/parse_worker.js",
-        "packages/rumoca-web/runtime/rumoca_gpu.js",
         "packages/rumoca-web/runtime/rumoca_diffsol.js",
         "packages/rumoca-web/viz/visualization_shared.js",
         "packages/rumoca-web/viz/results_app.js",

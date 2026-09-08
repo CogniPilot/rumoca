@@ -1,18 +1,21 @@
 use super::*;
 
 #[test]
-fn test_function_context_inherits_base_lexical_imports() {
+fn function_context_keeps_inherited_members_and_carries_no_import_clauses() {
     let (tree, derived_function) = function_context_inheritance_tree();
     let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut member_cache = qualify::MemberDefIdCache::default();
     let context =
-        collect_function_context(&tree, &class_index, &derived_function, &mut member_cache);
+        collect_function_context(&tree, &class_index, &derived_function, &mut member_cache)
+            .expect("context assembly must succeed");
 
-    assert_eq!(
-        context.imports.get("pi").map(String::as_str),
-        Some("Modelica.Constants.pi")
-    );
+    // Inherited members still arrive through the extends chain (MLS §7.1)...
     assert!(context.components.contains_key("crossArea"));
+    // ...but import clauses no longer flow through the context walk: the
+    // lookup authority decides them per origin scope (MLS §13.2), so the
+    // base package's `import Modelica.Constants.pi` must not surface in the
+    // merged alias channels.
+    assert!(!context.aliases.contains_key("pi"));
 }
 
 fn function_context_inheritance_tree() -> (ast::ClassTree, ast::ClassDef) {
@@ -324,10 +327,10 @@ fn test_extract_derivative_annotation_with_modification() {
                 span: test_span(),
             })],
         ),
-        value: Arc::new(ast::Expression::ComponentReference(ast_comp_ref(
+        value: Some(Arc::new(ast::Expression::ComponentReference(ast_comp_ref(
             &["myFunc_der2"],
             derivative_function_def_id,
-        ))),
+        )))),
         span: test_span(),
     }];
 
@@ -362,10 +365,10 @@ fn test_extract_derivative_annotation_with_zero_derivative() {
                 span: test_span(),
             })],
         ),
-        value: Arc::new(ast::Expression::ComponentReference(ast_comp_ref(
+        value: Some(Arc::new(ast::Expression::ComponentReference(ast_comp_ref(
             &["myFunc_der"],
             derivative_function_def_id,
-        ))),
+        )))),
         span: test_span(),
     }];
 

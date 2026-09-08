@@ -5,22 +5,6 @@ mod record_values;
 
 use record_values::*;
 
-pub(super) fn insert_structured_row(
-    covered: &mut IndexSet<usize>,
-    equation_index: usize,
-    partition: &'static str,
-    family_index: usize,
-) -> Result<(), FlatWireError> {
-    if covered.insert(equation_index) {
-        return Ok(());
-    }
-    Err(FlatWireError::InvalidStructuredEquationShape {
-        partition,
-        index: family_index,
-        reason: "two structured owners overlap one equation row",
-    })
-}
-
 pub(super) fn validate_family_provenance(
     checker: &mut WireSemanticChecker<'_>,
     family: &StructuredEquationFamily,
@@ -260,109 +244,6 @@ pub(super) fn invalid_dimensions(dimensions: &[i64]) -> bool {
             count.checked_mul(usize::try_from(*dimension).ok()?)
         })
         .is_none()
-}
-
-pub(super) fn represented_family_rows(
-    family: &StructuredEquationFamily,
-    domain_count: usize,
-) -> Option<usize> {
-    let Some(template) = &family.template else {
-        return domain_count.checked_mul(family.equations_per_point);
-    };
-    if template.body.len() != family.equations_per_point {
-        return None;
-    }
-    match template.scalar_view {
-        ComprehensionScalarView::BinderSubstitution => {
-            domain_count.checked_mul(family.equations_per_point)
-        }
-        ComprehensionScalarView::RowMajorProjection => Some(family.equations_per_point),
-        ComprehensionScalarView::BinderPrefixProjection { binder_count } => {
-            let domain = family.domain.validated().ok()?;
-            domain
-                .extents()
-                .get(..usize::try_from(binder_count).ok()?)?
-                .iter()
-                .try_fold(family.equations_per_point, |count, extent| {
-                    count.checked_mul(*extent)
-                })
-        }
-    }
-}
-
-pub(super) fn validate_structured_row_correlation(
-    partition: &'static str,
-    family_index: usize,
-    family: &StructuredEquationFamily,
-    domain_count: usize,
-    rows: &[Equation],
-) -> Result<(), FlatWireError> {
-    let per_row_scalar_count = match family
-        .template
-        .as_ref()
-        .map(|template| template.scalar_view)
-    {
-        None | Some(ComprehensionScalarView::BinderSubstitution) => 1,
-        Some(ComprehensionScalarView::RowMajorProjection) => domain_count,
-        Some(ComprehensionScalarView::BinderPrefixProjection { binder_count }) => family
-            .domain
-            .validated()
-            .ok()
-            .and_then(|domain| {
-                domain
-                    .extents()
-                    .get(usize::try_from(binder_count).ok()?..)
-                    .and_then(|suffix| {
-                        suffix
-                            .iter()
-                            .try_fold(1usize, |count, extent| count.checked_mul(*extent))
-                    })
-            })
-            .ok_or(FlatWireError::InvalidStructuredEquationShape {
-                partition,
-                index: family_index,
-                reason: "the projected scalar row shape is outside its exact domain",
-            })?,
-    };
-    if rows.iter().any(|row| row.origin != family.origin) {
-        return Err(FlatWireError::InvalidStructuredEquationShape {
-            partition,
-            index: family_index,
-            reason: "a represented row's typed origin contradicts its structured owner",
-        });
-    }
-    if rows
-        .iter()
-        .any(|row| row.scalar_count != per_row_scalar_count)
-    {
-        return Err(FlatWireError::InvalidStructuredEquationShape {
-            partition,
-            index: family_index,
-            reason: "a represented row's scalar shape contradicts its structured projection",
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn affine_form_fits_domain(
-    affine: &rumoca_core::AffineForm,
-    domain: &rumoca_core::StructuredIndexDomain,
-    extent: i64,
-) -> bool {
-    let Some((minimum, maximum)) = affine.coeffs.iter().zip(&domain.binders).try_fold(
-        (i128::from(affine.constant), i128::from(affine.constant)),
-        |(minimum, maximum), (coefficient, binder)| {
-            let first = i128::from(*coefficient).checked_mul(i128::from(binder.lower))?;
-            let last = i128::from(*coefficient).checked_mul(i128::from(binder.upper))?;
-            Some((
-                minimum.checked_add(first.min(last))?,
-                maximum.checked_add(first.max(last))?,
-            ))
-        },
-    ) else {
-        return false;
-    };
-    minimum >= 1 && maximum <= i128::from(extent)
 }
 
 pub(super) fn require_span(span: Span, context: &'static str) -> Result<(), FlatWireError> {
@@ -1053,15 +934,19 @@ impl<'model> WireSemanticChecker<'model> {
             }
             vector_prefix.get_or_insert_with(|| prefix.to_vec());
         }
-        if vector_prefix.is_some()
-            && (call_kind != FunctionCallKind::Invocation
-                || !resolved.transitively_non_replaceable
-                || !target.function.transitively_non_replaceable)
-        {
-            return Err(FlatWireError::InvalidFunctionCall {
-                function: target.name.clone(),
-                reason: "automatic vectorization lacks exact transitive non-replaceability proof",
-            });
+        if vector_prefix.is_some() {
+            if call_kind != FunctionCallKind::Invocation {
+                return Err(FlatWireError::InvalidFunctionCall {
+                    function: target.name.clone(),
+                    reason: "automatic vectorization requires an ordinary function invocation",
+                });
+            }
+            require_automatic_vectorization_authority(target.function, resolved).map_err(
+                |reason| FlatWireError::InvalidFunctionCall {
+                    function: target.name.clone(),
+                    reason,
+                },
+            )?;
         }
         Ok(vector_prefix.unwrap_or_default())
     }
@@ -1092,10 +977,10 @@ impl<'model> WireSemanticChecker<'model> {
     pub(super) fn validate_connected_state(&self) -> Result<(), FlatWireError> {
         // The standalone wire has no canonical Instance connection source
         // groups. Therefore it cannot reconstruct positive connected-state
-        // evidence. Accepting a caller-authored bit would create a second,
+        // evidence. Accepting a caller-authored domain would create a second,
         // unverifiable authority beside the build-local connection transaction.
         for (name, variable) in &self.model.variables {
-            if variable.connected {
+            if !variable.connected.is_unconnected() {
                 return Err(FlatWireError::ContradictoryConnectedState {
                     variable: name.clone(),
                     claimed: true,
@@ -1104,6 +989,44 @@ impl<'model> WireSemanticChecker<'model> {
             }
         }
         Ok(())
+    }
+}
+
+fn require_automatic_vectorization_authority(
+    function: &Function,
+    occurrence: rumoca_core::ResolvedFunctionReference,
+) -> Result<(), &'static str> {
+    function
+        .automatic_vectorization_authority(occurrence)
+        .map(drop)
+        .map_err(|_| {
+            "automatic vectorization lacks exact transitive non-replaceability and function-instance proof"
+        })
+}
+
+#[cfg(test)]
+mod automatic_vectorization_authority_tests {
+    use super::*;
+
+    #[test]
+    fn wire_vectorization_rejects_a_distinct_non_replaceable_instance() {
+        let function_instance = FunctionInstanceId::new(81_002);
+        let mut function = Function::new("same", DefId::new(81_000), Span::DUMMY);
+        function.instance_id = Some(function_instance);
+        function.transitively_non_replaceable = true;
+
+        let occurrence = rumoca_core::ResolvedFunctionReference {
+            instance_id: FunctionInstanceId::new(81_001),
+            base_part_count: 1,
+            transitively_non_replaceable: true,
+        };
+        assert!(require_automatic_vectorization_authority(&function, occurrence).is_err());
+
+        let exact_occurrence = rumoca_core::ResolvedFunctionReference {
+            instance_id: function_instance,
+            ..occurrence
+        };
+        assert!(require_automatic_vectorization_authority(&function, exact_occurrence).is_ok());
     }
 }
 
@@ -1882,126 +1805,5 @@ impl WireSemanticChecker<'_> {
     }
 }
 
-pub(super) fn raw_expression_span(expression: &Expression) -> Span {
-    match expression {
-        Expression::Binary { span, .. }
-        | Expression::Unary { span, .. }
-        | Expression::VarRef { span, .. }
-        | Expression::BuiltinCall { span, .. }
-        | Expression::FunctionCall { span, .. }
-        | Expression::StringConversion { span, .. }
-        | Expression::Literal { span, .. }
-        | Expression::If { span, .. }
-        | Expression::Array { span, .. }
-        | Expression::Tuple { span, .. }
-        | Expression::Range { span, .. }
-        | Expression::ArrayComprehension { span, .. }
-        | Expression::Index { span, .. }
-        | Expression::FieldAccess { span, .. }
-        | Expression::Empty { span } => *span,
-    }
-}
-
-pub(super) fn validate_when_equation(
-    checker: &mut WireSemanticChecker<'_>,
-    equation: &WhenEquation,
-) -> Result<(), FlatWireError> {
-    require_span(equation.span(), "when equation")?;
-    match equation {
-        WhenEquation::Assign { target, value, .. } => {
-            checker.validate_named_write_target(target)?;
-            checker.visit_expression(value)
-        }
-        WhenEquation::Reinit { state, value, .. } => {
-            checker.validate_named_write_target(state)?;
-            checker.visit_expression(value)
-        }
-        WhenEquation::Assert {
-            condition,
-            message,
-            level,
-            ..
-        } => {
-            checker.visit_expression(condition)?;
-            checker.visit_expression(message)?;
-            if let Some(level) = level {
-                checker.visit_expression(level)?;
-            }
-            Ok(())
-        }
-        WhenEquation::Terminate { message, .. } => checker.visit_expression(message),
-        WhenEquation::Conditional {
-            branches,
-            else_branch,
-            ..
-        } => {
-            for (condition, equations) in branches {
-                checker.visit_expression(condition)?;
-                for equation in equations {
-                    validate_when_equation(checker, equation)?;
-                }
-            }
-            if let Some(equations) = else_branch {
-                for equation in equations {
-                    validate_when_equation(checker, equation)?;
-                }
-            }
-            Ok(())
-        }
-        WhenEquation::FunctionCallOutputs {
-            outputs, function, ..
-        } => {
-            checker.visit_expression(function)?;
-            let Expression::FunctionCall {
-                name,
-                args,
-                call_kind: FunctionCallKind::Invocation,
-                ..
-            } = function
-            else {
-                return Err(FlatWireError::InvalidFunctionCall {
-                    function: VarName::new("<when-output>"),
-                    reason: "a when output group must be owned by an actual function invocation",
-                });
-            };
-            let resolved =
-                name.resolved_function()
-                    .ok_or_else(|| FlatWireError::InvalidFunctionCall {
-                        function: name.var_name().clone(),
-                        reason: "a when output group requires an exact function identity",
-                    })?;
-            let target = checker
-                .targets
-                .by_function_instance
-                .get(&resolved.instance_id)
-                .ok_or_else(|| FlatWireError::InvalidFunctionCall {
-                    function: name.var_name().clone(),
-                    reason: "the resolved function instance is absent",
-                })?;
-            if outputs.len() > target.function.outputs.len() {
-                return Err(FlatWireError::InvalidFunctionCall {
-                    function: name.var_name().clone(),
-                    reason: "the when equation claims more outputs than the exact function interface",
-                });
-            }
-            let vector_prefix = checker.validate_call_argument_shapes(
-                target,
-                args,
-                resolved,
-                FunctionCallKind::Invocation,
-            )?;
-            for (output, slot) in outputs.iter().zip(&target.function.outputs) {
-                if function_param_record_identity(checker.model, slot)?.is_some() {
-                    return Err(FlatWireError::InvalidFunctionCall {
-                        function: name.var_name().clone(),
-                        reason: "a named when output cannot authenticate a record-valued target identity",
-                    });
-                }
-                let mut expected_dimensions = vector_prefix.clone();
-                expected_dimensions.extend_from_slice(slot.dimensions());
-                checker.validate_named_write_target_shape(output, &expected_dimensions)?;
-            }
-            Ok(())
-        }
-    }
-}
+mod when_validation;
+pub(super) use when_validation::{raw_expression_span, validate_when_equation};

@@ -680,6 +680,7 @@ mod tests {
             name: Reference::from(name),
             args,
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: rumoca_core::Span::DUMMY,
         }
     }

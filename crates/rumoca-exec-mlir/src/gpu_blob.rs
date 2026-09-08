@@ -1,12 +1,15 @@
+use crate::MlirResidualAbi;
 use crate::error::MlirError;
 use crate::libdevice::{find_libdevice, link_libdevice, ll_needs_libdevice};
 use crate::options::{MlirBackendOptions, MlirTarget};
-use rumoca_ir_solve::{SolveArtifacts, SolveProblem};
-use rumoca_phase_codegen::{render_solve_template_with_name, templates};
+use rumoca_ir_solve::{
+    PureExplicitLayoutDiagnostic, PureExplicitLayoutDisposition, PureExplicitStateCount, SolveModel,
+};
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::TempDir;
 
-/// The result of compiling a `SolveProblem` to a GPU-native code blob.
+/// The result of compiling a `SolveModel` to a GPU-native code blob.
 ///
 /// The `device_ir` field contains the GPU assembly as UTF-8 bytes:
 /// - **CUDA** targets: PTX text (`.ptx`)
@@ -15,15 +18,168 @@ use tempfile::TempDir;
 /// Use this blob with the CUDA or ROCm runtime to load and launch the kernel.
 /// The entry point name is `eval_derivative_kernel`.
 pub struct GpuCompiledBlob {
-    pub device_ir: Vec<u8>,
-    pub entry_point: String,
-    pub target: MlirTarget,
-    pub chip: String,
+    device_ir: String,
+    entry_point: String,
+    target: MlirTarget,
+    chip: String,
+    kind: GpuBlobKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuLaunchAbi {
+    SolveDerivative(MlirResidualAbi),
+    EulerUpdate,
+}
+
+pub(crate) enum GpuBlobKind {
+    SolveDerivative(DerivativeRuntimeInputs),
+    EulerUpdate,
+}
+
+pub(crate) struct DerivativeRuntimeInputs {
+    abi: MlirResidualAbi,
+    parameters: Box<[f64]>,
+    initial_y: Box<[f64]>,
+    visible_names: Box<[String]>,
+    pure_explicit_disposition: PureExplicitLayoutDisposition,
+}
+
+pub(crate) struct PureExplicitDerivativeRuntimeInputs {
+    runtime: DerivativeRuntimeInputs,
+    state_count: PureExplicitStateCount,
+}
+
+pub(super) struct DerivativeRuntimeParts {
+    pub(super) abi: MlirResidualAbi,
+    pub(super) parameters: Box<[f64]>,
+    pub(super) initial_y: Box<[f64]>,
+    pub(super) visible_names: Box<[String]>,
+}
+
+impl DerivativeRuntimeInputs {
+    fn from_model(model: &SolveModel) -> Self {
+        Self {
+            abi: MlirResidualAbi::from_model(model),
+            parameters: model.parameters().to_vec().into_boxed_slice(),
+            initial_y: model.initial_y().to_vec().into_boxed_slice(),
+            visible_names: model
+                .visible_names()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            pure_explicit_disposition: model
+                .problem()
+                .solve_layout()
+                .pure_explicit_state_disposition(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(layout: &rumoca_ir_solve::SolveLayout) -> Self {
+        Self {
+            abi: MlirResidualAbi::fixture(
+                layout.solver_scalar_count(),
+                layout.state_scalar_count(),
+            ),
+            parameters: Box::new([]),
+            initial_y: vec![0.0; layout.solver_scalar_count()].into_boxed_slice(),
+            visible_names: Box::new([]),
+            pure_explicit_disposition: layout.pure_explicit_state_disposition(),
+        }
+    }
+
+    pub(super) fn admit_pure_explicit(
+        self,
+    ) -> Result<PureExplicitDerivativeRuntimeInputs, PureExplicitLayoutDiagnostic> {
+        match self.pure_explicit_disposition {
+            PureExplicitLayoutDisposition::Supported(state_count) => {
+                Ok(PureExplicitDerivativeRuntimeInputs {
+                    runtime: self,
+                    state_count,
+                })
+            }
+            PureExplicitLayoutDisposition::Unsupported(diagnostic) => Err(diagnostic),
+        }
+    }
+
+    pub(super) fn into_runtime_parts(self) -> DerivativeRuntimeParts {
+        DerivativeRuntimeParts {
+            abi: self.abi,
+            parameters: self.parameters,
+            initial_y: self.initial_y,
+            visible_names: self.visible_names,
+        }
+    }
+}
+
+impl PureExplicitDerivativeRuntimeInputs {
+    pub(super) const fn state_count(&self) -> PureExplicitStateCount {
+        self.state_count
+    }
+
+    pub(super) fn into_runtime_parts(self) -> DerivativeRuntimeParts {
+        self.runtime.into_runtime_parts()
+    }
 }
 
 impl GpuCompiledBlob {
+    fn derivative(
+        device_ir: String,
+        entry_point: &'static str,
+        target: MlirTarget,
+        chip: String,
+        runtime: DerivativeRuntimeInputs,
+    ) -> Self {
+        Self {
+            device_ir,
+            entry_point: entry_point.to_string(),
+            target,
+            chip,
+            kind: GpuBlobKind::SolveDerivative(runtime),
+        }
+    }
+
+    pub(crate) fn euler_update(device_ir: String, chip: String) -> Self {
+        Self {
+            device_ir,
+            entry_point: "euler_update_kernel".to_string(),
+            target: MlirTarget::GpuCuda,
+            chip,
+            kind: GpuBlobKind::EulerUpdate,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (String, String, MlirTarget, String, GpuBlobKind) {
+        (
+            self.device_ir,
+            self.entry_point,
+            self.target,
+            self.chip,
+            self.kind,
+        )
+    }
     pub fn device_ir_text(&self) -> &str {
-        std::str::from_utf8(&self.device_ir).unwrap_or("<invalid utf-8>")
+        &self.device_ir
+    }
+
+    pub fn entry_point(&self) -> &str {
+        &self.entry_point
+    }
+
+    pub fn target(&self) -> &MlirTarget {
+        &self.target
+    }
+
+    pub fn chip(&self) -> &str {
+        &self.chip
+    }
+
+    #[must_use]
+    pub const fn launch_abi(&self) -> GpuLaunchAbi {
+        match &self.kind {
+            GpuBlobKind::SolveDerivative(runtime) => GpuLaunchAbi::SolveDerivative(runtime.abi),
+            GpuBlobKind::EulerUpdate => GpuLaunchAbi::EulerUpdate,
+        }
     }
 }
 
@@ -35,22 +191,22 @@ impl GpuCompiledBlob {
 /// The kernel entry point is named `eval_derivative_kernel` and accepts the
 /// same expanded descriptor ABI as the CPU backend (15 + 1 parameters).
 pub fn compile_to_gpu_blob(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
     model_name: &str,
     opts: &MlirBackendOptions,
 ) -> Result<GpuCompiledBlob, MlirError> {
+    let runtime = DerivativeRuntimeInputs::from_model(&model);
     match &opts.target {
         MlirTarget::GpuCuda => {
             let chip = opts.gpu_chip.clone().unwrap_or_else(|| "sm_75".to_string());
-            compile_cuda(solve, artifacts, model_name, &chip, opts)
+            compile_cuda(model, runtime, model_name, &chip, opts)
         }
         MlirTarget::GpuRocm => {
             let chip = opts
                 .gpu_chip
                 .clone()
                 .unwrap_or_else(|| "gfx906".to_string());
-            compile_rocm(solve, artifacts, model_name, &chip)
+            compile_rocm(model, runtime, model_name, &chip)
         }
         other => Err(MlirError::ToolNotFound {
             tool: "GPU target not supported by compile_to_gpu_blob",
@@ -72,14 +228,13 @@ pub fn compile_to_gpu_blob(
 /// internalised with `opt-18 --nvvm-reflect`.  If not found it returns
 /// `MlirError::LibdeviceNotFound` with install instructions.
 fn compile_cuda(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
+    runtime: DerivativeRuntimeInputs,
     model_name: &str,
     chip: &str,
     opts: &MlirBackendOptions,
 ) -> Result<GpuCompiledBlob, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
-        .map_err(|e| MlirError::Template(e.to_string()))?;
+    let mlir_text = crate::render_mlir_model(model, model_name)?;
 
     let tmpdir = TempDir::new()?;
     let mlir_path = tmpdir.path().join("model.mlir");
@@ -142,25 +297,25 @@ fn compile_cuda(
             .arg(&ptx_path),
     )?;
 
-    let ptx_bytes = std::fs::read(&ptx_path)?;
-    Ok(GpuCompiledBlob {
-        device_ir: ptx_bytes,
-        entry_point: "eval_derivative".to_string(),
-        target: MlirTarget::GpuCuda,
-        chip: chip.to_string(),
-    })
+    let ptx = std::fs::read_to_string(&ptx_path)?;
+    Ok(GpuCompiledBlob::derivative(
+        ptx,
+        "eval_derivative",
+        MlirTarget::GpuCuda,
+        chip.to_string(),
+        runtime,
+    ))
 }
 
 /// Compile to AMDGPU ISA via: CPU MLIR template → mlir-opt (CPU lowering) →
 /// mlir-translate → inject amdgpu_kernel calling convention → llc (amdgcn) → GCN text.
 fn compile_rocm(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
+    runtime: DerivativeRuntimeInputs,
     model_name: &str,
     chip: &str,
 ) -> Result<GpuCompiledBlob, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
-        .map_err(|e| MlirError::Template(e.to_string()))?;
+    let mlir_text = crate::render_mlir_model(model, model_name)?;
 
     let tmpdir = TempDir::new()?;
     let mlir_path = tmpdir.path().join("model.mlir");
@@ -211,22 +366,14 @@ fn compile_rocm(
             .arg(&gcn_path),
     )?;
 
-    let gcn_bytes = std::fs::read(&gcn_path)?;
-    Ok(GpuCompiledBlob {
-        device_ir: gcn_bytes,
-        entry_point: "eval_derivative".to_string(),
-        target: MlirTarget::GpuRocm,
-        chip: chip.to_string(),
-    })
-}
-
-fn mlir_template() -> Result<&'static str, MlirError> {
-    templates::builtin_target("mlir")
-        .and_then(|target| target.template_source("mlir.mlir.jinja"))
-        .ok_or(MlirError::MissingBuiltinTemplate {
-            target: "mlir",
-            template: "mlir.mlir.jinja",
-        })
+    let gcn = std::fs::read_to_string(&gcn_path)?;
+    Ok(GpuCompiledBlob::derivative(
+        gcn,
+        "eval_derivative",
+        MlirTarget::GpuRocm,
+        chip.to_string(),
+        runtime,
+    ))
 }
 
 /// Append the NVVM metadata that marks `fn_name` as a CUDA kernel.

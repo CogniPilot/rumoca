@@ -110,19 +110,73 @@ pub(crate) fn canonicalize_collected_function_calls(
 }
 
 fn collect_canonical_functions(flat: &flat::Model) -> Result<CanonicalFunctionIndex, FlattenError> {
-    let mut index = CanonicalFunctionIndex::default();
-    for function in flat.functions.values() {
-        let instance_id = function
-            .instance_id
-            .ok_or_else(|| FlattenError::internal("missing function instance identity"))?;
-        index.insert(CanonicalFunction {
-            name: function.name.clone(),
-            def_id: function.def_id,
-            instance_id,
-            is_constructor: function.is_constructor,
-        })?;
+    CanonicalFunctionIndex::from_functions(flat.functions.values())
+}
+
+/// Occurrence attachment for one expression a structural fold evaluates
+/// outside the Flat model.
+///
+/// Declaration-level folds (structural component bindings, structural Boolean
+/// equations) lower their expression from the instance overlay on the spot and
+/// hand it straight to the evaluator, so the collected-table pass over Flat
+/// never sees it. This applies that same pass to the one expression in hand,
+/// against the identified pre-collected catalog: a call is restated with the
+/// exact instance the catalog issued for it, or it keeps no occurrence and the
+/// evaluator refuses it. Constructor marking precedes the rewrite for the same
+/// reason it precedes the Flat pass: a record constructor call is only restated
+/// as its collected constructor once its call kind agrees.
+///
+/// A catalog entry still awaiting its Flat identity is left out of the index.
+/// It cannot be a canonical target, and the evaluator's pending-identity
+/// refusal keeps deciding any call that would have needed it.
+pub(crate) struct StructuralFoldCallCanonicalizer<'a> {
+    rewriter: CollectedFunctionCallCanonicalizer<'a>,
+    constructor_def_ids: HashSet<rumoca_core::DefId>,
+}
+
+impl<'a> StructuralFoldCallCanonicalizer<'a> {
+    pub(crate) fn new<'f>(
+        functions: impl IntoIterator<Item = &'f rumoca_core::Function>,
+        tree: &ast::ClassTree,
+        class_index: &'a ast::ClassDefIndex<'a>,
+    ) -> Result<Self, FlattenError> {
+        let identified = functions
+            .into_iter()
+            .filter(|function| function.instance_id.is_some());
+        Ok(Self {
+            rewriter: CollectedFunctionCallCanonicalizer {
+                canonical_functions: CanonicalFunctionIndex::from_functions(identified)?,
+                class_index,
+                nonreplaceability_by_path: HashMap::new(),
+                error: None,
+            },
+            constructor_def_ids: crate::postprocess::record_constructor_def_ids(tree),
+        })
     }
-    Ok(index)
+
+    /// Restate every call in `expr` against the catalog. An expression with
+    /// no call, or a catalog with no identified entry, leaves it untouched.
+    pub(crate) fn canonicalize(
+        &mut self,
+        expr: &mut rumoca_core::Expression,
+    ) -> Result<(), FlattenError> {
+        if self.rewriter.canonical_functions.is_empty()
+            || !expr.contains_subexpression(|candidate| {
+                matches!(candidate, rumoca_core::Expression::FunctionCall { .. })
+            })
+        {
+            return Ok(());
+        }
+        crate::postprocess::mark_record_constructor_calls_in_expression(
+            expr,
+            &self.constructor_def_ids,
+        );
+        *expr = self.rewriter.rewrite_expression(expr);
+        match self.rewriter.error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
 }
 
 fn canonicalize_when_equations(
@@ -210,6 +264,24 @@ struct CanonicalFunctionIndex {
 }
 
 impl CanonicalFunctionIndex {
+    fn from_functions<'f>(
+        functions: impl IntoIterator<Item = &'f rumoca_core::Function>,
+    ) -> Result<Self, FlattenError> {
+        let mut index = Self::default();
+        for function in functions {
+            let instance_id = function
+                .instance_id
+                .ok_or_else(|| FlattenError::internal("missing function instance identity"))?;
+            index.insert(CanonicalFunction {
+                name: function.name.clone(),
+                def_id: function.def_id,
+                instance_id,
+                is_constructor: function.is_constructor,
+            })?;
+        }
+        Ok(index)
+    }
+
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -389,6 +461,7 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer<'_> {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expr
         else {
@@ -466,6 +539,7 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer<'_> {
                 } else {
                     *is_constructor
                 },
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -473,6 +547,7 @@ impl ExpressionRewriter for CollectedFunctionCallCanonicalizer<'_> {
             name: name.clone(),
             args,
             is_constructor: *is_constructor,
+            call_kind: *call_kind,
             span: *span,
         }
     }
@@ -493,6 +568,7 @@ impl StatementRewriter for CollectedFunctionCallCanonicalizer<'_> {
             name: comp.clone(),
             args: Vec::new(),
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: *span,
         });
         let rumoca_core::Expression::FunctionCall {
@@ -549,6 +625,7 @@ impl ExpressionRewriter for ScopedFunctionCallCanonicalizer<'_> {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expr
         else {
@@ -560,6 +637,7 @@ impl ExpressionRewriter for ScopedFunctionCallCanonicalizer<'_> {
                 name: name.clone(),
                 args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -573,6 +651,7 @@ impl ExpressionRewriter for ScopedFunctionCallCanonicalizer<'_> {
                 name: name.clone(),
                 args,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             };
         };
@@ -580,6 +659,7 @@ impl ExpressionRewriter for ScopedFunctionCallCanonicalizer<'_> {
             name: resolved_function_reference(name, resolved_name, self.tree, self.class_index),
             args,
             is_constructor: *is_constructor,
+            call_kind: *call_kind,
             span: *span,
         }
     }

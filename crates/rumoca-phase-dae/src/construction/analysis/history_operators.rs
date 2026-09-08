@@ -54,16 +54,17 @@ impl HistoryOperatorPlans {
 }
 
 pub(super) fn analyze_history_operators(
-    flat: &flat::Model,
+    owners: &StructuredEquationOwners<'_>,
     roles: &HashMap<VarName, PlannedRole>,
 ) -> Result<HistoryOperatorPlans, ToDaeError> {
+    let flat = owners.model();
     let mut analyzer = HistoryOperatorAnalyzer {
         flat,
         roles,
         plans: HistoryOperatorPlans::default(),
         in_function: false,
     };
-    analyzer.visit_model_owners(flat)?;
+    analyzer.visit_model_owners(owners)?;
     Ok(analyzer.plans)
 }
 

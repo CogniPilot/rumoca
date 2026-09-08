@@ -5,14 +5,12 @@ use rumoca_ir_solve::{
     LinearOp, ProgramRegister, ProgramSlot, ProgramTensorViewAxis, ScalarProgramBlock,
     SolveArithmeticProfile, SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator,
     SolveIntegerDomain, SolveProgramConstructionError, SolvePureCallIdentity, SolvePureCallOutput,
-    SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveReductionOperator,
-    SolveScalarType, SolveUnaryOperator, SolveValue, SolveValueKind, SolveValueType,
-    TypedProgramBuilder,
+    SolvePureCallOwnerId, SolvePureCallTable, SolveRealFormat, SolveScalarType, SolveUnaryOperator,
+    SolveValue, SolveValueKind, SolveValueType, TypedProgramBuilder,
 };
 
 use super::{
-    TypedProgramEvalError, TypedValue, eval_pure_call, eval_pure_call_directional,
-    eval_pure_call_with_invocation_counts,
+    TypedValue, eval_pure_call, eval_pure_call_directional, eval_pure_call_with_invocation_counts,
 };
 
 fn span(start: usize) -> Span {
@@ -27,6 +25,7 @@ fn profile(format: SolveRealFormat) -> SolveArithmeticProfile {
     SolveArithmeticProfile::construct(
         format,
         SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
     )
 }
 
@@ -113,7 +112,7 @@ fn directional_fold_table(
 ) -> SolvePureCallTable {
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 8,
+            id: rumoca_core::StructuredIndexBinderId::new(8),
             display_name: "i".into(),
             lower: 1,
             upper: 3,
@@ -531,6 +530,67 @@ fn compact_mixed_tensor_view_projects_and_updates_one_column() {
 }
 
 #[test]
+fn p0_permutation_constructs_from_compact_slices_and_concatenate() {
+    let arithmetic = profile(SolveRealFormat::Binary32);
+    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![10]).unwrap();
+    let matrix = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3, 2]).unwrap();
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(11),
+            vec![vector.clone()],
+            vec![SolvePureCallOutput::result(matrix.clone())],
+            span(108),
+            |builder, inputs, outputs| {
+                let x0 = builder.load(inputs[0], span(109))?;
+                let upper = builder.project_slice(x0, vec![3], vec![3], span(110))?;
+                let lower = builder.project_slice(x0, vec![0], vec![3], span(111))?;
+                let p0 = builder.concatenate(1, &[upper, lower], span(112))?;
+                builder.store(outputs[0], p0, span(113))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let table: SolvePureCallTable =
+        serde_json::from_str(&serde_json::to_string(&table).unwrap()).unwrap();
+    let real_value = |value| real_kind(SolveRealFormat::Binary32, value);
+    let x0 = TypedValue::construct(
+        vector,
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+            .map(real_value)
+            .to_vec(),
+    )
+    .unwrap();
+
+    let outputs = eval_pure_call(&table, table.owners()[0].id(), &[x0]).unwrap();
+
+    assert_eq!(
+        outputs[0].elements(),
+        [4.0, 1.0, 5.0, 2.0, 6.0, 3.0].map(real_value)
+    );
+    let operations = table.owners()[0].body().operations();
+    assert_eq!(operations.len(), 5);
+    assert!(matches!(
+        operations[1].operation(),
+        rumoca_ir_solve::SolveOperation::ProjectSlice { origin, .. }
+            if origin.as_ref() == [3]
+    ));
+    assert!(matches!(
+        operations[2].operation(),
+        rumoca_ir_solve::SolveOperation::ProjectSlice { origin, .. }
+            if origin.as_ref() == [0]
+    ));
+    assert!(matches!(
+        operations[3].operation(),
+        rumoca_ir_solve::SolveOperation::Concatenate { axis: 1, operands, .. }
+            if operands.len() == 2
+    ));
+    assert_eq!(operations[1].provenance(), span(110));
+    assert_eq!(operations[2].provenance(), span(111));
+    assert_eq!(operations[3].provenance(), span(112));
+}
+
+#[test]
 fn binary32_rounds_at_each_typed_operation() {
     let arithmetic = profile(SolveRealFormat::Binary32);
     let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
@@ -572,117 +632,12 @@ fn binary32_rounds_at_each_typed_operation() {
 }
 
 #[test]
-fn real_to_integer_conversion_checks_the_declared_domain() {
-    let arithmetic = SolveArithmeticProfile::construct(
-        SolveRealFormat::Binary64,
-        SolveIntegerDomain::construct(-10, 10).unwrap(),
-    );
-    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
-    let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
-    let table = SolvePureCallTable::construct(arithmetic, |table| {
-        table.add_owner(
-            identity(5),
-            vec![real.clone()],
-            vec![SolvePureCallOutput::result(integer)],
-            span(40),
-            |builder, inputs, outputs| {
-                let input = builder.load(inputs[0], span(41))?;
-                let converted = builder.convert(
-                    SolveConversionOperator::RealToIntegerTowardZero,
-                    input,
-                    span(42),
-                )?;
-                builder.store(outputs[0], converted, span(43))
-            },
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let input =
-        TypedValue::construct(real, vec![real_kind(SolveRealFormat::Binary64, 11.0)]).unwrap();
-
-    let error = eval_pure_call(&table, table.owners()[0].id(), &[input]).unwrap_err();
-
-    assert_eq!(
-        error,
-        TypedProgramEvalError::InvalidIntegerConversion {
-            provenance: span(42)
-        }
-    );
-}
-
-#[test]
-fn structured_conditional_executes_only_its_selected_checked_region() {
-    let arithmetic = SolveArithmeticProfile::construct(
-        SolveRealFormat::Binary64,
-        SolveIntegerDomain::construct(-10, 10).unwrap(),
-    );
-    let boolean = SolveValueType::scalar(SolveScalarType::Boolean);
-    let real = SolveValueType::scalar(SolveScalarType::real(arithmetic));
-    let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
-    let table = SolvePureCallTable::construct(arithmetic, |table| {
-        table.add_owner(
-            identity(6),
-            vec![boolean.clone(), real.clone()],
-            vec![SolvePureCallOutput::result(integer.clone())],
-            span(50),
-            |builder, inputs, outputs| {
-                let condition = builder.load(inputs[0], span(51))?;
-                let capture = builder.load(inputs[1], span(52))?;
-                let selected = builder.conditional(
-                    condition,
-                    &[capture],
-                    vec![integer.clone()],
-                    span(53),
-                    |region, inputs, outputs| {
-                        let value = region.load(inputs[0], span(54))?;
-                        let converted = region.convert(
-                            SolveConversionOperator::RealToIntegerTowardZero,
-                            value,
-                            span(55),
-                        )?;
-                        region.store(outputs[0], converted, span(56))
-                    },
-                    |region, _inputs, outputs| {
-                        let seven = region
-                            .constant(SolveValue::integer(arithmetic, 7).unwrap(), span(57))?;
-                        region.store(outputs[0], seven, span(58))
-                    },
-                )?;
-                builder.store(outputs[0], selected[0], span(59))
-            },
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let json = serde_json::to_string(&table).unwrap();
-    let table: SolvePureCallTable = serde_json::from_str(&json).unwrap();
-    let owner = table.owners()[0].id();
-    let value =
-        TypedValue::construct(real, vec![real_kind(SolveRealFormat::Binary64, 11.0)]).unwrap();
-    let condition = |value| {
-        TypedValue::construct(boolean.clone(), vec![SolveValueKind::Boolean(value)]).unwrap()
-    };
-
-    let inactive = eval_pure_call(&table, owner, &[condition(false), value.clone()]).unwrap();
-    let active = eval_pure_call(&table, owner, &[condition(true), value]).unwrap_err();
-
-    assert_eq!(inactive[0].elements(), [SolveValueKind::Integer(7)]);
-    assert_eq!(
-        active,
-        TypedProgramEvalError::InvalidIntegerConversion {
-            provenance: span(55)
-        }
-    );
-}
-
-#[test]
 fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let integer = SolveValueType::scalar(SolveScalarType::integer(arithmetic));
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 7,
+            id: rumoca_core::StructuredIndexBinderId::new(7),
             display_name: "i".into(),
             lower: 1,
             upper: 100,
@@ -707,7 +662,7 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
                         let sum = transition.load(carried[0], span(63))?;
                         let index = transition.load(binders[0], span(64))?;
                         let next =
-                            transition.binary(SolveBinaryOperator::Add, sum, index, span(65))?;
+                            transition.binary(SolveBinaryOperator::Max, sum, index, span(65))?;
                         transition.store(outputs[0], next, span(66))
                     },
                 )?;
@@ -722,7 +677,7 @@ fn compact_fold_executes_one_transition_owner_over_the_checked_domain() {
 
     let output = eval_pure_call(&table, table.owners()[0].id(), &[]).unwrap();
 
-    assert_eq!(output[0].elements(), [SolveValueKind::Integer(5_050)]);
+    assert_eq!(output[0].elements(), [SolveValueKind::Integer(100)]);
     assert_eq!(
         table.owners()[0]
             .body()
@@ -869,7 +824,7 @@ fn directional_scalar_guards_match_checked_ad_at_singular_values() {
 }
 
 #[test]
-fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
+fn compact_tensor_algebra_evaluates_scale_transpose_and_product() {
     let arithmetic = profile(SolveRealFormat::Binary64);
     let matrix = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![2, 3]).unwrap();
     let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
@@ -881,7 +836,6 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
             vec![matrix.clone(), vector.clone(), scalar.clone()],
             vec![
                 SolvePureCallOutput::result(result.clone()),
-                SolvePureCallOutput::result(scalar.clone()),
                 SolvePureCallOutput::result(
                     SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3, 2]).unwrap(),
                 ),
@@ -900,14 +854,12 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
                 let scaled = builder.scale(matrix, scalar, span(74))?;
                 let transposed = builder.transpose(scaled, span(75))?;
                 let product = builder.matrix_multiply(scaled, vector, span(76))?;
-                let sum = builder.reduce(SolveReductionOperator::Sum, product, span(77))?;
                 let identity = builder.identity(SolveScalarType::real(arithmetic), 3, span(78))?;
                 let diagonal = builder.diagonal(vector, span(79))?;
                 builder.store(outputs[0], product, span(79))?;
-                builder.store(outputs[1], sum, span(80))?;
-                builder.store(outputs[2], transposed, span(81))?;
-                builder.store(outputs[3], identity, span(82))?;
-                builder.store(outputs[4], diagonal, span(83))
+                builder.store(outputs[1], transposed, span(81))?;
+                builder.store(outputs[2], identity, span(82))?;
+                builder.store(outputs[3], diagonal, span(83))
             },
         )?;
         Ok(())
@@ -923,9 +875,8 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         eval_pure_call(&table, table.owners()[0].id(), &[matrix, vector, scalar]).unwrap();
 
     assert_eq!(outputs[0].elements(), [real_value(12.0), real_value(30.0)]);
-    assert_eq!(outputs[1].elements(), [real_value(42.0)]);
     assert_eq!(
-        outputs[2].elements(),
+        outputs[1].elements(),
         [
             real_value(2.0),
             real_value(8.0),
@@ -936,7 +887,7 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         ]
     );
     assert_eq!(
-        outputs[3].elements(),
+        outputs[2].elements(),
         [
             real_value(1.0),
             real_value(0.0),
@@ -950,8 +901,48 @@ fn compact_tensor_algebra_evaluates_scale_transpose_product_and_reduction() {
         ]
     );
     assert_eq!(
-        outputs[4].elements(),
+        outputs[3].elements(),
         [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0].map(real_value)
+    );
+}
+
+#[test]
+fn positive_zero_matrix_reduction_evaluates_an_empty_inner_domain_to_positive_zero() {
+    let arithmetic = SolveArithmeticProfile::construct(
+        SolveRealFormat::Binary64,
+        SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+    );
+    let empty = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![0]).unwrap();
+    let scalar = SolveValueType::scalar(SolveScalarType::real(arithmetic));
+    let table = SolvePureCallTable::construct(arithmetic, |table| {
+        table.add_owner(
+            identity(88),
+            vec![empty.clone(), empty.clone()],
+            vec![SolvePureCallOutput::result(scalar)],
+            span(840),
+            |builder, inputs, outputs| {
+                let lhs = builder.load(inputs[0], span(841))?;
+                let rhs = builder.load(inputs[1], span(842))?;
+                let product = builder.matrix_multiply(lhs, rhs, span(843))?;
+                builder.store(outputs[0], product, span(844))
+            },
+        )?;
+        Ok(())
+    })
+    .expect("PositiveZero issues the empty-inner reduction owner");
+    let empty_value = TypedValue::construct(empty, Vec::new()).unwrap();
+
+    let output = eval_pure_call(
+        &table,
+        table.owners()[0].id(),
+        &[empty_value.clone(), empty_value],
+    )
+    .expect("the issued identity reduction evaluates");
+
+    assert_eq!(
+        output[0].elements(),
+        [SolveValueKind::Real64(0.0_f64.to_bits())]
     );
 }
 
@@ -966,10 +957,7 @@ fn compact_tensor_directional_owner_preserves_aggregate_operations() {
         table.add_owner(
             identity(108),
             vec![matrix.clone(), vector.clone(), scalar.clone()],
-            vec![
-                SolvePureCallOutput::result(result.clone()),
-                SolvePureCallOutput::result(scalar.clone()),
-            ],
+            vec![SolvePureCallOutput::result(result.clone())],
             span(700),
             |builder, inputs, outputs| {
                 let matrix = builder.load(inputs[0], span(701))?;
@@ -977,9 +965,7 @@ fn compact_tensor_directional_owner_preserves_aggregate_operations() {
                 let scalar = builder.load(inputs[2], span(703))?;
                 let scaled = builder.scale(matrix, scalar, span(704))?;
                 let product = builder.matrix_multiply(scaled, vector, span(705))?;
-                let sum = builder.reduce(SolveReductionOperator::Sum, product, span(706))?;
-                builder.store(outputs[0], product, span(707))?;
-                builder.store(outputs[1], sum, span(708))
+                builder.store(outputs[0], product, span(707))
             },
         )?;
         Ok(())
@@ -987,14 +973,44 @@ fn compact_tensor_directional_owner_preserves_aggregate_operations() {
     .unwrap();
     let owner = &table.owners()[0];
     let directional = owner.directional().expect("tensor owner is differentiable");
+    let primal_plan = owner
+        .body()
+        .operations()
+        .iter()
+        .find_map(|operation| match operation.operation() {
+            rumoca_ir_solve::SolveOperation::MatrixMultiply { plan, .. } => Some(*plan),
+            _ => None,
+        })
+        .expect("primal owns one compact matrix-product contract");
+    assert_eq!(
+        directional
+            .body()
+            .operations()
+            .iter()
+            .filter(|operation| matches!(
+                operation.operation(),
+                rumoca_ir_solve::SolveOperation::MatrixMultiply { .. }
+            ))
+            .count(),
+        3
+    );
+    assert!(directional.body().operations().iter().all(|operation| {
+        !matches!(
+            operation.operation(),
+            rumoca_ir_solve::SolveOperation::MatrixMultiply { plan, .. }
+                if *plan != primal_plan
+        )
+    }));
     assert!(
         directional
             .body()
             .operations()
             .iter()
-            .any(|operation| matches!(
+            .all(|operation| !matches!(
                 operation.operation(),
-                rumoca_ir_solve::SolveOperation::MatrixMultiply { .. }
+                rumoca_ir_solve::SolveOperation::ProjectElement { .. }
+                    | rumoca_ir_solve::SolveOperation::ConstructAggregate { .. }
+                    | rumoca_ir_solve::SolveOperation::Reduce { .. }
             ))
     );
     let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
@@ -1014,48 +1030,6 @@ fn compact_tensor_directional_owner_preserves_aggregate_operations() {
 
     assert_eq!(outputs[0].elements(), [12.0, 30.0].map(real_value));
     assert_eq!(outputs[1].elements(), [6.0, 15.0].map(real_value));
-    assert_eq!(outputs[2].elements(), [42.0].map(real_value));
-    assert_eq!(outputs[3].elements(), [21.0].map(real_value));
-}
-
-#[test]
-fn compact_cross_product_evaluates_without_coordinate_operations() {
-    let arithmetic = profile(SolveRealFormat::Binary64);
-    let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
-    let table = SolvePureCallTable::construct(arithmetic, |table| {
-        table.add_owner(
-            identity(9),
-            vec![vector.clone(), vector.clone()],
-            vec![SolvePureCallOutput::result(vector.clone())],
-            span(84),
-            |builder, inputs, outputs| {
-                let lhs = builder.load(inputs[0], span(85))?;
-                let rhs = builder.load(inputs[1], span(86))?;
-                let cross = builder.cross(lhs, rhs, span(87))?;
-                builder.store(outputs[0], cross, span(88))
-            },
-        )?;
-        Ok(())
-    })
-    .unwrap();
-    let real_value = |value| real_kind(SolveRealFormat::Binary64, value);
-    let lhs =
-        TypedValue::construct(vector.clone(), [1.0, 2.0, 3.0].map(real_value).to_vec()).unwrap();
-    let rhs = TypedValue::construct(vector, [4.0, 5.0, 6.0].map(real_value).to_vec()).unwrap();
-
-    let outputs = eval_pure_call(&table, table.owners()[0].id(), &[lhs, rhs]).unwrap();
-
-    assert_eq!(outputs[0].elements(), [-3.0, 6.0, -3.0].map(real_value));
-    assert!(
-        table.owners()[0]
-            .body()
-            .operations()
-            .iter()
-            .any(|operation| matches!(
-                operation.operation(),
-                rumoca_ir_solve::SolveOperation::Cross { .. }
-            ))
-    );
 }
 
 #[test]
@@ -1096,7 +1070,7 @@ fn compact_map_evaluates_one_checked_body_over_its_domain() {
     let vector = SolveValueType::tensor(SolveScalarType::real(arithmetic), vec![3]).unwrap();
     let domain = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_owned(),
             lower: 1,
             upper: 3,

@@ -13,7 +13,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) fn canonicalize_flat_enum_literals(
     flat: &mut flat::Model,
     tree: &ast::ClassTree,
-    known_enum_values: &FxHashMap<String, String>,
+    known_enum_values: &FxHashMap<String, rumoca_eval_flat::constant::ResolvedEnumValue>,
 ) {
     let enum_literals = EnumLiteralIndex::new(tree, known_enum_values);
     if enum_literals.is_empty() {
@@ -83,11 +83,11 @@ struct EnumLiteralIndex {
 }
 
 impl EnumLiteralIndex {
-    fn new(tree: &ast::ClassTree, known_enum_values: &FxHashMap<String, String>) -> Self {
+    fn new(
+        tree: &ast::ClassTree,
+        _known_enum_values: &FxHashMap<String, rumoca_eval_flat::constant::ResolvedEnumValue>,
+    ) -> Self {
         let mut index = Self::default();
-        for value in known_enum_values.values() {
-            index.record_resolved_value(tree, value);
-        }
         for (def_id, qualified_name) in &tree.def_map {
             let Some(class_def) = tree.get_class_by_def_id(*def_id) else {
                 continue;
@@ -112,40 +112,11 @@ impl EnumLiteralIndex {
         self.by_identity.is_empty()
     }
 
-    fn record_resolved_value(&mut self, tree: &ast::ClassTree, value: &str) {
-        let path = ComponentPath::from_flat_path(value);
-        let Some(literal_name) = path.parts().last() else {
-            return;
-        };
-        let Some(type_path) = path.prefix(path.len().saturating_sub(1)) else {
-            return;
-        };
-        let Some(def_id) = tree.name_map.get(type_path.as_str()).copied().or_else(|| {
-            tree.def_map
-                .iter()
-                .find_map(|(def_id, name)| (name == type_path.as_str()).then_some(*def_id))
-        }) else {
-            return;
-        };
-        let Some(class_def) = tree.get_class_by_def_id(def_id) else {
-            return;
-        };
-        if !class_def
-            .enum_literals
-            .iter()
-            .any(|literal| literal.ident.text.as_ref() == literal_name)
-        {
-            return;
-        }
-        self.record_identity(def_id, literal_name, value.to_string());
-    }
-
     /// A colliding key names the same literal of the same enum class (the
     /// `DefId` pins the exact declaration), so entries can differ only in
-    /// rendered spelling — e.g. the declaration path versus a use-site path
-    /// from `known_enum_values`. Preferring the longest spelling
-    /// deterministically selects the most qualified display form; it cannot
-    /// change which literal is meant.
+    /// rendered spelling. Preferring the longest spelling deterministically
+    /// selects the most qualified display form; it cannot change which literal
+    /// is meant.
     fn record_identity(&mut self, def_id: rumoca_core::DefId, literal: &str, value: String) {
         let key = (def_id, literal.to_string());
         match self.by_identity.entry(key) {
@@ -538,10 +509,7 @@ mod tests {
             },
         ));
 
-        let mut known_enums = FxHashMap::default();
-        known_enums.insert("enumParam".to_string(), "TypesPkg.Init.NoInit".to_string());
-        // Also include short form to ensure canonicalization prefers the most-qualified path.
-        known_enums.insert("short".to_string(), "Init.NoInit".to_string());
+        let known_enums = FxHashMap::default();
 
         canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 
@@ -573,6 +541,7 @@ mod tests {
         let enum_type = rumoca_core::DefId::new(42);
         let mut tree = enum_tree(enum_type, None, "L", "U");
         tree.name_map.insert("P.L".to_string(), enum_type);
+        tree.def_map.insert(enum_type, "P.L".to_string());
         let resolved_reference = resolved_reference(&["L", "U"], enum_type, occurrence);
         let mut flat = flat::Model::new();
         flat.variables.insert(
@@ -589,8 +558,7 @@ mod tests {
                 ..flat::Variable::empty_with_span(occurrence)
             },
         );
-        let mut known_enums = FxHashMap::default();
-        known_enums.insert("a".to_string(), "P.L.U".to_string());
+        let known_enums = FxHashMap::default();
 
         canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 
@@ -631,11 +599,7 @@ mod tests {
             },
         ));
 
-        let mut known_enums = FxHashMap::default();
-        known_enums.insert(
-            "enumParam".to_string(),
-            "Modelica.Blocks.Types.Init.NoInit".to_string(),
-        );
+        let known_enums = FxHashMap::default();
 
         canonicalize_flat_enum_literals(&mut flat, &ast::ClassTree::new(), &known_enums);
 
@@ -661,8 +625,7 @@ mod tests {
             "test",
         ));
 
-        let mut known_enums = FxHashMap::default();
-        known_enums.insert("enumParam".to_string(), "TypesPkg.Init.NoInit".to_string());
+        let known_enums = FxHashMap::default();
 
         canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 
@@ -686,7 +649,7 @@ mod tests {
             .push(flat::StructuredEquationFamily {
                 domain: rumoca_core::StructuredIndexDomain {
                     binders: vec![rumoca_core::StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 2,
@@ -711,8 +674,7 @@ mod tests {
                 }),
                 interiors_materialized: true,
             });
-        let mut known_enums = FxHashMap::default();
-        known_enums.insert("enumParam".to_string(), "TypesPkg.Logic.Unset".to_string());
+        let known_enums = FxHashMap::default();
 
         canonicalize_flat_enum_literals(&mut flat, &tree, &known_enums);
 

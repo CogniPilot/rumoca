@@ -23,14 +23,14 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
     let solve = rumoca_sim::lower_for_simulation_with_overrides(result.dae(), &opts)
         .expect("NeuralODETensor should lower for simulation");
 
-    let p_len = solve.parameters.len();
+    let p_len = solve.parameters().len();
     let mut failures = Vec::new();
     check_problem_blocks(&solve, p_len, &mut failures);
     check_event_blocks(&solve, p_len, &mut failures);
     check_artifact_blocks(&solve, p_len, &mut failures);
     check_program(
         "visible_value_rows",
-        &solve.visible_value_rows,
+        solve.visible_value_rows(),
         p_len,
         &mut failures,
     );
@@ -45,31 +45,33 @@ fn neural_ode_tensor_indexed_parameter_loads_stay_in_parameter_vector() {
 fn check_problem_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<String>) {
     check_block(
         "continuous.implicit_rhs",
-        &solve.problem.continuous().implicit_rhs,
+        solve.problem().continuous().implicit_rhs(),
         p_len,
         failures,
     );
     check_block(
         "continuous.residual",
-        &solve.problem.continuous().residual,
+        solve.problem().continuous().residual(),
         p_len,
         failures,
     );
     check_block(
         "continuous.derivative_rhs",
-        &solve.problem.continuous().derivative_rhs,
+        solve.problem().continuous().derivative_rhs(),
         p_len,
         failures,
     );
     check_block(
         "initialization.residual",
-        &solve.problem.initialization().residual,
+        solve.problem().initialization().residual(),
         p_len,
         failures,
     );
     check_block(
         "initialization.update_rhs",
-        &ComputeBlock::from_scalar_program_block(solve.problem.initialization().update_rhs.clone()),
+        &ComputeBlock::from_scalar_program_block(
+            solve.problem().initialization().update_rhs().clone(),
+        ),
         p_len,
         failures,
     );
@@ -78,35 +80,35 @@ fn check_problem_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Str
 fn check_event_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<String>) {
     check_program(
         "discrete.runtime_assignment_rhs",
-        &solve.problem.discrete().runtime_assignment_rhs,
+        &solve.problem().discrete().runtime_assignment_rhs,
         p_len,
         failures,
     );
     check_program(
         "discrete.rhs",
-        &solve.problem.discrete().rhs,
+        &solve.problem().discrete().rhs,
         p_len,
         failures,
     );
     check_program(
         "events.root_conditions",
-        &solve.problem.events().root_conditions,
+        &solve.problem().events().root_conditions,
         p_len,
         failures,
     );
     check_program(
         "events.dynamic_time_event_rhs",
-        &solve.problem.events().dynamic_time_event_rhs,
+        &solve.problem().events().dynamic_time_event_rhs,
         p_len,
         failures,
     );
     check_program(
         "events.action_conditions",
-        &solve.problem.events().action_conditions,
+        &solve.problem().events().action_conditions,
         p_len,
         failures,
     );
-    for (action_idx, action) in solve.problem.events().actions.iter().enumerate() {
+    for (action_idx, action) in solve.problem().events().actions.iter().enumerate() {
         for (part_idx, part) in action.message.parts.iter().enumerate() {
             if let rumoca_ir_solve::SolveEventMessagePart::Conversion { value: ops, .. } = part {
                 check_ops(
@@ -123,19 +125,19 @@ fn check_event_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<Strin
 fn check_artifact_blocks(solve: &SolveModel, p_len: usize, failures: &mut Vec<String>) {
     check_block(
         "artifacts.continuous.implicit_jacobian_v",
-        &solve.artifacts.continuous.implicit_jacobian_v,
+        &solve.artifacts().continuous().implicit_jacobian_v,
         p_len,
         failures,
     );
     check_program(
         "artifacts.continuous.implicit_jacobian_v_scalar",
-        &solve.artifacts.continuous.implicit_jacobian_v_scalar,
+        &solve.artifacts().continuous().implicit_jacobian_v_scalar,
         p_len,
         failures,
     );
     check_program(
         "artifacts.continuous.full_jacobian_v",
-        &solve.artifacts.continuous.full_jacobian_v,
+        &solve.artifacts().continuous().full_jacobian_v,
         p_len,
         failures,
     );

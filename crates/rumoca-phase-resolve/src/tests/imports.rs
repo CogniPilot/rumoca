@@ -3,6 +3,24 @@
 
 use super::*;
 
+fn component_type_path<'a>(tree: &'a ast::ClassTree, class: &str, component: &str) -> &'a str {
+    let definition = tree
+        .definitions
+        .classes
+        .get(class)
+        .unwrap_or_else(|| panic!("missing class {class}"));
+    let type_id = definition
+        .components
+        .get(component)
+        .unwrap_or_else(|| panic!("missing component {class}.{component}"))
+        .type_def_id
+        .unwrap_or_else(|| panic!("missing type identity for {class}.{component}"));
+    tree.def_map
+        .get(&type_id)
+        .map(String::as_str)
+        .unwrap_or_else(|| panic!("missing definition path for {class}.{component}"))
+}
+
 #[test]
 fn test_record_parameter_type_resolves_through_renamed_package_import() {
     let source = r#"
@@ -112,6 +130,283 @@ end AC3ph;
 
     resolve_test_source(source)
         .expect("short package alias member access like `PS.j` should resolve");
+}
+
+#[test]
+fn inherited_declaration_precedes_qualified_and_wildcard_imports() {
+    let source = r#"
+package Imported
+  model X end X;
+end Imported;
+package Wild
+  model X end X;
+end Wild;
+model Base
+  model X end X;
+end Base;
+model Use
+  extends Base;
+  import Imported.X;
+  import Wild.*;
+  X value;
+end Use;
+"#;
+    let tree = resolve_test_source(source).expect("inherited X must resolve before imports");
+    assert_eq!(component_type_path(&tree, "Use", "value"), "Base.X");
+}
+
+#[test]
+fn single_definition_import_precedes_wildcard_in_both_clause_orders() {
+    for imports in [
+        "import Wild.*; import Named.X;",
+        "import Named.X; import Wild.*;",
+    ] {
+        let source = format!(
+            r#"
+package Named
+  model X end X;
+end Named;
+package Wild
+  model X end X;
+end Wild;
+model Use
+  {imports}
+  X value;
+end Use;
+"#
+        );
+        let tree = resolve_test_source(&source)
+            .unwrap_or_else(|diagnostics| panic!("named import must win: {diagnostics:?}"));
+        assert_eq!(component_type_path(&tree, "Use", "value"), "Named.X");
+    }
+}
+
+#[test]
+fn selective_import_precedes_wildcard_in_both_clause_orders() {
+    for imports in [
+        "import Wild.*; import Named.{X};",
+        "import Named.{X}; import Wild.*;",
+    ] {
+        let source = format!(
+            r#"
+package Named
+  model X end X;
+end Named;
+package Wild
+  model X end X;
+end Wild;
+model Use
+  {imports}
+  X value;
+end Use;
+"#
+        );
+        let tree = resolve_test_source(&source)
+            .unwrap_or_else(|diagnostics| panic!("selective import must win: {diagnostics:?}"));
+        assert_eq!(component_type_path(&tree, "Use", "value"), "Named.X");
+    }
+}
+
+#[test]
+fn import_precedes_enclosing_scope_member() {
+    let source = r#"
+package Named
+  model X end X;
+end Named;
+package Outer
+  model X end X;
+  model Use
+    import Named.X;
+    X value;
+  end Use;
+end Outer;
+"#;
+    let tree = resolve_test_source(source).expect("import must win before the parent walk");
+    let use_class = tree.definitions.classes["Outer"]
+        .classes
+        .get("Use")
+        .expect("missing Outer.Use");
+    let type_id = use_class.components["value"]
+        .type_def_id
+        .expect("missing imported type identity");
+    assert_eq!(tree.def_map[&type_id], "Named.X");
+}
+
+#[test]
+fn wildcard_ambiguity_is_diagnosed_at_use_and_unused_overlap_is_accepted() {
+    let declarations = r#"
+package A constant Real x = 1; end A;
+package B constant Real x = 2; end B;
+"#;
+    let used = format!(
+        r#"{declarations}
+model Use
+  import A.*;
+  import B.*;
+  Real y = x;
+end Use;
+"#
+    );
+    let diagnostics = resolve_test_source(&used).expect_err("used overlap must be ambiguous");
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code.as_deref() == Some("ER112"))
+            .count(),
+        1,
+        "the lookup consumer must emit exactly one ER112: {diagnostics:?}"
+    );
+
+    let unused = format!(
+        r#"{declarations}
+model Use
+  import A.*;
+  import B.*;
+  Real y = 0;
+end Use;
+"#
+    );
+    resolve_test_source(&unused).expect("unused wildcard overlap is legal");
+}
+
+#[test]
+fn wildcard_overlap_does_not_capture_instance_owned_modifier_targets() {
+    let source = r#"
+package A constant Real tol = 1e-3; end A;
+package B constant Real tol = 1e-6; end B;
+model Sub Real tol = 1; end Sub;
+model Base Sub sub; end Base;
+model Use
+  import A.*;
+  import B.*;
+  extends Base(sub(tol = 3));
+end Use;
+"#;
+
+    resolve_test_source(source)
+        .expect("the nested modifier target names Sub.tol; lexical wildcard overlap is irrelevant");
+}
+
+#[test]
+fn wildcard_ambiguity_is_diagnosed_by_every_lookup_use_kind() {
+    let cases = [
+        r#"
+package A constant Real x = 1; end A;
+package B constant Real x = 2; end B;
+model Use
+  import A.*; import B.*;
+  Real y;
+algorithm
+  y := x;
+end Use;
+"#,
+        r#"
+package A model X end X; end A;
+package B model X end X; end B;
+model Use
+  import A.*; import B.*;
+  X value;
+end Use;
+"#,
+        r#"
+package A constant Integer n = 1; end A;
+package B constant Integer n = 2; end B;
+model Use
+  import A.*; import B.*;
+  Real value[n];
+end Use;
+"#,
+        r#"
+package A
+  function f input Real x; output Real y; algorithm y := x; end f;
+end A;
+package B
+  function f input Real x; output Real y; algorithm y := x; end f;
+end B;
+model Use
+  import A.*; import B.*;
+  Real value = f(1);
+end Use;
+"#,
+        r#"
+package A model X end X; end A;
+package B model X end X; end B;
+model Use
+  import A.*; import B.*;
+  extends X;
+end Use;
+"#,
+    ];
+
+    for source in cases {
+        let diagnostics = resolve_test_source(source)
+            .expect_err("every ambiguous wildcard use must fail at Resolve");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code.as_deref() == Some("ER112"))
+                .count(),
+            1,
+            "expected exactly one producer-owned ER112: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn higher_precedence_match_suppresses_wildcard_ambiguity() {
+    let source = r#"
+package A model X end X; end A;
+package B model X end X; end B;
+model Base
+  model X Real selected; end X;
+end Base;
+model InheritedWins
+  extends Base;
+  import A.*;
+  import B.*;
+  X value;
+equation
+  value.selected = 1;
+end InheritedWins;
+package Named
+  model X Real selected; end X;
+end Named;
+model NamedWins
+  import A.*;
+  import B.*;
+  import Named.X;
+  X value;
+equation
+  value.selected = 1;
+end NamedWins;
+"#;
+    resolve_test_source(source)
+        .expect("inherited and named matches must stop before wildcard ambiguity");
+}
+
+#[test]
+fn wildcard_import_preserves_ambiguity_exported_by_its_package() {
+    let source = r#"
+package A constant Real x = 1; end A;
+package B constant Real x = 2; end B;
+package P
+  extends A;
+  extends B;
+end P;
+package Outer
+  constant Real x = 3;
+  model Use
+    import P.*;
+    Real y = x;
+  end Use;
+end Outer;
+"#;
+    let diagnostics =
+        resolve_test_source(source).expect_err("P.x ambiguity must not disappear into Outer.x");
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.as_deref() == Some("ER002")
+            && diagnostic.message.contains("ambiguous inherited reference")
+    }));
 }
 #[test]
 fn test_unresolved_import_is_emitted_before_unresolved_type_reference() {

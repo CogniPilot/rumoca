@@ -1,4 +1,5 @@
 /target
+/rust_out
 /crates/rumoca/target/rumoca-library-cache
 __pycache__/
 # Python virtual environments — any name, any location (.venv, venv, .venv-*).
@@ -24,6 +25,7 @@ docs/*/book/
 # Staged temporarily by `rum wasm build` so wasm-pack can include crate-local license metadata.
 crates/rumoca-bind-wasm/LICENSE
 perf.data*
+*.profraw
 flamegraph.svg
 msl
 

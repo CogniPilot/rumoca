@@ -40,45 +40,36 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rumoca_compile::analysis as dae_analysis;
-use rumoca_compile::codegen::{
-    CodegenError, SolveTemplateRenderer, render_ast_template_with_name, render_dae_template,
-    render_dae_template_with_name, render_flat_template_with_name,
-};
 use rumoca_compile::compile::{
     Dae, DaeCompilationResult as CompileDaeCompilationResult, FlatModel, Session, SessionConfig,
     SourceRootKind, VariableRole,
 };
 use rumoca_compile::parsing::collect_compile_unit_source_files;
 use rumoca_compile::source_roots::{
-    PackageLayoutError, canonical_path_key, parse_source_root_with_cache, plan_source_root_loads,
-    referenced_unloaded_source_root_paths, render_source_root_status_message,
-    resolve_source_root_cache_dir, source_root_source_set_key,
+    PackageLayoutError, SourceRootDiscoveryError, canonical_path_key, parse_source_root_with_cache,
+    plan_source_root_loads, referenced_unloaded_source_root_paths,
+    render_source_root_status_message, resolve_source_root_cache_dir, source_root_source_set_key,
 };
 use rumoca_core::DiagnosticSeverity;
 use rumoca_phase_resolve::ResolvedTree;
-use rumoca_sim::{lower_solve_artifacts, lower_solve_problem};
+use rumoca_sim::lower_solve_problem;
 
 use crate::error::CompilerError;
+
+impl From<SourceRootDiscoveryError> for CompilerError {
+    fn from(error: SourceRootDiscoveryError) -> Self {
+        let path = error.path.clone();
+        Self::io_error(path, error.to_string())
+    }
+}
 
 /// Result of a successful compilation.
 #[derive(Debug)]
 pub struct CompilationResult {
-    /// The DAE representation.
-    pub dae: Arc<Dae>,
-    /// Detailed continuous balance inputs validated during DAE construction.
-    pub balance_detail: dae_analysis::BalanceDetail,
-    /// The flat model (intermediate).
-    pub flat: FlatModel,
-    /// The resolved tree (intermediate, before instantiation and typechecking).
-    pub resolved: ResolvedTree,
-    /// Cached solve-template renderer (scalarized DAE + lowered solve
-    /// problem, as typed template values). Building it dominates target
-    /// generation on large models and a multi-file target renders several
-    /// strings against the same input.
-    solve_template_renderer: std::sync::OnceLock<SolveTemplateRenderer>,
-    /// Cached solve-template renderer for targets that never read the `dae`
-    /// template entry.
-    solve_template_renderer_without_dae: std::sync::OnceLock<SolveTemplateRenderer>,
+    /// The exact strict compiler aggregate. Keeping this value intact prevents
+    /// target orchestration from pairing a model identity, Resolve tree, Flat
+    /// model, or DAE produced by different compilations.
+    strict: rumoca_compile::compile::StrictCompilation,
 }
 
 #[derive(Clone, Copy)]
@@ -129,154 +120,74 @@ pub enum TemplateIr {
     Ast,
 }
 
-fn build_solve_template_renderer(dae_model: &Dae) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = lower_solve_artifacts(&problem)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    SolveTemplateRenderer::new_owned_with_dae(problem, artifacts, dae_model)
-        .map_err(CompilerError::TemplateError)
-}
-
-fn build_solve_template_renderer_without_dae(
-    dae_model: &Dae,
-) -> Result<SolveTemplateRenderer, CompilerError> {
-    let problem = lower_solve_problem(dae_model)
-        .map_err(|err| CompilerError::TemplateError(CodegenError::template(err.to_string())))?;
-    let artifacts = rumoca_ir_solve::SolveArtifacts::default();
-    SolveTemplateRenderer::new(&problem, &artifacts, "").map_err(CompilerError::TemplateError)
-}
-
 impl CompilationResult {
-    pub fn new(
-        dae: Arc<Dae>,
-        balance_detail: dae_analysis::BalanceDetail,
-        flat: FlatModel,
-        resolved: ResolvedTree,
-    ) -> Self {
+    /// Consume the strict compiler's proof-bearing result without separating
+    /// model identity, Resolve, Flat, DAE, or balance evidence.
+    pub fn from_strict(compilation: rumoca_compile::compile::StrictCompilation) -> Self {
         Self {
-            dae,
-            balance_detail,
-            flat,
-            resolved,
-            solve_template_renderer: std::sync::OnceLock::new(),
-            solve_template_renderer_without_dae: std::sync::OnceLock::new(),
+            strict: compilation,
         }
     }
 
-    /// Render the DAE using a template file.
-    pub fn render_template(&self, template_path: &str) -> Result<String, CompilerError> {
-        let template_content = fs::read_to_string(template_path)
-            .map_err(|e| CompilerError::io_error(template_path, e.to_string()))?;
-
-        self.render_template_str(&template_content)
+    pub(crate) const fn strict(&self) -> &rumoca_compile::compile::StrictCompilation {
+        &self.strict
     }
 
-    /// Render the DAE using a template string.
-    pub fn render_template_str(&self, template: &str) -> Result<String, CompilerError> {
-        render_dae_template(&self.dae, template).map_err(CompilerError::TemplateError)
+    #[must_use]
+    pub fn model_name(&self) -> &str {
+        self.strict.model_name()
     }
 
-    /// Render the DAE using a template string with an explicit model name.
-    ///
-    /// The model name is exposed as `model_name` in the template context.
-    pub fn render_template_str_with_name(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CompilerError> {
-        render_dae_template_with_name(&self.dae, template, model_name)
-            .map_err(CompilerError::TemplateError)
+    #[must_use]
+    pub fn dae(&self) -> &Arc<Dae> {
+        &self.strict.result().dae
     }
 
-    pub fn render_template_str_with_name_and_ir(
-        &self,
-        template: &str,
-        model_name: &str,
-        ir: TemplateIr,
-    ) -> Result<String, CompilerError> {
-        match ir {
-            TemplateIr::Dae => self.render_template_str_with_name(template, model_name),
-            TemplateIr::Solve => {
-                // Build the template context once per compilation, straight
-                // from typed data: the previous path serialized the
-                // scalarized DAE plus the lowered solve problem to JSON and
-                // deserialized the problem back, per compilation - several
-                // seconds of round-trip on large models with the actual
-                // template rendering measured in milliseconds.
-                if self.solve_template_renderer.get().is_none() {
-                    let renderer = build_solve_template_renderer(&self.dae)?;
-                    let _ = self.solve_template_renderer.set(renderer);
-                }
-                let renderer = self.solve_template_renderer.get().ok_or_else(|| {
-                    CompilerError::TemplateError(CodegenError::template(
-                        "solve template renderer was not initialized after build",
-                    ))
-                })?;
-                renderer
-                    .render_with_name(template, model_name)
-                    .map_err(CompilerError::TemplateError)
-            }
-            TemplateIr::Flat => render_flat_template_with_name(&self.flat, template, model_name)
-                .map_err(CompilerError::TemplateError),
-            TemplateIr::Ast => {
-                render_ast_template_with_name(self.resolved.inner(), template, model_name)
-                    .map_err(CompilerError::TemplateError)
-            }
-        }
+    #[must_use]
+    pub fn flat(&self) -> &FlatModel {
+        &self.strict.result().flat
     }
 
-    pub fn render_solve_template_str_without_dae(
-        &self,
-        template: &str,
-        model_name: &str,
-    ) -> Result<String, CompilerError> {
-        if self.solve_template_renderer_without_dae.get().is_none() {
-            let renderer = build_solve_template_renderer_without_dae(&self.dae)?;
-            let _ = self.solve_template_renderer_without_dae.set(renderer);
-        }
-        let renderer = self
-            .solve_template_renderer_without_dae
-            .get()
-            .ok_or_else(|| {
-                CompilerError::TemplateError(CodegenError::template(
-                    "solve template renderer was not initialized after build",
-                ))
-            })?;
-        renderer
-            .render_with_name(template, model_name)
-            .map_err(CompilerError::TemplateError)
+    #[must_use]
+    pub fn resolved(&self) -> &ResolvedTree {
+        self.strict.resolved()
+    }
+
+    #[must_use]
+    pub fn balance_detail(&self) -> &dae_analysis::BalanceDetail {
+        &self.strict.result().balance_detail
     }
 
     pub fn to_ir_json(&self, ir: TemplateIr) -> Result<String, CompilerError> {
         match ir {
             TemplateIr::Dae => self.to_json(),
             TemplateIr::Solve => {
-                let solve = lower_solve_problem(&self.dae)
+                let solve = lower_solve_problem(self.dae())
                     .map_err(|err| CompilerError::JsonError(err.to_string()))?;
                 serde_json::to_string_pretty(&solve)
                     .map_err(|err| CompilerError::JsonError(err.to_string()))
             }
-            TemplateIr::Flat => serde_json::to_string_pretty(&self.flat)
+            TemplateIr::Flat => serde_json::to_string_pretty(self.flat())
                 .map_err(|err| CompilerError::JsonError(err.to_string())),
-            TemplateIr::Ast => serde_json::to_string_pretty(self.resolved.inner())
+            TemplateIr::Ast => serde_json::to_string_pretty(self.resolved().inner())
                 .map_err(|err| CompilerError::JsonError(err.to_string())),
         }
     }
 
     /// Equation balance (equations - unknowns).
     pub fn balance(&self) -> i64 {
-        self.balance_detail.balance()
+        self.balance_detail().balance()
     }
 
     /// Whether equation/unknown balance is exact.
     pub fn is_balanced(&self) -> bool {
-        self.balance_detail.is_balanced()
+        self.balance_detail().is_balanced()
     }
 
     /// Convert the DAE to JSON.
     pub fn to_json(&self) -> Result<String, CompilerError> {
-        serde_json::to_string_pretty(&self.dae).map_err(|e| CompilerError::JsonError(e.to_string()))
+        serde_json::to_string_pretty(self.dae())
+            .map_err(|e| CompilerError::JsonError(e.to_string()))
     }
 }
 
@@ -386,7 +297,7 @@ impl Compiler {
             source,
             &self.source_root_paths,
             &loaded_source_root_path_keys,
-        );
+        )?;
         let referenced_path_keys = referenced_source_root_paths
             .iter()
             .map(|path| canonical_path_key(path))
@@ -403,7 +314,7 @@ impl Compiler {
         }
 
         let load_plan =
-            plan_source_root_loads(&referenced_source_root_paths, &loaded_source_root_path_keys);
+            plan_source_root_loads(&referenced_source_root_paths, &loaded_source_root_path_keys)?;
         for skipped in &load_plan.duplicate_root_skips {
             self.log_verbose(format!(
                 "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
@@ -492,12 +403,6 @@ impl Compiler {
         self.compile_str_flat(&source, path)
     }
 
-    /// Compile a Modelica file from a Path.
-    pub fn compile_path(&self, path: &Path) -> Result<CompilationResult, CompilerError> {
-        let path_str = path.to_string_lossy().to_string();
-        self.compile_file(&path_str)
-    }
-
     /// Compile a Modelica file through DAE only.
     ///
     /// This avoids retaining Flat and Resolved artifacts in callers that only
@@ -552,12 +457,11 @@ impl Compiler {
                 source_map: report.source_map.map(Box::new),
             }
         })?;
-        let (result, resolved) = compilation.into_parts();
         report_compile_warnings(&mut session, model_name);
 
         if self.verbose {
             eprintln!("[rumoca] Compilation complete.");
-            let counts = dae_counts(&result.dae);
+            let counts = dae_counts(&compilation.result().dae);
             eprintln!("[rumoca]   States: {}", counts.states);
             eprintln!("[rumoca]   Algebraics: {}", counts.algebraics);
             eprintln!("[rumoca]   Parameters: {}", counts.parameters);
@@ -565,15 +469,13 @@ impl Compiler {
                 "[rumoca]   Continuous equations (f_x): {}",
                 counts.continuous_equations
             );
-            eprintln!("[rumoca]   Balance: {}", result.balance_detail.balance());
+            eprintln!(
+                "[rumoca]   Balance: {}",
+                compilation.result().balance_detail.balance()
+            );
         }
 
-        Ok(CompilationResult::new(
-            result.dae,
-            result.balance_detail,
-            result.flat,
-            resolved,
-        ))
+        Ok(CompilationResult::from_strict(compilation))
     }
 
     /// Compile Modelica source code through the resolved AST stage only.
@@ -758,7 +660,7 @@ mod tests {
         assert!(result.is_ok(), "Compilation failed: {:?}", result.err());
         let result = result.unwrap();
         assert_eq!(
-            result.dae.inspect(|view| {
+            result.dae().inspect(|view| {
                 view.variables()
                     .filter(|(_, variable)| variable.role() == VariableRole::State)
                     .count()
@@ -1029,7 +931,7 @@ mod tests {
             .model("Root")
             .compile_file(&root.to_string_lossy())
             .expect("strict target compile must ignore unrelated sibling parse errors");
-        let index = rumoca_ir_ast::ClassDefIndex::from_tree(result.resolved.inner());
+        let index = rumoca_ir_ast::ClassDefIndex::from_tree(result.resolved().inner());
         assert!(
             index.get_by_qualified_name("Root").is_some(),
             "the compilation must carry the requested model's Resolve proof"
@@ -1310,23 +1212,10 @@ mod tests {
             solve_json.contains("\"LinSolve\""),
             "Solve JSON should preserve the tensor LinSolve node from the native DAE: {solve_json}"
         );
-
-        let rendered = result
-            .render_template_str_with_name_and_ir(
-                "{{ solve_blocks.continuous.derivative_rhs.tensor_node_count }}",
-                "TensorTargetDemo",
-                TemplateIr::Solve,
-            )
-            .expect("Solve template should render");
-        assert_eq!(
-            rendered.trim(),
-            "1",
-            "Solve templates should see tensor nodes before scalar fallback"
-        );
     }
 
     #[test]
-    fn test_render_template_exposes_orbit_algebraics_from_native_dae() {
+    fn test_checked_dae_projection_exposes_orbit_algebraics_from_native_dae() {
         let source = r#"
             model SatelliteOrbit2D
               parameter Real mu = 398600.4418;
@@ -1366,11 +1255,12 @@ mod tests {
             .model("SatelliteOrbit2D")
             .compile_str(source, "orbit.mo")
             .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str(
-                "{% for variable in dae.variables %}{% if variable.role == \"algebraic\" %}{{ variable.name }}\n{% endif %}{% endfor %}",
-            )
-            .expect("template render should succeed");
+        let projection = rumoca_compile::codegen::dae_to_template_json(result.dae())
+            .expect("checked DAE projection should construct");
+        let variables = projection
+            .get("variables")
+            .and_then(serde_json::Value::as_array)
+            .expect("checked DAE projection has variables");
 
         for expected in [
             "inv_r",
@@ -1383,15 +1273,15 @@ mod tests {
             "inv_ey",
             "inv_ecc",
         ] {
-            assert!(
-                rendered.lines().any(|line| line.trim() == expected),
-                "expected algebraic `{expected}` in template output; got:\n{rendered}"
-            );
+            assert!(variables.iter().any(|variable| {
+                variable.get("name").and_then(serde_json::Value::as_str) == Some(expected)
+                    && variable.get("role").and_then(serde_json::Value::as_str) == Some("algebraic")
+            }));
         }
     }
 
     #[test]
-    fn test_dae_template_rendering_does_not_lower_solve_ir() {
+    fn test_checked_dae_projection_does_not_lower_solve_ir() {
         let source = r#"
             model DaeOnlyTemplate
               parameter Real p = 2;
@@ -1405,15 +1295,20 @@ mod tests {
             .model("DaeOnlyTemplate")
             .compile_str(source, "DaeOnlyTemplate.mo")
             .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_with_name_and_ir(
-                "{{ dae.systems.continuous.owners | length }} {% for variable in dae.variables %}{% if variable.role == \"state\" %}{{ variable.value_type.dimensions | join(\",\") }}{% endif %}{% endfor %}",
-                "DaeOnlyTemplate",
-                TemplateIr::Dae,
-            )
-            .expect("DAE template should render from native DAE context");
-
-        assert_eq!(rendered.trim(), "1 2");
+        let projection = rumoca_compile::codegen::dae_to_template_json(result.dae())
+            .expect("checked DAE projection should construct");
+        assert_eq!(
+            projection["systems"]["continuous"]["owners"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        assert!(projection["variables"].as_array().is_some_and(|variables| {
+            variables.iter().any(|variable| {
+                variable["role"] == "state"
+                    && variable["value_type"]["dimensions"] == serde_json::json!([2])
+            })
+        }));
     }
 
     #[test]
@@ -1434,19 +1329,21 @@ mod tests {
             .compile_str(source, "CascadedDaeTemplate.mo")
             .expect("cascaded family should compile");
 
-        let rendered = result
-            .render_template_str(
-                "{% for owner in dae.systems.continuous.owners %}{% if owner.kind == \"structured\" %}structured:{{ owner.scalar_rows }}:{{ owner.bodies | length }}{% else %}residual:1:0{% endif %}\n{% endfor %}",
-            )
+        let projection = rumoca_compile::codegen::dae_to_template_json(result.dae())
             .expect("checked DAE projection must expose canonical semantic owners");
         assert!(
-            rendered.lines().any(|line| line == "structured:7:1"),
-            "the compact 2:8 family must remain one seven-row owner:\n{rendered}"
+            projection["systems"]["continuous"]["owners"]
+                .as_array()
+                .is_some_and(|owners| owners.iter().any(|owner| {
+                    owner["kind"] == "structured"
+                        && owner["scalar_rows"] == 7
+                        && owner["bodies"].as_array().map(Vec::len) == Some(1)
+                }))
         );
     }
 
     #[test]
-    fn test_solve_template_dae_context_preserves_array_equation_ownership() {
+    fn test_solve_ir_preserves_array_equation_ownership() {
         let source = r#"
             model SolveTemplateDaeContext
               parameter Integer N = 2;
@@ -1460,18 +1357,12 @@ mod tests {
             .model("SolveTemplateDaeContext")
             .compile_str(source, "SolveTemplateDaeContext.mo")
             .expect("compilation should succeed");
-        let rendered = result
-            .render_template_str_with_name_and_ir(
-                "{% for owner in dae.systems.continuous.owners %}{% if owner.kind == \"structured\" %}structured:{{ owner.scalar_rows }}{% else %}residual:1{% endif %} {% endfor %}",
-                "SolveTemplateDaeContext",
-                TemplateIr::Solve,
-            )
-            .expect("Solve template should expose the checked DAE projection");
-
-        assert_eq!(
-            rendered.trim(),
-            "structured:2",
-            "Solve templates must not receive a scalarized compatibility DAE"
+        let solve_json = result
+            .to_ir_json(TemplateIr::Solve)
+            .expect("checked Solve IR serialization should succeed");
+        assert!(
+            solve_json.contains("structured"),
+            "Solve IR must retain structured equation ownership: {solve_json}"
         );
     }
 

@@ -135,14 +135,15 @@ fn reindex_leaves_sibling_instances_untouched() {
         "left.pin[1].v"
     );
 
-    let sibling_endpoint = ast::InstanceConnectionEndpoint {
-        parts: vec![
-            ("left".to_string(), Vec::new()),
-            ("pin".to_string(), vec![AffineForm::constant(1, 1)]),
-        ],
-    };
+    let sibling_endpoint = ast::InstanceConnectionEndpoint::new(vec![
+        ("left".to_string(), Vec::new()),
+        ("pin".to_string(), vec![AffineForm::constant(1, 1)]),
+    ])
+    .expect("valid sibling endpoint");
     assert_eq!(
-        mapper.connection_endpoint(&sibling_endpoint),
+        mapper
+            .connection_endpoint(&sibling_endpoint)
+            .expect("reindex preserves endpoint validity"),
         sibling_endpoint
     );
 }
@@ -210,15 +211,16 @@ fn reindex_rewrites_component_paths() {
 
 #[test]
 fn reindex_rewrites_constant_connection_endpoint_subscripts() {
-    let endpoint = ast::InstanceConnectionEndpoint {
-        parts: vec![
-            ("c".to_string(), vec![AffineForm::constant(1, 1)]),
-            ("pin".to_string(), vec![AffineForm::unit_binder(0, 1)]),
-        ],
-    };
-    let rewritten = reindex("c", 0, &[7]).connection_endpoint(&endpoint);
-    assert_eq!(rewritten.parts[0].1[0], AffineForm::constant(7, 1));
-    assert_eq!(rewritten.parts[1].1[0], AffineForm::unit_binder(0, 1));
+    let endpoint = ast::InstanceConnectionEndpoint::new(vec![
+        ("c".to_string(), vec![AffineForm::constant(1, 1)]),
+        ("pin".to_string(), vec![AffineForm::unit_binder(0, 1)]),
+    ])
+    .expect("valid endpoint");
+    let rewritten = reindex("c", 0, &[7])
+        .connection_endpoint(&endpoint)
+        .expect("reindex preserves endpoint validity");
+    assert_eq!(rewritten.parts()[0].1[0], AffineForm::constant(7, 1));
+    assert_eq!(rewritten.parts()[1].1[0], AffineForm::unit_binder(0, 1));
 }
 
 #[test]
@@ -233,7 +235,6 @@ fn family_member_component_reindexes_instance_paths() {
     template
         .attribute_source_scopes
         .insert("start".to_string(), qualified(&[("c", &[1])]));
-    template.oc_record_path = Some("c[1].frame".to_string());
 
     let member = family_member_component(
         &template,
@@ -263,7 +264,6 @@ fn family_member_component_reindexes_instance_paths() {
         member.attribute_source_scopes["start"].to_flat_string(),
         "c[2]"
     );
-    assert_eq!(member.oc_record_path.as_deref(), Some("c[2].frame"));
 }
 
 #[test]
@@ -279,14 +279,16 @@ fn family_member_class_reindexes_origins_and_connections() {
             source_scope_id: None,
             span: span(),
         }],
-        connections: vec![ast::InstanceConnection {
-            a: qualified(&[("c", &[1]), ("p", &[])]),
-            b: qualified(&[("c", &[1]), ("n", &[])]),
-            connector_type: None,
-            span: span(),
-            scope: "c[1]".to_string(),
-            family: None,
-        }],
+        connections: vec![
+            ast::InstanceConnection::scalar(
+                qualified(&[("c", &[1]), ("p", &[])]),
+                qualified(&[("c", &[1]), ("n", &[])]),
+                None,
+                span(),
+                "c[1]".to_string(),
+            )
+            .expect("test scalar connection is valid"),
+        ],
         ..Default::default()
     };
 
@@ -294,13 +296,16 @@ fn family_member_class_reindexes_origins_and_connections() {
         &template,
         rumoca_core::InstanceId(11),
         &reindex("c", 0, &[3]),
-    );
+    )
+    .expect("family reindex preserves connection invariants");
     assert_eq!(member.qualified_name.to_flat_string(), "c[3]");
-    assert!(member.connections[0].family.is_none());
+    let connection = member.connections[0]
+        .as_scalar()
+        .expect("scalar connection must remain scalar after replication");
     assert_eq!(member.equations[0].origin.to_flat_string(), "c[3]");
-    assert_eq!(member.connections[0].a.to_flat_string(), "c[3].p");
-    assert_eq!(member.connections[0].b.to_flat_string(), "c[3].n");
-    assert_eq!(member.connections[0].scope, "c[3]");
+    assert_eq!(connection.a().to_flat_string(), "c[3].p");
+    assert_eq!(connection.b().to_flat_string(), "c[3].n");
+    assert_eq!(connection.scope(), "c[3]");
     // Lexical source scope is unaffected by instance reindexing.
     assert_eq!(
         member.source_scope.map(|s| s.to_flat_string()),
@@ -313,42 +318,38 @@ fn family_member_class_reindexes_compact_connection_family_endpoints() {
     // A `for k in 1:2 loop connect(pins[k], b[k].p)` inside a replicated array
     // element is stored compactly, so `reindex_connection` must re-root both
     // family endpoints at the derived domain point while leaving the binder
-    // subscripts of the inner arrays symbolic. Only the scalar `a`/`b` fields
-    // are visible in a flattened model, so a regression here is silent.
+    // subscripts of the inner arrays symbolic.
     let template = ast::ClassInstanceData {
         instance_id: rumoca_core::InstanceId(1),
         qualified_name: qualified(&[("bank", &[1])]),
-        connections: vec![ast::InstanceConnection {
-            a: qualified(&[("bank", &[1]), ("pins", &[1])]),
-            b: qualified(&[("bank", &[1]), ("b", &[1]), ("p", &[])]),
-            connector_type: None,
-            span: span(),
-            scope: "bank[1]".to_string(),
-            family: Some(ast::InstanceConnectionFamily {
-                domain: rumoca_core::StructuredIndexDomain {
+        connections: vec![
+            ast::InstanceConnection::family(
+                rumoca_core::StructuredIndexDomain {
                     binders: vec![rumoca_core::StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "k".to_string(),
                         lower: 1,
                         upper: 2,
                         step: 1,
                     }],
                 },
-                a: ast::InstanceConnectionEndpoint {
-                    parts: vec![
-                        ("bank".to_string(), vec![AffineForm::constant(1, 1)]),
-                        ("pins".to_string(), vec![AffineForm::unit_binder(0, 1)]),
-                    ],
-                },
-                b: ast::InstanceConnectionEndpoint {
-                    parts: vec![
-                        ("bank".to_string(), vec![AffineForm::constant(1, 1)]),
-                        ("b".to_string(), vec![AffineForm::unit_binder(0, 1)]),
-                        ("p".to_string(), Vec::new()),
-                    ],
-                },
-            }),
-        }],
+                ast::InstanceConnectionEndpoint::new(vec![
+                    ("bank".to_string(), vec![AffineForm::constant(1, 1)]),
+                    ("pins".to_string(), vec![AffineForm::unit_binder(0, 1)]),
+                ])
+                .expect("valid lhs endpoint"),
+                ast::InstanceConnectionEndpoint::new(vec![
+                    ("bank".to_string(), vec![AffineForm::constant(1, 1)]),
+                    ("b".to_string(), vec![AffineForm::unit_binder(0, 1)]),
+                    ("p".to_string(), Vec::new()),
+                ])
+                .expect("valid rhs endpoint"),
+                None,
+                span(),
+                "bank[1]".to_string(),
+            )
+            .expect("valid family"),
+        ],
         ..Default::default()
     };
 
@@ -356,20 +357,18 @@ fn family_member_class_reindexes_compact_connection_family_endpoints() {
         &template,
         rumoca_core::InstanceId(12),
         &reindex("bank", 0, &[4]),
-    );
+    )
+    .expect("family reindex preserves connection invariants");
     let family = member.connections[0]
-        .family
-        .as_ref()
+        .as_family()
         .expect("the compact family must survive replication");
-    assert_eq!(family.a.parts[0].1[0], AffineForm::constant(4, 1));
-    assert_eq!(family.b.parts[0].1[0], AffineForm::constant(4, 1));
+    assert_eq!(family.a().parts()[0].1[0], AffineForm::constant(4, 1));
+    assert_eq!(family.b().parts()[0].1[0], AffineForm::constant(4, 1));
     // Binder-carrying subscripts index the *inner* arrays and stay symbolic.
-    assert_eq!(family.a.parts[1].1[0], AffineForm::unit_binder(0, 1));
-    assert_eq!(family.b.parts[1].1[0], AffineForm::unit_binder(0, 1));
-    assert!(family.b.parts[2].1.is_empty());
+    assert_eq!(family.a().parts()[1].1[0], AffineForm::unit_binder(0, 1));
+    assert_eq!(family.b().parts()[1].1[0], AffineForm::unit_binder(0, 1));
+    assert!(family.b().parts()[2].1.is_empty());
     // The domain itself is a property of the source `for`, not of the element.
-    assert_eq!(family.domain.binders[0].upper, 2);
-    // The scalar diagnostic endpoints move with the family.
-    assert_eq!(member.connections[0].a.to_flat_string(), "bank[4].pins[1]");
-    assert_eq!(member.connections[0].scope, "bank[4]");
+    assert_eq!(family.domain().binders[0].upper, 2);
+    assert_eq!(family.scope(), "bank[4]");
 }

@@ -168,7 +168,7 @@ impl<'layout, 'dae> ScalarCompiler<'layout, 'dae> {
                     span,
                 )
             })?;
-        let result_count = program.result_count;
+        let result_count = program.result_count();
         let dst_start = self.next_register;
         for _ in 0..result_count {
             self.register(span)?;

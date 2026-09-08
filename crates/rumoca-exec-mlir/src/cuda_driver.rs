@@ -6,30 +6,30 @@
 use crate::error::MlirError;
 use std::ffi::{CString, c_void};
 
-pub type CUresult = i32;
-pub type CUdevice = i32;
-pub type CUdeviceptr = u64;
+pub(crate) type CUresult = i32;
+pub(crate) type CUdevice = i32;
+pub(crate) type CUdeviceptr = u64;
 type CUcontext = *mut c_void;
 type CUmoduleRaw = *mut c_void;
 type CUfunctionRaw = *mut c_void;
 type CUstreamRaw = *mut c_void;
 
 #[derive(Clone, Copy)]
-pub struct CUmodule(CUmoduleRaw);
+pub(crate) struct CUmodule(CUmoduleRaw);
 
 #[derive(Clone, Copy)]
-pub struct CUfunction(CUfunctionRaw);
+pub(crate) struct CUfunction(CUfunctionRaw);
 
 #[derive(Clone, Copy)]
-pub struct CUstream(CUstreamRaw);
+pub(crate) struct CUstream(CUstreamRaw);
 
 impl CUstream {
-    pub const fn null() -> Self {
+    pub(crate) const fn null() -> Self {
         Self(std::ptr::null_mut())
     }
 }
 
-pub const CUDA_SUCCESS: CUresult = 0;
+pub(crate) const CUDA_SUCCESS: CUresult = 0;
 
 type FnCuInit = unsafe extern "C" fn(u32) -> CUresult;
 type FnCuDeviceGet = unsafe extern "C" fn(*mut CUdevice, i32) -> CUresult;
@@ -59,20 +59,20 @@ type FnCuStreamCreate = unsafe extern "C" fn(*mut CUstreamRaw, u32) -> CUresult;
 type FnCuStreamSynchronize = unsafe extern "C" fn(CUstreamRaw) -> CUresult;
 type FnCuStreamDestroy = unsafe extern "C" fn(CUstreamRaw) -> CUresult;
 
-pub struct EvalDerivativeLaunch {
-    pub func: CUfunction,
-    pub d_y: CUdeviceptr,
-    pub len_y: i64,
-    pub d_p: CUdeviceptr,
-    pub len_p: i64,
-    pub t: f64,
-    pub d_out: CUdeviceptr,
-    pub len_out: i64,
-    pub stream: CUstream,
+pub(crate) struct EvalDerivativeLaunch {
+    pub(crate) func: CUfunction,
+    pub(crate) d_y: CUdeviceptr,
+    pub(crate) len_y: i64,
+    pub(crate) d_p: CUdeviceptr,
+    pub(crate) len_p: i64,
+    pub(crate) t: f64,
+    pub(crate) d_out: CUdeviceptr,
+    pub(crate) len_out: i64,
+    pub(crate) stream: CUstream,
 }
 
 /// Holds the dynamically-loaded CUDA driver library and all resolved symbols.
-pub struct CudaDriver {
+pub(crate) struct CudaDriver {
     _lib: libloading::Library,
     pub cu_module_load_data: FnCuModuleLoadData,
     pub cu_module_get_function: FnCuModuleGetFunction,
@@ -85,12 +85,12 @@ pub struct CudaDriver {
     pub cu_stream_create: FnCuStreamCreate,
     pub cu_stream_synchronize: FnCuStreamSynchronize,
     pub cu_stream_destroy: FnCuStreamDestroy,
-    pub ctx: CUcontext,
+    _ctx: CUcontext,
 }
 
 impl CudaDriver {
     /// Open `libcuda.so.1`, initialise CUDA, and create a context on device 0.
-    pub fn new() -> Result<Self, MlirError> {
+    pub(crate) fn new() -> Result<Self, MlirError> {
         let lib = unsafe { libloading::Library::new("libcuda.so.1") }.map_err(|e| {
             MlirError::ToolNotFound {
                 tool: "libcuda.so.1",
@@ -147,12 +147,12 @@ impl CudaDriver {
             cu_stream_create,
             cu_stream_synchronize,
             cu_stream_destroy,
-            ctx,
+            _ctx: ctx,
         })
     }
 
     /// Load a PTX blob (null-terminated text) and return the module handle.
-    pub fn load_ptx(&self, ptx: &[u8]) -> Result<CUmodule, MlirError> {
+    pub(crate) fn load_ptx(&self, ptx: &[u8]) -> Result<CUmodule, MlirError> {
         // cuModuleLoadData requires a null-terminated string.
         let mut ptx_with_nul = ptx.to_vec();
         if ptx_with_nul.last() != Some(&0) {
@@ -169,7 +169,11 @@ impl CudaDriver {
     }
 
     /// Resolve a kernel function by name within a loaded module.
-    pub fn get_function(&self, module: CUmodule, name: &str) -> Result<CUfunction, MlirError> {
+    pub(crate) fn get_function(
+        &self,
+        module: CUmodule,
+        name: &str,
+    ) -> Result<CUfunction, MlirError> {
         let cname = CString::new(name).map_err(|err| MlirError::InvalidInput {
             operation: "cuModuleGetFunction",
             message: format!("kernel name contains an interior NUL byte: {err}"),
@@ -183,7 +187,7 @@ impl CudaDriver {
     }
 
     /// Allocate `n` f64 values on the device and return the device pointer.
-    pub fn alloc_f64(&self, n: usize) -> Result<CUdeviceptr, MlirError> {
+    pub(crate) fn alloc_f64(&self, n: usize) -> Result<CUdeviceptr, MlirError> {
         let mut ptr: CUdeviceptr = 0;
         let bytes =
             n.checked_mul(std::mem::size_of::<f64>())
@@ -199,7 +203,7 @@ impl CudaDriver {
     }
 
     /// Copy a host f64 slice to device memory.
-    pub fn copy_h2d(&self, dst: CUdeviceptr, src: &[f64]) -> Result<(), MlirError> {
+    pub(crate) fn copy_h2d(&self, dst: CUdeviceptr, src: &[f64]) -> Result<(), MlirError> {
         cuda_check(
             unsafe { (self.cu_memcpy_h2d)(dst, src.as_ptr() as *const c_void, src.len() * 8) },
             "cuMemcpyHtoD",
@@ -208,7 +212,7 @@ impl CudaDriver {
     }
 
     /// Copy device memory to a host f64 slice.
-    pub fn copy_d2h(&self, dst: &mut [f64], src: CUdeviceptr) -> Result<(), MlirError> {
+    pub(crate) fn copy_d2h(&self, dst: &mut [f64], src: CUdeviceptr) -> Result<(), MlirError> {
         cuda_check(
             unsafe { (self.cu_memcpy_d2h)(dst.as_mut_ptr() as *mut c_void, src, dst.len() * 8) },
             "cuMemcpyDtoH",
@@ -217,7 +221,7 @@ impl CudaDriver {
     }
 
     /// Free a device allocation.
-    pub fn free(&self, ptr: CUdeviceptr) -> Result<(), MlirError> {
+    pub(crate) fn free(&self, ptr: CUdeviceptr) -> Result<(), MlirError> {
         cuda_check(unsafe { (self.cu_mem_free)(ptr) }, "cuMemFree")?;
         Ok(())
     }
@@ -230,7 +234,10 @@ impl CudaDriver {
     ///     t,
     ///     out_alloc, out_align, out_off, out_size, out_stride)`
     /// We pass device pointers as u64 with stride=1, offset=0.
-    pub fn launch_eval_derivative(&self, launch: EvalDerivativeLaunch) -> Result<(), MlirError> {
+    pub(crate) fn launch_eval_derivative(
+        &self,
+        launch: EvalDerivativeLaunch,
+    ) -> Result<(), MlirError> {
         let EvalDerivativeLaunch {
             func,
             d_y,
@@ -294,7 +301,7 @@ impl CudaDriver {
     ///   - `n`:     number of state elements
     ///
     /// Thread layout: `blockDim.x = 256`, `gridDim.x = ceil(n / 256)`.
-    pub fn launch_euler_update(
+    pub(crate) fn launch_euler_update(
         &self,
         func: CUfunction,
         d_y: CUdeviceptr,
@@ -333,11 +340,11 @@ impl CudaDriver {
         Ok(())
     }
 
-    pub fn synchronize(&self) -> Result<(), MlirError> {
+    pub(crate) fn synchronize(&self) -> Result<(), MlirError> {
         cuda_check(unsafe { (self.cu_ctx_synchronize)() }, "cuCtxSynchronize")
     }
 
-    pub fn stream_create(&self) -> Result<CUstream, MlirError> {
+    pub(crate) fn stream_create(&self) -> Result<CUstream, MlirError> {
         let mut stream: CUstreamRaw = std::ptr::null_mut();
         cuda_check(
             unsafe { (self.cu_stream_create)(&mut stream, 0) },
@@ -346,14 +353,14 @@ impl CudaDriver {
         Ok(CUstream(stream))
     }
 
-    pub fn stream_synchronize(&self, stream: CUstream) -> Result<(), MlirError> {
+    pub(crate) fn stream_synchronize(&self, stream: CUstream) -> Result<(), MlirError> {
         cuda_check(
             unsafe { (self.cu_stream_synchronize)(stream.0) },
             "cuStreamSynchronize",
         )
     }
 
-    pub fn stream_destroy(&self, stream: CUstream) -> Result<(), MlirError> {
+    pub(crate) fn stream_destroy(&self, stream: CUstream) -> Result<(), MlirError> {
         cuda_check(
             unsafe { (self.cu_stream_destroy)(stream.0) },
             "cuStreamDestroy",
@@ -361,7 +368,7 @@ impl CudaDriver {
     }
 }
 
-pub fn cuda_check(result: CUresult, op: &'static str) -> Result<(), MlirError> {
+pub(crate) fn cuda_check(result: CUresult, op: &'static str) -> Result<(), MlirError> {
     if result == CUDA_SUCCESS {
         Ok(())
     } else {

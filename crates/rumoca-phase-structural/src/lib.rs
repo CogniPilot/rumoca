@@ -539,8 +539,8 @@ pub(crate) fn unknown_label<'dae>(view: dae::DaeView<'dae>, unknown: UnknownId<'
 #[cfg(test)]
 mod checked_tests {
     use rumoca_core::{
-        ComprehensionScalarView, SourceMap, Span, StructuredIndexBinder, StructuredIndexDomain,
-        TypeId, VarName,
+        ComprehensionScalarView, InstanceId, SourceMap, Span, StructuredIndexBinder,
+        StructuredIndexDomain, TypeId, VarName,
     };
 
     use super::*;
@@ -572,12 +572,14 @@ mod checked_tests {
                 Ok((
                     variables.state(
                         VarName::new("x"),
+                        InstanceId::new(1),
                         real,
                         x_at,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.algebraic(
                         VarName::new("y"),
+                        InstanceId::new(2),
                         real,
                         y_at,
                         dae::VariableAttributes::default(),
@@ -648,6 +650,7 @@ mod checked_tests {
             let x = model.variables(|variables| {
                 variables.algebraic(
                     VarName::new("x"),
+                    InstanceId::new(1),
                     array,
                     x_at,
                     dae::VariableAttributes::default(),
@@ -657,7 +660,7 @@ mod checked_tests {
                 domains.structured(
                     StructuredIndexDomain {
                         binders: vec![StructuredIndexBinder {
-                            id: 0,
+                            id: rumoca_core::StructuredIndexBinderId::new(0),
                             display_name: "i".to_string(),
                             lower: 1,
                             upper: 3,
@@ -723,12 +726,14 @@ mod checked_tests {
                 Ok((
                     variables.algebraic(
                         VarName::new("x"),
+                        InstanceId::new(1),
                         array,
                         x_at,
                         dae::VariableAttributes::default(),
                     )?,
                     variables.input(
                         VarName::new("i"),
+                        InstanceId::new(2),
                         integer,
                         dae::InputVariability::Discrete,
                         i_at,
@@ -801,6 +806,7 @@ mod checked_tests {
             let x = model.variables(|variables| {
                 variables.algebraic(
                     VarName::new("x"),
+                    InstanceId::new(1),
                     array,
                     declaration_at,
                     dae::VariableAttributes::default(),

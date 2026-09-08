@@ -31,12 +31,15 @@ impl std::fmt::Display for TemplateSemanticError {
 
 impl std::error::Error for TemplateSemanticError {}
 
-pub(super) fn render_error(dae_model: &dae::Dae, error: minijinja::Error) -> CodegenError {
+pub(super) fn render_error(
+    source_map: &rumoca_core::SourceMap,
+    error: minijinja::Error,
+) -> CodegenError {
     let Some(semantic_error) = semantic_error(&error) else {
         return error.into();
     };
     let span = semantic_error.span;
-    let Some((source_name, source)) = dae_model.source_map().get_source(span.source) else {
+    let Some((source_name, source)) = source_map.get_source(span.source) else {
         return error.into();
     };
     if span.start.0 > span.end.0 || span.end.0 > source.len() {

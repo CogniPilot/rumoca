@@ -190,18 +190,29 @@ fn merge_components(
     Ok(())
 }
 
-/// Merge classes into composition, optionally marking as protected.
+/// Merge classes into composition, rejecting duplicate declarations across
+/// visibility sections and optionally marking them as protected.
 fn merge_classes(
     target: &mut IndexMap<String, rumoca_ir_ast::ClassDef>,
     source: IndexMap<String, rumoca_ir_ast::ClassDef>,
     set_protected: bool,
-) {
+) -> Result<(), anyhow::Error> {
     for (name, mut class) in source {
+        if let Some(existing) = target.get(&name) {
+            return Err(semantic_error_from_token(
+                format!(
+                    "Duplicate declaration of class '{}' at line {} (first declared at line {})",
+                    name, class.location.start_line, existing.location.start_line
+                ),
+                &class.name,
+            ));
+        }
         if set_protected {
             class.is_protected = true;
         }
         target.insert(name, class);
     }
+    Ok(())
 }
 
 /// Merge extends clauses into composition, optionally marking them as protected.
@@ -1137,12 +1148,34 @@ fn merge_element_section(
         imports,
         extends,
     } = section;
-    merge_components(&mut comp.components, components, is_protected)?;
-    if is_protected {
-        merge_classes(&mut comp.classes, classes, true);
-    } else {
-        comp.classes.extend(classes);
+    for (name, component) in &components {
+        if let Some(existing_class) = comp.classes.get(name) {
+            return Err(semantic_error_from_token(
+                format!(
+                    "Component '{}' at line {} conflicts with class of the same name (declared at line {})",
+                    name,
+                    component.name_token.location.start_line,
+                    existing_class.location.start_line
+                ),
+                &component.name_token,
+            ));
+        }
     }
+    for (name, class) in &classes {
+        if let Some(existing_component) = comp.components.get(name) {
+            return Err(semantic_error_from_token(
+                format!(
+                    "Class '{}' at line {} conflicts with component of the same name (declared at line {})",
+                    name,
+                    class.location.start_line,
+                    existing_component.name_token.location.start_line
+                ),
+                &class.name,
+            ));
+        }
+    }
+    merge_components(&mut comp.components, components, is_protected)?;
+    merge_classes(&mut comp.classes, classes, is_protected)?;
     merge_extends(&mut comp.extends, extends, is_protected);
     comp.imports.extend(imports);
     Ok(())

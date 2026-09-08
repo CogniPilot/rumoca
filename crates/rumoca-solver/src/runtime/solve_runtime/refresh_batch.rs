@@ -1,38 +1,49 @@
 use crate::RuntimeSolveError;
 
-use rumoca_ir_solve as solve;
-
-use super::SolveRuntime;
+use super::{InterpreterPermit, PreparedRefreshRow, PreparedRefreshRows, SolveRuntime};
 use rumoca_eval_solve::ComputeNodeOutputRangeRequest;
+
+pub(super) struct RefreshSegmentEvaluation<'a> {
+    pub(super) t: f64,
+    pub(super) solver_y: &'a mut [f64],
+    pub(super) params: &'a [f64],
+}
 
 impl SolveRuntime {
     pub(super) fn try_refresh_tensor_output_segment(
         &self,
-        plan: solve::RefreshRows<'_>,
+        selected_arm: &super::ExactAssignmentPermit,
+        plan: PreparedRefreshRows<'_>,
         start: usize,
         t: f64,
         solver_y: &mut [f64],
         params: &[f64],
     ) -> Result<Option<usize>, RuntimeSolveError> {
-        let first = &plan[start];
+        let first = plan
+            .get(start)
+            .expect("prepared refresh segment starts inside its checked selection");
         if !self.can_refresh_from_tensor_output(first) {
             return Ok(None);
         }
-        let first_program = self.refresh_program_row(first)?;
         let Some(first_output) = self
             .implicit_scalar_rhs
-            .row_output_index(first_program, first.output_offset())
+            .row_output_index(first.program_row(), first.output_offset())
         else {
             return Ok(None);
         };
 
         let mut end = start + 1;
         let mut next_output = first_output + 1;
-        while end < plan.len() && self.can_refresh_from_tensor_output(&plan[end]) {
-            let program = self.refresh_program_row(&plan[end])?;
+        while end < plan.len() {
+            let row = plan
+                .get(end)
+                .expect("prepared refresh segment remains inside its checked selection");
+            if !self.can_refresh_from_tensor_output(row) {
+                break;
+            }
             let Some(output_index) = self
                 .implicit_scalar_rhs
-                .row_output_index(program, plan[end].output_offset())
+                .row_output_index(row.program_row(), row.output_offset())
             else {
                 break;
             };
@@ -56,7 +67,7 @@ impl SolveRuntime {
                 y: solver_y,
                 p: params,
                 t,
-                context: self.row_eval_context(),
+                context: selected_arm.row_eval_context(self),
                 out: &mut tensor_out,
             })?;
         if !covered {
@@ -64,11 +75,12 @@ impl SolveRuntime {
         }
 
         for position in start..end {
-            let refresh_row = &plan[position];
-            let program = self.refresh_program_row(refresh_row)?;
+            let refresh_row = plan
+                .get(position)
+                .expect("prepared refresh segment remains inside its checked selection");
             let Some(output_index) = self
                 .implicit_scalar_rhs
-                .row_output_index(program, refresh_row.output_offset())
+                .row_output_index(refresh_row.program_row(), refresh_row.output_offset())
             else {
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "tensor refresh row {} output offset {} has no scalar output index",
@@ -93,15 +105,21 @@ impl SolveRuntime {
 
     pub(super) fn try_refresh_shapeless_output_segment(
         &self,
-        plan: solve::RefreshRows<'_>,
+        selected_arm: &super::ExactAssignmentPermit,
+        plan: PreparedRefreshRows<'_>,
         start: usize,
-        t: f64,
-        solver_y: &mut [f64],
-        params: &[f64],
+        evaluation: RefreshSegmentEvaluation<'_>,
         row_outputs: &mut Vec<f64>,
     ) -> Result<Option<usize>, RuntimeSolveError> {
-        let first = &plan[start];
-        let row_idx = self.refresh_program_row(first)?;
+        let RefreshSegmentEvaluation {
+            t,
+            solver_y,
+            params,
+        } = evaluation;
+        let first = plan
+            .get(start)
+            .expect("prepared refresh segment starts inside its checked selection");
+        let row_idx = first.program_row();
         let Some(output_count) = self.implicit_scalar_rhs.row_output_count(row_idx) else {
             return Ok(None);
         };
@@ -109,10 +127,13 @@ impl SolveRuntime {
             return Ok(None);
         }
         let mut end = start + 1;
-        while end < plan.len()
-            && plan[end].source() == first.source()
-            && self.can_batch_shapeless_output_refresh(&plan[end])
-        {
+        while end < plan.len() {
+            let row = plan
+                .get(end)
+                .expect("prepared refresh segment remains inside its checked selection");
+            if row.source() != first.source() || !self.can_batch_shapeless_output_refresh(row) {
+                break;
+            }
             end += 1;
         }
         row_outputs.resize(output_count, 0.0);
@@ -122,11 +143,13 @@ impl SolveRuntime {
                 solver_y,
                 params,
                 t,
-                self.row_eval_context(),
+                selected_arm.row_eval_context(self),
                 row_outputs,
             )?;
         for position in start..end {
-            let refresh_row = &plan[position];
+            let refresh_row = plan
+                .get(position)
+                .expect("prepared refresh segment remains inside its checked selection");
             let Some(value) = row_outputs.get(refresh_row.output_offset()).copied() else {
                 return Err(RuntimeSolveError::solve_ir(format!(
                     "refresh row {} requested output offset {} from {} outputs",
@@ -143,7 +166,7 @@ impl SolveRuntime {
         Ok(Some(end))
     }
 
-    pub(super) fn can_batch_assignment_refresh(&self, plan: solve::RefreshRows<'_>) -> bool {
+    pub(super) fn can_batch_assignment_refresh(&self, plan: PreparedRefreshRows<'_>) -> bool {
         plan.iter().all(|row| {
             row.assignment_target() == Some(row.target_index())
                 && row
@@ -152,24 +175,20 @@ impl SolveRuntime {
         })
     }
 
-    fn can_batch_shapeless_output_refresh(&self, row: &solve::AlgebraicRefreshRow) -> bool {
-        let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
-            return false;
-        };
+    fn can_batch_shapeless_output_refresh(&self, row: PreparedRefreshRow<'_>) -> bool {
         row.assignment_target() == Some(row.target_index())
-            && !self.implicit_scalar_rhs.row_has_assignment_shape(program)
             && !self
                 .implicit_scalar_rhs
-                .row_reads_y(program, row.target_index())
+                .row_has_assignment_shape(row.program_row())
+            && !self
+                .implicit_scalar_rhs
+                .row_reads_y(row.program_row(), row.target_index())
     }
 
-    fn can_refresh_from_tensor_output(&self, row: &solve::AlgebraicRefreshRow) -> bool {
-        let Some(program) = self.refresh_program_rows.get(&row.source()).copied() else {
-            return false;
-        };
+    fn can_refresh_from_tensor_output(&self, row: PreparedRefreshRow<'_>) -> bool {
         row.assignment_target() == Some(row.target_index())
             && !self
                 .implicit_scalar_rhs
-                .row_reads_y(program, row.target_index())
+                .row_reads_y(row.program_row(), row.target_index())
     }
 }

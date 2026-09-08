@@ -1,12 +1,74 @@
 use super::*;
 
+pub(super) fn source_root_preparation_failure_diagnostic(
+    error: &SourceRootPreparationError,
+) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position::new(0, 0),
+            end: Position::new(0, 1),
+        },
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("rumoca".to_string()),
+        message: format!("Source-root preparation failed: {error}"),
+        ..Diagnostic::default()
+    }
+}
+
+struct DiagnosticsRequestTiming {
+    started: Instant,
+    request_edit_epoch: u64,
+    uri: String,
+    trigger: DiagnosticsTrigger,
+    stats_before: rumoca_compile::compile::SessionCacheStatsSnapshot,
+    output_path: Option<PathBuf>,
+}
+
+struct DiagnosticsRunTiming {
+    request_was_stale: bool,
+    requested_source_root_load: bool,
+    source_root_load_ms: u64,
+    ran_compile: bool,
+    diagnostics_compute_ms: u64,
+    semantic_layer_override: Option<&'static str>,
+}
+
+impl DiagnosticsRequestTiming {
+    fn record(self, run: DiagnosticsRunTiming) {
+        let stats_after = session_cache_stats();
+        let session_cache_delta = stats_after.delta_since(self.stats_before);
+        write_diagnostics_timing_summary(
+            &DiagnosticsTimingSummary {
+                requested_edit_epoch: self.request_edit_epoch,
+                request_was_stale: run.request_was_stale,
+                uri: self.uri,
+                trigger: diagnostics_trigger_label(self.trigger),
+                semantic_layer: run.semantic_layer_override.unwrap_or_else(|| {
+                    diagnostics_semantic_layer_label(
+                        run.request_was_stale,
+                        run.ran_compile,
+                        &session_cache_delta,
+                    )
+                }),
+                requested_source_root_load: run.requested_source_root_load,
+                source_root_load_ms: run.source_root_load_ms,
+                ran_compile: run.ran_compile,
+                diagnostics_compute_ms: run.diagnostics_compute_ms,
+                total_ms: self.started.elapsed().as_millis() as u64,
+                session_cache_delta,
+            },
+            self.output_path.as_deref(),
+        );
+    }
+}
+
 impl ModelicaLanguageServer {
     pub(super) async fn ensure_source_roots_loaded_with_paths(
         &self,
         text: &str,
         current_document_path: &str,
         source_root_paths: &[String],
-    ) -> bool {
+    ) -> std::result::Result<bool, SourceRootPreparationError> {
         let (already_loaded, mut source_root_state_epoch) = {
             let session = self.session.read().await;
             (
@@ -20,14 +82,13 @@ impl ModelicaLanguageServer {
                 text,
                 source_root_paths,
                 &already_loaded,
-            );
+            )?;
         let load_plan = rumoca_compile::source_roots::plan_source_root_loads(
             &referenced_source_root_paths,
             &already_loaded,
-        );
+        )?;
 
         let mut progress_messages = Vec::new();
-        let mut load_errors = Vec::new();
         for skipped in &load_plan.duplicate_root_skips {
             progress_messages.push(format!(
                 "[rumoca] Skipping source root {} (duplicate root '{}' already loaded from {})",
@@ -49,12 +110,9 @@ impl ModelicaLanguageServer {
                 )
                 .await
             {
-                Ok(Some(loaded)) => loaded,
-                Ok(None) => continue,
-                Err(err) => {
-                    load_errors.push(err);
-                    continue;
-                }
+                Ok(SourceRootLoadDisposition::Loaded(loaded)) => loaded,
+                Ok(SourceRootLoadDisposition::AlreadyLoaded) => continue,
+                Err(error) => return Err(error),
             };
             progress_messages.push(
                 loaded
@@ -74,10 +132,7 @@ impl ModelicaLanguageServer {
         for message in progress_messages {
             self.client.log_message(MessageType::INFO, message).await;
         }
-        for err in load_errors {
-            self.client.log_message(MessageType::WARNING, err).await;
-        }
-        loaded_any
+        Ok(loaded_any)
     }
 
     pub(super) async fn publish_diagnostics(
@@ -98,96 +153,144 @@ impl ModelicaLanguageServer {
         text: &str,
         trigger: DiagnosticsTrigger,
         stats_before: rumoca_compile::compile::SessionCacheStatsSnapshot,
-        mut request_token: AnalysisRequestToken,
+        request_token: AnalysisRequestToken,
     ) {
-        let request_started = Instant::now();
+        let started = Instant::now();
         let file_name = session_document_uri_key(&uri);
-        let request_mutation_epoch = request_token.mutation_epoch;
-        let diagnostics_timing_path = self.diagnostics_timing_path.read().await.clone();
-        let publish_diagnostics_timing =
-            |request_was_stale: bool,
-             requested_source_root_load: bool,
-             source_root_load_ms: u64,
-             ran_compile: bool,
-             diagnostics_compute_ms: u64| {
-                let stats_after = session_cache_stats();
-                let session_cache_delta = stats_after.delta_since(stats_before);
-                write_diagnostics_timing_summary(
-                    &DiagnosticsTimingSummary {
-                        requested_edit_epoch: request_mutation_epoch,
-                        request_was_stale,
-                        uri: file_name.clone(),
-                        trigger: diagnostics_trigger_label(trigger),
-                        semantic_layer: diagnostics_semantic_layer_label(
-                            request_was_stale,
-                            ran_compile,
-                            &session_cache_delta,
-                        ),
-                        requested_source_root_load,
-                        source_root_load_ms,
-                        ran_compile,
-                        diagnostics_compute_ms,
-                        total_ms: request_started.elapsed().as_millis() as u64,
-                        session_cache_delta,
-                    },
-                    diagnostics_timing_path.as_deref(),
-                );
-            };
-        let should_compile = trigger == DiagnosticsTrigger::Save;
-        if should_compile {
-            let source_root_load_started = Instant::now();
-            let source_root_paths = self.source_root_paths.read().await.clone();
-            self.ensure_source_roots_loaded_with_paths(text, &file_name, &source_root_paths)
-                .await;
-            let source_root_load_ms = source_root_load_started.elapsed().as_millis() as u64;
-            request_token = self.refresh_analysis_request_revision(request_token).await;
-            if self.analysis_request_is_stale(request_token).await {
-                publish_diagnostics_timing(true, should_compile, source_root_load_ms, false, 0);
-                return;
+        let timing = DiagnosticsRequestTiming {
+            started,
+            request_edit_epoch: request_token.mutation_epoch,
+            uri: file_name.clone(),
+            trigger,
+            stats_before,
+            output_path: self.diagnostics_timing_path.read().await.clone(),
+        };
+        match trigger {
+            DiagnosticsTrigger::Save => {
+                self.publish_save_diagnostics(uri, text, &file_name, request_token, timing)
+                    .await;
             }
-            let diagnostics_started = Instant::now();
-            let tool_options = self.tool_options_for_document_or_default(&file_name).await;
-            let mut session = self.session.write().await;
-            let mut diagnostics = handlers::compute_diagnostics_with_options(
-                text,
-                &file_name,
-                Some(&mut session),
-                &tool_options.lint,
-                rumoca_compile::compile::SemanticDiagnosticsMode::Save,
-            );
-            drop(session);
-            let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;
-            diagnostics.extend(self.stored_source_root_load_diagnostics(&file_name).await);
+            DiagnosticsTrigger::Live => {
+                self.publish_live_diagnostics(uri, text, &file_name, request_token, timing)
+                    .await;
+            }
+        }
+    }
+
+    async fn publish_save_diagnostics(
+        &self,
+        uri: Url,
+        text: &str,
+        file_name: &str,
+        request_token: AnalysisRequestToken,
+        timing: DiagnosticsRequestTiming,
+    ) {
+        let source_root_load_started = Instant::now();
+        let source_root_paths = self.source_root_paths.read().await.clone();
+        if let Err(error) = self
+            .ensure_source_roots_loaded_with_paths(text, file_name, &source_root_paths)
+            .await
+        {
+            let source_root_load_ms = source_root_load_started.elapsed().as_millis() as u64;
             self.client
-                .publish_diagnostics(uri, diagnostics, None)
+                .log_message(MessageType::ERROR, error.to_string())
                 .await;
-            publish_diagnostics_timing(
-                false,
-                should_compile,
+            self.client
+                .publish_diagnostics(
+                    uri,
+                    vec![source_root_preparation_failure_diagnostic(&error)],
+                    None,
+                )
+                .await;
+            timing.record(DiagnosticsRunTiming {
+                request_was_stale: false,
+                requested_source_root_load: true,
                 source_root_load_ms,
-                true,
-                diagnostics_compute_ms,
-            );
+                ran_compile: false,
+                diagnostics_compute_ms: 0,
+                semantic_layer_override: Some("source_root_error"),
+            });
+            return;
+        }
+        let source_root_load_ms = source_root_load_started.elapsed().as_millis() as u64;
+        let request_token = self.refresh_analysis_request_revision(request_token).await;
+        if self.analysis_request_is_stale(request_token).await {
+            timing.record(DiagnosticsRunTiming {
+                request_was_stale: true,
+                requested_source_root_load: true,
+                source_root_load_ms,
+                ran_compile: false,
+                diagnostics_compute_ms: 0,
+                semantic_layer_override: None,
+            });
             return;
         }
         let diagnostics_started = Instant::now();
-        let tool_options = self.tool_options_for_document_or_default(&file_name).await;
+        let tool_options = self.tool_options_for_document_or_default(file_name).await;
+        let mut session = self.session.write().await;
         let mut diagnostics = handlers::compute_diagnostics_with_options(
             text,
-            &file_name,
+            file_name,
+            Some(&mut session),
+            &tool_options.lint,
+            rumoca_compile::compile::SemanticDiagnosticsMode::Save,
+        );
+        drop(session);
+        let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;
+        diagnostics.extend(self.stored_source_root_load_diagnostics(file_name).await);
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
+        timing.record(DiagnosticsRunTiming {
+            request_was_stale: false,
+            requested_source_root_load: true,
+            source_root_load_ms,
+            ran_compile: true,
+            diagnostics_compute_ms,
+            semantic_layer_override: None,
+        });
+    }
+
+    async fn publish_live_diagnostics(
+        &self,
+        uri: Url,
+        text: &str,
+        file_name: &str,
+        request_token: AnalysisRequestToken,
+        timing: DiagnosticsRequestTiming,
+    ) {
+        let diagnostics_started = Instant::now();
+        let tool_options = self.tool_options_for_document_or_default(file_name).await;
+        let mut diagnostics = handlers::compute_diagnostics_with_options(
+            text,
+            file_name,
             None,
             &tool_options.lint,
             rumoca_compile::compile::SemanticDiagnosticsMode::Standard,
         );
         let diagnostics_compute_ms = diagnostics_started.elapsed().as_millis() as u64;
         if self.analysis_request_is_stale(request_token).await {
-            publish_diagnostics_timing(true, false, 0, false, diagnostics_compute_ms);
+            timing.record(DiagnosticsRunTiming {
+                request_was_stale: true,
+                requested_source_root_load: false,
+                source_root_load_ms: 0,
+                ran_compile: false,
+                diagnostics_compute_ms,
+                semantic_layer_override: None,
+            });
             return;
         }
-        diagnostics.extend(self.stored_source_root_load_diagnostics(&file_name).await);
+        diagnostics.extend(self.stored_source_root_load_diagnostics(file_name).await);
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;
-        publish_diagnostics_timing(false, false, 0, false, diagnostics_compute_ms);
+        timing.record(DiagnosticsRunTiming {
+            request_was_stale: false,
+            requested_source_root_load: false,
+            source_root_load_ms: 0,
+            ran_compile: false,
+            diagnostics_compute_ms,
+            semantic_layer_override: None,
+        });
     }
 }

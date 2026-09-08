@@ -357,26 +357,6 @@ impl BaselineMeasurement {
     }
 }
 
-#[cfg(test)]
-impl std::ops::Deref for BaselineMeasurement {
-    type Target = Measured;
-
-    fn deref(&self) -> &Self::Target {
-        self.accepted()
-            .expect("test row has an accepted measurement")
-    }
-}
-
-#[cfg(test)]
-impl std::ops::DerefMut for BaselineMeasurement {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Accepted(measured) => measured,
-            Self::Pending(()) => panic!("test row has no accepted measurement"),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CorrectnessCase {

@@ -76,6 +76,17 @@ pub fn expression_semantic_fingerprint(expr: &Expression) -> u64 {
     hasher.finish()
 }
 
+/// Span-insensitive lookup fingerprint for a subscript vector.
+///
+/// This is only a bucket key. Callers must confirm a match with
+/// [`subscripts_semantically_equal`] because unequal subscripts may share a
+/// fingerprint. Equal semantic subscripts are guaranteed to share one.
+pub fn subscripts_semantic_fingerprint(subscripts: &[Subscript]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_subscripts_semantics(subscripts, &mut hasher);
+    hasher.finish()
+}
+
 fn hash_discriminant<T>(value: &T, hasher: &mut impl Hasher) {
     std::mem::discriminant(value).hash(hasher);
 }
@@ -133,19 +144,9 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
             name,
             args,
             is_constructor,
+            call_kind,
             ..
-        } => {
-            // `function_calls_semantically_equal` compares whole `Reference`s,
-            // so the resolved callee is part of equality and may be hashed.
-            // Adding it splits a bucket that the old rendered-name hash merged:
-            // two `FunctionInstanceId`s can render identically (an inherited or
-            // redeclared instance of one declaration) yet are not equal, and
-            // used to collide.
-            name.var_name().hash(hasher);
-            name.resolved_function().hash(hasher);
-            is_constructor.hash(hasher);
-            hash_expression_slice_semantics(args, hasher);
-        }
+        } => hash_function_call_semantics(name, args, *is_constructor, *call_kind, hasher),
         Expression::StringConversion {
             declaration,
             value,
@@ -213,6 +214,23 @@ fn hash_expression_semantics(expr: &Expression, hasher: &mut impl Hasher) {
         }
         Expression::Empty { .. } => {}
     }
+}
+
+fn hash_function_call_semantics(
+    name: &Reference,
+    args: &[Expression],
+    is_constructor: bool,
+    call_kind: FunctionCallKind,
+    hasher: &mut impl Hasher,
+) {
+    // `function_calls_semantically_equal` compares whole `Reference`s, so the
+    // resolved callee is part of equality. This splits inherited/redeclared
+    // function instances which render alike but are not semantically equal.
+    name.var_name().hash(hasher);
+    name.resolved_function().hash(hasher);
+    is_constructor.hash(hasher);
+    call_kind.hash(hasher);
+    hash_expression_slice_semantics(args, hasher);
 }
 
 fn hash_expression_slice_semantics(expressions: &[Expression], hasher: &mut impl Hasher) {
@@ -340,12 +358,14 @@ fn function_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool
             name: lhs_name,
             args: lhs_args,
             is_constructor: lhs_constructor,
+            call_kind: lhs_kind,
             ..
         },
         Expression::FunctionCall {
             name: rhs_name,
             args: rhs_args,
             is_constructor: rhs_constructor,
+            call_kind: rhs_kind,
             ..
         },
     ) = (lhs, rhs)
@@ -354,6 +374,7 @@ fn function_calls_semantically_equal(lhs: &Expression, rhs: &Expression) -> bool
     };
     lhs_name == rhs_name
         && lhs_constructor == rhs_constructor
+        && lhs_kind == rhs_kind
         && expression_slices_semantically_equal(lhs_args, rhs_args)
 }
 
@@ -619,7 +640,12 @@ fn optional_expressions_semantically_equal(
     }
 }
 
-fn subscripts_semantically_equal(lhs: &[Subscript], rhs: &[Subscript]) -> bool {
+/// Span-insensitive semantic equality for resolved subscripts.
+///
+/// Subscript spans identify where an occurrence was written, not which array
+/// coordinate it denotes. Shared reference/path proofs use this foundation
+/// helper so they cannot disagree with expression semantic equality.
+pub fn subscripts_semantically_equal(lhs: &[Subscript], rhs: &[Subscript]) -> bool {
     lhs.len() == rhs.len()
         && lhs.iter().zip(rhs).all(|(lhs, rhs)| match (lhs, rhs) {
             (Subscript::Index { value: lhs, .. }, Subscript::Index { value: rhs, .. }) => {

@@ -242,16 +242,30 @@ pub(crate) fn rewrite_function_overrides_in_flattened(
     Ok(())
 }
 
+pub(crate) struct FlatVariableOverrideRewrite<'variable, 'context, 'tree> {
+    pub(crate) variable: &'variable mut rumoca_ir_flat::Variable,
+    pub(crate) tree: &'context ClassTree,
+    pub(crate) class_index: &'context rumoca_ir_ast::ClassDefIndex<'tree>,
+    pub(crate) override_packages: &'context [OverrideTarget],
+    pub(crate) override_functions: &'context OverrideFunctionMap,
+    pub(crate) active_scope: ComponentPath,
+    pub(crate) component_members: &'context component_member_scope::ComponentMemberScopes,
+    pub(crate) semantic_catalogs: &'context rumoca_ir_ast::SemanticCatalogProjection,
+}
+
 pub(crate) fn rewrite_function_overrides_in_flat_variable(
-    variable: &mut rumoca_ir_flat::Variable,
-    tree: &ClassTree,
-    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-    override_packages: &[OverrideTarget],
-    override_functions: &OverrideFunctionMap,
-    active_scope: &ComponentPath,
-    component_members: &component_member_scope::ComponentMemberScopes,
-    semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+    request: FlatVariableOverrideRewrite<'_, '_, '_>,
 ) -> Result<(), FlattenError> {
+    let FlatVariableOverrideRewrite {
+        variable,
+        tree,
+        class_index,
+        override_packages,
+        override_functions,
+        active_scope,
+        component_members,
+        semantic_catalogs,
+    } = request;
     let expression_ctx = || {
         FunctionOverrideRewriteContext::new(
             tree,
@@ -409,16 +423,16 @@ fn rewrite_function_overrides_in_flat_variables(
                 override_context_for_component_path(scope, component_override_map)
             });
         let active_scope = scope_path.parent().unwrap_or_else(|| cache_key.clone());
-        rewrite_function_overrides_in_flat_variable(
+        rewrite_function_overrides_in_flat_variable(FlatVariableOverrideRewrite {
             variable,
             tree,
             class_index,
             override_packages,
             override_functions,
-            &active_scope,
+            active_scope,
             component_members,
             semantic_catalogs,
-        )?;
+        })?;
     }
     Ok(())
 }
@@ -885,6 +899,9 @@ pub(super) fn function_package_override_chain(
     })?;
     Ok(vec![OverrideTarget {
         alias: leaf_segment(package_name).to_string(),
+        // The lexical enclosing package is not a replaceable alias slot; its
+        // own declaration identity is the slot it occupies.
+        alias_slot: def_id,
         name: name.to_string(),
         def_id,
         class_type: class_def.class_type.clone(),

@@ -131,11 +131,15 @@ fn observation_rows(
                 seed,
             });
         }
-        stored_output = stored_output
-            .checked_add(solve::ScalarProgramBlock::program_output_count(program))
+        let output_count = discrete
+            .rhs
+            .stored_output_count_for_program(program_index)
             .ok_or_else(|| {
-                LowerError::contract("observation-refresh stored-output count overflow", span)
+                LowerError::contract("missing retained observation output width", span)
             })?;
+        stored_output = stored_output.checked_add(output_count).ok_or_else(|| {
+            LowerError::contract("observation-refresh stored-output count overflow", span)
+        })?;
     }
     Ok(rows)
 }

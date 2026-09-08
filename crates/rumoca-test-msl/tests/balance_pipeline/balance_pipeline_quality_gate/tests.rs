@@ -451,7 +451,7 @@ fn current_quality_snapshot_includes_pipeline_progression() {
         .insert("events".to_string(), 2);
     summary
         .unsupported_feature_counts_by_backend
-        .entry("c-ode".to_string())
+        .entry("fmi3".to_string())
         .or_default()
         .insert("events".to_string(), 2);
     summary.failures_by_phase.insert(
@@ -505,7 +505,7 @@ fn current_quality_snapshot_includes_pipeline_progression() {
     assert_eq!(
         pipeline
             .get("unsupported_feature_counts_by_backend")
-            .and_then(|value| value.get("c-ode"))
+            .and_then(|value| value.get("fmi3"))
             .and_then(|value| value.get("events"))
             .and_then(Value::as_u64),
         Some(2)
@@ -1018,6 +1018,7 @@ fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {
         policy_excluded_models: 0,
         trace_nonidentifiable_models: 0,
         agreement_high: 8,
+        strict_high_models: 8,
         agreement_high_percent: Some(80.0),
         agreement_minor: 1,
         agreement_minor_percent: Some(10.0),
@@ -1049,6 +1050,7 @@ fn trace_accuracy_baseline() -> MslTraceAccuracyStatsBaseline {
 fn trace_accuracy_regressed() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         agreement_high: 6,
+        strict_high_models: 6,
         agreement_high_percent: Some(60.0),
         agreement_deviation: 3,
         agreement_deviation_percent: Some(30.0),
@@ -1086,6 +1088,7 @@ fn trace_accuracy_small_channel_drift() -> MslTraceAccuracyStatsBaseline {
 fn trace_accuracy_near_promoted_to_high() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         agreement_high: 9,
+        strict_high_models: 9,
         agreement_high_percent: Some(90.0),
         agreement_minor: 0,
         agreement_minor_percent: Some(0.0),
@@ -1098,6 +1101,7 @@ fn trace_accuracy_near_promoted_to_high() -> MslTraceAccuracyStatsBaseline {
 fn trace_accuracy_acceptable_band_regressed() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         agreement_high: 7,
+        strict_high_models: 7,
         agreement_high_percent: Some(70.0),
         agreement_minor: 0,
         agreement_minor_percent: Some(0.0),
@@ -1110,6 +1114,7 @@ fn trace_accuracy_acceptable_band_regressed() -> MslTraceAccuracyStatsBaseline {
 fn trace_accuracy_deviation_migrated_to_near() -> MslTraceAccuracyStatsBaseline {
     MslTraceAccuracyStatsBaseline {
         agreement_high: 8,
+        strict_high_models: 8,
         agreement_high_percent: Some(80.0),
         agreement_minor: 2,
         agreement_minor_percent: Some(20.0),
@@ -1451,6 +1456,7 @@ fn reviewed_pointwise_exclusions_preserve_trace_accounting_ratchets() {
         skipped_models: 2,
         policy_excluded_models: 2,
         agreement_high: 8,
+        strict_high_models: 8,
         agreement_high_percent: Some(100.0),
         agreement_minor: 0,
         agreement_minor_percent: Some(0.0),
@@ -1486,6 +1492,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
     let baseline_trace = MslTraceAccuracyStatsBaseline {
         models_compared: 115,
         agreement_high: 64,
+        strict_high_models: 64,
         agreement_minor: 16,
         agreement_deviation: 35,
         models_with_severe_channel: Some(6),
@@ -1496,6 +1503,7 @@ fn trace_fixed_denominator_gate_accepts_current_ci_delta() {
     let current_trace = MslTraceAccuracyStatsBaseline {
         models_compared: 121,
         agreement_high: 64,
+        strict_high_models: 64,
         agreement_minor: 17,
         agreement_deviation: 40,
         models_with_severe_channel: Some(8),

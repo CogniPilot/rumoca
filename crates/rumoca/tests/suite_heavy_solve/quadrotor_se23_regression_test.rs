@@ -158,7 +158,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
 
     let package = rumoca_phase_solve::lower_solve_package(&compiled.dae)?;
     let problem = &package.problem;
-    let block = &problem.continuous.derivative_rhs;
+    let block = problem.continuous().derivative_rhs();
     let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
     let block_output_count = block.len()?;
     let total_ops: usize = scalar.programs().iter().map(|program| program.len()).sum();
@@ -211,8 +211,7 @@ fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::e
     // Runtime-variable subscripts into the constant reference tables
     // (`Xref[i-1,j]`, `nref`, `aref`, `tg`, where `i` depends on input time)
     // remain compact dynamic projections inside the issued typed call owners.
-    // The legacy scalar-call path represented these as `LoadIndexedP`; the
-    // typed path deliberately retains the aggregate parameter and proves each
+    // The typed path retains the aggregate parameter and proves each
     // one-based projection at its construction boundary. Count both the thin
     // scalar wrapper and the owner bodies so this gate follows the authoritative
     // representation instead of requiring scalarization to reappear.

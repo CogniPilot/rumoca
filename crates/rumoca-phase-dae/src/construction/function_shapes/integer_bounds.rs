@@ -9,10 +9,11 @@ impl ShapeEnvironment {
         &self,
         expression: &Expression,
     ) -> Option<(i64, i64)> {
-        if let Some(ProvenValue::Integer(value)) = eval_expr(expression, &self.values)
-            .ok()
-            .as_ref()
-            .and_then(ProvenValue::from_settled)
+        if let Some(ProvenValue::Settled(ProvenSettledValue::Integer(value))) =
+            eval_expr(expression, &self.values)
+                .ok()
+                .as_ref()
+                .and_then(ProvenValue::from_settled)
         {
             return Some((value, value));
         }

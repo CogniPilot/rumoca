@@ -36,40 +36,44 @@ use crate::ast::{
 };
 use crate::diagnostic::{GalecError, PathSegment};
 
-use super::context::{BlockContext, BodyView, Cursor, SignalSet, SignalTable, resolve_call};
-use super::types::ExpressionTypes;
+use super::context::{BlockContext, BodyView, Cursor, SignalSet, SignalTable};
+use super::retained::{CallTarget, RetainedValidationBuilder, RetainedValidationError};
 
 /// User-defined signal budget in the 32-bit encoding (§3.2.5 §1.6).
 const MAX_USER_SIGNALS: usize = 16;
 
 pub(super) fn check(
     ctx: &BlockContext<'_>,
-    expression_types: &ExpressionTypes,
+    retained: &RetainedValidationBuilder,
     diags: &mut Vec<GalecError>,
-) {
+) -> Result<(), RetainedValidationError> {
     if ctx.signals.user_count() > MAX_USER_SIGNALS {
         diags.push(GalecError::TooManyUserSignals {
             location: Cursor::for_block(ctx).here(),
             count: ctx.signals.user_count(),
         });
     }
+    let mut index_error = None;
     for body in ctx.bodies() {
-        check_body(ctx, expression_types, &body, diags);
+        check_body(ctx, retained, &body, diags, &mut index_error);
     }
+    index_error.map_or(Ok(()), Err)
 }
 
 fn check_body(
     ctx: &BlockContext<'_>,
-    expression_types: &ExpressionTypes,
+    retained: &RetainedValidationBuilder,
     body: &BodyView<'_>,
     diags: &mut Vec<GalecError>,
+    index_error: &mut Option<RetainedValidationError>,
 ) {
     let mut walker = SignalWalker {
         ctx,
-        expression_types,
+        retained,
         cursor: Cursor::for_body(ctx, body),
         closures: Vec::new(),
         diags,
+        index_error,
     };
     let declared = walker.declared_set(body);
     let computed = walker.statements(body.statements, SignalSet::default());
@@ -93,60 +97,72 @@ fn check_body(
 /// Exact predefined escape clauses for the three block methods.
 pub(super) fn method_signal_clauses(
     ctx: &BlockContext<'_>,
-    expression_types: &ExpressionTypes,
-) -> [Vec<PredefinedSignal>; 3] {
+    retained: &RetainedValidationBuilder,
+) -> Result<[Vec<PredefinedSignal>; 3], RetainedValidationError> {
     let bodies = ctx.bodies();
-    std::array::from_fn(|index| {
-        let body = &bodies[index];
+    let clause = |index: usize| -> Result<Vec<PredefinedSignal>, RetainedValidationError> {
+        let body = bodies
+            .get(index)
+            .ok_or(RetainedValidationError::MissingResolvedSubject)?;
         let mut diagnostics = Vec::new();
+        let mut index_error = None;
         let mut walker = SignalWalker {
             ctx,
-            expression_types,
+            retained,
             cursor: Cursor::for_body(ctx, body),
             closures: Vec::new(),
             diags: &mut diagnostics,
+            index_error: &mut index_error,
         };
         let computed = walker.statements(body.statements, SignalSet::default());
-        PredefinedSignal::ALL
+        if let Some(error) = index_error {
+            return Err(error);
+        }
+        Ok(PredefinedSignal::ALL
             .into_iter()
             .filter(|signal| computed.contains(SignalTable::predefined_bit(*signal)))
-            .collect()
-    })
+            .collect())
+    };
+    Ok([clause(0)?, clause(1)?, clause(2)?])
 }
 
 /// Exact escape clause for one user function in declaration order.
 pub(super) fn user_signal_clause(
     ctx: &BlockContext<'_>,
-    expression_types: &ExpressionTypes,
+    retained: &RetainedValidationBuilder,
     function_index: usize,
-) -> Vec<Identifier> {
+) -> Result<Vec<Identifier>, RetainedValidationError> {
     let body = ctx
         .bodies()
         .into_iter()
         .nth(function_index + 3)
-        .expect("checked user-function index resolves");
+        .ok_or(RetainedValidationError::MissingResolvedSubject)?;
     let mut diagnostics = Vec::new();
+    let mut index_error = None;
     let mut walker = SignalWalker {
         ctx,
-        expression_types,
+        retained,
         cursor: Cursor::for_body(ctx, &body),
         closures: Vec::new(),
         diags: &mut diagnostics,
+        index_error: &mut index_error,
     };
-    walker
+    let clause = walker
         .statements(body.statements, SignalSet::default())
         .iter()
         .map(|bit| Identifier::new(ctx.signals.name(bit)))
-        .collect()
+        .collect();
+    index_error.map_or(Ok(clause), Err)
 }
 
 struct SignalWalker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
-    expression_types: &'a ExpressionTypes,
+    retained: &'a RetainedValidationBuilder,
     cursor: Cursor,
     /// Signal-closures in scope: (name, statically captured set), LIFO.
     closures: Vec<(String, SignalSet)>,
     diags: &'d mut Vec<GalecError>,
+    index_error: &'d mut Option<RetainedValidationError>,
 }
 
 impl<'a> SignalWalker<'a, '_> {
@@ -389,14 +405,66 @@ impl<'a> SignalWalker<'a, '_> {
     /// linear-solver builtins signal (trap T14); unknown callees contribute
     /// nothing (reported as EG015 by the type analysis).
     fn call_signals(&mut self, call: &FunctionCall) -> SignalSet {
-        let mut set = match resolve_call(self.ctx, &call.function) {
-            Some(callee) => callee.signal_set(&self.ctx.signals),
-            None => SignalSet::default(),
+        let mut set = match self.retained.call_resolution(call) {
+            Ok(Some(resolution)) => self.call_target_signals(resolution.target),
+            Ok(None) => SignalSet::default(),
+            Err(error) => {
+                self.retain_index_error(error);
+                SignalSet::default()
+            }
         };
         for argument in &call.arguments {
             set.union_with(&self.expression_signals(argument));
         }
         set
+    }
+
+    fn call_target_signals(&mut self, target: CallTarget) -> SignalSet {
+        let mut set = SignalSet::default();
+        match target {
+            CallTarget::Function(function) => {
+                let Some(callee) = self
+                    .ctx
+                    .block
+                    .protected_functions
+                    .iter()
+                    .chain(&self.ctx.block.public_functions)
+                    .nth(function.index())
+                else {
+                    self.retain_index_error(RetainedValidationError::InconsistentFact {
+                        family: "call-target",
+                        index: function.ordinal(),
+                    });
+                    return set;
+                };
+                let bits = callee
+                    .signals
+                    .iter()
+                    .filter_map(|signal| self.ctx.signals.bit(&signal.0));
+                for bit in bits {
+                    set.insert(bit);
+                }
+            }
+            CallTarget::Builtin { base, .. } => {
+                let Some(builtin) = crate::builtins::BUILTINS.get(base.index()) else {
+                    self.retain_index_error(RetainedValidationError::InconsistentFact {
+                        family: "call-target",
+                        index: base.ordinal(),
+                    });
+                    return set;
+                };
+                for signal in builtin.signals {
+                    set.insert(SignalTable::predefined_bit(*signal));
+                }
+            }
+        }
+        set
+    }
+
+    fn retain_index_error(&mut self, error: RetainedValidationError) {
+        if self.index_error.is_none() {
+            *self.index_error = Some(error);
+        }
     }
 
     /// Under full Beta-1 semantics, Real relational and equality comparisons
@@ -407,9 +475,10 @@ impl<'a> SignalWalker<'a, '_> {
             op.precedence_class(),
             PrecedenceClass::Relational | PrecedenceClass::Equality
         );
-        let real = self.expression_types.get(lhs)
+        let real = self.retained.expression_type(lhs)
             == Some(super::context::Ty::Scalar(ScalarType::Real))
-            && self.expression_types.get(rhs) == Some(super::context::Ty::Scalar(ScalarType::Real));
+            && self.retained.expression_type(rhs)
+                == Some(super::context::Ty::Scalar(ScalarType::Real));
         let mut set = SignalSet::default();
         if compares && real {
             set.insert(SignalTable::predefined_bit(PredefinedSignal::Nan));

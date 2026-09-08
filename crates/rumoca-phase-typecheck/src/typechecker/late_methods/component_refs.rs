@@ -40,7 +40,9 @@ impl TypeChecker {
         field: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        let base_type = self.infer_expression_type(base, type_table)?;
+        let base_type = self
+            .infer_expression_type(base, type_table)
+            .value_identity()?;
         self.lookup_component_member_type(base_type, field, type_table)
             .or_else(|| self.infer_named_function_output_type(base, field, type_table))
             .and_then(|ty| Self::filter_non_value_component_type(type_table, ty))
@@ -52,7 +54,10 @@ impl TypeChecker {
         field: &str,
         type_table: &TypeTable,
     ) {
-        let Some(base_type) = self.infer_expression_type(base, type_table) else {
+        let Some(base_type) = self
+            .infer_expression_type(base, type_table)
+            .value_identity()
+        else {
             return;
         };
         if self
@@ -64,7 +69,7 @@ impl TypeChecker {
         {
             return;
         }
-        if !Self::is_strict_component_member_owner(type_table, base_type) {
+        if !self.is_strict_component_member_owner(type_table, base_type) {
             return;
         }
         let Some(location) = base.get_location() else {
@@ -130,6 +135,9 @@ impl TypeChecker {
         comp: &rumoca_ir_ast::ComponentReference,
         type_table: &TypeTable,
     ) -> Result<TypeId, ComponentReferenceTypeError> {
+        if let Some((owner, violation)) = invalid_subscript_owner(comp) {
+            return Err(self.invalid_ast_subscript(comp, owner, violation));
+        }
         let Some((mut current_type, prefix_len)) = self.find_component_ref_prefix_type(comp)?
         else {
             return Ok(TypeId::UNKNOWN);
@@ -142,7 +150,7 @@ impl TypeChecker {
             let member_name = part.ident.text.to_string();
             match self.lookup_component_member_type(current_type, &member_name, type_table) {
                 Some(next_type) => current_type = next_type,
-                None if !Self::is_strict_component_member_owner(type_table, current_type) => {
+                None if !self.is_strict_component_member_owner(type_table, current_type) => {
                     return Ok(TypeId::UNKNOWN);
                 }
                 None => {
@@ -196,6 +204,11 @@ impl TypeChecker {
                 }
                 SemanticLookup::Ambiguous => {
                     return Err(self.ambiguous_component_reference(comp));
+                }
+                SemanticLookup::InvalidAstSubscript => {
+                    let (owner, violation) = invalid_subscript_owner(comp)
+                        .expect("invalid subscript lookup retains its owning reference part");
+                    return Err(self.invalid_ast_subscript(comp, owner, violation));
                 }
                 SemanticLookup::Missing => {}
             }
@@ -254,6 +267,7 @@ impl TypeChecker {
                     SemanticLookup::Found(semantics.variability)
                 }),
             SemanticLookup::Ambiguous => SemanticLookup::Ambiguous,
+            SemanticLookup::InvalidAstSubscript => SemanticLookup::InvalidAstSubscript,
         }
     }
 
@@ -298,37 +312,76 @@ impl TypeChecker {
         }
     }
 
+    fn invalid_ast_subscript(
+        &self,
+        reference: &rumoca_ir_ast::ComponentReference,
+        owner: &rumoca_ir_ast::ComponentRefPart,
+        violation: rumoca_ir_ast::RequiredValueViolation,
+    ) -> ComponentReferenceTypeError {
+        let owner_span = self.source_map.try_span(
+            owner.ident.location.source,
+            owner.ident.location.start as usize,
+            owner.ident.location.end as usize,
+        );
+        let span = violation
+            .span
+            .or(owner_span)
+            .or_else(|| (!reference.span.is_dummy()).then_some(reference.span));
+        match span {
+            Some(span) => ComponentReferenceTypeError::InvalidAstSubscript(
+                TypeCheckError::InvalidAstSubscript {
+                    reference: reference.to_string(),
+                    reason: violation.kind.description().to_string(),
+                    span,
+                },
+            ),
+            None => ComponentReferenceTypeError::MissingSourceContext(
+                TypeCheckError::missing_source_context(format!(
+                    "source span for invalid recovered subscript on `{reference}` was not found"
+                )),
+            ),
+        }
+    }
+
     fn lookup_component_member_type(
         &self,
         current_type: TypeId,
         member_name: &str,
         type_table: &TypeTable,
     ) -> Option<TypeId> {
-        let current_root = self.resolve_type_root(type_table, current_type);
+        let current_root = self.resolve_type_root(current_type);
         let Some(Type::Class(class_type)) = type_table.get(current_root) else {
             return None;
         };
-        self.component_modifier_member_types
+        self.class_members
             .get(&class_type.def_id)
-            .and_then(|members| members.get(member_name).copied())
+            .and_then(|members| members.get(&rumoca_core::ComponentPath::from_parts([member_name])))
+            .and_then(|member| match member {
+                crate::modifier_targets::ModifierMember::Typed(type_id) => Some(*type_id),
+                crate::modifier_targets::ModifierMember::Ambiguous
+                | crate::modifier_targets::ModifierMember::UnresolvedType => None,
+            })
     }
 
     fn component_member_names(&self, owner_type: TypeId, type_table: &TypeTable) -> Vec<String> {
-        let owner_root = self.resolve_type_root(type_table, owner_type);
+        let owner_root = self.resolve_type_root(owner_type);
         let Some(Type::Class(class_type)) = type_table.get(owner_root) else {
             return Vec::new();
         };
-        let Some(members) = self.component_modifier_member_types.get(&class_type.def_id) else {
+        let Some(members) = self.class_members.get(&class_type.def_id) else {
             return Vec::new();
         };
-        let mut names = members.keys().cloned().collect::<Vec<_>>();
+        let mut names = members
+            .keys()
+            .map(rumoca_core::ComponentPath::to_flat_string)
+            .collect::<Vec<_>>();
         names.sort();
         names
     }
 
-    fn is_strict_component_member_owner(type_table: &TypeTable, owner_type: TypeId) -> bool {
+    fn is_strict_component_member_owner(&self, type_table: &TypeTable, owner_type: TypeId) -> bool {
         matches!(
-            type_table.get(Self::resolve_alias_root(type_table, owner_type)),
+            type_table.get(self.resolve_type_root(owner_type)),
             Some(Type::Class(class_type))
                 if matches!(
                     class_type.kind,

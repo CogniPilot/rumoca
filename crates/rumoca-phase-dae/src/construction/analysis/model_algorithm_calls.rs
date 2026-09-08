@@ -1,6 +1,7 @@
 //! Typed proof plans for whole-coordinate and whole-record receivers of
 //! event-algorithm function calls.
 
+use super::reference_identity::same_exact_reference;
 use super::*;
 
 pub(in crate::construction) struct ModelEventFunctionCallPlan {
@@ -19,114 +20,67 @@ pub(in crate::construction) struct ModelEventRecordFieldPlan {
     pub(in crate::construction) projection: Box<[usize]>,
 }
 
-struct ModelEventCallContext<'flat> {
+pub(super) struct ModelEventCallAnalysis<'flat, 'analysis> {
     flat: &'flat flat::Model,
-    roles: &'flat HashMap<VarName, PlannedRole>,
-    shapes: &'flat FunctionShapeAnalysis,
+    roles: &'analysis HashMap<VarName, PlannedRole>,
+    shapes: &'analysis FunctionShapeAnalysis,
     records: ModelRecordIndex<'flat>,
 }
 
-pub(super) fn analyze_event_function_calls(
-    flat: &flat::Model,
-    statements: &[rumoca_core::Statement],
-    roles: &HashMap<VarName, PlannedRole>,
-    shapes: &FunctionShapeAnalysis,
-    plans: &mut HashMap<Span, ModelEventFunctionCallPlan>,
-) -> Result<(), ToDaeError> {
-    let context = ModelEventCallContext {
-        flat,
-        roles,
-        shapes,
-        records: ModelRecordIndex::new(flat),
-    };
-    analyze_event_function_call_statements(&context, statements, plans)
-}
-
-fn analyze_event_function_call_statements(
-    context: &ModelEventCallContext<'_>,
-    statements: &[rumoca_core::Statement],
-    plans: &mut HashMap<Span, ModelEventFunctionCallPlan>,
-) -> Result<(), ToDaeError> {
-    for statement in statements {
-        match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                let Expression::FunctionCall {
-                    name,
-                    args,
-                    is_constructor: false,
-                    ..
-                } = value
-                else {
-                    continue;
-                };
-                let target = rumoca_core::component_ref_to_base_reference(comp)
-                    .var_name()
-                    .clone();
-                if !context.flat.record_instances.contains_key(&target) {
-                    continue;
-                }
-                let output = Some(comp.clone());
-                let plan = analyze_event_function_call(
-                    context,
-                    name,
-                    args,
-                    std::slice::from_ref(&output),
-                    *span,
-                )?;
-                insert_call_plan(plans, *span, plan)?;
-            }
-            rumoca_core::Statement::FunctionCall {
-                comp,
-                args,
-                outputs,
-                span,
-            } => {
-                let plan = analyze_event_function_call(context, comp, args, outputs, *span)?;
-                insert_call_plan(plans, *span, plan)?;
-            }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
-                ..
-            } => {
-                for block in cond_blocks {
-                    analyze_event_function_call_statements(context, &block.stmts, plans)?;
-                }
-                if let Some(fallback) = else_block {
-                    analyze_event_function_call_statements(context, fallback, plans)?;
-                }
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
-                for block in blocks {
-                    analyze_event_function_call_statements(context, &block.stmts, plans)?;
-                }
-            }
-            rumoca_core::Statement::For { equations, .. } => {
-                analyze_event_function_call_statements(context, equations, plans)?;
-            }
-            _ => {}
+impl<'flat, 'analysis> ModelEventCallAnalysis<'flat, 'analysis> {
+    pub(super) fn new(
+        flat: &'flat flat::Model,
+        roles: &'analysis HashMap<VarName, PlannedRole>,
+        shapes: &'analysis FunctionShapeAnalysis,
+    ) -> Self {
+        Self {
+            flat,
+            roles,
+            shapes,
+            records: ModelRecordIndex::new(flat),
         }
     }
-    Ok(())
-}
 
-fn insert_call_plan(
-    plans: &mut HashMap<Span, ModelEventFunctionCallPlan>,
-    span: Span,
-    plan: ModelEventFunctionCallPlan,
-) -> Result<(), ToDaeError> {
-    if plans.insert(span, plan).is_some() {
-        return Err(ToDaeError::unsupported_algorithm(
-            "model",
-            "event function calls require distinct source owners",
-            span,
-        ));
+    pub(super) fn analyze_call(
+        &self,
+        component: &rumoca_core::Reference,
+        arguments: &[Expression],
+        outputs: &[Option<rumoca_core::ComponentReference>],
+        span: Span,
+    ) -> Result<ModelEventFunctionCallPlan, ToDaeError> {
+        analyze_event_function_call(self, component, arguments, outputs, span)
     }
-    Ok(())
+
+    pub(super) fn analyze_assignment_call(
+        &self,
+        component: &rumoca_core::ComponentReference,
+        value: &Expression,
+        span: Span,
+    ) -> Result<Option<ModelEventFunctionCallPlan>, ToDaeError> {
+        let Expression::FunctionCall {
+            name,
+            args,
+            is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
+            ..
+        } = value
+        else {
+            return Ok(None);
+        };
+        let target = rumoca_core::component_ref_to_base_reference(component)
+            .var_name()
+            .clone();
+        if !self.flat.record_instances.contains_key(&target) {
+            return Ok(None);
+        }
+        let output = Some(component.clone());
+        self.analyze_call(name, args, std::slice::from_ref(&output), span)
+            .map(Some)
+    }
 }
 
 fn analyze_event_function_call(
-    context: &ModelEventCallContext<'_>,
+    context: &ModelEventCallAnalysis<'_, '_>,
     component: &rumoca_core::Reference,
     arguments: &[Expression],
     outputs: &[Option<rumoca_core::ComponentReference>],
@@ -138,10 +92,7 @@ fn analyze_event_function_call(
         context.shapes.model_values(),
         span,
     )?;
-    let certificate = context
-        .shapes
-        .certificate(&call.specialization)
-        .expect("a call-shape certificate names one function certificate");
+    let certificate = &call.specialization;
     if outputs.len() > certificate.results.len() {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
@@ -166,21 +117,37 @@ fn analyze_event_function_call(
         ));
     }
     let mut output_plans = Vec::with_capacity(outputs.len());
-    for (ordinal, output) in outputs.iter().enumerate() {
-        let Some(output) = output else {
-            output_plans.push(None);
-            continue;
+    let mut results = function.outputs.iter();
+    let mut shapes = certificate.results.iter();
+    for output in outputs {
+        let Some(result) = results.next() else {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "function-call result certificate is shorter than its source receivers",
+                span,
+            ));
         };
-        let result = &function.outputs[ordinal];
-        let shape = call
-            .prefix
-            .iter()
-            .copied()
-            .chain(certificate.results[ordinal].iter().copied())
-            .collect::<Vec<_>>();
-        output_plans.push(Some(analyze_event_function_output(
-            context, output, result, &shape, span,
-        )?));
+        let Some(result_shape) = shapes.next() else {
+            return Err(ToDaeError::unsupported_algorithm(
+                "model",
+                "function-call shape certificate is shorter than its source receivers",
+                span,
+            ));
+        };
+        match output {
+            None => output_plans.push(None),
+            Some(output) => {
+                let shape = call
+                    .prefix
+                    .iter()
+                    .copied()
+                    .chain(result_shape.iter().copied())
+                    .collect::<Vec<_>>();
+                output_plans.push(Some(analyze_event_function_output(
+                    context, output, result, &shape, span,
+                )?));
+            }
+        }
     }
     Ok(ModelEventFunctionCallPlan {
         outputs: output_plans,
@@ -188,7 +155,7 @@ fn analyze_event_function_call(
 }
 
 fn analyze_event_function_output(
-    context: &ModelEventCallContext<'_>,
+    context: &ModelEventCallAnalysis<'_, '_>,
     output: &rumoca_core::ComponentReference,
     result: &rumoca_core::FunctionParam,
     result_shape: &[u32],
@@ -220,7 +187,7 @@ fn analyze_event_function_output(
             output.span(),
         )
     })?;
-    if !same_unsubscripted_reference(output, &record.component_ref) {
+    if !same_exact_reference(output, &record.component_ref) {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
             format!("function-call receiver `{target}` disagrees with its resolved Flat identity"),
@@ -300,17 +267,6 @@ fn concrete_shape(dimensions: &[i64], span: Span) -> Result<Vec<u32>, ToDaeError
             })
         })
         .collect()
-}
-
-fn same_unsubscripted_reference(
-    left: &rumoca_core::ComponentReference,
-    right: &rumoca_core::ComponentReference,
-) -> bool {
-    left.local() == right.local()
-        && left.parts().len() == right.parts().len()
-        && left.parts().iter().zip(right.parts()).all(|(left, right)| {
-            left.subs.is_empty() && right.subs.is_empty() && left.def_id == right.def_id
-        })
 }
 
 struct ModelRecordIndex<'flat> {

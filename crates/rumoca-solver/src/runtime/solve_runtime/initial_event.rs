@@ -188,7 +188,8 @@ impl SolveRuntime {
             seeded_event_pre_p = seeded_condition_memory_snapshot(event_pre_p, &seeded)?;
             &seeded_event_pre_p
         };
-        let initial_event = initial_runtime_event_stop(&self.model.problem, t_start, dynamic_event);
+        let initial_event =
+            initial_runtime_event_stop(self.model.problem(), t_start, dynamic_event);
         // Modelica assertions and termination equations are active during
         // initialization even when no clock, relation, or scheduled event
         // happens at `t_start`. The event inventory controls which discrete

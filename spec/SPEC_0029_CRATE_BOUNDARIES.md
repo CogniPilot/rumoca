@@ -9,8 +9,10 @@ Crate boundaries are compiler-enforced guardrails. A crate's `Cargo.toml` is
 its reading list; illegal coupling should fail before review.
 
 Per-helper and per-layer ownership assignments are catalogued in
-[SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md). Every row there is normative
-by reference from the section that links it.
+[SPEC_0041](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md); exact runtime and artifact
+carriers are catalogued in [SPEC_0054](SPEC_0054_RUNTIME_LAYERING_CATALOG.md).
+Catalog entries are normative only through the affirmative parent rule that
+links them.
 
 ## Specification
 
@@ -23,11 +25,29 @@ by reference from the section that links it.
 No circular dependencies. Dependency tiers form an acyclic graph enforced by the
 Rust compiler. See [Dependency Tiers](#dependency-tiers).
 
-### 3. IR Crates Are Pure Data
+### 3. IR Crates and Checked Proof Plans Are Pure Data
 
-`rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, and `rumoca-ir-solve`
-contain only data types, display/debug implementations, and serde
-serialization. No evaluation logic, phase logic, or side effects.
+`rumoca-ir-ast`, `rumoca-ir-flat`, `rumoca-ir-dae`, `rumoca-ir-galec`, and
+`rumoca-ir-solve` contain only data types,
+display/debug implementations, and their specifically admitted wire
+surfaces. No evaluation logic, phase logic, or side effects.
+
+`rumoca-plan-callable` is the sole checked Tier 2 proof-plan crate. It owns the
+private-field checked callable semantic-plan aggregate and its closed typed
+scalar/tensor/structured-region vocabulary. It contains no DAE traversal,
+lowering, evaluation, backend policy, text, target profile, serialization or
+deserialization root, public unchecked builder, or side effects. Its plan is
+affine, non-wire proof authority rather than a canonical compiler root. Its
+sole IR dependency, `rumoca-plan-callable -> rumoca-ir-dae`, is retention-only:
+the plan retains the exact checked DAE owner used to construct it and borrows
+only its correlated source views; it cannot lend, return, or clone the raw DAE
+owner and cannot construct or mutate DAE.
+Architecture CI proves that current `rumoca-plan-callable` and
+`rumoca-phase-callable` source contains no reference, use, import, or re-export
+of DAE construction, decode, or mutation authority. This is a load-bearing
+coverage gate, not a construction proof; the typed corridor proof is
+lent-view-only access, no owner escape, consumer argument absence, and
+drop-on-rebrand.
 
 Every source-language parser, generated grammar, recoverable CST, parser state,
 and syntax diagnostic belongs in a `rumoca-phase-parse*` crate. IR crates MUST
@@ -88,8 +108,11 @@ Hosts serialize/display text, never process-local `VarNameId`.
 Do not create `rumoca-ir-core`, `rumoca-foundation`, or another micro-crate for
 spans, diagnostics, IDs, or shared IR vocabulary without a spec update.
 
-IR-specific types stay in their matching crate; shared multi-stage vocabulary
-belongs in `rumoca-core`.
+IR-specific types stay in their matching crate; shared multi-stage primitive
+vocabulary belongs in `rumoca-core`. The invariant-bearing, independently
+meaningful, multi-consumer callable proof aggregate belongs in
+`rumoca-plan-callable`; it does not move into core merely to evade a dependency
+boundary.
 
 ### 3b. Single-Source Helpers Across the Pipeline
 
@@ -104,30 +127,72 @@ Required rules:
   spec update.
 - List additions require a spec update.
 
-### 4. Phase Typing via Newtypes
+### 4. Phase Proof Chain and Forward Proof Edges
 
-`ParsedTree`, `ResolvedTree`, `TypedTree`, and `InstancedTree` wrap `ClassTree`.
-The type system enforces phase ordering: you can't pass unresolved data to a
-phase that requires resolved data. This eliminates pipeline-ordering bugs that
-would otherwise require runtime checks or careful documentation.
-
-The production compiled-model path is:
+Each landed successful front-end boundary publishes one opaque proof artifact,
+resident in its minting crate with private fields. The current production
+compiled-model chain is:
 
 ```text
-ParsedTree -> ResolvedTree/ClassTree -> InstanceOverlay -> typecheck_instanced -> flat::Model -> Dae
+ParsedTree -> ResolvedTree -> raw InstanceOverlay -> TypedInstancedTree -> flat::Model -> Dae
 ```
 
-`TypedTree` remains the artifact for the standalone resolved-tree typecheck API.
 Model compilation uses post-instantiation type checking because modifier and
 structural-parameter values are available only after instantiation.
+
+Exactly two forward proof edges currently exist inside Tier 3:
+`typecheck -> resolve` and `flatten -> typecheck`. Each edge licenses exactly
+two things: naming the
+predecessor's opaque proof artifact in the successor's own sole mint input
+position, and calling that artifact's public immutable query views. An edge
+licenses nothing else: no predecessor phase-entry calls, no re-exports, no
+trait implementations on predecessor types, and no construction, mutation,
+decode, or owned extraction of the predecessor artifact. Any other Tier-3
+phase-to-phase dependency remains prohibited.
+
+A proof artifact whose successor consumes it by value is not `Clone`, not
+`Default`, and not deserializable, and it exposes no mutable projection;
+consuming it transfers the unique phase capability by value, exactly once.
+This affine rule currently applies to `TypedInstancedTree`. A phase may
+additionally expose a `Clone`-able read-only projection that shares the
+immutable payload; a projection carries no phase capability and no phase
+accepts one directly in a proof input position. Cloning its raw overlay view
+and rerunning the sole Typecheck mint creates a fresh checked proof rather than
+recovering or duplicating the original proof.
+
+`ResolvedTree` remains an immutable, `Clone`-able checked root while Instantiate
+still takes a borrowed raw `&ClassTree`; that borrowed view is explicitly part
+of the unclosed raw Resolve-to-Instantiate migration boundary. `ResolvedTree`
+has no consuming payload extraction. The read-only `ResolvedTreeProjection`
+is `Clone` only so
+Typecheck can retain that exact shared Resolve root; its private field, sole Resolve-owned producer, and lack
+of construction, mutation, decode, default, or owned extraction are cataloged
+as a separate public semantic boundary.
+
+There is no `TypedTree` proof artifact. The standalone resolved-tree typecheck
+entry is a diagnostics query: it returns the checked data and its diagnostics
+and mints no proof, and nothing downstream accepts its output as phase
+evidence.
+
+Migration state: Instantiate's production entry still accepts a raw
+`&ClassTree` and returns a raw `InstanceOverlay`; it therefore has no
+`instantiate -> resolve` proof edge and publishes no `InstancedTree` proof.
+`InstancedTree` residence in `rumoca-phase-instantiate` with private fields,
+the `instantiate -> resolve` proof input, and the `typecheck -> instantiate`
+opaque input must land together with the Instantiate construction cutover.
+Until then Typecheck consumes the raw instantiation overlay by value while
+also naming `ResolvedTree`, and the Flatten edge is closed only for the exact
+Resolve-tree identity retained in `TypedInstancedTree`. The raw
+`InstanceOverlay` has no Resolve-root stamp yet, so pairing an overlay derived
+from tree A with `ResolvedTree` B at the Typecheck mint remains explicit CE-3
+migration debt until the Instantiate proof cutover.
 
 ### 5. Evaluation Decoupled from Representation
 
 Evaluation crates are aligned to IR ownership: `rumoca-eval-ast`,
-`rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates the
-shared typed Solve program vocabulary and both checked Solve roots, including
-tensor-kernel selection and `SolveAlgorithmBlock` lifecycle execution (pending:
-2026-08-08 plan, M3-4); it MUST NOT depend on a Tier 4/5 crate. The state
+`rumoca-eval-flat`, and `rumoca-eval-dae`. `rumoca-eval-solve` evaluates only
+checked Solve roots and their shared typed program vocabulary; it MUST NOT
+depend on a Tier 4/5 crate. The state
 machine and driver stay in `rumoca-solver::runtime`. SPEC_0038 moves the FMI 3
 ME master driver to `rumoca-solver::fmi_me`; `runtime` keeps its Solve helpers.
 `rumoca-eval-galec` remains an independent Algorithm Code oracle and MUST NOT
@@ -153,9 +218,17 @@ Before adding a dependency from crate A to crate B:
 
 ### 7. Rules for Creating New Crates
 
-**Split when:** adding a new IR, compiler phase, data-only consumer surface, or
-separating unrelated concerns. **Keep together when:** code is small, has one
-consumer, or always changes as a unit.
+**Split when:** adding a new IR, checked proof plan, compiler phase, data-only
+consumer surface, or separating unrelated concerns. **Keep together when:**
+code is small, has one consumer, or always changes as a unit.
+
+An IR crate requires an independently meaningful vocabulary, a checked
+construction discipline, a total reference-semantics/proof relation for every
+operation, and multiple non-presentation consumers. `rumoca-plan-callable` is
+not an IR crate: it is the sole checked proof-plan crate. Its admission is
+narrow because the plan is not a canonical root, is not serialized, is not
+target-selectable, and cannot authorize code generation. Adding another checked
+proof-plan crate or widening any of those properties requires a spec change.
 
 ### 8. Import and Re-export Discipline
 
@@ -233,96 +306,23 @@ dependency inputs on reopen, not to serialize the full downstream pipeline.
 
 ### 12. Runtime, Backend, Simulation Session, And Visualization Layering
 
-```
-compiler/session → DAE structural → checked Algorithm Code / Solve lowering → checked export/runtime contracts → execution backend → simulation session → reporting → visualization
-```
+The exact owner inventory is
+[SPEC_0041 §4](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#4-layering-ownership-catalog-spec_0029-12);
+the exact closed carriers, alternatives, and enforcement surfaces are
+[SPEC_0054](SPEC_0054_RUNTIME_LAYERING_CATALOG.md). Both catalogs are normative
+only through these obligations.
 
-Ownership of each link in that chain is
-[SPEC_0041 §4](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#4-layering-ownership-catalog-spec_0029-12).
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| Execution adapters consume checked Solve roots or generated artifacts; they are not compiler phases and cannot establish semantics. | execution/runtime boundary | Meaning is established once |
+| FMI deployment derives one checked component from completed Solve semantics; lifecycle/ABI text and solver binding occur only in preparation or templates. | Solve/FMI preparation | No parallel FMI authority |
+| Each file declares one closed IR context and checked view; one correlated product is constructed without target-wide selectors, defaults, inference, or root mixtures. | target construction | Invalid products are unrepresentable |
+| One invariant build-session origin retains semantic input, trace identity, model identity, file facts, and artifact identity through rendering. | `rumoca-compile` | Foreign facts cannot be joined |
+| Package membership, producer order, checksum edges, assets, and paths are resolved once into one affine render plan consumed without reordering or revalidation. | package construction | One ordering authority |
+| Preparation derives one sealed plan owning legality, ABI, layout, storage, solver, and refinement receipts; renderers receive no candidates or repair authority. | preparation/codegen boundary | Templates remain passive |
+| Target syntax, schemas, assets, and template composition remain target-owned; codegen Rust is target-neutral and cannot lower or assemble target language. | target directories + codegen | Presentation cannot acquire semantics |
+| Every public residual authority is affine, narrowly scoped, and structurally limited to its catalogued production issuance sites. | architecture CI | Public seams stay auditable |
 
-Execution adapters are not phases. Non-codegen phases must not depend on target
-encoders, JITs, toolchains, or device APIs. Textual target policy lives in
-`target.toml` and templates; Rust provides generic rendering, validation, and
-IR capability probes. Unsupported capabilities report
-`unsupported-feature:<feature_id>`. JIT/device adapters consume Solve IR or
-generated artifacts through stable execution ABIs and equivalence tests.
-
-FMI deployment is a checked export, not a textual DAE or Solve projection.
-Pending SPEC_0038 absorption, `rumoca-ir-solve::fmi` will own the checked
-component beside its kernel; no parallel FMI IR crate will remain.
-`rumoca-phase-solve::fmi` will be the real feature-scoped constructor from
-matching DAE metadata and Solve kernel. Non-FMI consumers MUST NOT enable its
-FMI-only dependencies. Codegen retains FMI 2/3 lifecycle and ABI text and MUST
-NOT repeat Modelica, DAE, or Solve lowering.
-
-Each target manifest selects one proven-valid canonical or checked export IR.
-`rumoca-phase-codegen` exposes a typed, read-only semantic view for each
-supported IR and dispatches that view generically. Rendering never performs a
-compiler transformation or repairs an artifact. Adding another target over an
-existing view MUST require no Rust change; adding support for another IR adds
-only its target-neutral semantic view and capability vocabulary. An export IR
-selectable by a target remains outside the canonical compiler pipeline.
-
-GALEC Production Code consumes a checked `SolveAlgorithmBlock` (pending:
-2026-08-08 plan, M3-4), never the high-level Algorithm Code template view.
-`rumoca-phase-solve` owns exhaustive `AlgorithmCodePackage` lowering into typed
-storage-neutral programs and ordered lifecycle actions. `rumoca-phase-codegen`
-exposes the completed root and its checked correlations; C/H templates may spell
-the selected ABI but MUST NOT choose passing mode, storage, scalar/tensor
-lowering, scope, scheduling, operation, or failure behavior.
-
-`rumoca-phase-codegen` Rust may derive target-neutral typed contexts, schedules,
-shapes, dependency/bounds proofs, symbols, and provenance. It MUST NOT spell or
-assemble target-language tokens, expressions, statements, declarations, or
-files. Those belong entirely to each target's `target.toml` and MiniJinja
-templates, so adding a textual target does not require a Rust dialect or
-renderer. Generic template operations consume semantic IR vocabulary and fail
-closed; they do not return pre-rendered language fragments.
-
-Target-specific package/schema models, constants, filenames, and artifact
-graphs also belong in the owning target directory, not in IR or phase Rust.
-Generic documented artifact commands may hash rendered bytes, validate a
-declared schema, and assemble the declared graph without understanding eFMI or
-another target format. Generic on-disk package assembly is owned by the
-`fmu-packaging` feature and MUST NOT depend on scheduled simulation, transports,
-input devices, viewers, or process control.
-
-Target assets follow the same ownership rule. Builtin target discovery embeds
-arbitrary assets declared beneath a target directory; external targets resolve
-declared asset sources relative to their own directory. Rust MUST NOT maintain
-a target-format bundle registry or map names such as an eFMI schema bundle to
-hardcoded files.
-
-Target-specific semantic lowering is a compiler phase, not code generation.
-`rumoca-phase-codegen/src` MUST NOT contain target-named subsystems such as
-`galec/`, C lowering, XML manifest models, target manglers, or target dispatch.
-It MAY contain small IR-specific adapters under `views/` when they expose only
-typed, read-only semantic data. Checked export data and constructors belong to
-their `rumoca-ir-*` crate; semantic projection belongs to its
-`rumoca-phase-*` crate; all target syntax and presentation belong to the target
-directory.
-
-Within `rumoca-phase-codegen`, `src/codegen/` is reserved for the public
-MiniJinja extension-command surface. Rendering orchestration belongs in generic
-renderer modules and IR adapters belong under `src/views/`. Every registered
-command MUST be pure, deterministic, target-neutral, fail closed, and have
-documented template syntax, typed inputs/outputs, failure behavior, complexity,
-and focused tests. A single registry is the source of truth for registration
-and user-facing command documentation. Commands may return semantic values or
-checked arithmetic/query results; they MUST NOT return target-language
-fragments or perform lowering, name resolution, type repair, target dispatch,
-file assembly, or escaping for a particular output language.
-
-Architecture CI MUST reject production `rumoca-phase-codegen` Rust that builds
-generated or template-context text with formatting, concatenation, replacement,
-writer, or incremental string-assembly APIs. Diagnostic messages and generic
-template/file transport are the only string-handling exceptions; their values
-must not enter semantic template contexts. Target names are rendered from typed
-identity/path segments in templates, not pre-mangled Rust strings.
-
-Steady-state CI rejects reverse dependencies across this chain. `rumoca-compile`
-MUST NOT depend on concrete solvers or visualization assets; backend-selection
-APIs MUST affect runtime behavior, not only metadata.
 
 ## Dependency Tiers
 
@@ -333,13 +333,14 @@ Tier 6 — Binary & bindings: rumoca, bind-python, bind-wasm, contracts
 Tier 5 — Integration/runtime: codec/input/solver/sim/opt/viz/tool-lsp families
 Tier 4 — Orchestration: rumoca-compile, tool-fmt, tool-lint
 Tier 3 — Phases & evaluation: rumoca-phase-*, rumoca-eval-*
-Tier 2 — IR data: rumoca-ir-*
+Tier 2 — IR data and checked proof plans: rumoca-ir-*, rumoca-plan-callable
 Tier 1 — Foundation: rumoca-core
 ```
 
 Within Tier 3, phases MUST compose through IR/evaluation crates rather than depend on other phases.
-Shared prerequisite analyses are the sole reasoned, bidirectionally gated
-exception; test fixtures are outside this production rule.
+The two current forward proof edges of [§4](#4-phase-proof-chain-and-forward-proof-edges)
+and shared prerequisite analyses are the sole reasoned, bidirectionally gated
+exceptions; test fixtures are outside this production rule.
 
 Input-boundary and simulation-composition ownership is
 [SPEC_0041 §5](SPEC_0041_CRATE_OWNERSHIP_CATALOG.md#5-input-and-simulation-composition-catalog-spec_0029-dependency-tiers).

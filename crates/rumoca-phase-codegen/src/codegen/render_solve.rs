@@ -17,7 +17,7 @@ use minijinja::Value;
 use minijinja::value::{Enumerator, Object, ObjectRepr};
 use rumoca_ir_solve as solve;
 
-use super::render_expr::get_field;
+use super::get_field;
 use super::render_solve_ops::{
     render_solve_binary_wgsl, render_solve_compare_wgsl, render_solve_unary_wgsl,
 };
@@ -27,8 +27,8 @@ use super::{RenderResult, render_vec_with_capacity, reserve_render_capacity, val
 pub(super) use dense_solve_render::{LinSolveRenderShape, MatMulRenderShape};
 pub(super) use dense_solve_render::{
     mlir_native_dense_node_supported, render_linsolve_mlir_function, render_matmul_mlir_function,
-    render_solve_row_output_wgsl_function, render_solve_row_wgsl_function, required_bool_field,
-    required_string_field, required_usize_field,
+    render_solve_row_output_wgsl_function, required_bool_field, required_string_field,
+    required_usize_field,
 };
 pub(super) use mlir_family::render_solve_native_family_mlir_function;
 pub(super) use template_partition::{
@@ -75,25 +75,6 @@ impl Object for SolveRowValue {
     fn enumerate(self: &Arc<Self>) -> Enumerator {
         Enumerator::Seq(self.ops().len())
     }
-}
-
-fn render_solve_row_for(
-    row: &Value,
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-) -> RenderResult {
-    if let Some(typed) = row.downcast_object_ref::<SolveRowValue>() {
-        return render_solve_row_typed(typed.ops(), cfg, dialect);
-    }
-    let mut regs = Vec::<String>::new();
-    let mut output = None;
-    let iter = row
-        .try_iter()
-        .map_err(|_| render_err("solve row must be an array of LinearOp values"))?;
-    for op in iter {
-        output = render_solve_op_for(&op, cfg, dialect, &mut regs, output)?;
-    }
-    output.ok_or_else(|| render_err("solve row did not contain StoreOutput"))
 }
 
 fn render_solve_row_output_for(
@@ -601,14 +582,6 @@ fn structured_binder_value_count(
         .ok_or_else(|| render_err("structured domain count overflows"))
 }
 
-fn render_solve_row_typed(
-    ops: &[solve::LinearOp],
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-) -> RenderResult {
-    render_solve_row_typed_with_overrides(ops, &std::collections::HashMap::new(), cfg, dialect)
-}
-
 fn render_solve_row_typed_output(
     ops: &[solve::LinearOp],
     output_ordinal: usize,
@@ -735,10 +708,6 @@ fn render_solve_op_typed(
     output: Option<String>,
 ) -> Result<Option<String>, minijinja::Error> {
     use solve::LinearOp;
-    // Runtime-indexed parameter/seed loads are handled by a shared renderer.
-    if render_indexed_load_op(op, cfg, dialect, regs)? {
-        return Ok(output);
-    }
     match op {
         LinearOp::Const { dst, value } => {
             let text = if value.is_finite() {
@@ -1413,60 +1382,6 @@ fn render_solve_op_typed(
     Ok(output)
 }
 
-/// Render the array-access expression for a runtime-indexed parameter (or seed)
-/// load: `array[base + clamp(round(index_expr), 0, count-1)]`.
-fn render_indexed_access(
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-    index_expr: &str,
-    base: usize,
-    count: usize,
-    is_seed: bool,
-) -> Result<String, minijinja::Error> {
-    let slot = dialect.render_indexed_index(index_expr, base, count);
-    if is_seed {
-        cfg.seed_access_expr(&slot).ok_or_else(|| {
-            render_err("LoadIndexedSeed requires a `seed` access pattern in solve-row output")
-        })
-    } else {
-        Ok(cfg.p_access_expr(&slot))
-    }
-}
-
-/// Typed-renderer handler for runtime-indexed parameter/seed loads: stores the
-/// access expression into `regs` and returns `true` when `op` is such a load.
-fn render_indexed_load_op(
-    op: &solve::LinearOp,
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-    regs: &mut Vec<String>,
-) -> Result<bool, minijinja::Error> {
-    use solve::LinearOp;
-    let (dst, base, count, index, is_seed) = match op {
-        LinearOp::LoadIndexedP {
-            dst,
-            base,
-            count,
-            index,
-        } => (*dst, *base, *count, *index, false),
-        LinearOp::LoadIndexedSeed {
-            dst,
-            base,
-            count,
-            index,
-        } => (*dst, *base, *count, *index, true),
-        _ => return Ok(false),
-    };
-    let index_expr = solve_reg(regs, index as usize)?;
-    let expr = render_indexed_access(cfg, dialect, &index_expr, base, count, is_seed)?;
-    store_solve_reg(regs, dst as usize, expr)?;
-    Ok(true)
-}
-
-/// Value-renderer (`get_field`) handler for a runtime-indexed load, mirroring
-/// [`render_indexed_load_op`] but producing a [`SolveOpEffect`] from the lazy op
-/// `Value`. The caller dispatches on op kind, so this always handles an indexed
-/// load (no optional-miss return).
 /// Value-renderer handler for a `LinearSolveComponent` op, extracted from the
 /// `solve_op_expr` chain to keep it within the complexity budget.
 fn solve_linsolve_effect(
@@ -1481,22 +1396,6 @@ fn solve_linsolve_effect(
     let component = solve_field_usize(value, "component")?;
     let expr =
         dialect.render_linear_solve_component(regs, matrix_start, rhs_start, n, component)?;
-    Ok(SolveOpEffect::Compute { dst, expr })
-}
-
-fn solve_indexed_effect(
-    value: &Value,
-    cfg: &SolveRowCConfig,
-    dialect: SolveRowDialect,
-    regs: &[String],
-    is_seed: bool,
-) -> Result<SolveOpEffect, minijinja::Error> {
-    let dst = solve_field_usize(value, "dst")?;
-    let base = solve_field_usize(value, "base")?;
-    let count = solve_field_usize(value, "count")?;
-    let index = solve_field_usize(value, "index")?;
-    let index_expr = solve_reg(regs, index)?;
-    let expr = render_indexed_access(cfg, dialect, &index_expr, base, count, is_seed)?;
     Ok(SolveOpEffect::Compute { dst, expr })
 }
 
@@ -1545,12 +1444,6 @@ fn solve_op_expr(
             dst,
             expr: cfg.p_access(index),
         });
-    }
-    if let Ok(value) = get_field(op, "LoadIndexedP") {
-        return solve_indexed_effect(&value, cfg, dialect, regs, false);
-    }
-    if let Ok(value) = get_field(op, "LoadIndexedSeed") {
-        return solve_indexed_effect(&value, cfg, dialect, regs, true);
     }
     if let Ok(value) = get_field(op, "LoadSeed") {
         let dst = solve_field_usize(&value, "dst")?;
@@ -1667,15 +1560,6 @@ impl SolveRowDialect {
 
     fn render_select(self, cond: String, if_true: String, if_false: String) -> String {
         format!("select(({if_false}), ({if_true}), ({cond}) != 0.0)")
-    }
-
-    /// Render the integer array index for a runtime-indexed load:
-    /// `base + clamp(round(index_expr), 0, count-1)`, matching
-    /// [`rumoca_ir_solve::resolve_indexed_slot`]. The result is an integer-typed
-    /// expression suitable to substitute into a `p[...]` / `seed[...]` access.
-    fn render_indexed_index(self, index_expr: &str, base: usize, count: usize) -> String {
-        let last = if count == 0 { 0 } else { count - 1 };
-        format!("({base}u + u32(clamp(round({index_expr}), 0.0, f32({last}))))")
     }
 
     fn render_linear_solve_component(

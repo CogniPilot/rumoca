@@ -8,6 +8,8 @@
 //! do not handle runtime events (the WebGPU v1 driver) keep their existing
 //! frozen-events contract.
 
+use std::sync::Arc;
+
 use rumoca_ir_solve as solve;
 use rumoca_solver::SolveRuntime;
 use rumoca_solver::commit_pre_params_after_event;
@@ -63,23 +65,25 @@ impl From<PreparedVectorError> for crate::SimulationDiagnosticError {
 
 /// Override named parameters and return freshly settled `(y0, p0)`.
 pub fn refresh_prepared_vectors(
-    model: &solve::SolveModel,
+    model: Arc<solve::SolveModel>,
     t_start: f64,
     overrides: &[(String, f64)],
 ) -> Result<(Vec<f64>, Vec<f64>), PreparedVectorError> {
-    let mut params = model.parameters.clone();
+    let mut params = model.parameters().to_vec();
     for (name, value) in overrides {
-        let Some(solve::ScalarSlot::P { index, .. }) = model.problem.layout.binding(name) else {
+        let Some(solve::ScalarSlot::P { index, .. }) = model.problem().layout().binding(name)
+        else {
             return Err(PreparedVectorError::NotAParameter { name: name.clone() });
         };
         params[index] = *value;
     }
 
-    let mut y = model.initial_y.clone();
-    let runtime = SolveRuntime::new(model).map_err(|error| PreparedVectorError::Runtime {
-        message: error.to_string(),
-        span: error.source_span(),
-    })?;
+    let mut y = model.initial_y().to_vec();
+    let runtime =
+        SolveRuntime::new(Arc::clone(&model)).map_err(|error| PreparedVectorError::Runtime {
+            message: error.to_string(),
+            span: error.source_span(),
+        })?;
     let settle = |message: String| PreparedVectorError::Settle { message };
     runtime
         .settle_initialization_system(&mut y, &mut params, t_start, SETTLE_TOL, SETTLE_MAX_ITERS)
@@ -98,7 +102,7 @@ pub fn refresh_prepared_vectors(
     runtime
         .refresh_algebraic_and_output_slots(t_start, &mut y, &params, SETTLE_TOL, SETTLE_MAX_ITERS)
         .map_err(|e| settle(e.to_string()))?;
-    commit_pre_params_after_event(model, &y, &mut params, SETTLE_TOL);
+    commit_pre_params_after_event(model.as_ref(), &y, &mut params, SETTLE_TOL);
     Ok((y, params))
 }
 

@@ -20,8 +20,17 @@ pub(crate) struct Context {
     pub real_parameter_values: rustc_hash::FxHashMap<String, f64>,
     /// Boolean parameter values for evaluating if-equation conditions.
     pub boolean_parameter_values: rustc_hash::FxHashMap<String, bool>,
-    /// Enumeration parameter values (name -> qualified enum literal string).
-    pub enum_parameter_values: rustc_hash::FxHashMap<String, String>,
+    /// Enumeration parameter values retain their Resolve-issued declaration
+    /// owner and owner-local ordinal. The map key is lookup/display data only.
+    pub enum_parameter_values:
+        rustc_hash::FxHashMap<String, rumoca_eval_flat::constant::ResolvedEnumValue>,
+    /// Enumeration identities and ordinals issued from the resolved class tree.
+    pub(crate) resolved_enum_catalog: rumoca_eval_flat::constant::ResolvedEnumCatalog,
+    /// Scalar constants keyed by their exact Resolve declaration identity.
+    pub parameter_values_by_identity: rustc_hash::FxHashMap<
+        rumoca_eval_flat::constant::ResolvedOccurrenceKey,
+        rumoca_eval_flat::constant::Value,
+    >,
     /// General constant expression values (scalars/arrays) extracted from
     /// class/package constants and redeclare/extends modifications.
     pub constant_values: rustc_hash::FxHashMap<String, rumoca_core::Expression>,
@@ -66,6 +75,9 @@ pub(crate) struct Context {
     pub(crate) expanded_component_keys: rustc_hash::FxHashSet<String>,
     /// Array dimensions for evaluating size() calls (name -> dims).
     pub array_dimensions: rustc_hash::FxHashMap<String, Vec<i64>>,
+    /// Array dimensions keyed by their exact Resolve declaration identity.
+    pub array_dimensions_by_identity:
+        rustc_hash::FxHashMap<rumoca_eval_flat::constant::ResolvedOccurrenceKey, Vec<i64>>,
     /// Parameters marked with annotation(Evaluate=true) or declared final (MLS §18.3).
     /// Only these structural parameters can be used for compile-time branch selection.
     pub structural_params: std::collections::HashSet<String>,
@@ -95,10 +107,16 @@ pub(crate) struct Context {
     pub cardinality_counts: rustc_hash::FxHashMap<String, i64>,
     /// Lazy base evaluator for flatten expression fallback evaluation.
     /// This is built once per flatten context after structural lookup stabilizes.
-    pub(crate) eval_fallback_context: std::cell::OnceCell<rumoca_eval_flat::constant::EvalContext>,
+    pub(crate) eval_fallback_context: std::cell::OnceCell<
+        Result<rumoca_eval_flat::constant::EvalContext, rumoca_eval_flat::constant::EvalError>,
+    >,
     /// Current import map for the class instance being processed (MLS §13.2).
     /// Set before processing each class instance's equations, cleared after.
     pub current_imports: crate::qualify::ImportMap,
+    /// Names the lookup authority refused to bind through the current scope's
+    /// imports (MLS §5.3.1). A use of one of these names is a typed error at
+    /// the use site, never a silent fallback binding.
+    pub(crate) current_import_refusals: super::super::import_scopes::ImportRefusalMap,
     /// Set of DefIds that correspond to class definitions in the current tree.
     /// Used by qualification to distinguish class/type references from components.
     pub class_def_ids: std::sync::Arc<rustc_hash::FxHashSet<rumoca_core::DefId>>,

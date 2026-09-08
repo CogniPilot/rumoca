@@ -518,7 +518,7 @@ const SIGNATURE_OWNER_LEDGER: &[(&str, &str, &str, usize, u64, u64)] = &[
         "add_input",
         0,
         3_509_535_177_801_760_813,
-        4_327_916_974_689_052_284,
+        6_307_820_156_066_991_244,
     ),
     (
         "crates/rumoca-phase-flatten/src/functions.rs",
@@ -526,7 +526,7 @@ const SIGNATURE_OWNER_LEDGER: &[(&str, &str, &str, usize, u64, u64)] = &[
         "add_output",
         1,
         2_206_464_988_371_185_010,
-        4_327_916_974_689_052_284,
+        6_307_820_156_066_991_244,
     ),
     (
         "crates/rumoca-phase-flatten/src/functions/constructor_signature.rs",
@@ -534,7 +534,7 @@ const SIGNATURE_OWNER_LEDGER: &[(&str, &str, &str, usize, u64, u64)] = &[
         "add_input",
         0,
         3_509_535_177_801_760_813,
-        459_455_872_432_268_345,
+        18_230_115_793_874_488_095,
     ),
 ];
 
@@ -925,6 +925,7 @@ fn analyze_source(path: &Path, source: &str) -> BTreeSet<String> {
         path,
         findings: BTreeSet::new(),
         algorithm_bindings: BTreeSet::new(),
+        signature_element_bindings: BTreeSet::new(),
     };
     visitor.visit_file(&syntax);
     visitor.findings
@@ -934,6 +935,7 @@ struct AggregateBoundaryVisitor<'a> {
     path: &'a Path,
     findings: BTreeSet<String>,
     algorithm_bindings: BTreeSet<String>,
+    signature_element_bindings: BTreeSet<String>,
 }
 
 impl AggregateBoundaryVisitor<'_> {
@@ -961,10 +963,12 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
             return;
         }
         self.record_identifier(&item.sig.ident);
-        let previous =
+        let previous_algorithms =
             std::mem::replace(&mut self.algorithm_bindings, algorithm_bindings(&item.sig));
+        let previous_signature_elements = std::mem::take(&mut self.signature_element_bindings);
         visit::visit_item_fn(self, item);
-        self.algorithm_bindings = previous;
+        self.algorithm_bindings = previous_algorithms;
+        self.signature_element_bindings = previous_signature_elements;
     }
 
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
@@ -993,10 +997,12 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
             return;
         }
         self.record_identifier(&item.sig.ident);
-        let previous =
+        let previous_algorithms =
             std::mem::replace(&mut self.algorithm_bindings, algorithm_bindings(&item.sig));
+        let previous_signature_elements = std::mem::take(&mut self.signature_element_bindings);
         visit::visit_impl_item_fn(self, item);
-        self.algorithm_bindings = previous;
+        self.algorithm_bindings = previous_algorithms;
+        self.signature_element_bindings = previous_signature_elements;
     }
 
     fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
@@ -1005,9 +1011,13 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
     }
 
     fn visit_expr_assign(&mut self, expression: &'ast syn::ExprAssign) {
-        if expression_mentions_signature_vector(&expression.left)
-            && !expression_is_algorithm_io(&expression.left, &self.algorithm_bindings)
-        {
+        let mutates_signature_vector = expression_mentions_signature_vector(&expression.left)
+            && !expression_is_algorithm_io(&expression.left, &self.algorithm_bindings);
+        let mutates_signature_element = expression_targets_signature_element_contract(
+            &expression.left,
+            &self.signature_element_bindings,
+        );
+        if mutates_signature_vector || mutates_signature_element {
             self.record_signature_mutation();
         }
         visit::visit_expr_assign(self, expression);
@@ -1015,8 +1025,12 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
 
     fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
         if expression.mutability.is_some()
-            && expression_mentions_signature_vector(&expression.expr)
-            && !expression_is_algorithm_io(&expression.expr, &self.algorithm_bindings)
+            && ((expression_mentions_signature_vector(&expression.expr)
+                && !expression_is_algorithm_io(&expression.expr, &self.algorithm_bindings))
+                || expression_targets_signature_element_contract(
+                    &expression.expr,
+                    &self.signature_element_bindings,
+                ))
         {
             self.record_signature_mutation();
         }
@@ -1025,7 +1039,11 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
 
     fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
         if SIGNATURE_MUTATORS.contains(&expression.method.to_string().as_str())
-            && expression_mentions_signature_vector(&expression.receiver)
+            && (expression_mentions_signature_vector(&expression.receiver)
+                || expression_targets_signature_element_contract(
+                    &expression.receiver,
+                    &self.signature_element_bindings,
+                ))
         {
             self.record_signature_mutation();
         }
@@ -1033,19 +1051,32 @@ impl<'ast> Visit<'ast> for AggregateBoundaryVisitor<'_> {
     }
 
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
-        self.visit_expr(&expression.expr);
-        let binding = match expression.pat.as_ref() {
-            syn::Pat::Ident(pattern) if expression_mentions_algorithm_catalog(&expression.expr) => {
-                Some(pattern.ident.to_string())
-            }
+        let pattern_binding = match expression.pat.as_ref() {
+            syn::Pat::Ident(pattern) => Some(pattern.ident.to_string()),
             _ => None,
         };
-        if let Some(binding) = &binding {
-            self.algorithm_bindings.insert(binding.clone());
+        let algorithm_binding = pattern_binding.clone().filter(|_| {
+            expression_mentions_algorithm_catalog(&expression.expr)
+                || expression_is_named_binding(&expression.expr, &self.algorithm_bindings)
+        });
+        let signature_binding =
+            pattern_binding.filter(|_| expression_is_mutable_signature_iteration(&expression.expr));
+
+        if signature_binding.is_none() {
+            self.visit_expr(&expression.expr);
         }
+        let algorithm_inserted = algorithm_binding
+            .as_ref()
+            .is_some_and(|binding| self.algorithm_bindings.insert(binding.clone()));
+        let signature_inserted = signature_binding
+            .as_ref()
+            .is_some_and(|binding| self.signature_element_bindings.insert(binding.clone()));
         self.visit_block(&expression.body);
-        if let Some(binding) = binding {
+        if algorithm_inserted && let Some(binding) = algorithm_binding {
             self.algorithm_bindings.remove(&binding);
+        }
+        if signature_inserted && let Some(binding) = signature_binding {
+            self.signature_element_bindings.remove(&binding);
         }
     }
 
@@ -1139,6 +1170,47 @@ fn expression_is_algorithm_io(
             algorithm_bindings.contains(&segment.ident.to_string())
         })
     )
+}
+
+fn expression_is_named_binding(expression: &syn::Expr, bindings: &BTreeSet<String>) -> bool {
+    matches!(
+        expression,
+        syn::Expr::Path(path) if path.path.segments.last().is_some_and(|segment| {
+            bindings.contains(&segment.ident.to_string())
+        })
+    )
+}
+
+fn expression_is_mutable_signature_iteration(expression: &syn::Expr) -> bool {
+    let syn::Expr::Reference(reference) = expression else {
+        return false;
+    };
+    let syn::Expr::Field(field) = reference.expr.as_ref() else {
+        return false;
+    };
+    reference.mutability.is_some()
+        && matches!(
+            &field.member,
+            syn::Member::Named(name) if name == "inputs" || name == "outputs"
+        )
+}
+
+fn expression_targets_signature_element_contract(
+    expression: &syn::Expr,
+    bindings: &BTreeSet<String>,
+) -> bool {
+    match expression {
+        syn::Expr::Field(field) => {
+            let syn::Member::Named(member) = &field.member else {
+                return expression_targets_signature_element_contract(&field.base, bindings);
+            };
+            if expression_is_named_binding(&field.base, bindings) {
+                return member != "default";
+            }
+            expression_targets_signature_element_contract(&field.base, bindings)
+        }
+        _ => expression_is_named_binding(expression, bindings),
+    }
 }
 
 fn algorithm_bindings(signature: &syn::Signature) -> BTreeSet<String> {

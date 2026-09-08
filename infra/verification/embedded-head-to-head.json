@@ -3,7 +3,12 @@
   "ratchet_policy": "ECM-003 remains pending until the shipped eFMU Production C whole-scope artifact, oracle receipt, and accepted baseline are authenticated from raw bytes; pending evidence cannot expose a delta or outcome.",
   "suite_implementation_history": {
     "initial_sha256": "51c0da8e81a06867ce29eb085fae05c359920233cdf7195dd99dc54cb3bd44ea",
-    "replacements": []
+    "replacements": [
+      {
+        "implementation_sha256": "dbd302e8f7ba6c1901baa82e04623144cd6eb1c959d050a9e934ced5b31a6df2",
+        "rationale": "Authenticate runner-only workspace dispatch and build-closure maintenance plus removal of test-only partial BaselineMeasurement Deref and DerefMut interfaces; benchmark protocol and row semantics are unchanged."
+      }
+    ]
   },
   "measured_tools": {
     "arm_gcc_sha256": "67b954ba6377782329e5bb873af42bf1bff4b2ec1461e9edc7345a6729c656e8",

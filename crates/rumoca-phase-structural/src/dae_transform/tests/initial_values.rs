@@ -14,7 +14,7 @@
 //! exercise both demotion paths at once: whichever one the filter fails to
 //! cover shows up as the wrong state surviving.
 
-use rumoca_core::StateSelect;
+use rumoca_core::{Fixity, StateSelect};
 
 use super::*;
 
@@ -92,12 +92,21 @@ fn aliased_pair_model(x: StatedInitialValue, y: StatedInitialValue) -> dae::Dae 
             )
         })?;
         let (x_id, x_reservation, y_id, y_reservation, f_id) = model.variables(|variables| {
-            let (x_id, x_reservation) =
-                variables.reserve_state(VarName::new("x"), real, at("Real x"))?;
-            let (y_id, y_reservation) =
-                variables.reserve_state(VarName::new("y"), real, at("Real y"))?;
+            let (x_id, x_reservation) = variables.reserve_state(
+                VarName::new("x"),
+                InstanceId::new(1),
+                real,
+                at("Real x"),
+            )?;
+            let (y_id, y_reservation) = variables.reserve_state(
+                VarName::new("y"),
+                InstanceId::new(2),
+                real,
+                at("Real y"),
+            )?;
             let f_id = variables.algebraic(
                 VarName::new("f"),
+                InstanceId::new(3),
                 real,
                 at("Real f"),
                 dae::VariableAttributes::default(),
@@ -115,7 +124,7 @@ fn aliased_pair_model(x: StatedInitialValue, y: StatedInitialValue) -> dae::Dae 
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: Some(x.fixed),
+                    fixed: Some(Fixity::from(x.fixed)),
                     state_select: x.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -125,7 +134,7 @@ fn aliased_pair_model(x: StatedInitialValue, y: StatedInitialValue) -> dae::Dae 
                 y_reservation,
                 dae::VariableAttributes {
                     start: y_start,
-                    fixed: Some(y.fixed),
+                    fixed: Some(Fixity::from(y.fixed)),
                     state_select: y.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -269,14 +278,20 @@ fn asserted_value_model(x: StatedInitialValue, asserted: AssertedValue) -> dae::
         let (c_id, x_id, x_reservation, f_id) = model.variables(|variables| {
             let c_id = variables.parameter(
                 VarName::new("c"),
+                InstanceId::new(1),
                 real,
                 at("parameter Real c"),
                 dae::VariableAttributes::default(),
             )?;
-            let (x_id, x_reservation) =
-                variables.reserve_state(VarName::new("x"), real, at("Real x"))?;
+            let (x_id, x_reservation) = variables.reserve_state(
+                VarName::new("x"),
+                InstanceId::new(2),
+                real,
+                at("Real x"),
+            )?;
             let f_id = variables.algebraic(
                 VarName::new("f"),
+                InstanceId::new(3),
                 real,
                 at("Real f"),
                 dae::VariableAttributes::default(),
@@ -323,7 +338,7 @@ fn asserted_value_model(x: StatedInitialValue, asserted: AssertedValue) -> dae::
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: Some(x.fixed),
+                    fixed: Some(Fixity::from(x.fixed)),
                     state_select: x.select,
                     ..dae::VariableAttributes::default()
                 },
@@ -351,7 +366,7 @@ fn role(dae: &dae::Dae, name: &str) -> dae::VariableRole {
 
 /// The `start` value a reconstructed DAE still states about `name`, together
 /// with its `fixed` flag — the two halves of the MLS 3.6 §8.6 initial equation.
-fn stated_initial_value(dae: &dae::Dae, name: &str) -> (Option<f64>, Option<bool>) {
+fn stated_initial_value(dae: &dae::Dae, name: &str) -> (Option<f64>, Fixity) {
     dae.inspect(|view| {
         let variable = view
             .variables()
@@ -421,7 +436,7 @@ fn a_pinned_start_decides_which_aliased_state_is_demoted() {
     );
     assert_eq!(
         stated_initial_value(&reduced, "x"),
-        (Some(1.0), Some(true)),
+        (Some(1.0), Fixity::Fixed),
         "the MLS 3.6 section 8.6 initial equation `x = 1.0` survives the reduction"
     );
     reduced.inspect(|view| assert!(sort(view).is_ok(), "replacement DAE matches perfectly"));
@@ -482,7 +497,18 @@ fn two_pinned_members_that_agree_on_the_start_still_reduce() {
         "the surviving anchor carries the obligation the demoted member states"
     );
     assert_eq!(role(&reduced, "y"), dae::VariableRole::Algebraic);
-    assert_eq!(stated_initial_value(&reduced, "x"), (Some(1.0), Some(true)));
+    assert_eq!(
+        stated_initial_value(&reduced, "x"),
+        (Some(1.0), Fixity::Fixed)
+    );
+    // The demotion changed `y`'s role inside the shared `fixed = false`
+    // default class; its effective fixity is copied, never re-defaulted. An
+    // algebraic that omitted `fixed` would read `Free`, so this can only
+    // pass when the reconstruction preserves the stated value.
+    assert_eq!(
+        stated_initial_value(&reduced, "y"),
+        (Some(1.0), Fixity::Fixed)
+    );
 }
 
 #[test]
@@ -495,7 +521,7 @@ fn an_omitted_start_states_the_same_initial_value_as_an_explicit_zero() {
         prepare_for_solve(&model).expect("the Real start default is the value it defaults to"),
     );
     assert_eq!(role(&reduced, "y"), dae::VariableRole::Algebraic);
-    assert_eq!(stated_initial_value(&reduced, "x"), (None, Some(true)));
+    assert_eq!(stated_initial_value(&reduced, "x"), (None, Fixity::Fixed));
 }
 
 /// MLS 3.6 §8.6 adds `x = 1` and `y = 2` to the initialization equations, and

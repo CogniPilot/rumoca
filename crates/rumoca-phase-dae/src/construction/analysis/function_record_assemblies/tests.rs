@@ -70,11 +70,21 @@ fn resolved_root_at(name: &str, def_id: u32, span: Span) -> Reference {
 }
 
 fn assignment(root_id: u32, field_name: &str, field_id: u32, span: Span) -> rumoca_core::Statement {
+    assignment_to("y", root_id, field_name, field_id, span)
+}
+
+fn assignment_to(
+    root_name: &str,
+    root_id: u32,
+    field_name: &str,
+    field_id: u32,
+    span: Span,
+) -> rumoca_core::Statement {
     let component = ComponentReference::construct(
         false,
         span,
         vec![
-            part_at("y", root_id, span),
+            part_at(root_name, root_id, span),
             part_at(field_name, field_id, span),
         ],
     )
@@ -374,6 +384,33 @@ fn staging_identity_keeps_same_spelling_on_distinct_targets_separate() {
         },
         "conditional definedness must not merge exact fields by display spelling"
     );
+}
+
+#[test]
+fn staging_groups_use_exact_target_identity_and_first_source_order() {
+    let mut function =
+        rumoca_core::Function::new("same_spelling", DefId::new(63_806), test_span(360, 390));
+    for target in [77, 88] {
+        function.add_output(
+            parameter("y")
+                .with_def_id(DefId::new(target))
+                .with_type_class(ClassType::Record),
+        );
+    }
+    let statements = vec![
+        assignment_to("y", 88, "a", 102, test_span(361, 362)),
+        assignment_to("y", 77, "a", 102, test_span(363, 364)),
+        assignment_to("y", 88, "b", 103, test_span(365, 366)),
+        assignment_to("y", 77, "b", 103, test_span(367, 368)),
+    ];
+
+    let groups = staged_record_assignment_groups(&statements, &function)
+        .expect("resolved staging assignments group without display-name recovery");
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].0.def_id, Some(DefId::new(88)));
+    assert_eq!(groups[0].1, [0, 2]);
+    assert_eq!(groups[1].0.def_id, Some(DefId::new(77)));
+    assert_eq!(groups[1].1, [1, 3]);
 }
 
 #[test]

@@ -503,7 +503,7 @@ mod shipped;
         fn new(label: &str) -> Self {
             let root = std::env::temp_dir()
                 .join(format!("rumoca-totality-{label}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&root);
+            let _stale_fixture_removal_error = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).expect("create fixture root");
             Self { root }
         }
@@ -531,7 +531,7 @@ mod shipped;
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
+            let _fixture_removal_error = fs::remove_dir_all(&self.root);
         }
     }
 }

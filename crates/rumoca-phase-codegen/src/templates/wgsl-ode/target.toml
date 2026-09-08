@@ -1,5 +1,4 @@
 version = 1
-ir = "solve"
 name = "wgsl-ode"
 description = "WGSL compute-shader explicit-ODE derivative kernels for WebGPU execution"
 execution_mode = "jit"
@@ -26,7 +25,6 @@ dynamic_ranges = false
 # subscripts natively even though genuinely dynamic ranges remain unsupported.
 dynamic_derivative_subscripts = true
 external_functions = false
-external_tables = false
 random = false
 
 [capabilities.tensor]
@@ -40,9 +38,13 @@ sparse = false
 dtypes = ["f32"]
 
 [[files]]
+artifact_kind = "wgsl-source"
+semantic_context = "solve"
 path = "{{ model_name }}_ode.wgsl"
 template = "model_ode.wgsl.jinja"
 
 [[files]]
+artifact_kind = "json"
+semantic_context = "solve"
 path = "{{ model_name }}_layout.json"
 template = "model_layout.json.jinja"

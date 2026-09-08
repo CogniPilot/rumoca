@@ -28,6 +28,7 @@ pub mod diagnostic;
 pub mod lexical;
 pub mod package;
 pub mod signal_effect;
+mod traced_product;
 pub mod validate;
 
 pub use ast::{Block, BlockMethod, BlockMethodKind, Expression, PredefinedSignal, Statement};
@@ -35,4 +36,9 @@ pub use builtins::{BUILTINS, Builtin, is_reserved_name};
 pub use diagnostic::{GalecError, Location, PathSegment};
 pub use lexical::{is_legal_plain_identifier, plain_identifier_shape_error};
 pub use signal_effect::{RepeatableSignalEffect, StatusEffect};
-pub use validate::{SymbolInfo, span_of, symbol_at, validate};
+pub use traced_product::{
+    AlgorithmCodeOriginProjectionError, AlgorithmCodePackageIssuer,
+    AlgorithmCodeSemanticModelIdentity, AlgorithmCodeSourceContentDigest,
+    AlgorithmCodeTraceOriginError, OriginBoundAlgorithmCodePackage, TracedAlgorithmCodeProduct,
+};
+pub use validate::{SymbolInfo, span_of, symbol_at};

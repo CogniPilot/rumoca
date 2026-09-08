@@ -476,9 +476,11 @@ fn evaluate_derivative(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rumoca_solver::fmi_me::backend_test_support::MeBackendProbe;
 
     fn setup() -> MeNumericalSetup {
-        MeNumericalSetup::new(1.0e-6, 1.0e-9, vec![1.0], 1, Some(0.01))
+        MeBackendProbe::linear(vec![1.0])
+            .numerical_setup(1.0e-6, 1.0e-9, Some(0.01))
             .expect("fixture setup is checked")
     }
 

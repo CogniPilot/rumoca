@@ -1,0 +1,735 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index abfca7c2..ae312133 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -360,6 +360,11 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
+ [[package]]
+ name = "closure-region-facts"
+ version = "0.1.0"
++dependencies = [
++ "serde",
++ "serde_json",
++ "tempfile",
++]
+ 
+ [[package]]
+ name = "cobs"
+diff --git a/src/bin/charon/main.rs b/src/bin/charon/main.rs
+index 674d99e3..bb089ea0 100644
+--- a/src/bin/charon/main.rs
++++ b/src/bin/charon/main.rs
+@@ -46,6 +46,7 @@ use toolchain::{toolchain_path, toolchain_version};
+ extern crate charon_lib;
+ 
+ mod cli;
++mod fact_cache;
+ mod toml_config;
+ mod toolchain;
+ mod ui_test;
+@@ -192,21 +193,24 @@ fn translate_multi_target(
+ 
+ fn translate_with_cargo(
+     mut options: CliOpts,
+-    cargo_args: Vec<String>,
++    mut cargo_args: Vec<String>,
+ ) -> anyhow::Result<ExitStatus> {
+     ensure_rustup();
+     if let Some(toml) = toml_config::read_toml() {
+         options = toml.apply(options);
+     }
+     options.validate()?;
++    let (target_dir, fact_cache_key) = fact_cache::target_directory(&mut cargo_args)?;
+     let mut cmd = toolchain::in_toolchain("cargo")?;
+     cmd.env("RUSTC_WRAPPER", toolchain::driver_path());
+     // We pass a random value to prevent cargo from considering a charon run cacheable.
+     cmd.env("RUSTC_WORKSPACE_WRAPPER", fresh_fingerprint());
+     cmd.env("CHARON_USING_CARGO", "1");
++    cmd.env("CHARON_CLOSURE_FACT_CACHE_KEY", fact_cache_key);
+     cmd.env_remove("CARGO_PRIMARY_PACKAGE");
+     cmd.env(CHARON_ARGS, serde_json::to_string(&options).unwrap());
+     cmd.arg("build");
++    cmd.arg("--target-dir").arg(target_dir);
+     if arg_value(&cargo_args, "--target").is_none() {
+         // Make sure the build target is explicitly set. This is needed to detect which crates are
+         // proc-macro/build-script in `charon-driver`.
+diff --git a/src/bin/charon/fact_cache.rs b/src/bin/charon/fact_cache.rs
+new file mode 100644
+index 00000000..17034f9c
+--- /dev/null
++++ b/src/bin/charon/fact_cache.rs
+@@ -0,0 +1,104 @@
++//! Keep dependency facts in a compiler/collector-owned Cargo artifact namespace.
++
++use anyhow::{Context, Result, bail, ensure};
++use serde::Deserialize;
++use std::path::PathBuf;
++
++use crate::toolchain;
++
++#[derive(Deserialize)]
++struct Metadata {
++    target_directory: PathBuf,
++}
++
++/// Cargo itself resolves environment/configuration/manifest-relative paths. An
++/// explicit build --target-dir is supplied as metadata's target-directory input,
++/// then replaced with one authoritative path for the actual build.
++pub(super) fn target_directory(cargo_args: &mut Vec<String>) -> Result<(PathBuf, String)> {
++    let (metadata_args, cli_target) = metadata_arguments(cargo_args)?;
++    let mut metadata = toolchain::in_toolchain("cargo")?;
++    metadata.args(["metadata", "--no-deps", "--format-version=1"]);
++    metadata.args(metadata_args);
++    if let Some(target) = cli_target {
++        // metadata has no --target-dir flag. Its equivalent environment input
++        // must replace the inherited value, not sit below it as a config key.
++        metadata.env("CARGO_TARGET_DIR", target);
++    }
++    let output = metadata
++        .output()
++        .context("cannot resolve Cargo target directory")?;
++    ensure!(
++        output.status.success(),
++        "Cargo metadata failed: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++    let metadata: Metadata = serde_json::from_slice(&output.stdout)?;
++
++    let output = toolchain::in_toolchain(toolchain::driver_path())?
++        .arg("--print-closure-fact-cache-key")
++        .output()
++        .context("cannot identify closure fact collector")?;
++    ensure!(
++        output.status.success(),
++        "collector identity failed: {}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++    let key = String::from_utf8(output.stdout)?;
++    let Some(hash) = key.trim_end().strip_prefix("sha256=") else {
++        bail!("invalid collector cache identity");
++    };
++    ensure!(
++        hash.len() == 64
++            && hash
++                .bytes()
++                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
++        "invalid collector cache digest"
++    );
++    let directory = metadata
++        .target_directory
++        .join("charon-closure-facts")
++        .join(hash);
++    Ok((directory, key.trim_end().to_owned()))
++}
++
++fn metadata_arguments(cargo_args: &mut Vec<String>) -> Result<(Vec<String>, Option<String>)> {
++    let mut metadata = Vec::new();
++    let mut build = Vec::new();
++    let mut target = None;
++    let mut args = cargo_args.iter();
++    while let Some(arg) = args.next() {
++        if arg == "--target-dir" || arg.starts_with("--target-dir=") {
++            ensure!(target.is_none(), "--target-dir may only be supplied once");
++            let value = if let Some(value) = arg.strip_prefix("--target-dir=") {
++                value.to_owned()
++            } else {
++                args.next().context("--target-dir requires a path")?.clone()
++            };
++            ensure!(!value.is_empty(), "--target-dir requires a nonempty path");
++            target = Some(value);
++            continue;
++        }
++        build.push(arg.clone());
++        if ["--manifest-path", "--config", "--lockfile-path", "-Z", "-C"].contains(&arg.as_str()) {
++            let value = args
++                .next()
++                .with_context(|| format!("{arg} requires a value"))?;
++            metadata.extend([arg.clone(), value.clone()]);
++            build.push(value.clone());
++        } else if [
++            "--manifest-path=",
++            "--config=",
++            "--lockfile-path=",
++            "-Z",
++            "-C",
++        ]
++        .iter()
++        .any(|prefix| arg.starts_with(prefix))
++            || ["--offline", "--locked", "--frozen"].contains(&arg.as_str())
++        {
++            metadata.push(arg.clone());
++        }
++    }
++    *cargo_args = build;
++    Ok((metadata, target))
++}
+diff --git a/src/bin/charon-driver/main.rs b/src/bin/charon-driver/main.rs
+index 5cc9c017..469a9e9a 100644
+--- a/src/bin/charon-driver/main.rs
++++ b/src/bin/charon-driver/main.rs
+@@ -83,6 +83,17 @@ impl fmt::Display for CharonFailure {
+ 
+ /// Run charon. Returns the number of warnings generated.
+ fn run_charon() -> Result<usize, CharonFailure> {
++    if std::env::args()
++        .skip(1)
++        .eq(["--print-closure-fact-cache-key"])
++    {
++        let key = closure_region_facts::session::FactSession::cache_key().map_err(|error| {
++            eprintln!("error: cannot identify closure fact collector: {error:?}");
++            CharonFailure::CharonError(1)
++        })?;
++        println!("{key}");
++        return Ok(0);
++    }
+     // Run the driver machinery.
+     let Some((mut ctx, options)) = driver::run_rustc_driver()? else {
+         // We didn't run charon.
+diff --git a/src/bin/charon-driver/driver.rs b/src/bin/charon-driver/driver.rs
+index 7812a538..e4c56cfd 100644
+--- a/src/bin/charon-driver/driver.rs
++++ b/src/bin/charon-driver/driver.rs
+@@ -7,7 +7,7 @@ use charon_lib::errors::ErrorCtx;
+ use charon_lib::options::{self, CliOpts};
+ use charon_lib::transform::TransformCtx;
+ use charon_lib::utils::arg_value;
+-use closure_region_facts::collection::Collection;
++use closure_region_facts::session::FactSession;
+ use itertools::Itertools;
+ use rustc_driver::{Callbacks, Compilation};
+ use rustc_interface::Config;
+@@ -72,8 +72,6 @@ fn setup_compiler(
+                     Ok(tcx.arena.alloc(Default::default()))
+                 };
+             });
+-        } else {
+-            config.override_queries = Some(|_, providers| Collection::install_query(providers));
+         }
+ 
+         config.opts.unstable_opts.no_codegen = !codegen;
+@@ -257,6 +255,7 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+     // This matches what Miri does, which hopefully makes it reliable enough. This relies on us
+     // always invoking cargo itself with `--target`, which `charon` ensures.
+     let target = arg_value(&compiler_args, "--target");
++    let is_target_crate = target.is_some();
+     // Whether this is the crate we want to translate.
+     let is_selected_crate = !is_workspace_dependency && target.is_some();
+ 
+@@ -300,7 +299,18 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+     let output = if !is_selected_crate {
+         trace!("Skipping charon; running compiler normally instead.");
+         // Run the compiler normally.
+-        run_compiler_with_callbacks(compiler_args, &mut RunCompilerNormallyCallbacks)?;
++        if is_target_crate && !options.skip_borrowck {
++            let session = FactSession::begin().map_err(fact_failure)?;
++            session
++                .run_compiler(
++                    &compiler_args,
++                    &mut RunCompilerNormallyCallbacks,
++                    emit_artifacts,
++                )
++                .map_err(fact_failure)?;
++        } else {
++            run_compiler_with_callbacks(compiler_args, &mut RunCompilerNormallyCallbacks)?;
++        }
+         None
+     } else {
+         options.apply_preset();
+@@ -308,7 +318,7 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+         let closure_regions = if options.skip_borrowck {
+             ClosureFactSource::BorrowCheckingDisabled
+         } else {
+-            ClosureFactSource::Checked(Arc::new(Collection::begin().map_err(|error| {
++            ClosureFactSource::Checked(Arc::new(FactSession::begin().map_err(|error| {
+                 register_error!(
+                     error_ctx,
+                     no_crate,
+@@ -327,15 +337,20 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+ 
+         // Call the Rust compiler with our custom callback.
+         let mut callback = CharonCallbacks {
+-            closure_regions,
++            closure_regions: closure_regions.clone(),
+             options: &options,
+             emit_artifacts,
+             codegen,
+             error_ctx: Some(error_ctx),
+             transform_ctx: None,
+         };
+-        charon_lib::timing::time("rustc-driver", || {
+-            run_compiler_with_callbacks(compiler_args, &mut callback)
++        charon_lib::timing::time("rustc-driver", || match &closure_regions {
++            ClosureFactSource::Checked(session) => session
++                .run_compiler(&compiler_args, &mut callback, emit_artifacts)
++                .map_err(fact_failure),
++            ClosureFactSource::BorrowCheckingDisabled => {
++                run_compiler_with_callbacks(compiler_args, &mut callback)
++            }
+         })?;
+         // If `transform_ctx` is not set here, there was a fatal error.
+         let ctx = callback.transform_ctx.ok_or(CharonFailure::RustcError)?;
+@@ -344,6 +359,17 @@ pub fn run_rustc_driver() -> Result<Option<(TransformCtx, CliOpts)>, CharonFailu
+     Ok(output)
+ }
+ 
++fn fact_failure(error: closure_region_facts::session::TransportError) -> CharonFailure {
++    if matches!(
++        error,
++        closure_region_facts::session::TransportError::RustcRejected
++    ) {
++        return CharonFailure::RustcError;
++    }
++    eprintln!("error: closure fact transport failed: {error:?}");
++    CharonFailure::CharonError(1)
++}
++
+ /// The callbacks for Charon
+ pub struct CharonCallbacks<'a> {
+     closure_regions: ClosureFactSource,
+diff --git a/src/bin/charon-driver/translate/translate_ctx.rs b/src/bin/charon-driver/translate/translate_ctx.rs
+index 66575d9c..f4b30a0f 100644
+--- a/src/bin/charon-driver/translate/translate_ctx.rs
++++ b/src/bin/charon-driver/translate/translate_ctx.rs
+@@ -79,7 +79,7 @@ pub struct TranslateCtx<'tcx> {
+ /// Unchecked extraction has no authority to issue closure lifetime contracts.
+ #[derive(Clone)]
+ pub enum ClosureFactSource {
+-    Checked(Arc<closure_region_facts::collection::Collection>),
++    Checked(Arc<closure_region_facts::session::FactSession>),
+     BorrowCheckingDisabled,
+ }
+ 
+diff --git a/src/bin/charon-driver/translate/closure_constraints.rs b/src/bin/charon-driver/translate/closure_constraints.rs
+index c949ea20..9b56fd10 100644
+--- a/src/bin/charon-driver/translate/closure_constraints.rs
++++ b/src/bin/charon-driver/translate/closure_constraints.rs
+@@ -35,13 +35,6 @@ impl ItemTransCtx<'_, '_> {
+         let hax::DefIdBase::Real(owner) = args.item.def_id.base else {
+             raise_error!(self, span, "Closure contract has no Rust declaration owner")
+         };
+-        let Some(local) = owner.as_local() else {
+-            raise_error!(
+-                self,
+-                span,
+-                "Cross-crate closure region facts are not available for this artifact"
+-            )
+-        };
+         let ClosureFactSource::Checked(collection) = &self.t_ctx.closure_regions else {
+             raise_error!(
+                 self,
+@@ -49,7 +42,7 @@ impl ItemTransCtx<'_, '_> {
+                 "Closure contract extraction requires Rust borrow checking"
+             )
+         };
+-        let facts = match collection.local(self.t_ctx.tcx, local) {
++        let facts = match collection.facts(self.t_ctx.tcx, owner) {
+             Ok(facts) => facts,
+             Err(error) => raise_error!(self, span, "Closure region facts unavailable: {error:?}"),
+         };
+diff --git a/tests/closure_fact_transport.rs b/tests/closure_fact_transport.rs
+new file mode 100644
+index 00000000..4189e116
+--- /dev/null
++++ b/tests/closure_fact_transport.rs
+@@ -0,0 +1,402 @@
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::{Command, Output};
++
++use anyhow::{Context, Result, ensure};
++use charon_lib::ast::{OutlivesPred, PathElem, RegionBinder, TyKind};
++use charon_lib::export::CrateData;
++use charon_lib::options::SerializationFormat;
++use serde_json::Value;
++
++struct Fixture {
++    directory: tempfile::TempDir,
++    dependency: PathBuf,
++    sidecar: PathBuf,
++    source: PathBuf,
++}
++
++impl Fixture {
++    fn new() -> Result<Self> {
++        let directory = tempfile::tempdir()?;
++        let source = directory.path().join("dep.rs");
++        fs::write(
++            &source,
++            "pub fn named<'a>() -> impl Fn(&'a u32) -> &'a u32 { |x| x }\n",
++        )?;
++        fs::write(
++            directory.path().join("root.rs"),
++            "pub fn call(x: &u32) -> &u32 { dep::named()(x) }\n",
++        )?;
++        Ok(Self {
++            dependency: directory.path().join("libdep.rmeta"),
++            sidecar: directory
++                .path()
++                .join("libdep.rmeta.charon-closure-regions.json"),
++            source,
++            directory,
++        })
++    }
++
++    fn command(&self) -> Command {
++        let mut command = Command::new(env!("CARGO_BIN_EXE_charon"));
++        command.current_dir(self.directory.path());
++        command.args([
++            "rustc",
++            "--sysroot=default",
++            "--error-on-warnings",
++            "--abort-on-error",
++        ]);
++        command.env_remove("CARGO_PRIMARY_PACKAGE");
++        command.env_remove("CHARON_USING_CARGO");
++        command.env_remove("CHARON_CLOSURE_FACT_CACHE_KEY");
++        command
++    }
++
++    fn produce(&self) -> Result<Output> {
++        Ok(self
++            .command()
++            .env("CHARON_USING_CARGO", "1")
++            .args([
++                "--",
++                "--edition=2024",
++                "--crate-type=rlib",
++                "--crate-name=dep",
++                "--emit=metadata",
++            ])
++            .arg("-o")
++            .arg(&self.dependency)
++            .arg(&self.source)
++            .output()?)
++    }
++
++    fn consume(&self) -> Result<Output> {
++        Ok(self
++            .command()
++            .args([
++                "--mir=optimized",
++                "--include=dep",
++                "--translate-all-methods",
++                "--lift-associated-types=*",
++                "--hide-marker-traits",
++                "--hide-allocator",
++                "--remove-unused-self-clauses",
++                "--remove-adt-clauses",
++                "--no-gen-tuple-structs",
++                "--dest-file=root.llbc",
++                "--",
++                "--edition=2024",
++                "--crate-type=rlib",
++                "--crate-name=root",
++                "--extern",
++            ])
++            .arg(format!("dep={}", self.dependency.display()))
++            .arg("root.rs")
++            .output()?)
++    }
++}
++
++fn succeeds(output: Output) -> Result<()> {
++    ensure!(
++        output.status.success(),
++        "{}",
++        String::from_utf8_lossy(&output.stderr)
++    );
++    Ok(())
++}
++
++fn refuses(output: Output, reason: &str) -> Result<()> {
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    ensure!(!output.status.success(), "unexpected success for {reason}");
++    ensure!(stderr.contains(reason), "expected {reason}: {stderr}");
++    Ok(())
++}
++
++fn write_json(path: &Path, value: &Value) -> Result<()> {
++    fs::write(path, serde_json::to_vec(value)?)?;
++    Ok(())
++}
++
++fn imported_contract_contains_the_required_direction(fixture: &Fixture) -> Result<()> {
++    let data = CrateData::deserialize_from_file(
++        &fixture.directory.path().join("root.llbc"),
++        SerializationFormat::Json,
++    )?;
++    let mut checked = 0;
++    for function in &data.translated.fun_decls {
++        if function.item_meta.is_local
++            || !function
++                .item_meta
++                .name
++                .name
++                .iter()
++                .any(|part| matches!(part, PathElem::Impl(_)))
++        {
++            continue;
++        }
++        let Some(PathElem::Ident(name, _)) = function.item_meta.name.name.last() else {
++            continue;
++        };
++        if !["call", "call_mut", "call_once"].contains(&name.as_str()) {
++            continue;
++        }
++        ensure!(
++            function.signature.inputs.len() == 2,
++            "imported callable must have receiver and tuple"
++        );
++        let TyKind::Adt(tuple) = function.signature.inputs[1].kind() else {
++            anyhow::bail!("expected callable tuple")
++        };
++        let TyKind::Ref(input, _, _) = tuple.generics.types[0].kind() else {
++            anyhow::bail!("expected input reference")
++        };
++        let TyKind::Ref(output, _, _) = function.signature.output.kind() else {
++            anyhow::bail!("expected output reference")
++        };
++        ensure!(
++            input != output,
++            "free occurrences were incorrectly identified"
++        );
++        let predicates = &function.generics.regions_outlive;
++        ensure!(
++            predicates.contains(&RegionBinder::empty(OutlivesPred(*input, *output))),
++            "missing imported required path"
++        );
++        ensure!(
++            !predicates.contains(&RegionBinder::empty(OutlivesPred(*output, *input))),
++            "invented reverse path"
++        );
++        checked += 1;
++    }
++    ensure!(
++        checked == 3,
++        "expected all three imported callable contracts, got {checked}"
++    );
++    Ok(())
++}
++
++#[test]
++fn exact_artifact_facts_reject_missing_stale_and_malformed_records() -> Result<()> {
++    let fixture = Fixture::new()?;
++    succeeds(fixture.produce()?)?;
++    succeeds(fixture.consume()?)?;
++    imported_contract_contains_the_required_direction(&fixture)?;
++    let original = fs::read(&fixture.sidecar)?;
++    let artifact: Value = serde_json::from_slice(&original)?;
++    ensure!(artifact["records"].as_array().context("records")?.len() == 1);
++    let hidden = fixture.directory.path().join("saved-sidecar.json");
++    fs::rename(&fixture.sidecar, &hidden)?;
++    refuses(fixture.consume()?, "Closure region facts unavailable")?;
++    fs::rename(hidden, &fixture.sidecar)?;
++    for field in [
++        "schema",
++        "compiler",
++        "driver_digest",
++        "target_digest",
++        "stable_crate_id",
++        "crate_hash",
++    ] {
++        let mut changed = artifact.clone();
++        changed["identity"][field] = if field == "schema" || field == "stable_crate_id" {
++            serde_json::json!(0)
++        } else {
++            serde_json::json!("wrong identity")
++        };
++        write_json(&fixture.sidecar, &changed)?;
++        refuses(fixture.consume()?, "stale or mismatched dependency facts")?;
++    }
++    let mut changed = artifact.clone();
++    changed["artifact_digest"] = serde_json::json!("wrong artifact");
++    write_json(&fixture.sidecar, &changed)?;
++    refuses(fixture.consume()?, "stale or mismatched dependency facts")?;
++    let mut changed = artifact.clone();
++    changed["records"] = serde_json::json!([]);
++    write_json(&fixture.sidecar, &changed)?;
++    refuses(fixture.consume()?, "MissingDeclaration")?;
++    let mut changed = artifact.clone();
++    changed["records"][0]["facts"] = serde_json::json!({"Err": "MissingFacts"});
++    write_json(&fixture.sidecar, &changed)?;
++    refuses(fixture.consume()?, "MissingFacts")?;
++    let mut changed = artifact.clone();
++    changed["records"][0]["facts"]["Ok"]["slots"][0]["occurrence"] = serde_json::json!(99);
++    write_json(&fixture.sidecar, &changed)?;
++    refuses(fixture.consume()?, "noncanonical region slots")?;
++    let mut changed = artifact.clone();
++    let record = changed["records"][0].clone();
++    changed["records"]
++        .as_array_mut()
++        .context("records")?
++        .push(record);
++    write_json(&fixture.sidecar, &changed)?;
++    refuses(fixture.consume()?, "duplicate declaration record")?;
++    fs::write(&fixture.sidecar, b"{truncated")?;
++    refuses(fixture.consume()?, "Decode")?;
++    fs::write(&fixture.sidecar, original)?;
++    succeeds(fixture.consume()?)?;
++    imported_contract_contains_the_required_direction(&fixture)?;
++    Ok(())
++}
++
++#[test]
++fn rejected_rust_compilation_cannot_publish_a_sidecar() -> Result<()> {
++    let fixture = Fixture::new()?;
++    fs::write(
++        &fixture.source,
++        "pub fn bad() -> impl Fn() -> &'static u32 { let x = 1; move || &x }\n",
++    )?;
++    let output = fixture.produce()?;
++    ensure!(
++        output.status.code() == Some(2),
++        "Rust rejection must retain its exit class"
++    );
++    refuses(output, "lifetime")?;
++    ensure!(!fixture.sidecar.exists(), "rejected source published facts");
++    Ok(())
++}
++
++#[test]
++fn a_post_analysis_link_failure_cannot_publish_facts() -> Result<()> {
++    let fixture = Fixture::new()?;
++    succeeds(fixture.produce()?)?;
++    let previous = fs::read(&fixture.sidecar)?;
++    let previous_metadata = fs::read(&fixture.dependency)?;
++    fs::write(
++        &fixture.source,
++        "#[link(name=\"charon_fact_test_missing_native_library\")] unsafe extern \"C\" {}\npub fn named<'a>() -> impl Fn(&'a u32) -> &'a u32 { |x| x }\n",
++    )?;
++    let output = fixture
++        .command()
++        .env("CHARON_USING_CARGO", "1")
++        .args([
++            "--",
++            "--edition=2024",
++            "--crate-type=dylib",
++            "--crate-name=dep",
++            "--emit=metadata,link",
++            "--out-dir=.",
++        ])
++        .arg(&fixture.source)
++        .output()?;
++    ensure!(
++        String::from_utf8_lossy(&output.stderr).contains("linking with"),
++        "did not reach the linker"
++    );
++    ensure!(
++        output.status.code() == Some(2),
++        "link failure must retain its Rust exit class"
++    );
++    refuses(output, "charon_fact_test_missing_native_library")?;
++    ensure!(
++        fs::read(&fixture.dependency)? != previous_metadata,
++        "new metadata emission was not reached"
++    );
++    ensure!(
++        fs::read(&fixture.sidecar)? == previous,
++        "post-analysis failure replaced previous facts"
++    );
++    ensure!(
++        !fixture
++            .directory
++            .path()
++            .join("libdep.so.charon-closure-regions.json")
++            .exists()
++    );
++    Ok(())
++}
++
++#[test]
++fn changing_the_driver_mid_cargo_invocation_refuses_before_compilation() -> Result<()> {
++    let fixture = Fixture::new()?;
++    let output = fixture
++        .command()
++        .env("CHARON_USING_CARGO", "1")
++        .env("CHARON_CLOSURE_FACT_CACHE_KEY", "old driver identity")
++        .args([
++            "--",
++            "--edition=2024",
++            "--crate-type=rlib",
++            "--crate-name=dep",
++            "--emit=metadata",
++        ])
++        .arg("-o")
++        .arg(&fixture.dependency)
++        .arg(&fixture.source)
++        .output()?;
++    refuses(output, "collector changed during Cargo invocation")?;
++    ensure!(!fixture.dependency.exists() && !fixture.sidecar.exists());
++    Ok(())
++}
++
++#[test]
++fn cargo_owns_its_namespace_and_preserves_target_directory_precedence() -> Result<()> {
++    let fixture = Fixture::new()?;
++    fs::create_dir(fixture.directory.path().join("dep"))?;
++    fs::write(
++        fixture.directory.path().join("Cargo.toml"),
++        "[package]\nname='root'\nversion='0.0.0'\nedition='2024'\n[lib]\npath='root.rs'\n[dependencies]\ndep={path='dep'}\n[workspace]\nexclude=['dep']\n",
++    )?;
++    fs::write(
++        fixture.directory.path().join("dep/Cargo.toml"),
++        "[package]\nname='dep'\nversion='0.0.0'\nedition='2024'\n[lib]\npath='../dep.rs'\n[workspace]\n",
++    )?;
++    fs::create_dir(fixture.directory.path().join(".cargo"))?;
++    fs::write(
++        fixture.directory.path().join(".cargo/config.toml"),
++        "[build]\ntarget-dir='configured'\n",
++    )?;
++    succeeds(
++        Command::new("cargo")
++            .current_dir(fixture.directory.path())
++            .env_remove("CARGO_TARGET_DIR")
++            .env_remove("RUSTC_WRAPPER")
++            .env_remove("RUSTC_WORKSPACE_WRAPPER")
++            .args(["build", "--offline"])
++            .output()?,
++    )?;
++    let base = fixture.directory.path();
++    for (choice, env_dir, cli_dir) in [
++        ("configured", None, None),
++        ("environment", Some("environment"), None),
++        ("command-line", Some("environment"), Some("command-line")),
++    ] {
++        for attempt in 0..2 {
++            let mut command = Command::new(env!("CARGO_BIN_EXE_charon"));
++            command
++                .current_dir(base)
++                .env_remove("CARGO_TARGET_DIR")
++                .args([
++                    "cargo",
++                    "--sysroot=default",
++                    "--mir=optimized",
++                    "--error-on-warnings",
++                    "--abort-on-error",
++                    "--include=dep",
++                    "--dest-file=cargo.llbc",
++                    "--",
++                    "--offline",
++                    "--lib",
++                ]);
++            if let Some(directory) = env_dir {
++                command.env("CARGO_TARGET_DIR", base.join(directory));
++            }
++            if let Some(directory) = cli_dir {
++                command.arg("--target-dir").arg(base.join(directory));
++            }
++            let output = command.output()?;
++            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
++            succeeds(output)?;
++            ensure!(
++                base.join(choice).join("charon-closure-facts").is_dir(),
++                "wrong directory for {choice}"
++            );
++            ensure!(
++                stderr.contains("Compiling dep ") == (attempt == 0),
++                "dependency cache reuse at {choice}/{attempt}: {stderr}"
++            );
++            ensure!(
++                stderr.contains("Compiling root "),
++                "requested translation must rerun"
++            );
++        }
++    }
++    Ok(())
++}

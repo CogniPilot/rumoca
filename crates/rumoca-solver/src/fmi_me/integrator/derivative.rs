@@ -26,7 +26,10 @@ use std::{
 };
 
 use super::MeIntegrationError;
-use crate::fmi_me::{MeError, MeTime, SolveMeKernel};
+use crate::fmi_me::{
+    MeContinuousStateDomain, MeDirectionalKnownBatch, MeDirectionalUnknownBatch, MeError, MeTime,
+    SolveMeKernel,
+};
 
 /// What a handle actually evaluates.
 ///
@@ -37,13 +40,7 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
 
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetContinuousStateDerivatives`.
-    fn derivatives_into(
-        &self,
-        time: f64,
-        states: &[f64],
-        event_boundary: Option<f64>,
-        out: &mut [f64],
-    ) -> Result<(), MeError>;
+    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError>;
 
     /// `fmi3SetTime` + `fmi3SetContinuousStates` +
     /// `fmi3GetDirectionalDerivative`.
@@ -51,7 +48,6 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
         &self,
         time: f64,
         states: &[f64],
-        event_boundary: Option<f64>,
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError>;
@@ -60,39 +56,34 @@ pub(in crate::fmi_me) trait MeDerivativeComponent {
 /// The sole production derivative source: the one leased FMI component.
 struct KernelDerivatives {
     kernel: Rc<RefCell<SolveMeKernel>>,
-    state_count: usize,
+    state_domain: MeContinuousStateDomain,
+    state_knowns: MeDirectionalKnownBatch,
+    derivative_unknowns: MeDirectionalUnknownBatch,
 }
 
 impl MeDerivativeComponent for KernelDerivatives {
     fn state_count(&self) -> usize {
-        self.state_count
+        self.state_domain.len()
     }
 
-    fn derivatives_into(
-        &self,
-        time: f64,
-        states: &[f64],
-        event_boundary: Option<f64>,
-        out: &mut [f64],
-    ) -> Result<(), MeError> {
+    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut();
-        kernel.set_time(MeTime::new(time, event_boundary))?;
+        kernel.set_time(MeTime::at(time))?;
         kernel.set_continuous_states(states)?;
-        kernel.continuous_state_derivatives_into(out)
+        kernel.get_continuous_state_derivatives(out)
     }
 
     fn directional_derivative_into(
         &self,
         time: f64,
         states: &[f64],
-        event_boundary: Option<f64>,
         seed: &[f64],
         out: &mut [f64],
     ) -> Result<(), MeError> {
         let mut kernel = self.kernel.borrow_mut();
-        kernel.set_time(MeTime::new(time, event_boundary))?;
+        kernel.set_time(MeTime::at(time))?;
         kernel.set_continuous_states(states)?;
-        kernel.get_directional_derivative(seed, out)
+        kernel.get_directional_derivative(&self.derivative_unknowns, &self.state_knowns, seed, out)
     }
 }
 
@@ -105,7 +96,6 @@ impl MeDerivativeComponent for KernelDerivatives {
 struct DerivativeCell {
     component: Box<dyn MeDerivativeComponent>,
     active: Cell<bool>,
-    event_boundary: Cell<Option<f64>>,
     pending: RefCell<Option<MeIntegrationError>>,
 }
 
@@ -141,7 +131,7 @@ impl DerivativeCell {
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a state-derivative evaluation")?;
         self.component
-            .derivatives_into(time, states, self.event_boundary.get(), out)
+            .derivatives_into(time, states, out)
             .map_err(MeIntegrationError::from)
     }
 
@@ -154,7 +144,7 @@ impl DerivativeCell {
     ) -> Result<(), MeIntegrationError> {
         self.require_active("a directional-derivative evaluation")?;
         self.component
-            .directional_derivative_into(time, states, self.event_boundary.get(), seed, out)
+            .directional_derivative_into(time, states, seed, out)
             .map_err(MeIntegrationError::from)
     }
 }
@@ -275,12 +265,26 @@ pub(in crate::fmi_me) struct MeDerivativeController {
 
 impl MeDerivativeController {
     /// The production controller over the one leased FMI component.
-    pub(in crate::fmi_me) fn over_kernel(kernel: Rc<RefCell<SolveMeKernel>>) -> Self {
-        let state_count = kernel.borrow().model_description().continuous_state_count;
-        Self::over_component(Box::new(KernelDerivatives {
+    pub(in crate::fmi_me) fn over_kernel(
+        kernel: Rc<RefCell<SolveMeKernel>>,
+    ) -> Result<Self, MeError> {
+        let (state_domain, state_knowns, derivative_unknowns) = {
+            let kernel = kernel.borrow();
+            let state_domain = kernel.continuous_state_domain();
+            let state_references = kernel.continuous_state_value_references()?;
+            let derivative_references = kernel.continuous_state_derivative_value_references()?;
+            (
+                state_domain,
+                kernel.directional_known_batch(state_references)?,
+                kernel.directional_unknown_batch(derivative_references)?,
+            )
+        };
+        Ok(Self::over_component(Box::new(KernelDerivatives {
             kernel,
-            state_count,
-        }))
+            state_domain,
+            state_knowns,
+            derivative_unknowns,
+        })))
     }
 
     fn over_component(component: Box<dyn MeDerivativeComponent>) -> Self {
@@ -288,7 +292,6 @@ impl MeDerivativeController {
             shared: Rc::new(DerivativeCell {
                 component,
                 active: Cell::new(false),
-                event_boundary: Cell::new(None),
                 pending: RefCell::new(None),
             }),
         }
@@ -306,18 +309,7 @@ impl MeDerivativeController {
     /// The returned guard deactivates on drop, so "the host deactivates on
     /// every exit" is structural rather than a discipline every call site has
     /// to remember.
-    #[cfg(test)]
     pub(in crate::fmi_me) fn activate(&self) -> MeDerivativeActivation<'_> {
-        self.activate_until(None)
-    }
-
-    /// Open one activation window while preserving a scheduled event's left
-    /// limit through every derivative callback made by the numerical plugin.
-    pub(in crate::fmi_me) fn activate_until(
-        &self,
-        event_boundary: Option<f64>,
-    ) -> MeDerivativeActivation<'_> {
-        self.shared.event_boundary.set(event_boundary);
         self.shared.active.set(true);
         MeDerivativeActivation {
             shared: &self.shared,
@@ -350,7 +342,86 @@ pub(in crate::fmi_me) struct MeDerivativeActivation<'host> {
 impl Drop for MeDerivativeActivation<'_> {
     fn drop(&mut self) {
         self.shared.active.set(false);
-        self.shared.event_boundary.set(None);
+    }
+}
+
+/// A constant-rate derivative source that enforces a monotone time bound.
+///
+/// `y' = rates` (a constant vector), so the Jacobian is zero and the implicit
+/// solve is well posed with a directional derivative of zero. `min_time` models
+/// the component's retained `fmi3SetTime` lower bound: a derivative query at a
+/// coordinate strictly behind it is refused with the same typed component
+/// failure the real component raises, which is what makes an in-place numerical
+/// restart at a problem's original `t0` observable to a backend regression.
+#[cfg(any(test, feature = "test-support"))]
+struct MonotoneLinearComponent {
+    rates: Vec<f64>,
+    min_time: Rc<Cell<f64>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MonotoneLinearComponent {
+    fn require_within_bound(&self, time: f64) -> Result<(), MeError> {
+        if time < self.min_time.get() {
+            return Err(MeError::Contract {
+                reason: format!(
+                    "derivative query at t={time} precedes the retained monotone bound {}",
+                    self.min_time.get()
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MeDerivativeComponent for MonotoneLinearComponent {
+    fn state_count(&self) -> usize {
+        self.rates.len()
+    }
+
+    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError> {
+        self.require_within_bound(time)?;
+        if states.len() != self.rates.len() || out.len() != self.rates.len() {
+            return Err(MeError::Contract {
+                reason: "monotone-linear derivative source width mismatch".to_owned(),
+            });
+        }
+        out.copy_from_slice(&self.rates);
+        Ok(())
+    }
+
+    fn directional_derivative_into(
+        &self,
+        time: f64,
+        _states: &[f64],
+        seed: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), MeError> {
+        self.require_within_bound(time)?;
+        if seed.len() != self.rates.len() || out.len() != self.rates.len() {
+            return Err(MeError::Contract {
+                reason: "monotone-linear directional source width mismatch".to_owned(),
+            });
+        }
+        // The Jacobian of a constant rate is zero.
+        out.fill(0.0);
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl MeDerivativeController {
+    /// A controller over a constant-rate source with a shared monotone bound.
+    ///
+    /// The caller retains a clone of `min_time` to advance the bound between
+    /// accepted steps, exactly as the host advances the component's own
+    /// `fmi3SetTime` lower bound on a completed step.
+    pub(in crate::fmi_me) fn over_monotone_linear(
+        rates: Vec<f64>,
+        min_time: Rc<Cell<f64>>,
+    ) -> Self {
+        Self::over_component(Box::new(MonotoneLinearComponent { rates, min_time }))
     }
 }
 
@@ -374,13 +445,7 @@ impl MeDerivativeComponent for ClosureDerivatives {
         self.state_count
     }
 
-    fn derivatives_into(
-        &self,
-        time: f64,
-        states: &[f64],
-        _event_boundary: Option<f64>,
-        out: &mut [f64],
-    ) -> Result<(), MeError> {
+    fn derivatives_into(&self, time: f64, states: &[f64], out: &mut [f64]) -> Result<(), MeError> {
         let values = (self.derivative)(time, states);
         if values.len() != out.len() {
             return Err(MeError::Contract {
@@ -399,7 +464,6 @@ impl MeDerivativeComponent for ClosureDerivatives {
         &self,
         _time: f64,
         _states: &[f64],
-        _event_boundary: Option<f64>,
         _seed: &[f64],
         _out: &mut [f64],
     ) -> Result<(), MeError> {

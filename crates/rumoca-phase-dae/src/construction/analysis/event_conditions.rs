@@ -3,14 +3,12 @@ use super::*;
 pub(super) fn validate_condition_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     validate_condition_expression_in_context(
         expression,
         roles,
-        states,
         constants,
         sample_lattices,
         PreContext::Continuous,
@@ -28,7 +26,6 @@ pub(super) fn validate_condition_expression(
 pub(super) fn validate_when_activation_condition(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     enumeration_literals: &ShapeEnvironment,
@@ -36,7 +33,6 @@ pub(super) fn validate_when_activation_condition(
     validate_condition_expression_in_context(
         expression,
         roles,
-        states,
         constants,
         sample_lattices,
         PreContext::Continuous,
@@ -55,7 +51,6 @@ pub(super) fn validate_when_activation_condition(
 pub(super) fn validate_when_condition_expression(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     clocked: bool,
@@ -64,7 +59,6 @@ pub(super) fn validate_when_condition_expression(
     validate_condition_expression_in_context(
         expression,
         roles,
-        states,
         constants,
         sample_lattices,
         when_body_context(clocked),
@@ -75,7 +69,6 @@ pub(super) fn validate_when_condition_expression(
 fn validate_condition_expression_in_context(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
     when_clause: PreContext,
@@ -118,7 +111,6 @@ fn validate_condition_expression_in_context(
         } => validate_condition_expression_in_context(
             rhs,
             roles,
-            states,
             constants,
             sample_lattices,
             when_clause,
@@ -133,7 +125,6 @@ fn validate_condition_expression_in_context(
             validate_condition_expression_in_context(
                 lhs,
                 roles,
-                states,
                 constants,
                 sample_lattices,
                 when_clause,
@@ -142,7 +133,6 @@ fn validate_condition_expression_in_context(
             validate_condition_expression_in_context(
                 rhs,
                 roles,
-                states,
                 constants,
                 sample_lattices,
                 when_clause,
@@ -161,7 +151,6 @@ fn validate_condition_expression_in_context(
                 validate_condition_expression_in_context(
                     element,
                     roles,
-                    states,
                     constants,
                     sample_lattices,
                     when_clause,
@@ -173,7 +162,6 @@ fn validate_condition_expression_in_context(
         _ => validate_expression_in_context_with_literals(
             expression,
             roles,
-            states,
             when_clause,
             enumeration_literals,
         ),
@@ -183,7 +171,6 @@ fn validate_condition_expression_in_context(
 pub(super) fn validate_algorithm_condition(
     expression: &Expression,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
@@ -206,24 +193,24 @@ pub(super) fn validate_algorithm_condition(
             op: OpUnary::Not,
             rhs,
             ..
-        } => validate_algorithm_condition(rhs, roles, states, constants, sample_lattices),
+        } => validate_algorithm_condition(rhs, roles, constants, sample_lattices),
         Expression::Binary {
             op: OpBinary::And | OpBinary::Or,
             lhs,
             rhs,
             ..
         } => {
-            validate_algorithm_condition(lhs, roles, states, constants, sample_lattices)?;
-            validate_algorithm_condition(rhs, roles, states, constants, sample_lattices)
+            validate_algorithm_condition(lhs, roles, constants, sample_lattices)?;
+            validate_algorithm_condition(rhs, roles, constants, sample_lattices)
         }
         // Same MLS §8.5 vector activation, reached through `lower_algorithm_when`.
         Expression::Array { elements, .. } => {
             for element in elements {
-                validate_algorithm_condition(element, roles, states, constants, sample_lattices)?;
+                validate_algorithm_condition(element, roles, constants, sample_lattices)?;
             }
             Ok(())
         }
-        _ => validate_expression(expression, roles, states),
+        _ => validate_expression(expression, roles),
     }
 }
 

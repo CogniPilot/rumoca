@@ -57,7 +57,7 @@ fn package_constant_member_with_exact_identity_uses_active_override_scope() {
     override_package.alias = "Medium".to_string();
     let override_packages = vec![override_package];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -119,7 +119,7 @@ fn qualified_package_member_with_exact_identity_is_not_captured_by_active_overri
     override_package.alias = "Medium".to_string();
     let override_packages = vec![override_package];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,
@@ -261,7 +261,7 @@ fn package_constant_field_projection_uses_concrete_package_scope() {
         false,
     )];
     let override_functions = OverrideFunctionMap::default();
-    let ctx = FunctionOverrideRewriteContext::new(
+    let ctx = FunctionOverrideRewriteContext::new_test(
         &tree,
         &class_index,
         &override_packages,

@@ -6,21 +6,23 @@
 //! `'previous(x)'` state committed after all assignments.
 
 mod assigned_primitives;
+mod call_ownership;
 mod causal_outputs;
+mod causal_substitution;
 mod clock_schedule;
 mod clocked_assignments;
 mod shared_call_memo;
-use shared_call_memo::{MaterializedFunctionCallKey, SharedMaterializedFunctionCalls};
+use shared_call_memo::MaterializedFunctionCallKey;
 mod conditionals;
 mod dependent_folding;
 mod expression_array_update;
+mod expression_core;
 mod expression_function_folds;
 mod expression_functions;
 mod expression_helpers;
 mod expression_projection;
+mod expression_record_fields;
 mod guard_binding;
-mod inline_policy;
-use inline_policy::EmissionFacts;
 mod local_integer_bounds;
 mod pre_references;
 mod start;
@@ -39,18 +41,34 @@ use rumoca_ir_galec::ast as gast;
 use crate::admissibility::{AdmittedClock, check_view as check_admissibility_view};
 use crate::diagnostic::GalecTargetError;
 use crate::input::{GalecInput, GalecOptions};
-use rumoca_ir_galec::package::AlgorithmCodePackage;
-use rumoca_ir_galec::package::{EmissionPolicy, InlinePolicy};
+use rumoca_ir_galec::package::{AlgorithmCodeArithmeticProfile, AlgorithmCodePackageMetadata};
+use rumoca_ir_galec::{AlgorithmCodePackageIssuer, OriginBoundAlgorithmCodePackage};
 
 use assigned_primitives::{
     AssignedPrimitiveSnapshot, AssignedPrimitives, ConditionalActivationKey,
-    ConditionalActivationKind,
+    ConditionalActivationKind, SelectionPointId, SelectionPointNamespace,
+};
+use call_ownership::{
+    CallExecutionSource, CommittedCallActionLedger, CommittedFunctionCallActionLedger,
+    CrossGroupCallRetention, EmissionRegion, ExpectedRootCallAction, FunctionCallAction,
+    FunctionCallReuse, MaterializedRootCall, PreparedCallActions, RetainedCallActivation,
+    RetainedCallResults, RootCallAction, RootCallReuse,
 };
 use clock_schedule::lower_clock_schedule;
+use expression_core::{conditional_activation_operands, first_function_assertion};
 use expression_helpers::*;
 use local_integer_bounds::{ConditionalIntegerBounds, LocalIntegerBounds, LoopIntegerBounds};
 use pre_references::referenced_pre_variables;
 use start::{StartShape, StartValues};
+
+#[cfg(test)]
+fn positive_zero_arithmetic() -> AlgorithmCodeArithmeticProfile {
+    AlgorithmCodeArithmeticProfile::construct(
+        rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+        rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VariableClass {
@@ -119,18 +137,16 @@ impl<'dae> ClassifiedVariables<'dae> {
 ///
 /// These five travel together through the whole projection: the checked DAE,
 /// its causal definitions, the classified block variables keyed by identity,
-/// the name each `pre(x)` state got, and the ceiling on how much call structure
-/// the projection may collapse. They are carried as one value rather than as
-/// five parallel parameters because a step that had four of them and not the
-/// fifth would be a step that cannot build an [`ExpressionLowerer`], and every
-/// one of these steps builds one.
+/// the name each `pre(x)` state got, and the value-affecting arithmetic profile.
+/// They are carried as one value because every lowering step needs the same
+/// construction-issued semantic context.
 #[derive(Clone, Copy)]
 struct BlockLowering<'a, 'dae> {
     view: dae::DaeView<'dae>,
     definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
     by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
     pre_names: &'a HashMap<u32, gast::Name>,
-    emission: EmissionFacts<'a>,
+    arithmetic: AlgorithmCodeArithmeticProfile,
 }
 
 struct ParameterDependencyProof {
@@ -157,6 +173,61 @@ struct ProjectionParts {
     dependent_starts: HashMap<u32, gast::Expression>,
     /// Dependent parameters emitted as folded values rather than as calls.
     constant_folded: Vec<rumoca_ir_galec::package::ConstantFoldedParameter>,
+    /// The first empty block-storage extent, retained until every reachable
+    /// executable expression has passed through its central constructor.
+    ///
+    /// GALEC cannot declare the empty storage, but a FirstProduct contraction
+    /// over that storage has the more precise, occurrence-local rejection
+    /// required by the selected arithmetic profile. No partially built block
+    /// escapes when this diagnostic remains after executable lowering.
+    zero_extent_rejection: Option<GalecTargetError>,
+}
+
+/// The only local route from emitted GALEC statements to package closure.
+///
+/// The whole-`DoStep` call ledger is retained beside the block until the block
+/// is consumed by the package constructor. This prevents validation from
+/// becoming a discarded side check whose statements could be packaged through
+/// an independent path.
+struct CommittedBlockEmission {
+    block: gast::Block,
+    call_ledger: CommittedCallActionLedger,
+    function_call_ledgers: Vec<CommittedFunctionCallActionLedger>,
+}
+
+struct BlockCompletionRequest<'refs, 'dae, 'origin> {
+    issuer: AlgorithmCodePackageIssuer<'origin>,
+    view: dae::DaeView<'dae>,
+    definitions: &'refs rumoca_phase_structural::CausalDefinitions<'dae>,
+    arithmetic: AlgorithmCodeArithmeticProfile,
+    block_name: gast::Name,
+    period_ref: String,
+    zero_extent_rejection: Option<GalecTargetError>,
+    call_ledger: CommittedCallActionLedger,
+}
+
+impl CommittedBlockEmission {
+    fn new(
+        block: gast::Block,
+        call_ledger: CommittedCallActionLedger,
+        function_call_ledgers: Vec<CommittedFunctionCallActionLedger>,
+    ) -> Self {
+        Self {
+            block,
+            call_ledger,
+            function_call_ledgers,
+        }
+    }
+
+    fn construct_package<'origin>(
+        self,
+        issuer: AlgorithmCodePackageIssuer<'origin>,
+        metadata: AlgorithmCodePackageMetadata,
+    ) -> Result<OriginBoundAlgorithmCodePackage<'origin>, rumoca_ir_galec::package::PackageError>
+    {
+        self.call_ledger
+            .close_package(issuer, self.block, metadata, self.function_call_ledgers)
+    }
 }
 
 impl ProjectionParts {
@@ -182,43 +253,42 @@ struct ProtectedDeclarations<'a> {
 }
 
 /// Lower one checked DAE into validated eFMI Algorithm Code.
-pub fn lower_to_algorithm_code(
+pub fn lower_to_algorithm_code<'inv>(
+    brand: rumoca_core::TargetInvocationBrand<'inv>,
     input: &GalecInput<'_>,
     options: &GalecOptions,
-) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
-    // Expanding a tensor operation into per-element statements is not built.
-    // A setting that asks for it must say so, because the alternative is an
-    // artifact that silently keeps every structure the caller asked to trade
-    // away and a header that then claims a tradeoff the code did not make.
-    if !options.emission_policy.is_certifiable() {
-        // No span: the setting came from the command line, not from the model,
-        // so there is no source position to point a reader at and inventing one
-        // would be worse than saying so.
-        return Err(vec![GalecTargetError::UnsupportedFeature {
-            feature: "scalarize-policy".to_owned(),
-            detail: format!(
-                "`--scalarize-policy {}` is not implemented: this projection never expands a \
-                 tensor operation into per-element statements. Use `never` (the default), which \
-                 keeps every index set, symmetry and bandedness the model carried",
-                options.emission_policy.scalarize.as_str()
-            ),
-            span: None,
-        }]);
+) -> Result<rumoca_ir_galec::TracedAlgorithmCodeProduct<'inv>, Vec<GalecTargetError>> {
+    let projected = rumoca_ir_galec::TracedAlgorithmCodeProduct::project_from_origin(
+        brand,
+        input.dae.source_map(),
+        input.model_name,
+        |issuer| {
+            input.dae.inspect(|view| {
+                let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+                let clock = check_admissibility_view(view, &definitions)?;
+                lower_view(issuer, input, options, view, &definitions, clock)
+            })
+        },
+    );
+    match projected {
+        Ok(product) => Ok(product),
+        Err(rumoca_ir_galec::AlgorithmCodeOriginProjectionError::Projection(errors)) => Err(errors),
+        Err(rumoca_ir_galec::AlgorithmCodeOriginProjectionError::Origin(error)) => {
+            Err(vec![GalecTargetError::LoweringInternal {
+                detail: format!("failed to close Algorithm Code trace origin: {error}"),
+            }])
+        }
     }
-    input.dae.inspect(|view| {
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let clock = check_admissibility_view(view, &definitions)?;
-        lower_view(input, options, view, &definitions, clock)
-    })
 }
 
-fn lower_view<'dae>(
+fn lower_view<'dae, 'origin>(
+    issuer: AlgorithmCodePackageIssuer<'origin>,
     input: &GalecInput<'_>,
     options: &GalecOptions,
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     clock: AdmittedClock,
-) -> Result<AlgorithmCodePackage, Vec<GalecTargetError>> {
+) -> Result<OriginBoundAlgorithmCodePackage<'origin>, Vec<GalecTargetError>> {
     let clock_id = admitted_clock_id(view, &clock).map_err(single)?;
     validate_clocks(&clock, view).map_err(single)?;
     let classified = classify_variables(view, definitions)?;
@@ -229,21 +299,18 @@ fn lower_view<'dae>(
     let referenced_pre = referenced_pre_variables(view)?;
     let pre_names = build_pre_names(&referenced_pre, &by_id)?;
 
-    // Counted once for the whole projection, not per call site: the census is a
-    // whole-arena scan, and asking it per site would make the cost model
-    // quadratic in the number of calls for an answer that cannot change.
-    let call_sites = inline_policy::CallSiteCensus::derive(view);
     let lowering = BlockLowering {
         view,
         definitions,
         by_id: &by_id,
         pre_names: &pre_names,
-        emission: EmissionFacts {
-            policy: options.emission_policy,
-            call_sites: &call_sites,
-        },
+        arithmetic: options.arithmetic_profile,
     };
+    let causal_assignments =
+        causal_outputs::CausalAssignmentsPlan::construct(definitions, classified.as_slice())
+            .map_err(single)?;
     let mut parts = build_variable_parts(lowering, &classified, &referenced_pre)?;
+    let zero_extent_rejection = parts.zero_extent_rejection.take();
 
     let period_ref = append_clock_period(
         &clock,
@@ -256,32 +323,62 @@ fn lower_view<'dae>(
         &mut parts.protected_declarations(),
     )?;
 
+    let mut retained_calls = RetainedCallResults::default();
     let clocked = lower_clock_schedule(
         lowering,
         &clock,
         classified.as_slice(),
         &mut parts.protected_declarations(),
+        &mut retained_calls,
+    )
+    .map_err(single)?;
+    let causal = causal_outputs::prepare_causal_assignments(
+        lowering,
+        &causal_assignments,
+        &mut retained_calls,
+    )
+    .map_err(single)?;
+    let call_ledger = CommittedCallActionLedger::construct(
+        view,
+        clocked.call_actions.into_iter().chain(causal.call_actions),
     )
     .map_err(single)?;
     parts.do_step_locals.extend(clocked.locals);
+    parts.do_step_locals.extend(causal.locals);
     let mut do_step = clocked.statements;
+    do_step.extend(causal.statements);
     let mut called_user_functions = clocked.called_user_functions;
     called_user_functions.extend(parts.startup_called_user_functions.iter().copied());
-    called_user_functions.extend(
-        causal_outputs::append_causal_assignments(
-            lowering,
-            classified.as_slice(),
-            &mut parts.do_step_locals,
-            &mut do_step,
-        )
-        .map_err(single)?,
-    );
+    called_user_functions.extend(causal.called_user_functions);
     append_pre_commits(&referenced_pre, &by_id, &pre_names, &mut do_step)?;
     let block_name = crate::mangle::galec_variable_name(
         options.block_name.as_deref().unwrap_or(input.model_name),
     )
     .map_err(single)?;
-    let mut block = gast::Block::new(block_name);
+    complete_lowered_view(
+        BlockCompletionRequest {
+            issuer,
+            view,
+            definitions,
+            arithmetic: lowering.arithmetic,
+            block_name,
+            period_ref,
+            zero_extent_rejection,
+            call_ledger,
+        },
+        parts,
+        do_step,
+        called_user_functions,
+    )
+}
+
+fn complete_lowered_view<'dae, 'origin>(
+    request: BlockCompletionRequest<'_, 'dae, 'origin>,
+    parts: ProjectionParts,
+    do_step: Vec<gast::Spanned<gast::Statement>>,
+    called_user_functions: HashSet<u32>,
+) -> Result<OriginBoundAlgorithmCodePackage<'origin>, Vec<GalecTargetError>> {
+    let mut block = gast::Block::new(request.block_name);
     block.interface = parts
         .interface_inputs
         .into_iter()
@@ -295,21 +392,29 @@ fn lower_view<'dae>(
     block.startup.statements = parts.startup;
     block.recalibrate.locals = parts.startup_locals;
     block.recalibrate.statements = parts.recalibrate;
-    block.protected_functions = user_functions::lower_reachable(
-        view,
-        definitions,
+    let protected_functions = user_functions::lower_reachable_committed(
+        request.view,
+        request.definitions,
         called_user_functions,
-        lowering.emission,
+        request.arithmetic,
     )
     .map_err(single)?;
+    block.protected_functions = protected_functions.functions;
+    if let Some(error) = request.zero_extent_rejection {
+        return Err(single(error));
+    }
     block.do_step.locals = parts.do_step_locals;
     block.do_step.statements = do_step;
-    AlgorithmCodePackage::construct(block, parts.nominals, &period_ref)
-        .map(|package| {
-            package
-                .with_constant_folded_parameters(parts.constant_folded)
-                .with_emission_policy(lowering.emission.policy)
-        })
+    CommittedBlockEmission::new(block, request.call_ledger, protected_functions.call_ledgers)
+        .construct_package(
+            request.issuer,
+            AlgorithmCodePackageMetadata::new(
+                parts.nominals,
+                request.period_ref,
+                parts.constant_folded,
+                request.arithmetic,
+            ),
+        )
         .map_err(|error| {
             vec![GalecTargetError::LoweringInternal {
                 detail: format!("lowering produced an invalid Algorithm Code package: {error}"),
@@ -326,9 +431,13 @@ fn build_variable_parts<'dae>(
         view,
         by_id,
         pre_names,
+        arithmetic,
         ..
     } = lowering;
-    let mut evaluator = NumericEvaluator::new(view);
+    let mut evaluator = NumericEvaluator::with_real_matrix_multiply_semantics(
+        view,
+        arithmetic.real_matrix_multiply(),
+    );
     let mut parts = ProjectionParts {
         nominals: Vec::new(),
         interface_inputs: Vec::new(),
@@ -342,8 +451,13 @@ fn build_variable_parts<'dae>(
         do_step_locals: Vec::new(),
         dependent_starts: HashMap::new(),
         constant_folded: Vec::new(),
+        zero_extent_rejection: None,
     };
     for variable in classified.as_slice() {
+        if let Some(error) = zero_extent_rejection(variable) {
+            parts.zero_extent_rejection.get_or_insert(error);
+            continue;
+        }
         append_variable(view, variable, &mut evaluator, &mut parts)?;
     }
     dependent_folding::append_dependent_parameters(
@@ -361,6 +475,21 @@ fn build_variable_parts<'dae>(
         &mut parts.protected_declarations(),
     )?;
     Ok(parts)
+}
+
+fn zero_extent_rejection(classified: &ClassifiedVariable<'_>) -> Option<GalecTargetError> {
+    classified
+        .variable
+        .value_type()
+        .dimensions()
+        .iter()
+        .position(|extent| *extent == 0)
+        .map(|index| GalecTargetError::NonPositiveDimension {
+            variable: classified.variable.name().to_string(),
+            dimension: index + 1,
+            size: 0,
+            span: classified.variable.declaration().span(),
+        })
 }
 
 fn append_variable<'dae>(
@@ -1168,25 +1297,43 @@ struct ExpressionLowerer<'a, 'dae> {
     scalar_projection_cache: HashMap<ScalarProjectionKey, TypedExpression>,
     function_fold_projection_cache: HashMap<u32, bool>,
     comprehension_frames: Vec<ComprehensionFrame>,
+    /// Construction-issued identities for the exact finite/runtime points
+    /// whose binders have been projected by this lowerer.
+    ///
+    /// The interner compares the checked owner, the complete enclosing point
+    /// path, and the structured GALEC binder expressions. Cache keys carry
+    /// only the resulting private id, so a call/effect cache cannot represent
+    /// reuse across two different fold or comprehension points.
+    iteration_points: Vec<IterationPointIdentity>,
     loop_index_bounds: Vec<LoopIndexBound>,
     conditional_activation_path: Vec<ConditionalActivationKey>,
+    /// Exact projection decisions interned by checked owner and structured
+    /// coordinate. The carried id is additionally namespaced by the semantic
+    /// owner of this lowerer, so activation facts from two clock domains or a
+    /// clock and the causal region cannot collide in the committed ledger.
+    selection_points: Vec<SelectionPointIdentity>,
+    /// Sequential statement epoch. Equal predicate expressions correlate only
+    /// within one atomic statement/group; after a store, the same coordinate
+    /// expression may read a different runtime value.
+    selection_epoch: u32,
     materialize_function_values: bool,
     inline_causal_locals: bool,
-    /// The emission decisions, and the facts they are decided from.
-    ///
-    /// Read only at the call-lowering decision point. Every other lowering
-    /// question is unaffected, which is what makes the fully structured setting
-    /// byte-identical to a build that has no dial at all.
-    emission: EmissionFacts<'a>,
+    /// Value-affecting arithmetic selected before this semantic phase begins.
+    /// Every contraction reads this field; no contraction constructor owns a
+    /// fallback relation.
+    arithmetic: AlgorithmCodeArithmeticProfile,
     conditional_depth: usize,
     materialized_function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
     materialized_function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
-    materialized_shared_record_fields: HashMap<(u32, usize), gast::Expression>,
+    imported_materialized_call_regions: HashMap<MaterializedFunctionCallKey, EmissionRegion>,
+    retained_call_dependencies: HashSet<EmissionRegion>,
+    call_argument_read_captures: Vec<HashSet<u32>>,
+    materialized_shared_record_fields: HashMap<SharedRecordFieldKey, gast::Expression>,
     /// Index-list entries of an array-update target already bound to a local.
     ///
     /// Keyed by the entry expression so every coordinate of the same update,
     /// and every update reading the array it produces, shares one evaluation.
-    array_update_index_locals: HashMap<u32, gast::Name>,
+    array_update_index_locals: HashMap<ArrayUpdateIndexKey, gast::Name>,
     /// Proven ranges of scalar Integer function locals, keyed by lexeme.
     ///
     /// The map is the ranges that hold at the current point of the function
@@ -1203,6 +1350,30 @@ struct ExpressionLowerer<'a, 'dae> {
     /// Pure aggregate definitions whose checked local storage is unnecessary.
     structural_function_locals: structural_locals::StructuralFunctionLocals<'dae>,
     called_user_functions: HashSet<u32>,
+    /// Construction-issued call owners evaluated by the current root lowering.
+    ///
+    /// Only calls reached outside an entered function body are recorded. A
+    /// call inside an inlined function is owned by that enclosing source call;
+    /// treating the function-body identity as a model-level invocation would
+    /// conflate distinct calls of the same function.
+    evaluated_root_call_actions: Vec<RootCallAction>,
+    /// Source-call capabilities reached by the real root lowering. Kept
+    /// separately from emitted actions so deleting or dropping an action
+    /// cannot make an incomplete ledger appear complete.
+    expected_root_call_actions: HashSet<ExpectedRootCallAction>,
+    /// Dominating evaluation capabilities consumed by reached memo hits.
+    reused_root_call_actions: Vec<RootCallReuse>,
+    /// Exact emitted actions that justify each materialized memo fact.
+    materialized_call_sources: HashMap<MaterializedFunctionCallKey, HashSet<CallExecutionSource>>,
+    /// Complete call paths committed while emitting one protected function.
+    ///
+    /// This is separate from model-root ownership: an inner expression in a
+    /// substituted body belongs to the enclosing model call during `DoStep`,
+    /// but it is an independently checked action when that protected function
+    /// body itself is emitted.
+    evaluated_function_call_actions: Vec<FunctionCallAction>,
+    expected_function_call_actions: HashSet<FunctionCallAction>,
+    reused_function_call_actions: Vec<FunctionCallReuse>,
     function_scope: Option<dae::FunctionId<'dae>>,
     temporary_locals: Vec<gast::VariableDeclaration>,
     temporary_counter: usize,
@@ -1210,19 +1381,6 @@ struct ExpressionLowerer<'a, 'dae> {
     capture_assertions: bool,
     seen_assertion_calls: HashSet<FunctionAssertionCallKey>,
     pending_prefix_statements: Vec<gast::Spanned<gast::Statement>>,
-    /// The schedule node that wrote each shared-call memo entry this clock
-    /// domain materialized at a scheduled position of its own.
-    ///
-    /// Keyed by the memo entry rather than by the call owner: one owner can be
-    /// materialized by two nodes under two different activations, and a group
-    /// that takes one of them must be ordered after THAT node, not after
-    /// whichever node happened to materialize the owner last.
-    scheduled_shared_calls: HashMap<MaterializedFunctionCallKey, u32>,
-    /// The schedule nodes whose result temporaries the group currently being
-    /// lowered has taken, drained per group into that group's reads. A node
-    /// under construction records here too, which is how one node that reuses
-    /// an earlier node's temporary declares the edge that keeps it later.
-    consumed_scheduled_calls: HashSet<u32>,
     /// Lazily-built index from a classified block variable's GALEC name to its
     /// declared shape. `by_id` is keyed by variable identity, but a `gast`
     /// state reference carries only the name — this index is built once, on
@@ -1233,27 +1391,40 @@ struct ExpressionLowerer<'a, 'dae> {
 #[derive(Clone)]
 struct CallFrame<'dae> {
     call: dae::ExprId<'dae>,
+    owner: dae::ExprId<'dae>,
     function: dae::FunctionId<'dae>,
     arguments: Vec<dae::ExprId<'dae>>,
-    indices: Vec<Option<i64>>,
-    /// Whether the emission policy chose to substitute this body, rather than
-    /// the GALEC ABI being unable to represent the call.
+    /// Actual arguments evaluated exactly once, before entering the function.
     ///
-    /// The distinction is a traceability one. A call the policy deleted had a
-    /// call form that would have named its results after the callee, the result
-    /// and the call site, so the values that replace it must carry that path or
-    /// the transform has reduced traceability. A call the ABI never had a form
-    /// for had no such names to lose.
-    substituted_by_policy: bool,
+    /// Keeping the evaluated values in the frame makes eager Modelica call
+    /// semantics structural: an unused formal cannot erase an effectful actual,
+    /// and multiple formal reads cannot re-evaluate the actual.
+    prepared_arguments: Vec<PreparedInlineArgument>,
+    indices: Vec<Option<i64>>,
+}
+
+#[derive(Clone)]
+enum PreparedInlineArgument {
+    Primitive(PreparedInlineValue),
+    Record(Vec<PreparedInlineValue>),
+}
+
+#[derive(Clone)]
+struct PreparedInlineValue {
+    expression: gast::Expression,
+    dimensions: Vec<u32>,
+    scalar_type: gast::ScalarType,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionAssertionCallKey {
     path: Vec<FunctionAssertionCallSite>,
+    iteration_path: Vec<IterationPointId>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionAssertionCallSite {
+    owner: u32,
     function: u32,
     arguments: Vec<u32>,
     indices: Vec<Option<i64>>,
@@ -1264,6 +1435,29 @@ struct FunctionAssertionCallSite {
 struct ComprehensionFrame {
     domain: u32,
     binders: Vec<gast::Expression>,
+    point: IterationPointId,
+}
+
+/// Private identity issued only by [`ExpressionLowerer::enter_iteration_point`].
+///
+/// Callers cannot manufacture an ordinal and thereby claim two iteration
+/// points are equal: the id is interned from the checked iteration owner, its
+/// parent path, and the exact binder projection.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct IterationPointId(u32);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IterationOwner {
+    Comprehension { expression: u32 },
+    FunctionFold { function: u32, fold: u32 },
+}
+
+#[derive(Clone, PartialEq)]
+struct IterationPointIdentity {
+    id: IterationPointId,
+    parent: Vec<IterationPointId>,
+    owner: IterationOwner,
+    binders: Vec<gast::Expression>,
 }
 
 #[derive(Clone)]
@@ -1273,9 +1467,21 @@ struct LoopIndexBound {
     maximum: i64,
 }
 
+#[derive(Clone, PartialEq)]
+struct SelectionPointIdentity {
+    id: SelectionPointId,
+    kind: ConditionalActivationKind,
+    expression: Option<u32>,
+    operands: Vec<u32>,
+    epoch: u32,
+    iteration_path: Vec<IterationPointId>,
+    coordinates: Vec<gast::Expression>,
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct MaterializedFunctionValueKey {
     call_path: Vec<MaterializedCallKey>,
+    iteration_path: Vec<IterationPointId>,
     function: u32,
     definition: u32,
     indices: Vec<i64>,
@@ -1284,14 +1490,31 @@ struct MaterializedFunctionValueKey {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct MaterializedCallKey {
+    owner: u32,
     function: u32,
     arguments: Vec<u32>,
     indices: Vec<Option<i64>>,
+    iteration_path: Vec<IterationPointId>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SharedRecordFieldKey {
+    iteration_path: Vec<IterationPointId>,
+    expression: u32,
+    field: usize,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ArrayUpdateIndexKey {
+    iteration_path: Vec<IterationPointId>,
+    expression: u32,
 }
 
 #[derive(Clone)]
 struct ConditionalMaterializationSnapshot {
     function_values: HashMap<MaterializedFunctionValueKey, gast::Name>,
+    function_calls: HashMap<MaterializedFunctionCallKey, Vec<gast::Name>>,
+    call_sources: HashMap<MaterializedFunctionCallKey, HashSet<CallExecutionSource>>,
     fold_outputs: HashMap<FunctionFoldOutputKey, TypedExpression>,
     seen_assertions: HashSet<FunctionAssertionCallKey>,
     assigned_primitive_expressions: AssignedPrimitiveSnapshot,
@@ -1303,6 +1526,7 @@ struct MaterializedConditional<'a, 'dae> {
     scalar_type: gast::ScalarType,
     target: &'a gast::Name,
     activation_operands: Vec<u32>,
+    selection: SelectionPointId,
     span: Span,
 }
 
@@ -1315,6 +1539,7 @@ struct TypedExpression {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FunctionFoldOutputKey {
     call_path: Vec<MaterializedCallKey>,
+    iteration_path: Vec<IterationPointId>,
     fold: u32,
     carried: u32,
     scalar: u32,
@@ -1323,680 +1548,9 @@ struct FunctionFoldOutputKey {
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ScalarProjectionKey {
     call_path: Vec<MaterializedCallKey>,
+    iteration_path: Vec<IterationPointId>,
     expression: u32,
     indices: Vec<i64>,
-}
-
-fn expression_depth(expression: &gast::Expression) -> usize {
-    match expression {
-        gast::Expression::Bool(_)
-        | gast::Expression::Integer(_)
-        | gast::Expression::Real(_)
-        | gast::Expression::Ref(_)
-        | gast::Expression::Neg(_) => 1,
-        gast::Expression::Size { dimension, .. }
-        | gast::Expression::Paren(dimension)
-        | gast::Expression::Not(dimension) => 1 + expression_depth(dimension),
-        gast::Expression::Call(call) => {
-            1 + call
-                .arguments
-                .iter()
-                .map(expression_depth)
-                .max()
-                .unwrap_or(0)
-        }
-        gast::Expression::If(value) => {
-            let branch_depth = value
-                .branches
-                .iter()
-                .flat_map(|(condition, result)| [condition, result])
-                .map(expression_depth)
-                .max()
-                .unwrap_or(0);
-            1 + branch_depth.max(expression_depth(&value.else_value))
-        }
-        gast::Expression::Array(elements) => {
-            1 + elements.iter().map(expression_depth).max().unwrap_or(0)
-        }
-        gast::Expression::Binary { lhs, rhs, .. } => {
-            1 + expression_depth(lhs).max(expression_depth(rhs))
-        }
-    }
-}
-
-impl<'a, 'dae> ExpressionLowerer<'a, 'dae> {
-    fn new(
-        view: dae::DaeView<'dae>,
-        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
-        by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
-        pre_names: &'a HashMap<u32, gast::Name>,
-    ) -> Self {
-        Self {
-            view,
-            by_id,
-            pre_names,
-            definitions,
-            call_frames: Vec::new(),
-            function_fold_values: Vec::new(),
-            function_fold_output_cache: HashMap::new(),
-            scalar_projection_cache: HashMap::new(),
-            function_fold_projection_cache: HashMap::new(),
-            comprehension_frames: Vec::new(),
-            loop_index_bounds: Vec::new(),
-            conditional_activation_path: Vec::new(),
-            materialize_function_values: false,
-            inline_causal_locals: false,
-            emission: EmissionFacts::structured(),
-            conditional_depth: 0,
-            materialized_function_values: HashMap::new(),
-            materialized_function_calls: HashMap::new(),
-            materialized_shared_record_fields: HashMap::new(),
-            array_update_index_locals: HashMap::new(),
-            local_integer_bounds: LocalIntegerBounds::new(),
-            assigned_primitive_expressions: AssignedPrimitives::default(),
-            structural_function_locals: structural_locals::StructuralFunctionLocals::default(),
-            called_user_functions: HashSet::new(),
-            function_scope: None,
-            temporary_locals: Vec::new(),
-            temporary_counter: 0,
-            temporary_namespace: TemporaryNamespace::Value,
-            capture_assertions: false,
-            seen_assertion_calls: HashSet::new(),
-            state_shapes_by_name: None,
-            pending_prefix_statements: Vec::new(),
-            scheduled_shared_calls: HashMap::new(),
-            consumed_scheduled_calls: HashSet::new(),
-        }
-    }
-
-    fn with_assertions(
-        view: dae::DaeView<'dae>,
-        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
-        by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
-        pre_names: &'a HashMap<u32, gast::Name>,
-    ) -> Self {
-        Self {
-            capture_assertions: true,
-            ..Self::new(view, definitions, by_id, pre_names)
-        }
-    }
-
-    fn with_do_step_effects(
-        view: dae::DaeView<'dae>,
-        definitions: &'a rumoca_phase_structural::CausalDefinitions<'dae>,
-        by_id: &'a HashMap<u32, ClassifiedVariable<'dae>>,
-        pre_names: &'a HashMap<u32, gast::Name>,
-    ) -> Self {
-        Self {
-            capture_assertions: true,
-            materialize_function_values: true,
-            ..Self::new(view, definitions, by_id, pre_names)
-        }
-    }
-
-    /// Finish one emitted statement group and sever every temporary cache
-    /// whose initializer belongs to that group.
-    ///
-    /// A later scheduler may reorder statement groups. Keeping a cached local
-    /// across this boundary would let the later group read a temporary whose
-    /// defining assignment moved after the read.
-    fn take_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
-        self.finish_statement_group();
-        self.drain_prefix_statements()
-    }
-
-    fn conditional_materialization_snapshot(&self) -> ConditionalMaterializationSnapshot {
-        ConditionalMaterializationSnapshot {
-            function_values: self.materialized_function_values.clone(),
-            fold_outputs: self.function_fold_output_cache.clone(),
-            seen_assertions: self.seen_assertion_calls.clone(),
-            assigned_primitive_expressions: self.assigned_primitive_expressions.snapshot(),
-        }
-    }
-
-    fn restore_conditional_materialization(
-        &mut self,
-        snapshot: &ConditionalMaterializationSnapshot,
-    ) {
-        self.materialized_function_values
-            .clone_from(&snapshot.function_values);
-        self.function_fold_output_cache
-            .clone_from(&snapshot.fold_outputs);
-        self.seen_assertion_calls
-            .clone_from(&snapshot.seen_assertions);
-        self.assigned_primitive_expressions
-            .restore(&snapshot.assigned_primitive_expressions);
-        self.scalar_projection_cache.clear();
-    }
-
-    /// Name the values whose assigned locals survive a branch boundary, and
-    /// return the previous naming so one group can restore it.
-    fn carry_assigned_primitives(&mut self, carried: HashSet<u32>) -> HashSet<u32> {
-        self.assigned_primitive_expressions.carry(carried)
-    }
-
-    fn drain_prefix_statements(&mut self) -> Vec<gast::Spanned<gast::Statement>> {
-        std::mem::take(&mut self.pending_prefix_statements)
-    }
-
-    fn finish_statement_group(&mut self) {
-        self.materialized_function_values.clear();
-        self.materialized_function_calls.clear();
-        self.materialized_shared_record_fields.clear();
-        self.array_update_index_locals.clear();
-        self.function_fold_output_cache.clear();
-        self.scalar_projection_cache.clear();
-        self.seen_assertion_calls.clear();
-    }
-
-    fn take_temporary_locals(&mut self) -> Vec<gast::VariableDeclaration> {
-        std::mem::take(&mut self.temporary_locals)
-    }
-
-    /// Record the store of `expression` into `target`.
-    fn remember_primitive_assignment(&mut self, expression: u32, target: gast::Name) {
-        self.assigned_primitive_expressions.remember(
-            expression,
-            target,
-            &self.conditional_activation_path,
-        );
-        self.scalar_projection_cache.clear();
-    }
-
-    /// Record that `target` holds a joined value its branches already stored.
-    fn remember_joined_assignment(&mut self, expression: u32, target: gast::Name) {
-        self.assigned_primitive_expressions.remember_joined(
-            expression,
-            target,
-            &self.conditional_activation_path,
-        );
-        self.scalar_projection_cache.clear();
-    }
-
-    /// Declared shape of the classified block variable `name` refers to, if
-    /// any. Backed by [`Self::state_shapes_by_name`], built here on first use.
-    fn state_shape(&mut self, name: &str) -> Option<(Vec<u32>, gast::ScalarType)> {
-        self.state_shapes_by_name
-            .get_or_insert_with(|| {
-                self.by_id
-                    .values()
-                    .map(|classified| {
-                        (
-                            classified.name.lexeme().to_owned(),
-                            (
-                                classified.variable.value_type().dimensions().to_vec(),
-                                classified.scalar_type,
-                            ),
-                        )
-                    })
-                    .collect()
-            })
-            .get(name)
-            .cloned()
-    }
-
-    fn take_called_user_functions(&mut self) -> HashSet<u32> {
-        std::mem::take(&mut self.called_user_functions)
-    }
-
-    fn with_temporary_namespace(mut self, namespace: TemporaryNamespace<'dae>) -> Self {
-        self.temporary_namespace = namespace;
-        self
-    }
-
-    fn with_structural_function_locals(
-        mut self,
-        locals: structural_locals::StructuralFunctionLocals<'dae>,
-    ) -> Self {
-        self.structural_function_locals = locals;
-        self
-    }
-
-    fn with_causal_inlining(mut self) -> Self {
-        self.inline_causal_locals = true;
-        self
-    }
-
-    /// Set the emission decisions and the facts they are decided from.
-    fn with_emission(mut self, emission: EmissionFacts<'a>) -> Self {
-        self.emission = emission;
-        self
-    }
-
-    fn lower(&mut self, id: dae::ExprId<'dae>) -> Result<TypedExpression, GalecTargetError> {
-        self.lower_at(id, &[])
-    }
-
-    fn lower_element(
-        &mut self,
-        id: dae::ExprId<'dae>,
-        indices: &[u32],
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let indices = indices
-            .iter()
-            .map(|index| gast::Expression::Integer(i64::from(*index)))
-            .collect::<Vec<_>>();
-        self.lower_at(id, &indices)
-    }
-
-    fn lower_at(
-        &mut self,
-        id: dae::ExprId<'dae>,
-        indices: &[gast::Expression],
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let cache_key = self.scalar_projection_key(id, indices);
-        if let Some(key) = &cache_key
-            && let Some(value) = self.scalar_projection_cache.get(key)
-        {
-            return Ok(value.clone());
-        }
-        let node = self
-            .view
-            .expression(id)
-            .expect("checked expression identity resolves");
-        if node.value_type().dimensions().len() != indices.len() {
-            return Err(unsupported(
-                "array-projection",
-                format!(
-                    "expression rank {} cannot be projected with {} indices",
-                    node.value_type().dimensions().len(),
-                    indices.len()
-                ),
-                node.provenance().span(),
-            ));
-        }
-        let scalar_type = scalar_type(
-            node.value_type().scalar_type(),
-            "<expression>",
-            node.provenance().span(),
-        )?;
-        if let Some(name) = self
-            .assigned_primitive_expressions
-            .read(id.index(), &self.conditional_activation_path)
-        {
-            return Ok(TypedExpression {
-                expression: self.lower_local_reference(
-                    name,
-                    node.value_type().dimensions(),
-                    indices,
-                    node.provenance().span(),
-                )?,
-                scalar_type,
-            });
-        }
-        let value = self.lower_operation(id, node, indices, scalar_type)?;
-        if let Some(key) = cache_key {
-            self.scalar_projection_cache.insert(key, value.clone());
-        }
-        Ok(value)
-    }
-
-    fn scalar_projection_key(
-        &self,
-        expression: dae::ExprId<'dae>,
-        indices: &[gast::Expression],
-    ) -> Option<ScalarProjectionKey> {
-        if !self.materialize_function_values
-            || self.conditional_depth != 0
-            || !self.comprehension_frames.is_empty()
-            || !self.loop_index_bounds.is_empty()
-            || !self.function_fold_values.is_empty()
-        {
-            return None;
-        }
-        Some(ScalarProjectionKey {
-            call_path: self
-                .call_frames
-                .iter()
-                .map(|frame| MaterializedCallKey {
-                    function: frame.function.index(),
-                    arguments: frame
-                        .arguments
-                        .iter()
-                        .map(|argument| argument.index())
-                        .collect(),
-                    indices: frame.indices.clone(),
-                })
-                .collect(),
-            expression: expression.index(),
-            indices: indices
-                .iter()
-                .map(constant_integer)
-                .collect::<Option<Vec<_>>>()?,
-        })
-    }
-
-    fn lower_operation(
-        &mut self,
-        id: dae::ExprId<'dae>,
-        node: dae::ExpressionView<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let expression = match node.operation() {
-            dae::ExpressionOperation::Literal(literal) => {
-                lower_literal(literal, node.provenance().span())?
-            }
-            dae::ExpressionOperation::Coordinate(coordinate) => {
-                return self.coordinate_at(coordinate, indices, node.provenance().span());
-            }
-            dae::ExpressionOperation::ClockTransfer { .. } => {
-                return Err(unsupported(
-                    "clock-transfer",
-                    "cross-clock value transfer is not representable in scalar GALEC".to_owned(),
-                    node.provenance().span(),
-                ));
-            }
-            dae::ExpressionOperation::Unary { operator, operand } => {
-                self.lower_unary_at(operator, operand, indices, node.provenance().span())?
-            }
-            dae::ExpressionOperation::Binary { operator, lhs, rhs } => {
-                return self.lower_binary_at(
-                    operator,
-                    lhs,
-                    rhs,
-                    indices,
-                    scalar_type,
-                    node.provenance().span(),
-                );
-            }
-            dae::ExpressionOperation::Conditional(operands) => {
-                self.lower_conditional_at(operands, indices, scalar_type, node.provenance().span())?
-            }
-            dae::ExpressionOperation::Builtin { builtin, arguments } => {
-                if matches!(builtin, dae::PureBuiltin::Sum | dae::PureBuiltin::Product) {
-                    return self.lower_reduction(builtin, arguments, scalar_type);
-                }
-                if !indices.is_empty() {
-                    return self.lower_elementwise_builtin(
-                        builtin,
-                        arguments,
-                        indices,
-                        scalar_type,
-                        node.provenance().span(),
-                    );
-                }
-                lower_builtin(self, builtin, arguments, node.provenance().span())?
-            }
-            dae::ExpressionOperation::FunctionValue { definition, .. } => {
-                return self.lower_function_value(definition, indices, scalar_type);
-            }
-            dae::ExpressionOperation::Index { base, subscripts } => {
-                return self.lower_index_at(base, subscripts, indices, node.provenance().span());
-            }
-            dae::ExpressionOperation::Array(elements) => {
-                return self.lower_array_at(elements, indices, node.provenance().span());
-            }
-            _ => return self.lower_aggregate_operation(id, node, indices, scalar_type),
-        };
-        self.bound_expression(
-            TypedExpression {
-                expression,
-                scalar_type,
-            },
-            node.provenance().span(),
-        )
-    }
-
-    fn bound_expression(
-        &mut self,
-        value: TypedExpression,
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        const MAX_INLINE_DEPTH: usize = 16;
-        if !self.materialize_function_values
-            || expression_depth(&value.expression) <= MAX_INLINE_DEPTH
-        {
-            return Ok(value);
-        }
-        let name = gast::Name::ident(format!(
-            "rumoca_{}_expr_{}",
-            self.temporary_namespace, self.temporary_counter
-        ));
-        self.temporary_counter += 1;
-        self.temporary_locals.push(gast::VariableDeclaration {
-            ty: gast::TypeRef::Primitive(value.scalar_type),
-            name: name.clone(),
-            dimensions: Vec::new(),
-            range: gast::RangeAttributes::default(),
-            span,
-        });
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: gast::Reference::local(name.clone()),
-                value: value.expression,
-            },
-            span,
-        ));
-        Ok(TypedExpression {
-            expression: gast::Expression::Ref(gast::Reference::local(name)),
-            scalar_type: value.scalar_type,
-        })
-    }
-
-    pub(super) fn lower_function_value(
-        &mut self,
-        definition: dae::FunctionDefinitionView<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        if self.function_scope == Some(definition.id().function()) {
-            if self
-                .structural_function_locals
-                .elides_definition(definition)
-            {
-                let value = self.lower_at(definition.rhs(), indices)?;
-                return Ok(TypedExpression {
-                    expression: coerce(value, scalar_type, definition.provenance().span())?,
-                    scalar_type,
-                });
-            }
-            let value = self
-                .view
-                .function(definition.id().function())
-                .expect("checked function identity resolves")
-                .values()
-                .find(|value| value.id() == definition.target())
-                .expect("checked function definition target resolves");
-            let value_type = self
-                .view
-                .value_type(value.value_type())
-                .expect("checked function value type resolves");
-            return Ok(TypedExpression {
-                expression: self.lower_local_reference(
-                    user_functions::value_name(value)?,
-                    value_type.dimensions(),
-                    indices,
-                    definition.provenance().span(),
-                )?,
-                scalar_type,
-            });
-        }
-        let Some(key) = self.function_value_key(definition, indices, Vec::new()) else {
-            return self.lower_at(definition.rhs(), indices);
-        };
-        if let Some(name) = self.materialized_function_values.get(&key) {
-            return Ok(TypedExpression {
-                expression: gast::Expression::Ref(gast::Reference::local(name.clone())),
-                scalar_type,
-            });
-        }
-
-        let value = self.lower_at(definition.rhs(), indices)?;
-        self.store_materialized_function_value(
-            key,
-            value,
-            scalar_type,
-            definition.provenance().span(),
-        )
-    }
-
-    fn function_value_key(
-        &self,
-        definition: dae::FunctionDefinitionView<'dae>,
-        indices: &[gast::Expression],
-        fields: Vec<u32>,
-    ) -> Option<MaterializedFunctionValueKey> {
-        if !self.materialize_function_values
-            || self.conditional_depth != 0
-            || self.call_frames.is_empty()
-        {
-            return None;
-        }
-        Some(MaterializedFunctionValueKey {
-            call_path: self
-                .call_frames
-                .iter()
-                .map(|frame| MaterializedCallKey {
-                    function: frame.function.index(),
-                    arguments: frame
-                        .arguments
-                        .iter()
-                        .map(|argument| argument.index())
-                        .collect(),
-                    indices: frame.indices.clone(),
-                })
-                .collect(),
-            function: definition.id().function().index(),
-            definition: definition.id().ordinal(),
-            indices: indices
-                .iter()
-                .map(|index| match index {
-                    gast::Expression::Integer(value) => Some(*value),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()?,
-            fields,
-        })
-    }
-
-    fn store_materialized_function_value(
-        &mut self,
-        key: MaterializedFunctionValueKey,
-        value: TypedExpression,
-        scalar_type: gast::ScalarType,
-        span: Span,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        let name = self.substituted_value_name(&key)?;
-        self.temporary_counter += 1;
-        self.temporary_locals.push(gast::VariableDeclaration {
-            ty: gast::TypeRef::Primitive(scalar_type),
-            name: name.clone(),
-            dimensions: Vec::new(),
-            range: gast::RangeAttributes::default(),
-            span,
-        });
-        self.pending_prefix_statements.push(gast::Spanned::new(
-            gast::Statement::Assignment {
-                target: gast::Reference::local(name.clone()),
-                value: coerce(value, scalar_type, span)?,
-            },
-            span,
-        ));
-        self.materialized_function_values.insert(key, name.clone());
-        Ok(TypedExpression {
-            expression: gast::Expression::Ref(gast::Reference::local(name)),
-            scalar_type,
-        })
-    }
-
-    fn lower_aggregate_operation(
-        &mut self,
-        id: dae::ExprId<'dae>,
-        node: dae::ExpressionView<'dae>,
-        indices: &[gast::Expression],
-        scalar_type: gast::ScalarType,
-    ) -> Result<TypedExpression, GalecTargetError> {
-        match node.operation() {
-            dae::ExpressionOperation::Range(range) => lower_range_at(
-                range.start().value(),
-                range.effective_step(),
-                range.stop().value(),
-                indices,
-                scalar_type,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::Call {
-                function,
-                output,
-                arguments,
-                ..
-            } => self.lower_call_at(
-                id,
-                function,
-                output,
-                arguments,
-                indices,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::ArrayUpdate {
-                base,
-                value,
-                subscripts,
-            } => self.lower_array_update_at(
-                base,
-                value,
-                subscripts,
-                indices,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::Comprehension { domain, body } => {
-                self.lower_comprehension_at(domain, body, indices, node.provenance().span())
-            }
-            dae::ExpressionOperation::Field { base, field } => self.lower_record_field_at(
-                base,
-                field as usize,
-                indices,
-                scalar_type,
-                node.provenance().span(),
-            ),
-            dae::ExpressionOperation::FunctionFoldParameter { fold, carried, .. } => self
-                .lower_function_fold_parameter_at(fold, carried, indices, node.provenance().span()),
-            dae::ExpressionOperation::FunctionFoldOutput { fold, carried, .. } => {
-                self.lower_function_fold_output_at(fold, carried, indices, node.provenance().span())
-            }
-            dae::ExpressionOperation::Record(_)
-            | dae::ExpressionOperation::StringConversion { .. } => Err(unsupported(
-                "expression-form",
-                format!(
-                    "checked expression form {:?} is outside the scalar GALEC projection",
-                    node.kind()
-                ),
-                node.provenance().span(),
-            )),
-            _ => unreachable!("ordinary scalar operation was lowered before aggregate dispatch"),
-        }
-    }
-}
-
-fn conditional_activation_operands(operands: dae::ExpressionOperands<'_>) -> Vec<u32> {
-    (0..operands.len().saturating_sub(1))
-        .step_by(2)
-        .map(|ordinal| {
-            operands
-                .get(ordinal)
-                .expect("checked conditional condition")
-                .index()
-        })
-        .collect()
-}
-
-fn first_function_assertion(statements: dae::FunctionStatements<'_>) -> Option<Span> {
-    for statement in statements {
-        match statement {
-            dae::FunctionStatementView::Assertion { provenance, .. } => {
-                return Some(provenance.span());
-            }
-            dae::FunctionStatementView::For { statements, .. } => {
-                if let Some(span) = first_function_assertion(statements) {
-                    return Some(span);
-                }
-            }
-            dae::FunctionStatementView::Assignment { .. }
-            | dae::FunctionStatementView::AssignmentGroup { .. } => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]

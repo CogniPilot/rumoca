@@ -635,7 +635,7 @@ fn ast_dot_completion_target(
     character: u32,
 ) -> Option<DotCompletionTarget> {
     let mut finder = DotCompletionTargetFinder::new(source, line, character);
-    let _ = finder.visit_stored_definition(ast);
+    let _visit_outcome = finder.visit_stored_definition(ast);
     finder.best
 }
 

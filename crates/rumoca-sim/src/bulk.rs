@@ -76,7 +76,9 @@ fn worker_loop<P, O, Run>(
             break;
         };
         let result = run(job.payload);
-        let _ = result_tx.send((job.index, result));
+        if result_tx.send((job.index, result)).is_err() {
+            break;
+        }
     }
 }
 

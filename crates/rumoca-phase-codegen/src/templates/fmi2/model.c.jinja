@@ -1,4 +1,4 @@
-{%- set model_identifier = "Rumoca_" ~ (artifact.identities.fmu | replace("-", "_")) %}
+{%- set model_identifier = "Rumoca_" ~ (__rumoca_artifact_identity_v1_fmu | replace("-", "_")) %}
 {%- macro scalar_const(op) -%}
 {%- if op.value_class == "finite" -%}{{ op.value }}
 {%- elif op.value_class == "positive_infinity" -%}INFINITY
@@ -50,7 +50,6 @@
 {%- elif op.kind == "LoadTime" %}    r[{{ op.dst }}] = m->time;
 {%- elif op.kind == "LoadY" %}    r[{{ op.dst }}] = m->y[{{ op.index }}];
 {%- elif op.kind == "LoadP" %}    r[{{ op.dst }}] = m->p[{{ op.index }}];
-{%- elif op.kind == "LoadIndexedP" %}    r[{{ op.dst }}] = m->p[{{ op.base }} + (size_t)fmin(fmax(round(r[{{ op.index_ref }}]), 0.0), {{ op.count - 1 if op.count > 0 else 0 }}.0)];
 {%- elif op.kind == "Move" %}    r[{{ op.dst }}] = r[{{ op.src }}];
 {%- elif op.kind == "Unary" %}    r[{{ op.dst }}] = {{ unary(op.operator, op.arg) }};
 {%- elif op.kind == "Binary" %}    r[{{ op.dst }}] = {{ binary(op.operator, op.lhs, op.rhs) }};
@@ -75,7 +74,7 @@
 enum ModelState { MODEL_INSTANTIATED, MODEL_INITIALIZATION, MODEL_EVENT, MODEL_CONTINUOUS, MODEL_STEP, MODEL_TERMINATED };
 #define Y_LEN {{ solve.layout.y_scalars if solve.layout.y_scalars > 0 else 1 }}
 #define P_LEN {{ solve.layout.p_scalars if solve.layout.p_scalars > 0 else 1 }}
-#define STATE_LEN {{ solve.solve_layout.state_scalar_count if solve.solve_layout.state_scalar_count > 0 else 1 }}
+#define STATE_LEN {{ fmi.fmi2.continuous_state_scalar_count if fmi.fmi2.continuous_state_scalar_count > 0 else 1 }}
 typedef struct {
     double time;
     double y[Y_LEN];
@@ -89,10 +88,8 @@ typedef struct {
 static void initialize_values(ModelInstance* m) {
     memset(m->y, 0, sizeof(m->y));
     memset(m->p, 0, sizeof(m->p));
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = {{ variable.start[scalar] }};
-{%- endfor %}
+{%- for variable in fmi.fmi2.variables %}
+    m->{{ variable.storage.column }}[{{ variable.storage.base }}] = {{ variable.runtime_start }};
 {%- endfor %}
     m->time = 0.0;
 }
@@ -108,7 +105,7 @@ static fmi2Status evaluate_derivatives(ModelInstance* m) {
 {%- endfor %}
     }
 {%- endfor %}
-    for (size_t i = 0; i < {{ solve.solve_layout.state_scalar_count }}; ++i) {
+    for (size_t i = 0; i < {{ fmi.fmi2.continuous_state_scalar_count }}; ++i) {
         if (!isfinite(m->derivative[i])) return fmi2Error;
     }
     return fmi2OK;
@@ -120,7 +117,7 @@ static fmi2Status integrate_rk4(ModelInstance* m, fmi2Real start, fmi2Real step)
     double k2[STATE_LEN];
     double k3[STATE_LEN];
     double k4[STATE_LEN];
-    size_t count = {{ solve.solve_layout.state_scalar_count }};
+    size_t count = {{ fmi.fmi2.continuous_state_scalar_count }};
     for (size_t i = 0; i < count; ++i) initial[i] = m->y[i];
     m->time = start;
     if (evaluate_derivatives(m) != fmi2OK) return fmi2Error;
@@ -143,57 +140,43 @@ static fmi2Status integrate_rk4(ModelInstance* m, fmi2Real start, fmi2Real step)
 static fmi2Status get_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real* value) {
     switch (vr) {
     case 0: *value = m->time; return fmi2OK;
-{%- set vr = namespace(value=1) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}: *value = m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}]; return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
+{%- for variable in fmi.fmi2.variables %}
+    case {{ variable.value_reference }}: *value = m->{{ variable.storage.column }}[{{ variable.storage.base }}]; return fmi2OK;
 {%- endfor %}
-{%- endfor %}
-{%- for scalar in range(solve.solve_layout.state_scalar_count) %}
-    case {{ vr.value }}: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[{{ scalar }}]; return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
+{%- for derivative in fmi.fmi2.derivatives %}
+    case {{ derivative.link.derivative_value_reference }}: if (evaluate_derivatives(m) != fmi2OK) return fmi2Error; *value = m->derivative[{{ derivative.storage.base }}]; return fmi2OK;
 {%- endfor %}
     default: return fmi2Error;
     }
 }
 
+static unsigned current_write_mode(const ModelInstance* m) {
+    switch (m->state) {
+    case MODEL_INSTANTIATED: return {{ fmi.fmi2.write_mode_bits.instantiated }}u;
+    case MODEL_INITIALIZATION: return {{ fmi.fmi2.write_mode_bits.initialization }}u;
+    case MODEL_EVENT: return m->type == fmi2ModelExchange ? {{ fmi.fmi2.write_mode_bits.me_event }}u : 0u;
+    case MODEL_CONTINUOUS: return m->type == fmi2ModelExchange ? {{ fmi.fmi2.write_mode_bits.me_continuous }}u : 0u;
+    case MODEL_STEP: return m->type == fmi2CoSimulation ? {{ fmi.fmi2.write_mode_bits.cs_step }}u : 0u;
+    default: return 0u;
+    }
+}
+
 static fmi2Boolean can_set_real(const ModelInstance* m, fmi2ValueReference vr) {
+    unsigned modes;
     switch (vr) {
-{%- set vr = namespace(value=1) %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}:
-{%- if variable.role == "State" %}
-        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
-            || (m->type == fmi2ModelExchange && m->state == MODEL_CONTINUOUS);
-{%- elif variable.causality == "input" %}
-        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION
-            || (m->type == fmi2ModelExchange && (m->state == MODEL_EVENT || m->state == MODEL_CONTINUOUS))
-            || (m->type == fmi2CoSimulation && m->state == MODEL_STEP);
-{%- elif variable.causality == "parameter" %}
-        return m->state == MODEL_INSTANTIATED || m->state == MODEL_INITIALIZATION{% if variable.tunable %}
-            || (m->type == fmi2ModelExchange && m->state == MODEL_EVENT)
-            || (m->type == fmi2CoSimulation && m->state == MODEL_STEP){% endif %};
-{%- else %}
-        return fmi2False;
-{%- endif %}
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
+{%- for variable in fmi.fmi2.variables %}
+    case {{ variable.value_reference }}: modes = {{ variable.write_modes }}u; break;
 {%- endfor %}
     default: return fmi2False;
     }
+    return (modes & current_write_mode(m)) != 0u ? fmi2True : fmi2False;
 }
 
 static fmi2Status set_real(ModelInstance* m, fmi2ValueReference vr, fmi2Real value) {
     if (!isfinite(value)) return fmi2Error;
     switch (vr) {
-{%- set vr.value = 1 %}
-{%- for variable in fmi.variables %}
-{%- for scalar in range(variable.storage.scalar_count) %}
-    case {{ vr.value }}: m->{{ variable.storage.column }}[{{ variable.storage.base + scalar }}] = value; return fmi2OK;
-{%- set vr.value = vr.value + 1 %}
-{%- endfor %}
+{%- for variable in fmi.fmi2.variables %}
+    case {{ variable.value_reference }}: m->{{ variable.storage.column }}[{{ variable.storage.base }}] = value; return fmi2OK;
 {%- endfor %}
     default: return fmi2Error;
     }
@@ -204,7 +187,7 @@ FMI_EXPORT const char* fmi2GetVersion(void) { return "2.0"; }
 FMI_EXPORT fmi2Status fmi2SetDebugLogging(fmi2Component c, fmi2Boolean loggingOn, size_t n, const fmi2String categories[]) { (void)loggingOn; if (!c || (!categories && n)) return fmi2Error; return fmi2OK; }
 FMI_EXPORT fmi2Component fmi2Instantiate(fmi2String name, fmi2Type type, fmi2String guid, fmi2String resources, const fmi2CallbackFunctions* callbacks, fmi2Boolean visible, fmi2Boolean loggingOn) {
     (void)name; (void)resources; (void)visible; (void)loggingOn;
-    if ((type != fmi2ModelExchange && type != fmi2CoSimulation) || !guid || strcmp(guid, "{ {{- artifact.identities.fmu -}} }") != 0 || !callbacks || !callbacks->allocateMemory || !callbacks->freeMemory) return NULL;
+    if ((type != fmi2ModelExchange && type != fmi2CoSimulation) || !guid || strcmp(guid, "{ {{- __rumoca_artifact_identity_v1_fmu -}} }") != 0 || !callbacks || !callbacks->allocateMemory || !callbacks->freeMemory) return NULL;
     ModelInstance* m = callbacks->allocateMemory(1, sizeof(ModelInstance));
     if (!m) return NULL;
     m->callbacks = *callbacks; m->type = type; m->state = MODEL_INSTANTIATED; initialize_values(m); return m;
@@ -224,10 +207,10 @@ UNSUPPORTED_GET_SET(fmi2Integer, Integer)
 UNSUPPORTED_GET_SET(fmi2Boolean, Boolean)
 UNSUPPORTED_GET_SET(fmi2String, String)
 FMI_EXPORT fmi2Status fmi2SetTime(fmi2Component c, fmi2Real time) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || !isfinite(time)) return fmi2Error; m->time = time; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2SetContinuousStates(fmi2Component c, const fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) if (!isfinite(x[i])) return fmi2Error; for (size_t i = 0; i < nx; ++i) m->y[i] = x[i]; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2GetContinuousStates(fmi2Component c, fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) x[i] = m->y[i]; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2GetDerivatives(fmi2Component c, fmi2Real dx[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ solve.solve_layout.state_scalar_count }} || (!dx && nx) || evaluate_derivatives(m) != fmi2OK) return fmi2Error; for (size_t i = 0; i < nx; ++i) dx[i] = m->derivative[i]; return fmi2OK; }
-FMI_EXPORT fmi2Status fmi2GetNominalsOfContinuousStates(fmi2Component c, fmi2Real values[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || nx != {{ solve.solve_layout.state_scalar_count }} || (!values && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) values[i] = 1.0; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2SetContinuousStates(fmi2Component c, const fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state != MODEL_CONTINUOUS || nx != {{ fmi.fmi2.continuous_state_scalar_count }} || (!x && nx)) return fmi2Error; for (size_t i = 0; i < nx; ++i) if (!isfinite(x[i])) return fmi2Error;{% for variable in fmi.fmi2.variables if variable.continuous_state_storage is not none %} m->{{ variable.storage.column }}[{{ variable.storage.base }}] = x[{{ variable.continuous_state_storage.base }}];{% endfor %} return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2GetContinuousStates(fmi2Component c, fmi2Real x[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ fmi.fmi2.continuous_state_scalar_count }} || (!x && nx)) return fmi2Error;{% for variable in fmi.fmi2.variables if variable.continuous_state_storage is not none %} x[{{ variable.continuous_state_storage.base }}] = m->{{ variable.storage.column }}[{{ variable.storage.base }}];{% endfor %} return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2GetDerivatives(fmi2Component c, fmi2Real dx[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || m->state == MODEL_INSTANTIATED || m->state == MODEL_STEP || nx != {{ fmi.fmi2.continuous_state_scalar_count }} || (!dx && nx) || evaluate_derivatives(m) != fmi2OK) return fmi2Error; for (size_t i = 0; i < nx; ++i) dx[i] = m->derivative[i]; return fmi2OK; }
+FMI_EXPORT fmi2Status fmi2GetNominalsOfContinuousStates(fmi2Component c, fmi2Real values[], size_t nx) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || nx != {{ fmi.fmi2.continuous_state_scalar_count }} || (!values && nx)) return fmi2Error;{% for variable in fmi.fmi2.variables if variable.continuous_state_storage is not none %} values[{{ variable.continuous_state_storage.base }}] = {{ variable.nominal if variable.nominal is not none else 1.0 }};{% endfor %} return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2GetEventIndicators(fmi2Component c, fmi2Real values[], size_t ni) { ModelInstance* m = c; (void)values; return m && m->type == fmi2ModelExchange && m->state != MODEL_INSTANTIATED && m->state != MODEL_STEP && ni == 0 ? fmi2OK : fmi2Error; }
 FMI_EXPORT fmi2Status fmi2EnterEventMode(fmi2Component c) { ModelInstance* m = c; if (!m || m->type != fmi2ModelExchange || (m->state != MODEL_EVENT && m->state != MODEL_CONTINUOUS)) return fmi2Error; m->state = MODEL_EVENT; return fmi2OK; }
 FMI_EXPORT fmi2Status fmi2NewDiscreteStates(fmi2Component c, fmi2EventInfo* info) { ModelInstance* m = c; if (!m || !info || m->state != MODEL_EVENT) return fmi2Error; memset(info, 0, sizeof(*info)); return fmi2OK; }

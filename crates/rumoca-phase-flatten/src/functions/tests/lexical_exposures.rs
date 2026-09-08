@@ -56,7 +56,8 @@ fn add_regular_function(
     name: &str,
     def_id: rumoca_core::DefId,
 ) -> rumoca_core::FunctionInstanceId {
-    let mut function = rumoca_core::Function::new(name, test_span());
+    let mut function =
+        rumoca_core::Function::new(name, rumoca_core::DefId::new(61_002), test_span());
     function.def_id = Some(def_id);
     function
         .body

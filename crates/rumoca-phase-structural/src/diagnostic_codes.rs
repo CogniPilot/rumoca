@@ -1,15 +1,14 @@
-//! Stable `ES0xx` structural diagnostic codes (SPEC_0008 "Error Code Ranges").
+//! Stable structural diagnostic codes (SPEC_0008 "Error Code Ranges").
 //!
-//! Warnings (`ES001`, `ES002`) and hard errors (`ES01x`) share this one table so
-//! the whole structural surface is greppable from a single place. Codes are part
-//! of the tool contract: once shipped, a code is never renumbered or reused for
-//! a different defect class — [`STRUCTURAL_DIAGNOSTIC_CODES`] plus the unit
-//! tests below pin that.
+//! Warnings use `WS0xx`; hard errors use `ES0xx`. Both share this table so the
+//! whole structural surface is greppable. Shipped codes are retired rather than
+//! reused for another defect class; [`STRUCTURAL_DIAGNOSTIC_CODES`] pins the
+//! live set.
 
 /// A maximum matching smaller than the system size was found (warning form).
-pub const ES001_STRUCTURAL_SINGULARITY: &str = "ES001";
+pub const WS001_STRUCTURAL_SINGULARITY: &str = "WS001";
 /// A strongly connected component of size > 1 requires simultaneous solution.
-pub const ES002_ALGEBRAIC_LOOP: &str = "ES002";
+pub const WS002_ALGEBRAIC_LOOP: &str = "WS002";
 
 /// [`crate::StructuralError::Singular`]: no perfect matching exists.
 pub const ES010_SINGULAR_SYSTEM: &str = "ES010";
@@ -72,12 +71,12 @@ pub const ES014_CONTRACT_VIOLATION: &str = "ES014";
 
 /// Every structural diagnostic code, in numeric order.
 ///
-/// The grep-discoverable registry: a new `ES0xx` constant must be added here,
-/// and every code returned by [`crate::StructuralError::code`] must be present
-/// (enforced by `structural_error_codes_are_registered`).
+/// The grep-discoverable registry includes both severity ranges. Every code
+/// returned by [`crate::StructuralError::code`] must be present (enforced by
+/// `structural_error_codes_are_registered`).
 pub const STRUCTURAL_DIAGNOSTIC_CODES: &[&str] = &[
-    ES001_STRUCTURAL_SINGULARITY,
-    ES002_ALGEBRAIC_LOOP,
+    WS001_STRUCTURAL_SINGULARITY,
+    WS002_ALGEBRAIC_LOOP,
     ES010_SINGULAR_SYSTEM,
     ES011_EMPTY_SYSTEM,
     ES012_DROPPED_STATED_INITIAL_VALUE,
@@ -162,9 +161,9 @@ mod tests {
         for code in STRUCTURAL_DIAGNOSTIC_CODES {
             assert!(
                 code.len() == 5
-                    && code.starts_with("ES")
+                    && matches!(&code[..2], "ES" | "WS")
                     && code[2..].chars().all(|c| c.is_ascii_digit()),
-                "structural code {code} must match ES<three digits>"
+                "structural code {code} must match ES/WS<three digits>"
             );
         }
     }
@@ -200,13 +199,33 @@ mod tests {
 
     #[test]
     fn structural_codes_are_pinned_literals() {
-        assert_eq!(ES001_STRUCTURAL_SINGULARITY, "ES001");
-        assert_eq!(ES002_ALGEBRAIC_LOOP, "ES002");
+        assert_eq!(WS001_STRUCTURAL_SINGULARITY, "WS001");
+        assert_eq!(WS002_ALGEBRAIC_LOOP, "WS002");
         assert_eq!(ES010_SINGULAR_SYSTEM, "ES010");
         assert_eq!(ES011_EMPTY_SYSTEM, "ES011");
         assert_eq!(ES012_DROPPED_STATED_INITIAL_VALUE, "ES012");
         assert_eq!(ES013_CONFLICTING_STATED_INITIAL_VALUES, "ES013");
         assert_eq!(ES014_CONTRACT_VIOLATION, "ES014");
+    }
+
+    #[test]
+    fn structural_warning_codes_match_warning_severity() {
+        let diagnostic = crate::diagnostics::singular_warning(
+            Some(structural_code_test_span()),
+            &["equation".to_owned()],
+            &["x".to_owned()],
+            0,
+            1,
+            1,
+        );
+        assert_eq!(
+            diagnostic.code.as_deref(),
+            Some(WS001_STRUCTURAL_SINGULARITY)
+        );
+        assert_eq!(
+            diagnostic.severity,
+            rumoca_core::DiagnosticSeverity::Warning
+        );
     }
 
     #[test]

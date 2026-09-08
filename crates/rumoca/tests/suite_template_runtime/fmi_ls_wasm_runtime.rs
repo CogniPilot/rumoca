@@ -97,9 +97,18 @@ fn fmi_ls_wasm_component_validates_and_executes_pinned_lifecycle() {
         .compile_str(SOURCE, "FmiLsDecay.mo")
         .expect("compile FMI-LS-Wasm fixture");
     let generated = work.path().join("generated");
-    rumoca::compile_packaged_target(&result, MODEL, "fmi-ls-wasm", generated.clone())
-        .expect("render complete FMI-LS-Wasm component crate");
-    let crate_root = generated.join(MODEL);
+    let published = rumoca::compile_target(
+        &result,
+        "fmi-ls-wasm",
+        &generated,
+        crate::artifact_session::pinned_artifact_input(),
+    )
+    .expect("render complete FMI-LS-Wasm component crate");
+    assert!(
+        published.archive().is_none(),
+        "FMI-LS-Wasm publishes an unpackaged component tree"
+    );
+    let crate_root = published.root().to_owned();
 
     checked_output(
         Command::new("wasm-tools")

@@ -1,5 +1,4 @@
 version = 1
-ir = "solve"
 name = "rust-fixed-ode"
 description = "Fixed-size Rust explicit-ODE right-hand-side evaluator for no-allocation CPU hot paths"
 execution_mode = "compiled"
@@ -13,7 +12,6 @@ continuous_states = true
 residual_equations = false
 scalar_fallback = true
 external_functions = false
-external_tables = false
 random = false
 initialization = false
 events = false
@@ -35,5 +33,7 @@ sparse = false
 dtypes = ["f64"]
 
 [[files]]
+artifact_kind = "rust-source"
+semantic_context = "solve"
 path = "{{ model_name }}_fixed_ode.rs"
 template = "model_fixed_ode.rs.jinja"

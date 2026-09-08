@@ -22,25 +22,8 @@ impl TypeChecker {
         )
     }
 
-    pub(crate) fn resolve_alias_root(type_table: &TypeTable, mut ty: TypeId) -> TypeId {
-        const MAX_DEPTH: usize = 16;
-        for _ in 0..MAX_DEPTH {
-            let Some(Type::Alias(alias)) = type_table.get(ty) else {
-                return ty;
-            };
-            if alias.aliased.is_unknown() || alias.aliased == ty {
-                return ty;
-            }
-            ty = alias.aliased;
-        }
-        ty
-    }
-
-    pub(crate) fn resolve_type_root(&self, type_table: &TypeTable, ty: TypeId) -> TypeId {
-        self.type_roots
-            .get(&ty)
-            .copied()
-            .unwrap_or_else(|| Self::resolve_alias_root(type_table, ty))
+    pub(crate) fn resolve_type_root(&self, ty: TypeId) -> TypeId {
+        self.type_roots.canonical(ty)
     }
 
     pub(crate) fn format_type_name(type_table: &TypeTable, type_id: TypeId) -> String {

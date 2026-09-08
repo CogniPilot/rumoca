@@ -23,14 +23,21 @@ enum SimulationSessionInner {
 }
 
 impl SimulationSession {
-    pub fn new(
-        dae_model: &dae::Dae,
-        opts: rumoca_solver::SimOptions,
-    ) -> Result<Self, SimulationDiagnosticError> {
-        Self::new_with_diagnostics(dae_model, opts)
+    #[cfg(all(test, feature = "solver-diffsol", feature = "scheduled-sim"))]
+    pub(crate) fn verification_from_diffsol(session: crate::diffsol::SimulationSession) -> Self {
+        Self {
+            inner: SimulationSessionInner::Diffsol(Box::new(session)),
+        }
     }
 
-    pub fn new_with_diagnostics(
+    #[cfg(all(test, feature = "solver-rk45", feature = "scheduled-sim"))]
+    pub(crate) fn verification_from_rk_like(session: crate::rk45::SimulationSession) -> Self {
+        Self {
+            inner: SimulationSessionInner::RkLike(Box::new(session)),
+        }
+    }
+
+    pub fn new(
         dae_model: &dae::Dae,
         opts: rumoca_solver::SimOptions,
     ) -> Result<Self, SimulationDiagnosticError> {
@@ -46,24 +53,38 @@ impl SimulationSession {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .set_input(name, value)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .map_err(SimulationDiagnosticError::from),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => session
                 .set_input(name, value)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .map_err(SimulationDiagnosticError::from),
         }
     }
 
-    pub fn reset(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
+    pub fn reset(&mut self) -> Result<(), SimulationDiagnosticError> {
+        match &mut self.inner {
+            #[cfg(feature = "solver-diffsol")]
+            SimulationSessionInner::Diffsol(session) => {
+                session.reset().map_err(SimulationDiagnosticError::from)
+            }
+            #[cfg(feature = "solver-rk45")]
+            SimulationSessionInner::RkLike(session) => {
+                session.reset().map_err(SimulationDiagnosticError::from)
+            }
+        }
+    }
+
+    /// Explicitly replay the pristine state at a new start coordinate.
+    pub fn retime(&mut self, t_start: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
-                .reset(t_start)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .retime(t_start)
+                .map_err(SimulationDiagnosticError::from),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => session
-                .reset(t_start)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .retime(t_start)
+                .map_err(SimulationDiagnosticError::from),
         }
     }
 
@@ -72,34 +93,24 @@ impl SimulationSession {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .advance_to(target_time)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .map_err(SimulationDiagnosticError::from),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => session
                 .advance_to(target_time)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
-        }
-    }
-
-    /// Ensure the finite solver horizon includes `target_time`.
-    pub fn ensure_end_time(&mut self, target_time: f64) {
-        match &mut self.inner {
-            #[cfg(feature = "solver-diffsol")]
-            SimulationSessionInner::Diffsol(session) => session.ensure_end_time(target_time),
-            #[cfg(feature = "solver-rk45")]
-            SimulationSessionInner::RkLike(session) => session.ensure_end_time(target_time),
+                .map_err(SimulationDiagnosticError::from),
         }
     }
 
     pub fn step(&mut self, dt: f64) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]
-            SimulationSessionInner::Diffsol(session) => session
-                .step(dt)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            SimulationSessionInner::Diffsol(session) => {
+                session.step(dt).map_err(SimulationDiagnosticError::from)
+            }
             #[cfg(feature = "solver-rk45")]
-            SimulationSessionInner::RkLike(session) => session
-                .step(dt)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            SimulationSessionInner::RkLike(session) => {
+                session.step(dt).map_err(SimulationDiagnosticError::from)
+            }
         }
     }
 
@@ -115,13 +126,13 @@ impl SimulationSession {
     pub fn get(&self, name: &str) -> Result<Option<f64>, SimulationDiagnosticError> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
-            SimulationSessionInner::Diffsol(session) => session
-                .get(name)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            SimulationSessionInner::Diffsol(session) => {
+                session.get(name).map_err(SimulationDiagnosticError::from)
+            }
             #[cfg(feature = "solver-rk45")]
-            SimulationSessionInner::RkLike(session) => session
-                .get(name)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+            SimulationSessionInner::RkLike(session) => {
+                session.get(name).map_err(SimulationDiagnosticError::from)
+            }
         }
     }
 
@@ -129,9 +140,7 @@ impl SimulationSession {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => {
-                let state = session
-                    .state()
-                    .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+                let state = session.state().map_err(SimulationDiagnosticError::from)?;
                 Ok(SessionState {
                     time: state.time,
                     values: state.values,
@@ -139,9 +148,7 @@ impl SimulationSession {
             }
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => {
-                let state = session
-                    .state()
-                    .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+                let state = session.state().map_err(SimulationDiagnosticError::from)?;
                 Ok(SessionState {
                     time: state.time,
                     values: state.values,
@@ -173,16 +180,12 @@ impl SimulationSession {
 impl SimulationSessionApi for SimulationSession {
     type Error = SimulationDiagnosticError;
 
-    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-        Self::reset(self, t_start)
+    fn retime(&mut self, t_start: f64) -> Result<(), Self::Error> {
+        Self::retime(self, t_start)
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
         Self::set_input(self, name, value)
-    }
-
-    fn ensure_end_time(&mut self, target_time: f64) {
-        Self::ensure_end_time(self, target_time);
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
@@ -193,22 +196,16 @@ impl SimulationSessionApi for SimulationSession {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
-        Self::get(self, name)
-    }
-
-    fn values_for(&self, names: &[String]) -> Result<Option<IndexMap<String, f64>>, Self::Error> {
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, Self::Error> {
         match &self.inner {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
                 .values_for(names)
-                .map(Some)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .map_err(SimulationDiagnosticError::from),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => session
                 .values_for(names)
-                .map(Some)
-                .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
+                .map_err(SimulationDiagnosticError::from),
         }
     }
 
@@ -244,20 +241,26 @@ fn new_auto_session(
     let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     {
-        match crate::diffsol::select_auto_integrator(&artifact, &opts, execution_backend.clone())
-            .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
+        match crate::prepared_simulation::select_retained_component(
+            artifact,
+            &opts,
+            execution_backend,
+        )
+        .map_err(SimulationDiagnosticError::from)?
         {
-            crate::diffsol::SelectedAutoIntegrator::Bdf => {
-                crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend)
-                    .map(|session| SimulationSession {
+            crate::prepared_simulation::SelectedRetainedComponent::Bdf(retained) => {
+                crate::diffsol::SimulationSession::from_retained(retained, opts).map(|session| {
+                    SimulationSession {
                         inner: SimulationSessionInner::Diffsol(Box::new(session)),
-                    })
+                    }
+                })
             }
-            crate::diffsol::SelectedAutoIntegrator::RkLike => {
-                crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend)
-                    .map(|session| SimulationSession {
+            crate::prepared_simulation::SelectedRetainedComponent::RkLike(retained) => {
+                crate::rk45::SimulationSession::from_selected_retained(retained, opts).map(
+                    |session| SimulationSession {
                         inner: SimulationSessionInner::RkLike(Box::new(session)),
-                    })
+                    },
+                )
             }
         }
     }
@@ -271,11 +274,10 @@ fn new_auto_session(
     }
     #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
     {
-        crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
-            |session| SimulationSession {
+        crate::rk45::SimulationSession::from_selected_artifact(artifact, opts, execution_backend)
+            .map(|session| SimulationSession {
                 inner: SimulationSessionInner::RkLike(Box::new(session)),
-            },
-        )
+            })
     }
     #[cfg(not(any(feature = "solver-diffsol", feature = "solver-rk45")))]
     {
@@ -315,11 +317,10 @@ fn new_rk_like_session(
     let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(feature = "solver-rk45")]
     {
-        crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
-            |session| SimulationSession {
+        crate::rk45::SimulationSession::from_selected_artifact(artifact, opts, execution_backend)
+            .map(|session| SimulationSession {
                 inner: SimulationSessionInner::RkLike(Box::new(session)),
-            },
-        )
+            })
     }
     #[cfg(not(feature = "solver-rk45"))]
     {

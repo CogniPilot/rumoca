@@ -401,11 +401,7 @@ fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
         a = b;
         b = next;
     }
-    if a == 0 {
-        1
-    } else {
-        a
-    }
+    if a == 0 { 1 } else { a }
 }
 
 fn divide_signed_by_unsigned(value: i128, divisor: u128) -> LatticeResult<i128> {

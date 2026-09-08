@@ -524,7 +524,7 @@ fn convert_type_class_specifier_inner(
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(class_mod),
+        value: Some(Arc::new(class_mod)),
     })
 }
 
@@ -583,7 +583,7 @@ fn convert_function_partial_specifier_inner(
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, function_call.span()),
         target: name_ref,
-        value: Arc::new(function_call),
+        value: Some(Arc::new(function_call)),
     })
 }
 
@@ -667,7 +667,7 @@ fn convert_component_clause_redecl_inner(
         return Ok(rumoca_ir_ast::Expression::Modification {
             span: merge_spans(name_ref.span, class_mod.span()),
             target: name_ref,
-            value: Arc::new(class_mod),
+            value: Some(Arc::new(class_mod)),
         });
     }
 
@@ -686,7 +686,7 @@ fn convert_component_clause_redecl_inner(
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(class_mod),
+        value: Some(Arc::new(class_mod)),
     })
 }
 
@@ -729,7 +729,7 @@ fn convert_replaceable_component_clause_inner(
                         return Ok(rumoca_ir_ast::Expression::Modification {
                             span: merge_spans(name_ref.span, expr.expression.span()),
                             target: name_ref,
-                            value: Arc::new(expr.expression.clone()),
+                            value: Some(Arc::new(expr.expression.clone())),
                         });
                     }
                     modelica_grammar_trait::ModificationExpression::Break(_) => {}
@@ -753,7 +753,7 @@ fn convert_replaceable_component_clause_inner(
                 return Ok(rumoca_ir_ast::Expression::Modification {
                     span: merge_spans(name_ref.span, class_mod.span()),
                     target: name_ref,
-                    value: Arc::new(class_mod),
+                    value: Some(Arc::new(class_mod)),
                 });
             }
         }
@@ -770,7 +770,7 @@ fn convert_replaceable_component_clause_inner(
     Ok(rumoca_ir_ast::Expression::Modification {
         span: merge_spans(name_ref.span, class_mod.span()),
         target: name_ref,
-        value: Arc::new(class_mod),
+        value: Some(Arc::new(class_mod)),
     })
 }
 
@@ -859,18 +859,23 @@ fn convert_element_modification(
                         Ok(rumoca_ir_ast::Expression::Modification {
                             span: merge_spans(target.span, expr.expression.span()),
                             target,
-                            value: Arc::new(expr.expression.clone()),
+                            value: Some(Arc::new(expr.expression.clone())),
                         })
                     }
                 }
             }
         },
-        // An element modification without a modification (a bare name,
-        // MLS §18.2) is dropped here: representing it as a ComponentReference
-        // corrupts modification consumers that treat entries as values
-        // (dimension evaluation of MSL table blocks). Preserving it needs a
-        // dedicated AST node (see ANN-002 blocker note).
-        None => Ok(empty_expr(target.span)),
+        // An element modification consisting of a bare name (MLS §18.2,
+        // `annotation(Dialog)`) is a modification whose value is absent. The
+        // absence is typed (`value: None`) rather than spelled with a
+        // placeholder expression: a `ComponentReference` would be read as a
+        // value by modifier consumers, and `Expression::Empty` is reserved for
+        // parser recovery and is refused at semantic lowering.
+        None => Ok(rumoca_ir_ast::Expression::Modification {
+            span: target.span,
+            target,
+            value: None,
+        }),
     }
 }
 
@@ -1161,6 +1166,23 @@ fn convert_global_function_call(
         }
         modelica_grammar_trait::GlobalFunctionCallGroup::Pure(expr) => expr.pure.pure.clone(),
     };
+    if matches!(
+        gfc.global_function_call_group,
+        modelica_grammar_trait::GlobalFunctionCallGroup::Der(_)
+    ) {
+        let func_call = rumoca_ir_ast::Expression::DerivativeCall {
+            span: merge_spans(token_span(&tok)?, gfc.function_call_args.delimiter_span),
+            args: gfc.function_call_args.args.clone(),
+        };
+        return Ok(match &gfc.global_function_call_opt {
+            Some(opt) => rumoca_ir_ast::Expression::ArrayIndex {
+                span: func_call.span(),
+                base: Arc::new(func_call),
+                subscripts: opt.array_subscripts.subscripts.clone(),
+            },
+            None => func_call,
+        });
+    }
     let part = rumoca_ir_ast::ComponentRefPart {
         ident: tok.clone().into(),
         subs: None,

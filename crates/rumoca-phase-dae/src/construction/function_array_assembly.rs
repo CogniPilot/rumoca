@@ -1,3 +1,4 @@
+use super::analysis::function_statement_products::FunctionArraySuffixProduct;
 use super::*;
 
 pub(super) fn lower_function_array_assembly<'dae>(
@@ -7,77 +8,68 @@ pub(super) fn lower_function_array_assembly<'dae>(
     source: &[rumoca_core::Statement],
     plan: &FunctionArrayAssemblyPlan,
 ) -> Result<(), dae::DaeConstructionError> {
-    let mut elements = source[..plan.direct_count]
+    let owner_span = source
+        .first()
+        .and_then(rumoca_core::Statement::source_span)
+        .ok_or(dae::DaeConstructionError::MissingProvenance {
+            origin: dae::DaeProvenanceOrigin::Generated(dae::DaeGeneration::FunctionLoopLowering),
+            attempted_span: None,
+        })?;
+    let direct_source = source
+        .get(..plan.direct_count)
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: owner_span })?;
+    let mut elements = direct_source
         .iter()
         .map(|statement| {
             let rumoca_core::Statement::Assignment { value, .. } = statement else {
-                unreachable!("analysis proves direct array-assembly assignments")
+                return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: statement.source_span().unwrap_or(owner_span),
+                });
             };
-            lower_function_expression(
+            let value = lower_function_expression(
                 construction,
                 symbols.coordinates,
+                Some(symbols.record_staging_scope()),
                 symbols.functions,
                 symbols.shapes,
                 body,
                 value,
-            )
+            )?;
+            Ok(value)
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    if plan.loop_plan.is_some() {
-        let loop_elements = lower_array_assembly_loop(
-            construction,
-            symbols,
-            body,
-            &source[plan.direct_count],
-            plan,
-        )?;
+        .collect::<Result<Vec<_>, dae::DaeConstructionError>>()?;
+    if let Some(suffix) = &plan.suffix {
+        let loop_elements = lower_array_assembly_loop(construction, symbols, body, suffix)?;
         elements.extend(loop_elements);
     }
+    if elements.len() != plan.extent {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm { span: owner_span });
+    }
 
-    let owner_span = source[0]
-        .source_span()
-        .expect("analysis requires array-assembly source provenance");
     let owner =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionLoopLowering, owner_span)?;
-    let array = construction.expressions(|expressions| expressions.at(owner).array(elements))?;
-    let target = function_value_coordinate(symbols.coordinates, &plan.target);
-    construction.functions(|functions| functions.assign(body, target, array, owner))
+    let target = *symbols
+        .function_values
+        .get(&plan.target_def_id)
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span: owner_span })?;
+    construction.functions(|functions| functions.assign_array(body, target, elements, owner))
 }
 
 fn lower_array_assembly_loop<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     body: &mut dae::FunctionBody<'dae>,
-    source: &rumoca_core::Statement,
-    plan: &FunctionArrayAssemblyPlan,
+    suffix: &FunctionArraySuffixProduct,
 ) -> Result<Vec<dae::ExprId<'dae>>, dae::DaeConstructionError> {
-    let (
-        rumoca_core::Statement::For {
-            indices,
-            equations,
-            span,
-        },
-        Some(FunctionStatementPlan::For {
-            domain,
-            binder_spans,
-            statements,
-            source_depth: 1,
-            ..
-        }),
-    ) = (source, plan.loop_plan.as_deref())
-    else {
-        unreachable!("analysis proves a rank-one suffix loop")
-    };
-    let domain_owner = dae::DaeProvenance::source(*span)?;
+    let domain_owner = dae::DaeProvenance::source(suffix.span)?;
     let domain_id =
-        construction.domains(|domains| domains.structured(domain.clone(), domain_owner))?;
-    let binders = lower_function_binders(construction, domain_id, &[&indices[0]], binder_spans)?;
-    let [rumoca_core::Statement::Assignment { value, .. }] = equations.as_slice() else {
-        unreachable!("analysis proves one suffix-loop assignment")
-    };
-    let [FunctionStatementPlan::Assignment(_)] = statements.as_slice() else {
-        unreachable!("analysis proves one suffix-loop assignment plan")
-    };
+        construction.domains(|domains| domains.structured(suffix.domain.clone(), domain_owner))?;
+    let binders = lower_function_binders(
+        construction,
+        domain_id,
+        &[&suffix.index],
+        &[suffix.binder_span],
+    )?;
     let mut loop_shapes = symbols.shapes.clone();
     for binder in binders.keys() {
         // A loop binder is a scalar whose value varies over the iteration, so
@@ -86,33 +78,43 @@ fn lower_array_assembly_loop<'dae>(
     }
     let element = lower_function_expression_scoped(
         construction,
-        symbols.coordinates,
+        FunctionExpressionValues {
+            coordinates: symbols.coordinates,
+            record_staging: Some(symbols.record_staging_scope()),
+        },
         symbols.functions,
         &loop_shapes,
         body,
         &binders,
-        value,
+        &suffix.value,
     )?;
-    let generated = dae::DaeProvenance::generated(dae::DaeGeneration::FunctionLoopLowering, *span)?;
-    let suffix = construction
+    let generated =
+        dae::DaeProvenance::generated(dae::DaeGeneration::FunctionLoopLowering, suffix.span)?;
+    let comprehension = construction
         .expressions(|expressions| expressions.at(generated).comprehension(domain_id, element))?;
-    let count = domain
-        .scalar_count()
-        .expect("analysis validates the suffix-loop domain");
+    let count = suffix
+        .domain
+        .validated()
+        .map_err(|source| dae::DaeConstructionError::InvalidDomain {
+            source,
+            span: suffix.span,
+        })?
+        .scalar_count();
     (0..count)
         .map(|point| {
-            construction.expressions(|expressions| {
+            let value = construction.expressions(|expressions| {
                 let index = expressions
                     .at(generated)
                     .literal(dae::DaeLiteral::Integer((point + 1) as i64))?;
                 expressions.at(generated).index(
-                    suffix,
+                    comprehension,
                     [dae::Subscript::Index {
                         expression: index,
                         provenance: generated,
                     }],
                 )
-            })
+            })?;
+            Ok(value)
         })
         .collect()
 }

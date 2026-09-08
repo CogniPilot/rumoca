@@ -26,10 +26,19 @@ fn metric_over(
     deviation: usize,
     max_dev: f64,
 ) -> Value {
+    let compared_count = high + minor + deviation;
+    let compared = (0..compared_count)
+        .map(|index| format!("channel-{index:08}"))
+        .collect::<Vec<_>>();
     json!({
         "model_name": model_name,
-        "compared_variables": high + minor + deviation,
-        "samples_compared": 100,
+        "channel_partition": {
+            "compared": compared,
+            "shared_unmeasured": [],
+            "rumoca_only": [],
+            "reference_only": []
+        },
+        "samples_compared": compared_count * 2,
         "bounded_normalized_l1_score": max_dev / 2.0,
         "mean_channel_bounded_normalized_l1": max_dev / 2.0,
         "max_channel_bounded_normalized_l1": max_dev,
@@ -37,7 +46,36 @@ fn metric_over(
         "channel_minor_count": minor,
         "channel_deviation_count": deviation,
         "channel_severe_count": 0,
-        "worst_variables": []
+        "channel_high_percent": high as f64 / (high + minor + deviation) as f64,
+        "channel_minor_percent": minor as f64 / (high + minor + deviation) as f64,
+        "channel_deviation_percent": deviation as f64 / (high + minor + deviation) as f64,
+        "channel_severe_percent": 0.0,
+        "channel_violation_mass": 0.0,
+        "initial_condition": {
+            "channels_compared": high + minor + deviation,
+            "channels_unmeasured": 0,
+            "high_count": high,
+            "minor_count": minor,
+            "deviation_count": deviation,
+            "severe_count": 0,
+            "high_percent": high as f64 / (high + minor + deviation) as f64,
+            "minor_percent": minor as f64 / (high + minor + deviation) as f64,
+            "deviation_percent": deviation as f64 / (high + minor + deviation) as f64,
+            "severe_percent": 0.0,
+            "violation_mass_total": 0.0,
+            "violation_mass_mean_per_channel": 0.0,
+            "mean_channel_bounded_normalized_error": 0.0,
+            "max_channel_bounded_normalized_error": 0.0
+        },
+        "worst_variables": [],
+        "state_selection": null,
+        "rumoca_sim_wall_seconds": null,
+        "rumoca_sim_seconds": null,
+        "rumoca_sim_build_seconds": null,
+        "rumoca_sim_run_seconds": null,
+        "omc_sim_system_seconds": null,
+        "omc_total_system_seconds": null,
+        "omc_wall_seconds": null
     })
 }
 
@@ -45,13 +83,36 @@ fn trace_payload(models: Value, missing: Value, skipped: Value) -> Value {
     json!({
         "models": models,
         "missing_trace": missing,
-        "skipped": skipped
+        "skipped": skipped,
+        "trace_nonidentifiable": {}
     })
 }
 
 /// A comparator-recorded non-comparison in the shape a current run writes.
 fn exit(kind: &str, detail: &str) -> Value {
-    json!({ "kind": kind, "detail": detail })
+    match kind {
+        "no_common_variables" => json!({
+            "kind": kind,
+            "detail": detail,
+            "channel_partition": {
+                "compared": [],
+                "shared_unmeasured": [],
+                "rumoca_only": ["rumoca-channel"],
+                "reference_only": ["reference-channel"]
+            }
+        }),
+        "no_comparable_samples" => json!({
+            "kind": kind,
+            "detail": detail,
+            "channel_partition": {
+                "compared": [],
+                "shared_unmeasured": ["shared-channel"],
+                "rumoca_only": [],
+                "reference_only": []
+            }
+        }),
+        _ => json!({ "kind": kind, "detail": detail }),
+    }
 }
 
 /// `msl_results.json` for a run whose cohort roster is exactly `entries`.
@@ -102,6 +163,7 @@ fn meta(tag: &str) -> BandTableMeta {
         source: BandTableSource {
             trace_comparison_file: format!("{tag}/sim_trace_comparison.json"),
             trace_comparison_digest: format!("digest-{tag}"),
+            trace_source_evidence_digest: "0".repeat(64),
             results_file: format!("{tag}/msl_results.json"),
             results_digest: format!("results-digest-{tag}"),
             exclusions_file: "msl_trace_compare_exclusions.json".to_string(),
@@ -312,32 +374,25 @@ fn a_rumoca_trace_gap_is_not_recorded_as_a_missing_omc_reference() {
     );
 }
 
-/// A certification written before the comparator recorded kinds cannot say which
-/// side a missing trace came from. The table says exactly that rather than
-/// picking one.
+/// A bare string carries no typed side or producer identity and is not current
+/// evidence. Readers must not guess from its wording.
 #[test]
-fn an_untyped_missing_trace_entry_does_not_claim_a_side() {
-    let table = derive(
+fn an_untyped_missing_trace_entry_is_rejected() {
+    let error = derive_band_table(
         &trace_payload(
             json!({ "Compared": metric("Compared", 10, 0, 0, 1.0e-9) }),
             json!({ "Untyped": "failed to load omc trace: no such file" }),
             json!({}),
         ),
-        &results_payload(&[("Compared", Some("sim_ok")), ("Untyped", Some("sim_ok"))]),
-    );
-
-    let untyped = table
-        .row("Untyped")
-        .expect("an untyped entry still gets a row");
-    assert_eq!(
-        untyped.exit_reason,
-        Some(ExitReason::TraceMissingSideUnrecorded)
-    );
-    assert_eq!(
-        untyped.exit_detail.as_deref(),
-        Some("failed to load omc trace: no such file"),
-        "the recorded text must survive even when the side does not"
-    );
+        Some(&results_payload(&[
+            ("Compared", Some("sim_ok")),
+            ("Untyped", Some("sim_ok")),
+        ])),
+        &BTreeMap::new(),
+        meta("untyped-missing"),
+    )
+    .expect_err("untyped missing-trace evidence must fail closed");
+    assert!(format!("{error:#}").contains("invalid `missing_trace` exit record"));
 }
 
 /// The exclusions argument used to be dead, so an excluded model that the
@@ -373,18 +428,16 @@ fn a_tracked_exclusion_supplies_the_reason_the_row_records() {
     );
 }
 
-/// A certification written before the comparator recorded kinds cannot say
-/// whether a `skipped` model was policy or a comparator crash — but the tracked
-/// exclusion list can, and membership in it is a fact about the run's
-/// configuration rather than a reading of the reason text.
+/// Policy membership cannot repair an untyped comparator record. Current
+/// evidence must state the producer boundary in its closed record variant.
 #[test]
-fn an_untyped_skip_is_attributed_by_the_tracked_exclusion_list_not_by_its_wording() {
+fn an_untyped_skip_is_rejected_even_when_a_policy_list_mentions_the_model() {
     let mut exclusions = BTreeMap::new();
     exclusions.insert(
         "OnTheList".to_string(),
         "stochastic random-input model".to_string(),
     );
-    let table = derive_band_table(
+    let error = derive_band_table(
         &trace_payload(
             json!({ "Compared": metric("Compared", 10, 0, 0, 1.0e-9) }),
             json!({}),
@@ -401,19 +454,8 @@ fn an_untyped_skip_is_attributed_by_the_tracked_exclusion_list_not_by_its_wordin
         &exclusions,
         meta("untyped-skips"),
     )
-    .expect("derive with untyped skips");
-
-    assert_eq!(
-        table.row("OnTheList").and_then(|row| row.exit_reason),
-        Some(ExitReason::Excluded),
-        "a model on the tracked list is a policy exclusion"
-    );
-    assert_eq!(
-        table.row("NotOnTheList").and_then(|row| row.exit_reason),
-        Some(ExitReason::ComparatorFailed),
-        "the only other producer of `skipped` is a comparator failure, and a defect \
-         must not be filed as policy"
-    );
+    .expect_err("untyped skip evidence must fail closed");
+    assert!(format!("{error:#}").contains("invalid `skipped` exit record"));
 }
 
 /// The comparator only reaches its exclusion check for models that simulated. A
@@ -718,7 +760,7 @@ fn a_persisted_table_round_trips_and_rotates_the_previous_run_aside() {
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
 
-    let first = persist_band_table(dir, BandTableRunScope::Full).expect("persist run A");
+    let first = persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run A");
     assert!(
         first.previous.is_none(),
         "the first run has no previous table"
@@ -729,7 +771,7 @@ fn a_persisted_table_round_trips_and_rotates_the_previous_run_aside() {
     assert!(!previous_band_table_path(dir).is_file());
 
     write_run(dir, &run_b_artifacts());
-    let second = persist_band_table(dir, BandTableRunScope::Full).expect("persist run B");
+    let second = persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B");
     let previous = second
         .previous
         .clone()
@@ -763,14 +805,15 @@ fn a_persist_after_an_interrupted_rotation_still_finds_the_previous_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    let run_a = persist_band_table(dir, BandTableRunScope::Full).expect("persist run A");
+    let run_a = persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run A");
 
     // The crash window: run A's table was rotated aside, run B's write never
     // landed.
     write_run(dir, &run_b_artifacts());
     fs::rename(band_table_path(dir), previous_band_table_path(dir)).expect("simulate the crash");
 
-    let retried = persist_band_table(dir, BandTableRunScope::Full).expect("persist run B again");
+    let retried =
+        persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B again");
 
     let previous = retried
         .previous
@@ -793,14 +836,15 @@ fn re_persisting_one_certification_does_not_rotate_its_own_table_aside() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    persist_band_table(dir, BandTableRunScope::Full).expect("persist run A");
+    persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run A");
     write_run(dir, &run_b_artifacts());
-    let run_b_persist = persist_band_table(dir, BandTableRunScope::Full).expect("persist run B");
+    let run_b_persist =
+        persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B");
     assert!(!run_b_persist.rewrote_same_run);
 
     // Same directory, same comparator output: this is the second reader of one
     // certification, not a new run.
-    let again = persist_band_table(dir, BandTableRunScope::Full).expect("persist run B again");
+    let again = persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B again");
 
     assert!(
         again.rewrote_same_run,
@@ -849,6 +893,7 @@ fn a_comparison_that_compared_nothing_is_rejected_as_vacuous() {
             "agreement_bands": { "high_agreement": 0, "minor_agreement": 0, "deviation": 0 },
             "missing_trace": {},
             "skipped": {},
+            "trace_nonidentifiable": {},
             "models": {}
         }),
     )
@@ -861,7 +906,7 @@ fn a_comparison_that_compared_nothing_is_rejected_as_vacuous() {
 
     let error = format!(
         "{:#}",
-        load_or_derive_band_table(dir).expect_err("a vacuous comparison is not evidence")
+        load_or_derive_test_band_table(dir).expect_err("a vacuous comparison is not evidence")
     );
 
     assert!(error.contains("vacuous comparison"), "got: {error}");
@@ -869,7 +914,7 @@ fn a_comparison_that_compared_nothing_is_rejected_as_vacuous() {
     assert!(
         format!(
             "{:#}",
-            persist_band_table(dir, BandTableRunScope::Full)
+            persist_test_band_table(dir, BandTableRunScope::Full)
                 .expect_err("nor may it be persisted as a table")
         )
         .contains("vacuous comparison"),
@@ -885,7 +930,8 @@ fn a_comparison_whose_header_disagrees_with_its_models_map_is_rejected() {
         "models_compared": 48,
         "models": { "Only": metric("Only", 10, 0, 0, 1.0e-9) },
         "missing_trace": {},
-        "skipped": {}
+        "skipped": {},
+        "trace_nonidentifiable": {}
     });
 
     let error = format!(
@@ -918,7 +964,7 @@ fn a_results_dir_with_no_comparator_output_is_named_not_skipped() {
 
     let error = format!(
         "{:#}",
-        load_or_derive_band_table(dir)
+        load_or_derive_test_band_table(dir)
             .expect_err("a directory with no comparator output carries no parity evidence")
     );
 
@@ -938,11 +984,11 @@ fn a_table_planted_from_another_run_is_refused() {
     let target = temp.path().join("target");
     write_run(&donor, &run_a_artifacts());
     write_run(&target, &run_b_artifacts());
-    persist_band_table(&donor, BandTableRunScope::Full).expect("persist donor");
+    persist_test_band_table(&donor, BandTableRunScope::Full).expect("persist donor");
 
     fs::copy(band_table_path(&donor), band_table_path(&target)).expect("plant the donor's table");
 
-    let error = load_or_derive_band_table(&target)
+    let error = load_historical_transition_band_table(&target)
         .expect_err("a table derived from another run's comparator output is not this run's");
     let error = format!("{error:#}");
     assert!(
@@ -952,10 +998,12 @@ fn a_table_planted_from_another_run_is_refused() {
 
     // And the honest path still works: the directory's own artifacts derive a
     // table that is bound to them.
-    let persisted = persist_band_table(&target, BandTableRunScope::Full).expect("persist target");
-    ensure_bound_to_dir(&persisted.table, &target).expect("a freshly persisted table is bound");
+    let persisted =
+        persist_test_band_table(&target, BandTableRunScope::Full).expect("persist target");
+    ensure_report_and_results_bound_to_dir(&persisted.table, &target)
+        .expect("a freshly persisted table is historically bound");
     assert!(
-        load_or_derive_band_table(&target).is_ok(),
+        load_historical_transition_band_table(&target).is_ok(),
         "the run's own table must be accepted"
     );
 }
@@ -967,14 +1015,15 @@ fn a_table_left_over_from_an_earlier_comparator_run_is_refused() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    persist_band_table(dir, BandTableRunScope::Full).expect("persist run A");
+    persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run A");
 
     // The comparator re-runs; the table on disk still describes run A.
     write_run(dir, &run_b_artifacts());
 
     let error = format!(
         "{:#}",
-        load_bound_band_table(dir).expect_err("a stale table must not read as this run's")
+        load_historical_transition_band_table(dir)
+            .expect_err("a stale table must not read as this run's")
     );
     assert!(
         error.contains("different comparator output"),
@@ -990,12 +1039,13 @@ fn a_partial_run_refuses_to_rotate_the_full_cohort_table_aside() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    let cohort = persist_band_table(dir, BandTableRunScope::Full).expect("persist the cohort run");
+    let cohort =
+        persist_test_band_table(dir, BandTableRunScope::Full).expect("persist the cohort run");
     assert_eq!(cohort.table.run_scope, BandTableRunScope::Full);
 
     write_run(dir, &run_b_artifacts());
-    let focused =
-        persist_band_table(dir, BandTableRunScope::Partial).expect("the focused run still reads");
+    let focused = persist_test_band_table(dir, BandTableRunScope::Partial)
+        .expect("the focused run still reads");
 
     assert!(
         !focused.persisted,
@@ -1027,11 +1077,13 @@ fn a_full_run_does_not_diff_the_cohort_against_a_shard_stripe() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    let shard = persist_band_table(dir, BandTableRunScope::Partial).expect("persist the shard");
+    let shard =
+        persist_test_band_table(dir, BandTableRunScope::Partial).expect("persist the shard");
     assert!(shard.persisted);
 
     write_run(dir, &run_b_artifacts());
-    let cohort = persist_band_table(dir, BandTableRunScope::Full).expect("persist the cohort run");
+    let cohort =
+        persist_test_band_table(dir, BandTableRunScope::Full).expect("persist the cohort run");
 
     assert!(
         cohort.persisted,
@@ -1081,7 +1133,7 @@ fn a_trace_with_nothing_comparable_is_its_own_kind() {
     assert_eq!(
         serde_json::from_value::<TraceExitRecord>(entry.clone())
             .ok()
-            .map(|record| record.kind),
+            .map(|record| record.kind()),
         Some(TraceExitKind::NoComparableSamples)
     );
     assert_eq!(
@@ -1090,7 +1142,7 @@ fn a_trace_with_nothing_comparable_is_its_own_kind() {
             "trace compare failed: shape mismatch"
         ))
         .ok()
-        .map(|record| record.kind),
+        .map(|record| record.kind()),
         Some(TraceExitKind::ComparatorFailed)
     );
     assert_eq!(
@@ -1098,7 +1150,7 @@ fn a_trace_with_nothing_comparable_is_its_own_kind() {
             "trace compare failed: trace has no comparable variable samples"
         ))
         .ok()
-        .map(|record| record.kind),
+        .map(|record| record.kind()),
         None,
         "an untyped entry does not say which boundary stopped the comparison, and a reader must \
          not infer one from the text"
@@ -1118,6 +1170,36 @@ fn a_trace_with_nothing_comparable_is_its_own_kind() {
     );
 }
 
+#[test]
+fn strict_high_subset_does_not_count_as_channel_complete_parity() {
+    let mut subset = metric("Subset", 16, 0, 0, 0.0);
+    subset["channel_partition"]["rumoca_only"] = json!(
+        (0..16)
+            .map(|index| format!("extra-{index:08}"))
+            .collect::<Vec<_>>()
+    );
+    let table = derive(
+        &trace_payload(json!({ "Subset": subset }), json!({}), json!({})),
+        &results_payload(&[("Subset", Some("sim_ok"))]),
+    );
+
+    let row = table.row("Subset").expect("subset row");
+    assert_eq!(
+        row.band,
+        BandLabel::High,
+        "the numerical subset still agrees"
+    );
+    assert_eq!(
+        table.strict_high_models(),
+        0,
+        "unmeasured emitted coordinates block the trace-parity proof count"
+    );
+    let BandChannelAccounting::Compared { channel_partition } = &row.channel_accounting else {
+        panic!("banded row must retain compared-channel accounting")
+    };
+    assert_eq!(channel_partition.rumoca_only().len(), 16);
+}
+
 /// A CI shard is a partial run with a results directory of its own. It must
 /// still write its table: the fan-in checks that every shard produced one, and
 /// there is no cohort baseline in a fresh runner's directory to displace.
@@ -1127,7 +1209,8 @@ fn a_partial_run_in_a_fresh_directory_still_writes_its_table() {
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
 
-    let shard = persist_band_table(dir, BandTableRunScope::Partial).expect("persist the shard");
+    let shard =
+        persist_test_band_table(dir, BandTableRunScope::Partial).expect("persist the shard");
 
     assert!(shard.persisted, "got: {:?}", shard.not_persisted_reason);
     assert_eq!(shard.table.run_scope, BandTableRunScope::Partial);
@@ -1149,14 +1232,15 @@ fn a_rotation_interrupted_before_the_write_is_recovered_from_the_previous_slot()
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_b_artifacts());
-    let persisted = persist_band_table(dir, BandTableRunScope::Full).expect("persist run B");
+    let persisted = persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B");
 
     // Reproduce the crash window: the table was renamed aside, the write never
     // happened.
     fs::rename(band_table_path(dir), previous_band_table_path(dir)).expect("simulate the crash");
     assert!(!band_table_path(dir).is_file());
 
-    let recovered = load_or_derive_band_table(dir).expect("the interrupted table must be found");
+    let recovered =
+        load_or_derive_test_band_table(dir).expect("the interrupted table must be found");
 
     assert_eq!(
         recovered.rows, persisted.table.rows,
@@ -1172,12 +1256,13 @@ fn an_earlier_runs_previous_table_is_not_mistaken_for_an_interrupted_write() {
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
-    persist_band_table(dir, BandTableRunScope::Full).expect("persist run A");
+    persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run A");
     write_run(dir, &run_b_artifacts());
-    persist_band_table(dir, BandTableRunScope::Full).expect("persist run B");
+    persist_test_band_table(dir, BandTableRunScope::Full).expect("persist run B");
     fs::remove_file(band_table_path(dir)).expect("drop the current table");
 
-    let derived = load_or_derive_band_table(dir).expect("derive from the directory's artifacts");
+    let derived =
+        load_or_derive_test_band_table(dir).expect("derive from the directory's artifacts");
 
     assert!(
         derived.row("Delta").is_some(),
@@ -1198,8 +1283,8 @@ fn an_unreadable_previous_table_is_rotated_aside_and_named_never_silently_droppe
     write_run(dir, &run_a_artifacts());
     fs::write(band_table_path(dir), "{\"schema\":\"something-else\"}").expect("write junk table");
 
-    let persisted =
-        persist_band_table(dir, BandTableRunScope::Full).expect("persist over an unreadable table");
+    let persisted = persist_test_band_table(dir, BandTableRunScope::Full)
+        .expect("persist over an unreadable table");
 
     assert!(persisted.previous.is_none());
     let detail = persisted
@@ -1224,7 +1309,8 @@ fn the_table_records_the_certification_commit_not_the_readers_head() {
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
 
-    let table = derive_band_table_from_dir(dir, BandTableRunScope::Full).expect("derive from dir");
+    let table = derive_band_table_from_test_artifacts(dir, BandTableRunScope::Full)
+        .expect("derive from dir");
 
     assert_eq!(
         table.git_commit, "cert1234",
@@ -1254,7 +1340,8 @@ fn a_table_derived_without_a_results_roster_is_not_comparable() {
     trace["git_worktree_dirty"] = json!(false);
     write_pretty_json(&dir.join(TRACE_COMPARISON_FILE), &trace).expect("write trace");
 
-    let table = derive_band_table_from_dir(dir, BandTableRunScope::Full).expect("derive from dir");
+    let table = derive_band_table_from_test_artifacts(dir, BandTableRunScope::Full)
+        .expect("derive from dir");
 
     assert_eq!(
         table.git_commit, "comparatorstamp",
@@ -1282,7 +1369,7 @@ fn a_table_derived_without_a_results_roster_is_not_comparable() {
     // And the whole evidence path refuses it, not just the predicate.
     let error = format!(
         "{:#}",
-        load_or_derive_band_table(dir).expect_err("the evidence path must refuse it too")
+        load_or_derive_test_band_table(dir).expect_err("the evidence path must refuse it too")
     );
     assert!(error.contains("no cohort roster"), "got: {error}");
 }
@@ -1350,26 +1437,11 @@ fn a_table_whose_rows_were_edited_after_derivation_is_rejected() {
 /// or every table this tool writes fails its own integrity check on reload.
 #[test]
 fn a_metric_that_does_not_survive_json_still_round_trips_the_integrity_check() {
+    let mut fragile = metric_over("Fragile", 49, 0, 0, 5.723148252362699e-9);
+    fragile["bounded_normalized_l1_score"] = json!(0.0);
+    fragile["mean_channel_bounded_normalized_l1"] = json!(1.4521673119841147e-9);
     let table = derive(
-        &trace_payload(
-            json!({
-                "Fragile": {
-                    "model_name": "Fragile",
-                    "compared_variables": 49,
-                    "samples_compared": 100,
-                    "bounded_normalized_l1_score": 0.0,
-                    "mean_channel_bounded_normalized_l1": 1.4521673119841147e-9,
-                    "max_channel_bounded_normalized_l1": 5.723148252362699e-9,
-                    "channel_high_count": 49,
-                    "channel_minor_count": 0,
-                    "channel_deviation_count": 0,
-                    "channel_severe_count": 0,
-                    "worst_variables": []
-                }
-            }),
-            json!({}),
-            json!({}),
-        ),
+        &trace_payload(json!({ "Fragile": fragile }), json!({}), json!({})),
         &results_payload(&[("Fragile", Some("sim_ok"))]),
     );
     ensure_comparable(&table).expect("a freshly derived table must be comparable");
@@ -1401,6 +1473,18 @@ fn a_table_whose_counts_were_edited_is_rejected() {
     );
 }
 
+#[test]
+fn current_band_table_rejects_an_omitted_required_provenance_key() {
+    let mut wire = serde_json::to_value(run_a()).expect("encode fixture table");
+    wire.as_object_mut()
+        .expect("table is an object")
+        .remove("run_scope");
+    assert!(
+        serde_json::from_value::<BandTable>(wire).is_err(),
+        "omitting run_scope must not silently select the Full scope"
+    );
+}
+
 /// The exclusion list decides policy-vs-defect attribution, so which list was
 /// used has to be on the artifact. Two readings of one certification against
 /// different lists are different readings, and the table says which it is.
@@ -1410,7 +1494,8 @@ fn the_table_records_the_exclusion_list_that_attributed_it() {
     let dir = temp.path();
     write_run(dir, &run_a_artifacts());
 
-    let table = derive_band_table_from_dir(dir, BandTableRunScope::Full).expect("derive from dir");
+    let table = derive_band_table_from_test_artifacts(dir, BandTableRunScope::Full)
+        .expect("derive from dir");
 
     assert!(
         table
@@ -1467,8 +1552,8 @@ fn a_results_dir_written_before_the_table_existed_is_still_diffable() {
 
     // Neither directory carries `msl_band_table.json`; both must still yield a
     // comparable table so a historical certification is not silently dropped.
-    let before = load_or_derive_band_table(&before_dir).expect("derive before");
-    let after = load_or_derive_band_table(&after_dir).expect("derive after");
+    let before = load_or_derive_test_band_table(&before_dir).expect("derive before");
+    let after = load_or_derive_test_band_table(&after_dir).expect("derive after");
 
     let transitions = diff_band_tables(&before, &after);
     assert_eq!(transitions.counts.left, 1);

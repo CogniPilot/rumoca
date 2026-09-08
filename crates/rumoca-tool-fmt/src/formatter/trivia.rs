@@ -16,7 +16,7 @@ pub(super) fn apply_ast_trivia_rules(
 ) -> String {
     let component_layout = ComponentDeclarationLayout::collect(ast);
     let mut collector = AstTriviaReplacementCollector::new(source, options, &component_layout);
-    let _ = ast::Visitor::visit_stored_definition(&mut collector, ast);
+    let _visit_outcome = ast::Visitor::visit_stored_definition(&mut collector, ast);
     let mut replacements = collector.into_replacements();
     if replacements.is_empty() {
         return source.to_string();
@@ -751,9 +751,14 @@ pub(super) fn expression_list_item_span(expr: &ast::Expression) -> Span {
         }
         ast::Expression::Modification {
             target,
-            value,
+            value: Some(value),
             span,
         } => span_from_start_to_end(target.span, value.span()).unwrap_or(*span),
+        ast::Expression::Modification {
+            target,
+            value: None,
+            ..
+        } => target.span,
         _ => expr.span(),
     }
 }
@@ -781,7 +786,7 @@ pub(super) struct ComponentDeclarationLayout {
 impl ComponentDeclarationLayout {
     pub(super) fn collect(ast: &ast::StoredDefinition) -> Self {
         let mut collector = ComponentDeclarationLayoutCollector::default();
-        let _ = ast::Visitor::visit_stored_definition(&mut collector, ast);
+        let _visit_outcome = ast::Visitor::visit_stored_definition(&mut collector, ast);
         collector.into_layout()
     }
 
@@ -836,7 +841,10 @@ pub(super) fn type_alias_base_name(class: &ast::ClassDef) -> Option<&ast::Name> 
 pub(super) fn redeclare_modification_class_target(
     expr: &ast::Expression,
 ) -> Option<(&ast::ComponentReference, &[ast::Expression])> {
-    let ast::Expression::Modification { value, .. } = expr else {
+    let ast::Expression::Modification {
+        value: Some(value), ..
+    } = expr
+    else {
         return None;
     };
     let ast::Expression::ClassModification {

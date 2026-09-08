@@ -22,7 +22,37 @@ enum FullPathResolution {
     Exact(DefId),
     DeferredDynamic,
     MissingStaticTail,
+    AmbiguousInherited,
+    AmbiguousUnqualifiedImport,
     UnresolvedRoot,
+}
+
+#[derive(Clone, Copy)]
+enum ReferenceUse {
+    Component,
+    FunctionCall,
+    ModificationTarget,
+}
+
+#[derive(Clone, Copy)]
+enum UnresolvedReferenceKind {
+    Component,
+    FunctionCall,
+}
+
+#[derive(Clone, Copy)]
+enum LookupAmbiguity {
+    Inherited,
+    UnqualifiedImport,
+}
+
+impl UnresolvedReferenceKind {
+    fn description(self) -> &'static str {
+        match self {
+            Self::Component => "component reference",
+            Self::FunctionCall => "function call",
+        }
+    }
 }
 
 impl ResolveTraversalCallbacks for Resolver {
@@ -47,14 +77,28 @@ impl ResolveTraversalCallbacks for Resolver {
         self.resolve_function_reference(comp, scope);
     }
 
+    fn on_modification_target(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
+        self.resolve_reference(comp, scope, ReferenceUse::ModificationTarget);
+    }
+
     fn on_field_access(
         &mut self,
         base: &Expression,
         field: &str,
         field_def_id: &mut Option<DefId>,
+        span: rumoca_core::Span,
         _scope: ScopeId,
     ) {
-        *field_def_id = self.resolve_field_access_member(base, field);
+        match self.resolve_field_access_member(base, field) {
+            ast::LookupOutcome::Found(definition) => *field_def_id = Some(definition),
+            ast::LookupOutcome::Absent => {}
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.emit_ambiguous_inherited_lookup(field, span);
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.emit_ambiguous_unqualified_import(field, span);
+            }
+        }
     }
 }
 
@@ -116,10 +160,8 @@ impl Resolver {
             .scope_id
             .expect("Class scope should be set in registration phase");
 
-        if let Some(constrainedby) = class.constrainedby.as_mut()
-            && let Some(def_id) = self.resolve_qualified_name(constrainedby, class_scope)
-        {
-            constrainedby.def_id = Some(def_id);
+        if let Some(constrainedby) = class.constrainedby.as_mut() {
+            self.resolve_required_type_name(constrainedby, class_scope);
         }
 
         let short_class_modifier_scope =
@@ -165,17 +207,24 @@ impl Resolver {
             for mod_expr in comp.modifications.values_mut() {
                 self.resolve_expression(mod_expr, class_scope);
             }
-            for source_modification in comp.source_modifications.iter_mut() {
-                self.resolve_source_modification(source_modification, class_scope);
+            for (source_modification, is_redeclare) in comp
+                .source_modifications
+                .iter_mut()
+                .zip(comp.source_modification_redeclare_flags.iter().copied())
+            {
+                self.resolve_source_modification(
+                    source_modification,
+                    class_scope,
+                    comp.type_def_id,
+                    is_redeclare,
+                );
             }
             self.resolve_subscripts(&mut comp.shape_expr, class_scope);
             if let Some(ref mut cond) = comp.condition {
                 self.resolve_expression(cond, class_scope);
             }
-            if let Some(constrainedby) = comp.constrainedby.as_mut()
-                && let Some(def_id) = self.resolve_qualified_name(constrainedby, class_scope)
-            {
-                constrainedby.def_id = Some(def_id);
+            if let Some(constrainedby) = comp.constrainedby.as_mut() {
+                self.resolve_required_type_name(constrainedby, class_scope);
             }
         }
 
@@ -205,18 +254,29 @@ impl Resolver {
             if let Some(component) = comp.def_id {
                 self.dynamic_member_root_ids.insert(component);
             }
-            self.stats.types_partial_direct += 1;
+            self.stats.types_partially_resolved += 1;
             return;
         }
-        let resolved = self
-            .resolve_qualified_name(&comp.type_name, class_scope)
-            .or_else(|| self.resolve_type_name_with_inheritance(&comp.type_name, class_scope));
-        if let Some(type_def_id) = resolved {
-            comp.type_name.def_id = Some(type_def_id);
-            comp.type_def_id = Some(type_def_id);
-            self.stats.types_fully_resolved += 1;
-        } else if !comp.type_name.name.is_empty() {
-            self.try_partial_type_resolution(comp, class_scope, qualified_name);
+        let resolved = self.resolve_qualified_name(&comp.type_name, class_scope);
+        match resolved {
+            ast::LookupOutcome::Found(type_def_id) => {
+                comp.type_name.def_id = Some(type_def_id);
+                comp.type_def_id = Some(type_def_id);
+                self.stats.types_fully_resolved += 1;
+            }
+            ast::LookupOutcome::Absent if !comp.type_name.name.is_empty() => {
+                self.try_partial_type_resolution(comp, class_scope, qualified_name);
+                if comp.type_name.def_id.is_none() {
+                    self.emit_unresolved_type_reference(&comp.type_name);
+                }
+            }
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.emit_type_name_ambiguity(&comp.type_name, LookupAmbiguity::Inherited);
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.emit_type_name_ambiguity(&comp.type_name, LookupAmbiguity::UnqualifiedImport);
+            }
+            ast::LookupOutcome::Absent => {}
         }
         if let (Some(component), Some(component_type)) = (comp.def_id, comp.type_def_id) {
             if self.dynamic_member_root_ids.contains(&component_type) {
@@ -232,10 +292,20 @@ impl Resolver {
 
     fn dynamic_type_root(&self, name: &ast::Name, scope: ScopeId) -> Option<DefId> {
         let first = name.name.first()?.text.as_ref();
-        self.scope_tree
+        match self
+            .scope_tree
             .lookup(scope, &ComponentPath::from_flat_path(first))
-            .or_else(|| self.find_inherited_type(scope, first))
-            .filter(|def_id| self.dynamic_member_root_ids.contains(def_id))
+        {
+            ast::LookupOutcome::Found(definition)
+                if self.dynamic_member_root_ids.contains(&definition) =>
+            {
+                Some(definition)
+            }
+            ast::LookupOutcome::Found(_)
+            | ast::LookupOutcome::Absent
+            | ast::LookupOutcome::AmbiguousInherited
+            | ast::LookupOutcome::AmbiguousUnqualifiedImport => None,
+        }
     }
 
     /// Resolve one modification of an `extends` clause.
@@ -259,8 +329,17 @@ impl Resolver {
                 self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
             }
             Expression::Modification { target, value, .. } => {
-                self.resolve_component_reference(target, target_scope);
-                self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
+                // The target names a member of the derived class, which may be
+                // a builtin attribute of a predefined type (`Real(final
+                // quantity = "Angle")`) that has no lexical declaration here.
+                // Typecheck owns exact receiver-member validation after
+                // instantiation has selected any redeclared receiver. Resolve
+                // therefore tolerates absence here, but an ambiguity already
+                // issued by ScopeTree remains an ambiguity at this use site.
+                self.resolve_reference(target, target_scope, ReferenceUse::ModificationTarget);
+                if let Some(value) = value {
+                    self.resolve_expression(std::sync::Arc::make_mut(value), value_scope);
+                }
             }
             other => self.resolve_expression(other, target_scope),
         }
@@ -276,23 +355,40 @@ impl Resolver {
     /// formatter, redeclare validation — reads *this* copy. Leaving it
     /// unresolved would hide the references it contains from those consumers.
     ///
-    /// Modifier *targets* name members of the modified component's declared
-    /// type, which Resolve does not own (instantiation applies redeclares
-    /// first), so only the values are resolved here, in the enclosing class
-    /// scope where they are written (MLS §7.2.5).
-    fn resolve_source_modification(&mut self, expr: &mut Expression, class_scope: ScopeId) {
+    /// A direct redeclare target identifies the declaration slot in the
+    /// component's declared receiver type. Resolve already owns that exact
+    /// receiver and its finalized direct/inherited member view, so it issues
+    /// the slot identity here. The redeclare value remains a separate lookup
+    /// in the enclosing class scope where the modifier is written (MLS §7.2).
+    /// Ordinary and nested modifier targets remain instance-owned until the
+    /// selected receiver is known.
+    fn resolve_source_modification(
+        &mut self,
+        expr: &mut Expression,
+        class_scope: ScopeId,
+        receiver_type: Option<DefId>,
+        is_redeclare: bool,
+    ) {
+        if is_redeclare {
+            self.resolve_direct_redeclare_slot(expr, receiver_type);
+        }
         // A ClassModification at the root names the member being modified and
-        // remains instance-owned. A ClassModification used as the value of an
-        // outer Modification instead names the substituting class/function;
-        // that occurrence is written in `class_scope` and must carry the same
-        // exact identity as the keyed modification copy.
+        // remains instance-owned unless the source flag above proves it is a
+        // direct redeclare. A ClassModification used as the value of an outer
+        // Modification instead names the substituting class/function; that
+        // occurrence is written in `class_scope` and must carry the same exact
+        // identity as the keyed modification copy.
         let mut pending = vec![(expr, false)];
         while let Some((current, resolve_class_target)) = pending.pop() {
             self.resolve_source_class_value_target(current, class_scope, resolve_class_target);
             match current {
-                Expression::Modification { value, .. } => {
+                Expression::Modification {
+                    value: Some(value), ..
+                } => {
                     pending.push((std::sync::Arc::make_mut(value), true));
                 }
+                // A value-less modifier names its slot and nothing else.
+                Expression::Modification { value: None, .. } => {}
                 Expression::ClassModification { modifications, .. } => {
                     pending.extend(modifications.iter_mut().map(|item| (item, false)));
                 }
@@ -300,6 +396,75 @@ impl Resolver {
                     self.resolve_expression(std::sync::Arc::make_mut(value), class_scope);
                 }
                 other => self.resolve_expression(other, class_scope),
+            }
+        }
+    }
+
+    /// Issue one direct redeclare LHS identity from the receiver's exact class
+    /// scope. The source spelling is presentation only and is never looked up
+    /// lexically where the modifier value is written.
+    fn resolve_direct_redeclare_slot(
+        &mut self,
+        expr: &mut Expression,
+        receiver_type: Option<DefId>,
+    ) {
+        let target = match expr {
+            Expression::Modification { target, .. }
+            | Expression::ClassModification { target, .. } => target,
+            _ => {
+                self.diagnostics.emit(Diagnostic::error(
+                    "ER002",
+                    "unresolved redeclare target: unsupported source modifier shape",
+                    PrimaryLabel::new(expr.span())
+                        .with_message("a direct redeclare must name exactly one receiver member"),
+                ));
+                return;
+            }
+        };
+        let [part] = target.parts.as_mut_slice() else {
+            self.diagnostics.emit(Diagnostic::error(
+                "ER002",
+                format!("unresolved redeclare target: '{target}'"),
+                PrimaryLabel::new(target.span)
+                    .with_message("qualified direct redeclare targets are not yet supported"),
+            ));
+            return;
+        };
+        let Some(receiver_type) = receiver_type else {
+            self.diagnostics.emit(Diagnostic::error(
+                "ER002",
+                format!("unresolved redeclare target: '{}'", part.ident.text),
+                PrimaryLabel::new(target.span).with_message(
+                    "the receiver type is instance-dependent and cannot yet issue this slot",
+                ),
+            ));
+            return;
+        };
+        let Some(receiver_scope) = self.class_def_scopes.get(&receiver_type).copied() else {
+            self.diagnostics.emit(Diagnostic::error(
+                "ER002",
+                format!("unresolved redeclare target: '{}'", part.ident.text),
+                PrimaryLabel::new(target.span)
+                    .with_message("the receiver has no class member scope"),
+            ));
+            return;
+        };
+        match self.scope_tree.lookup_member(
+            receiver_scope,
+            &ComponentPath::from_flat_path(&part.ident.text),
+        ) {
+            ast::LookupOutcome::Found(definition) => part.def_id = Some(definition),
+            ast::LookupOutcome::Absent => self.diagnostics.emit(Diagnostic::error(
+                "ER002",
+                format!("unresolved redeclare target: '{}'", part.ident.text),
+                PrimaryLabel::new(target.span)
+                    .with_message("the declared receiver has no such direct or inherited member"),
+            )),
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.emit_ambiguous_inherited_lookup(&part.ident.text, target.span);
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                unreachable!("exact class-member lookup never consults imports")
             }
         }
     }
@@ -333,24 +498,16 @@ impl Resolver {
     ) {
         let first_part = &comp.type_name.name[0].text;
 
-        // First check direct scope lookup
-        if let Some(first_def_id) = self
+        // The ScopeTree owns direct, imported, inherited, enclosing, and
+        // encapsulation-aware lookup. A second inheritance walk would only
+        // bypass one of its deliberate refusal states.
+        if let ast::LookupOutcome::Found(first_def_id) = self
             .scope_tree
             .lookup(class_scope, &ComponentPath::from_flat_path(first_part))
             && self.partial_type_root_ids.contains(&first_def_id)
         {
             comp.type_name.def_id = Some(first_def_id);
-            self.stats.types_partial_direct += 1;
-            return;
-        }
-
-        // If not in direct scope, check inherited members from base classes.
-        // We need to search the entire enclosing class hierarchy.
-        if let Some(def_id) = self.find_inherited_type(class_scope, first_part)
-            && self.partial_type_root_ids.contains(&def_id)
-        {
-            comp.type_name.def_id = Some(def_id);
-            self.stats.types_partial_inherited += 1;
+            self.stats.types_partially_resolved += 1;
             return;
         }
 
@@ -381,13 +538,6 @@ impl Resolver {
         self.enclosing_class_def_ids(enclosing_scope).next()
     }
 
-    /// Find an inherited type by searching the class at `scope` and every
-    /// enclosing class.
-    fn find_inherited_type(&self, scope: ScopeId, type_name: &str) -> Option<rumoca_core::DefId> {
-        self.enclosing_class_def_ids(scope)
-            .find_map(|container| self.lookup_class_member(container, type_name))
-    }
-
     /// Resolve references in a list of expressions.
     fn resolve_expressions(&mut self, exprs: &mut [Expression], scope: ScopeId) {
         walk_expressions(self, exprs, scope);
@@ -410,6 +560,15 @@ impl Resolver {
         comp: &mut ComponentReference,
         scope: ScopeId,
     ) {
+        self.resolve_reference(comp, scope, ReferenceUse::Component);
+    }
+
+    fn resolve_reference(
+        &mut self,
+        comp: &mut ComponentReference,
+        scope: ScopeId,
+        reference_use: ReferenceUse,
+    ) {
         if comp.parts.is_empty() {
             return;
         }
@@ -419,22 +578,51 @@ impl Resolver {
 
         let first_name = &comp.parts[0].ident.text;
 
-        // Look up the name in the scope tree
-        if let Some(def_id) = self
+        // A leading dot selects the global scope (MLS §5.3.3); otherwise
+        // simple-name lookup starts in the lexical scope (MLS §5.3.1).
+        // The selected root is minted exactly once here and the full-path
+        // resolver consumes only that recorded identity.
+        let root_scope = if comp.local { ScopeId::GLOBAL } else { scope };
+        let full_path = match self
             .scope_tree
-            .lookup(scope, &ComponentPath::from_flat_path(first_name))
+            .lookup(root_scope, &ComponentPath::from_flat_path(first_name))
         {
-            comp.parts[0].def_id = Some(def_id);
-            self.stats.comp_refs_resolved += 1;
-        } else {
-            self.stats.comp_refs_unresolved += 1;
-        }
-        match self.resolve_component_reference_full_path(comp, scope) {
-            FullPathResolution::Exact(_)
-            | FullPathResolution::DeferredDynamic
-            | FullPathResolution::UnresolvedRoot => {}
-            FullPathResolution::MissingStaticTail => {
-                self.emit_missing_static_tail(comp);
+            ast::LookupOutcome::Found(definition) => {
+                comp.parts[0].def_id = Some(definition);
+                self.stats.comp_refs_resolved += 1;
+                self.resolve_component_reference_full_path(comp)
+            }
+            ast::LookupOutcome::Absent => {
+                self.stats.comp_refs_unresolved += 1;
+                FullPathResolution::UnresolvedRoot
+            }
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.stats.comp_refs_unresolved += 1;
+                FullPathResolution::AmbiguousInherited
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.stats.comp_refs_unresolved += 1;
+                FullPathResolution::AmbiguousUnqualifiedImport
+            }
+        };
+        match full_path {
+            FullPathResolution::Exact(_) | FullPathResolution::DeferredDynamic => {}
+            FullPathResolution::MissingStaticTail | FullPathResolution::UnresolvedRoot => {
+                self.emit_unresolved_reference_for_use(comp, reference_use)
+            }
+            FullPathResolution::AmbiguousInherited => {
+                self.emit_reference_ambiguity_for_use(
+                    comp,
+                    reference_use,
+                    LookupAmbiguity::Inherited,
+                );
+            }
+            FullPathResolution::AmbiguousUnqualifiedImport => {
+                self.emit_reference_ambiguity_for_use(
+                    comp,
+                    reference_use,
+                    LookupAmbiguity::UnqualifiedImport,
+                );
             }
         }
         // Also resolve subscript expressions
@@ -457,8 +645,10 @@ impl Resolver {
     /// connector) or which no declaration owns (a function result) keeps its
     /// absent identity for the phase that can prove it, and reaches the Flat
     /// boundary as EF024 if nothing does.
-    fn resolve_field_access_member(&self, base: &Expression, field: &str) -> Option<DefId> {
-        let base_def_id = base_declaration_identity(base)?;
+    fn resolve_field_access_member(&self, base: &Expression, field: &str) -> ast::LookupOutcome {
+        let Some(base_def_id) = base_declaration_identity(base) else {
+            return ast::LookupOutcome::Absent;
+        };
         let container = self
             .component_type_def_ids
             .get(&base_def_id)
@@ -467,9 +657,11 @@ impl Resolver {
         if self.dynamic_member_root_ids.contains(&base_def_id)
             || self.dynamic_member_root_ids.contains(&container)
         {
-            return None;
+            return ast::LookupOutcome::Absent;
         }
-        let container_scope = self.class_def_scopes.get(&container).copied()?;
+        let Some(container_scope) = self.class_def_scopes.get(&container).copied() else {
+            return ast::LookupOutcome::Absent;
+        };
         self.scope_tree
             .lookup_member(container_scope, &ComponentPath::from_flat_path(field))
     }
@@ -481,7 +673,7 @@ impl Resolver {
     /// entire path (including inherited package members) at resolve time so
     /// later phases do exact function lookup without name heuristics.
     fn resolve_function_reference(&mut self, comp: &mut ComponentReference, scope: ScopeId) {
-        self.resolve_component_reference(comp, scope);
+        self.resolve_reference(comp, scope, ReferenceUse::FunctionCall);
         self.reject_non_callable_callee_capture(comp);
 
         // A root identity is not proof that the called member exists. Static
@@ -555,32 +747,22 @@ impl Resolver {
         }
     }
 
-    fn resolve_function_first_part(&self, first_part: &str, scope: ScopeId) -> Option<DefId> {
-        if let Some(def_id) = self
-            .scope_tree
-            .lookup(scope, &ComponentPath::from_flat_path(first_part))
-        {
-            return Some(def_id);
-        }
-
-        self.enclosing_class_def_ids(scope)
-            .find_map(|container| self.lookup_class_member(container, first_part))
-    }
-
     fn resolve_component_reference_full_path(
         &self,
         comp: &mut ComponentReference,
-        scope: ScopeId,
     ) -> FullPathResolution {
         let Some(first_part) = comp.parts.first() else {
             return FullPathResolution::UnresolvedRoot;
         };
-        let Some(mut current_def_id) = comp
-            .root_def_id()
-            .or_else(|| self.resolve_function_first_part(&first_part.ident.text, scope))
-        else {
+        let Some(mut current_def_id) = comp.root_def_id() else {
             return FullPathResolution::UnresolvedRoot;
         };
+        // The receiver identity established by the authoritative ScopeTree
+        // lookup is the deferral's authority: a deferred reference must leave
+        // Resolve carrying it, because later admission is decided by that
+        // recorded identity, never by re-deriving the first segment from its
+        // spelling.
+        let entry_root_def_id = current_def_id;
         let root_path = ComponentPath::from_parts([first_part.ident.text.as_ref()]);
         if self.scope_tree.predefined_member(&root_path) == Some(current_def_id) {
             return self.resolve_predefined_reference_tail(comp, current_def_id);
@@ -588,7 +770,7 @@ impl Resolver {
 
         for index in 1..comp.parts.len() {
             if self.dynamic_member_root_ids.contains(&current_def_id) {
-                return FullPathResolution::DeferredDynamic;
+                return self.deferred_dynamic_with_root(comp, entry_root_def_id);
             }
             let container = self
                 .component_type_def_ids
@@ -596,23 +778,67 @@ impl Resolver {
                 .copied()
                 .unwrap_or(current_def_id);
             if self.dynamic_member_root_ids.contains(&container) {
-                return FullPathResolution::DeferredDynamic;
+                return self.deferred_dynamic_with_root(comp, entry_root_def_id);
             }
             let Some(container_scope) = self.class_def_scopes.get(&container).copied() else {
                 return FullPathResolution::MissingStaticTail;
             };
             let part = &comp.parts[index];
-            let Some(member) = self.scope_tree.lookup_member(
+            let member = match self.scope_tree.lookup_member(
                 container_scope,
                 &ComponentPath::from_flat_path(&part.ident.text),
-            ) else {
-                return self.absent_member_resolution(container);
+            ) {
+                ast::LookupOutcome::Found(definition) => definition,
+                ast::LookupOutcome::Absent => {
+                    return self.absent_member_resolution_with_root(
+                        comp,
+                        container,
+                        entry_root_def_id,
+                    );
+                }
+                ast::LookupOutcome::AmbiguousInherited => {
+                    return FullPathResolution::AmbiguousInherited;
+                }
+                ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                    return FullPathResolution::AmbiguousUnqualifiedImport;
+                }
             };
             comp.parts[index].def_id = Some(member);
             current_def_id = member;
         }
 
         FullPathResolution::Exact(current_def_id)
+    }
+
+    /// Defer a reference across an instance-dependent type edge while
+    /// retaining the receiver's established root identity on the reference.
+    fn deferred_dynamic_with_root(
+        &self,
+        comp: &ComponentReference,
+        entry_root_def_id: DefId,
+    ) -> FullPathResolution {
+        debug_assert_eq!(
+            comp.root_def_id(),
+            Some(entry_root_def_id),
+            "deferred references retain the root identity minted before full-path resolution"
+        );
+        FullPathResolution::DeferredDynamic
+    }
+
+    /// Classify an absent qualified member, retaining the root identity on
+    /// the reference when the absence is instance-dependent.
+    fn absent_member_resolution_with_root(
+        &self,
+        comp: &ComponentReference,
+        container: DefId,
+        entry_root_def_id: DefId,
+    ) -> FullPathResolution {
+        match self.absent_member_resolution(container) {
+            FullPathResolution::DeferredDynamic => {
+                self.deferred_dynamic_with_root(comp, entry_root_def_id)
+            }
+            resolution => resolution,
+        }
     }
 
     /// Classify a qualified tail whose member is absent from `container`.
@@ -650,35 +876,119 @@ impl Resolver {
         FullPathResolution::Exact(current_def_id)
     }
 
-    fn emit_missing_static_tail(&mut self, comp: &ComponentReference) {
+    fn emit_unresolved_reference(
+        &mut self,
+        comp: &ComponentReference,
+        kind: UnresolvedReferenceKind,
+    ) {
+        let description = kind.description();
         let primary_label =
-            PrimaryLabel::new(comp.span).with_message("unresolved component reference");
+            PrimaryLabel::new(comp.span).with_message(format!("unresolved {description}"));
         self.diagnostics.emit(Diagnostic::error(
             "ER002",
-            format!("unresolved component reference: '{comp}'"),
+            format!("unresolved {description}: '{comp}'"),
             primary_label,
         ));
     }
 
-    fn resolve_type_name_with_inheritance(
-        &self,
-        name: &rumoca_ir_ast::Name,
-        scope: ScopeId,
-    ) -> Option<rumoca_core::DefId> {
-        let first_part = name.name.first()?.text.as_ref();
-        let mut current_def_id = self
-            .scope_tree
-            .lookup(scope, &ComponentPath::from_flat_path(first_part))
-            .or_else(|| self.resolve_function_first_part(first_part, scope))
-            // MLS §7.3: inherited class/type elements are visible as members of
-            // the extending class, including simple type names in nested records.
-            .or_else(|| self.find_inherited_type(scope, first_part))?;
-        for part in name.name.iter().skip(1) {
-            let member = part.text.as_ref();
-            current_def_id = self.lookup_class_member(current_def_id, member)?;
+    fn emit_unresolved_reference_for_use(
+        &mut self,
+        comp: &ComponentReference,
+        reference_use: ReferenceUse,
+    ) {
+        match reference_use {
+            ReferenceUse::Component => {
+                self.emit_unresolved_reference(comp, UnresolvedReferenceKind::Component);
+            }
+            ReferenceUse::FunctionCall => {
+                self.emit_unresolved_reference(comp, UnresolvedReferenceKind::FunctionCall);
+            }
+            ReferenceUse::ModificationTarget => {}
         }
+    }
 
-        Some(current_def_id)
+    fn emit_reference_ambiguity_for_use(
+        &mut self,
+        comp: &ComponentReference,
+        reference_use: ReferenceUse,
+        ambiguity: LookupAmbiguity,
+    ) {
+        match (reference_use, ambiguity) {
+            (ReferenceUse::Component | ReferenceUse::FunctionCall, LookupAmbiguity::Inherited) => {
+                self.emit_ambiguous_inherited_lookup(&comp.to_string(), comp.span)
+            }
+            (
+                ReferenceUse::Component | ReferenceUse::FunctionCall,
+                LookupAmbiguity::UnqualifiedImport,
+            ) => self.emit_ambiguous_unqualified_import(&comp.to_string(), comp.span),
+            // An inherited ambiguity is already a ScopeTree verdict for this
+            // target use. Deferring it would lose a typed refusal and let a
+            // later phase select an arbitrary declaration.
+            (ReferenceUse::ModificationTarget, LookupAmbiguity::Inherited) => {
+                self.emit_ambiguous_inherited_lookup(&comp.to_string(), comp.span)
+            }
+            // Modifier targets name members of the modified instance, not
+            // lexical imports. Unqualified-import overlap is irrelevant here;
+            // Typecheck owns exact receiver-member validation.
+            (ReferenceUse::ModificationTarget, LookupAmbiguity::UnqualifiedImport) => {}
+        }
+    }
+
+    fn resolve_required_type_name(&mut self, name: &mut ast::Name, scope: ScopeId) {
+        if name.def_id.is_some() || name.name.is_empty() {
+            return;
+        }
+        match self.resolve_qualified_name(name, scope) {
+            ast::LookupOutcome::Found(definition) => name.def_id = Some(definition),
+            ast::LookupOutcome::Absent => self.emit_unresolved_type_reference(name),
+            ast::LookupOutcome::AmbiguousInherited => {
+                self.emit_type_name_ambiguity(name, LookupAmbiguity::Inherited);
+            }
+            ast::LookupOutcome::AmbiguousUnqualifiedImport => {
+                self.emit_type_name_ambiguity(name, LookupAmbiguity::UnqualifiedImport);
+            }
+        }
+    }
+
+    fn emit_type_name_ambiguity(&mut self, name: &ast::Name, ambiguity: LookupAmbiguity) {
+        let Some(first) = name.name.first() else {
+            return;
+        };
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            &first.location,
+            &self.source_map,
+            "type reference",
+        ) else {
+            return;
+        };
+        match ambiguity {
+            LookupAmbiguity::Inherited => {
+                self.emit_ambiguous_inherited_lookup(&first.text, span);
+            }
+            LookupAmbiguity::UnqualifiedImport => {
+                self.emit_ambiguous_unqualified_import(&first.text, span);
+            }
+        }
+    }
+
+    fn emit_unresolved_type_reference(&mut self, name: &ast::Name) {
+        let Some(location) = name.name.first().map(|part| &part.location) else {
+            return;
+        };
+        let Some(span) = crate::location_span_or_emit(
+            &mut self.diagnostics,
+            location,
+            &self.source_map,
+            "type reference",
+        ) else {
+            return;
+        };
+        self.diagnostics.emit(Diagnostic::error(
+            "ER002",
+            format!("unresolved type reference: '{name}'"),
+            PrimaryLabel::new(span).with_message("unresolved type reference"),
+        ));
     }
 
     /// Resolve references in a list of subscripts.

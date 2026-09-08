@@ -1100,7 +1100,7 @@ function scenarioNeedsInputRunner(scenario: ScenarioConfigResponse): boolean {
     return scenario.viewerMode === 'external_web';
 }
 
-const DEFAULT_CODEGEN_TARGET_ID = 'c-ode';
+const DEFAULT_CODEGEN_TARGET_ID = 'fmi3';
 const SELECTED_SIMULATION_MODELS_STATE_KEY = 'rumoca.selectedSimulationModelsByDocument';
 const LIVE_VIEWER_READY_PREFIX = 'rumoca-viewer-ready ';
 const MAX_INTERACTIVE_FAILURE_LINES = 30;

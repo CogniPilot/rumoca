@@ -179,8 +179,8 @@ struct LspStdioClient {
 impl Drop for LspStdioClient {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+            let _already_exited = self.child.kill();
+            let _reap_error = self.child.wait();
         }
     }
 }
@@ -194,7 +194,6 @@ impl LspStdioClient {
     ) -> Result<Self> {
         let mut command = Command::new(lsp_binary);
         command
-            .arg("--stdio")
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -721,7 +720,12 @@ fn stage_timing_artifact(timing_path: &Path, stable_timing_path: &Path) -> Resul
             stable_timing_path.display()
         )
     })?;
-    let _ = fs::remove_file(timing_path);
+    fs::remove_file(timing_path).with_context(|| {
+        format!(
+            "failed to remove staged timing file {}",
+            timing_path.display()
+        )
+    })?;
     Ok(())
 }
 

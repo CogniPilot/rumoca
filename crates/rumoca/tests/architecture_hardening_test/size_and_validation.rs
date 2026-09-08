@@ -11,5 +11,6 @@ mod span_debt;
 mod clippy_exceptions;
 
 mod architecture_boundaries;
+mod flat_wire_replay;
 
 mod source_named_spans;

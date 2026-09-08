@@ -4,10 +4,12 @@
 //! modifier validation, and scoped instance assembly. split plan: move those
 //! concerns behind focused modules as follow-up compiler hardening work.
 //!
-//! This phase has two entry points. `typecheck` walks a resolved `ClassTree`
-//! and returns a `TypedTree`. The production compiled-model pipeline uses
-//! `typecheck_instanced` after instantiation so modifier-dependent dimensions
-//! and structural parameters are available in the instance overlay.
+//! This phase has two entry points. `typecheck` is a standalone diagnostics
+//! query over a resolved `ClassTree`; it mints no proof. The production
+//! compiled-model pipeline uses `typecheck_instanced_tree` after
+//! instantiation, so modifier-dependent dimensions and structural parameters
+//! are available in the instance overlay, and it is the sole mint of the
+//! opaque [`TypedInstancedTree`] proof that flattening consumes by value.
 //!
 //! Type checking:
 //! 1. Resolves type specifiers to TypeIds
@@ -18,9 +20,10 @@
 //! 6. Performs type checking on expressions
 //! 7. Validates type constraints (variability, causality, etc.)
 //!
-//! The standalone API input is a `ResolvedTree` and the output is a
-//! `TypedTree`. The production API input is a resolved `ClassTree` plus an
-//! `InstanceOverlay`, and it annotates the overlay in place before flattening.
+//! The standalone API input is a `ResolvedTree` and the output is the checked
+//! `ClassTree` data plus diagnostics. The production API consumes the
+//! instantiation overlay by value and publishes one immutable
+//! `TypedInstancedTree`; no mutable predecessor alias crosses the boundary.
 //!
 //! ## Dimension Evaluation (MLS §10.1)
 //!
@@ -32,6 +35,7 @@
 
 mod constant_collection;
 mod enum_context;
+mod expression_type;
 mod function_signatures;
 mod instanced;
 mod modifier_targets;
@@ -39,8 +43,13 @@ mod path_utils;
 mod semantic_scope;
 mod type_roots;
 mod typechecker;
+mod typed_instanced;
 pub mod unit_syntax;
 
+use expression_type::{
+    ExpressionType, IncompatibilityKind, MultiValueForm, ReportedComposition, ReportedTypeError,
+    TypeErrorReason, ValueCompositionContext,
+};
 use rumoca_core::{ComponentPath, DefId, InstanceId, ScopeId, SourceId, Span, TypeId};
 use rumoca_core::{
     Diagnostic as CommonDiagnostic, Diagnostics, PhaseError, PrimaryLabel, SourceMap,
@@ -50,8 +59,8 @@ use rumoca_core::{
 pub(crate) const UNKNOWN_SOURCE_DISPLAY_NAME: &str = "<unknown source>";
 use rumoca_ir_ast::{
     ClassDef, ClassKind, ClassTree, Component, EnumerationType, Expression, ExpressionContext,
-    InstanceOverlay, ScopeImport, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
-    TypedTree, Visitor,
+    InstanceOverlay, StoredDefinition, Type, TypeAlias, TypeClassType, TypeTable,
+    TypeTableAppendError, Visitor,
 };
 use rumoca_phase_resolve::ResolvedTree;
 use semantic_scope::{
@@ -67,7 +76,8 @@ use typechecker::traversal_adapter::{
 
 #[cfg(test)]
 use typechecker::api::typecheck_instanced_test_projection;
-pub use typechecker::api::{typecheck, typecheck_instanced};
+pub use typechecker::api::{typecheck, typecheck_instanced_tree};
+pub use typed_instanced::{TypedInstancedTree, TypedOverlayProjection};
 
 /// Type alias for typecheck results with boxed errors.
 ///
@@ -136,9 +146,85 @@ pub(crate) fn semantic_catalog_projection_for_test(
     )
 }
 
+enum PlannedType<'tree> {
+    Enumeration {
+        name: String,
+        declaration: DefId,
+        class: &'tree ClassDef,
+    },
+    Class {
+        name: String,
+        declaration: DefId,
+        class: &'tree ClassDef,
+    },
+    Alias {
+        name: String,
+        declaration: DefId,
+        class: &'tree ClassDef,
+    },
+}
+
+impl<'tree> PlannedType<'tree> {
+    fn name(&self) -> &str {
+        match self {
+            Self::Enumeration { name, .. }
+            | Self::Class { name, .. }
+            | Self::Alias { name, .. } => name,
+        }
+    }
+
+    fn declaration(&self) -> DefId {
+        match self {
+            Self::Enumeration { declaration, .. }
+            | Self::Class { declaration, .. }
+            | Self::Alias { declaration, .. } => *declaration,
+        }
+    }
+
+    fn class(&self) -> &'tree ClassDef {
+        match self {
+            Self::Enumeration { class, .. }
+            | Self::Class { class, .. }
+            | Self::Alias { class, .. } => class,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ResolvedTypeRoots {
+    dense: Box<[(TypeId, TypeId)]>,
+}
+
+impl ResolvedTypeRoots {
+    fn empty() -> Self {
+        Self {
+            dense: Box::new([]),
+        }
+    }
+
+    fn canonical(&self, type_id: TypeId) -> TypeId {
+        if type_id.is_unknown() {
+            return TypeId::UNKNOWN;
+        }
+        self.dense[type_id.index() as usize].1
+    }
+
+    fn get(&self, type_id: TypeId) -> Option<TypeId> {
+        if type_id.is_unknown() {
+            return None;
+        }
+        self.dense
+            .get(type_id.index() as usize)
+            .map(|(_, canonical)| *canonical)
+    }
+
+    fn into_pairs(self) -> impl ExactSizeIterator<Item = (TypeId, TypeId)> {
+        self.dense.into_vec().into_iter()
+    }
+}
+
 struct ResolvedTypeRootCatalog {
-    roots: HashMap<TypeId, TypeId>,
-    failures: HashMap<TypeId, type_roots::TypeRootResolutionError>,
+    roots: ResolvedTypeRoots,
     enumeration_roots: HashSet<TypeId>,
     declarations: Vec<(DefId, TypeId)>,
 }
@@ -181,15 +267,12 @@ impl Visitor for UsedFunctionCollector {
     }
 }
 
-fn format_type_root_failure(failure: Option<&type_roots::TypeRootResolutionError>) -> String {
+fn format_type_root_failure(failure: type_roots::TypeRootResolutionError) -> String {
     match failure {
-        Some(type_roots::TypeRootResolutionError::UnknownTarget { source }) => {
-            format!("the alias edge from {source:?} has no exact target")
+        type_roots::TypeRootResolutionError::UnknownTarget { .. } => {
+            "has no exact target".to_string()
         }
-        Some(type_roots::TypeRootResolutionError::Cycle { repeated }) => {
-            format!("the alias graph repeats {repeated:?}")
-        }
-        None => "the type identity is absent from the issued type table".to_string(),
+        type_roots::TypeRootResolutionError::Cycle { .. } => "closes an alias cycle".to_string(),
     }
 }
 
@@ -342,6 +425,17 @@ pub enum TypeCheckError {
     #[error("missing source context: {reason}")]
     MissingSourceContext { reason: String },
 
+    /// Canonical type-root construction encountered an impossible edge.
+    #[error("canonical type-root invariant violated: {reason}")]
+    CanonicalTypeRootInvariant {
+        root_name: String,
+        root: Option<TypeId>,
+        edge_source: Option<TypeId>,
+        edge_target: Option<TypeId>,
+        reason: String,
+        span: Option<Span>,
+    },
+
     /// Phase-local diagnostic emitted during recoverable type checking.
     #[error("{message}")]
     PhaseDiagnostic {
@@ -401,6 +495,46 @@ impl TypeCheckError {
             other => other,
         }
     }
+
+    fn canonical_type_root_diagnostic(
+        root_name: &str,
+        root: Option<TypeId>,
+        edge_source: Option<TypeId>,
+        edge_target: Option<TypeId>,
+        reason: &str,
+        span: Option<Span>,
+    ) -> CommonDiagnostic {
+        let root = root.map_or_else(|| "<unallocated>".to_string(), |root| format!("{root:?}"));
+        let (message, label) = if let Some(edge_source) = edge_source {
+            let edge_target =
+                edge_target.map_or_else(|| "<missing>".to_string(), |target| format!("{target:?}"));
+            (
+                format!(
+                    "cannot construct the canonical type root for `{root_name}` ({root}): edge {edge_source:?} -> {edge_target} {reason}"
+                ),
+                format!("failing canonical edge {edge_source:?} -> {edge_target}"),
+            )
+        } else {
+            (
+                format!(
+                    "cannot construct the canonical alias identity for `{root_name}` ({root}): {reason}"
+                ),
+                "affected canonical alias edge here".to_string(),
+            )
+        };
+        let diagnostic = if let Some(span) = span {
+            CommonDiagnostic::error(
+                "ET014",
+                message,
+                PrimaryLabel::new(span).with_message(label),
+            )
+        } else {
+            CommonDiagnostic::global_error("ET014", message)
+        };
+        diagnostic.with_note(
+            "Resolve-issued type identities must form a finite, exact canonical-root graph",
+        )
+    }
 }
 
 impl PhaseError for TypeCheckError {
@@ -408,7 +542,7 @@ impl PhaseError for TypeCheckError {
         match self {
             Self::UndefinedType { name, span } => CommonDiagnostic::error(
                 "ET001",
-                format!("undefined type: `{name}` not found"),
+                format!("undefined type '{name}' not found"),
                 PrimaryLabel::new(*span).with_message("type not found"),
             )
             .with_note("check that the type name is spelled correctly"),
@@ -454,6 +588,21 @@ impl PhaseError for TypeCheckError {
             .with_note(
                 "internal type-check metadata must preserve source provenance for diagnostics",
             ),
+            Self::CanonicalTypeRootInvariant {
+                root_name,
+                root,
+                edge_source,
+                edge_target,
+                reason,
+                span,
+            } => Self::canonical_type_root_diagnostic(
+                root_name,
+                *root,
+                *edge_source,
+                *edge_target,
+                reason,
+                *span,
+            ),
             Self::PhaseDiagnostic {
                 code,
                 message,
@@ -476,8 +625,12 @@ impl PhaseError for TypeCheckError {
     }
 }
 
-/// Type checking context.
-pub struct TypeChecker {
+/// One-shot type checking context.
+///
+/// The context stays crate-private and every complete phase entry consumes it,
+/// so tree-local identities and diagnostics cannot be reused with another
+/// compiler root.
+struct TypeChecker {
     /// Collected diagnostics.
     diagnostics: Diagnostics,
     /// Evaluation context for current class (built from constants/parameters).
@@ -498,13 +651,7 @@ pub struct TypeChecker {
     ///
     /// This unwraps aliases and trivial class wrappers (e.g. operator-record
     /// unit wrappers) so assignment checks compare semantic roots.
-    type_roots: HashMap<TypeId, TypeId>,
-    /// Exact refusal retained for every type identity omitted from `type_roots`.
-    ///
-    /// Unused unresolved aliases are intentionally absent from downstream
-    /// catalogs, but their construction failure is not erased: a later use can
-    /// surface the original unknown edge or cycle.
-    type_root_failures: HashMap<TypeId, type_roots::TypeRootResolutionError>,
+    type_roots: ResolvedTypeRoots,
     /// Source-declaration component metadata for standalone resolved-tree checks.
     current_declaration_semantics: HashMap<DefId, ComponentSemantics>,
     /// Concrete component metadata keyed by `InstanceId`.
@@ -514,22 +661,28 @@ pub struct TypeChecker {
     /// Concrete instance scope used for lexical lookup in instanced bodies and
     /// bindings.
     current_instance_scope: Option<ComponentPath>,
-    /// Lexically active `for` iterators. These are Integer locals, not
-    /// component references, and may shadow a component with the same name.
-    current_integer_iterators: Vec<String>,
+    /// Lexically active `for` iterator binders, paired with the value type
+    /// issued from the iterator's checked range domain (MLS §11.2.2). These are
+    /// locals, not component references, and may shadow a component with the
+    /// same name, so the binder is consulted before instance lookup.
+    ///
+    /// The binder type is derived, never asserted: an iterator over
+    /// `1:0.5:2` binds Real, one over an enumeration binds that enumeration,
+    /// and one over a range that cannot be inferred stays unknown rather than
+    /// defaulting to Integer.
+    current_iterator_binders: Vec<(String, ExpressionType)>,
     /// Array domain contributed by the current structured class instance.
     /// Declaration-body equations are scalar over this implicit outer domain.
     current_instance_domain_shape: Vec<usize>,
-    /// Allowed first-segment modifier targets per class DefId.
+    /// Resolve-issued direct/inherited member outcomes used by the sole
+    /// modifier-target validator.
+    class_members: modifier_targets::ModifierMemberCatalog,
+    /// Class declarations whose source modifier targets have been checked.
     ///
-    /// Includes direct and inherited members (components and nested classes),
-    /// with `break` names removed per extends-clause selection rules.
-    component_modifier_targets: HashMap<DefId, HashSet<String>>,
-    /// Component member types available for modifier-path validation.
-    ///
-    /// Keys are class DefIds; values map component member names to their TypeIds
-    /// (including inherited members, with extends `break` names removed).
-    component_modifier_member_types: HashMap<DefId, HashMap<String, TypeId>>,
+    /// The instanced checker may visit one declaration through many concrete
+    /// occurrences; member existence belongs to the source declaration and is
+    /// issued exactly once.
+    validated_modifier_classes: HashSet<DefId>,
     /// Complete function signatures after inherited inputs and outputs are
     /// merged in declaration order.
     function_signatures: HashMap<DefId, function_signatures::FunctionSignature>,
@@ -541,40 +694,31 @@ pub struct TypeChecker {
     /// inner map preserves the declaration slot from base type DefId to the
     /// effective instance type DefId.
     current_call_type_overrides: function_signatures::CallTypeOverrides,
-    /// Type aliases whose targets could not be resolved during type-table
-    /// construction (e.g. an MSL alias into a library that is not loaded).
-    ///
-    /// The error is deferred and surfaced only when the alias is actually
-    /// used by the model being checked, so unrelated broken library classes
-    /// cannot fail every compile in the session (strict-reachable semantics).
-    deferred_alias_errors: HashMap<TypeId, (String, Span)>,
 }
 
 impl TypeChecker {
     /// Create a new type checker.
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             diagnostics: Diagnostics::new(),
-            eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext::new(),
+            eval_ctx: rumoca_eval_ast::eval::TypeCheckEvalContext::for_resolved_identities(),
             source_map: SourceMap::default(),
             predefined_intrinsics: HashMap::new(),
             def_qualified_names: HashMap::new(),
             type_ids_by_def_id: HashMap::new(),
             class_base_def_ids: HashMap::new(),
             operator_record_zero_capabilities: HashMap::new(),
-            type_roots: HashMap::new(),
-            type_root_failures: HashMap::new(),
+            type_roots: ResolvedTypeRoots::empty(),
             current_declaration_semantics: HashMap::new(),
             current_instance_semantics: InstanceSemanticScope::default(),
             current_class_instance_id: None,
             current_instance_scope: None,
-            current_integer_iterators: Vec::new(),
+            current_iterator_binders: Vec::new(),
             current_instance_domain_shape: Vec::new(),
-            component_modifier_targets: HashMap::new(),
-            component_modifier_member_types: HashMap::new(),
+            class_members: HashMap::new(),
+            validated_modifier_classes: HashSet::new(),
             function_signatures: HashMap::new(),
             current_call_type_overrides: function_signatures::CallTypeOverrides::default(),
-            deferred_alias_errors: HashMap::new(),
         }
     }
 
@@ -608,7 +752,16 @@ impl TypeChecker {
     }
 
     /// Type check a ClassTree.
-    pub fn check(&mut self, tree: &mut ClassTree) {
+    fn check(self, tree: &mut ClassTree) -> Diagnostics {
+        let mut candidate = tree.clone();
+        let diagnostics = self.check_detached(&mut candidate);
+        if !diagnostics.has_errors() {
+            *tree = candidate;
+        }
+        diagnostics
+    }
+
+    fn check_detached(mut self, tree: &mut ClassTree) -> Diagnostics {
         self.source_map = tree.source_map.clone();
         register_predefined_eval_functions(tree, &mut self.eval_ctx);
         self.predefined_intrinsics = rumoca_core::BuiltinFunction::PREDEFINED_IDENTITY_REQUIRED
@@ -633,28 +786,29 @@ impl TypeChecker {
             Ok(context) => context,
             Err(error) => {
                 self.emit_typecheck_error(*error);
-                return;
+                return self.diagnostics;
             }
         };
-        tree.type_table = type_table;
         self.type_ids_by_def_id = type_ids_by_def_id;
-        self.rebuild_type_roots(tree, &tree.type_table);
-        self.component_modifier_targets = modifier_targets::build_component_modifier_targets(tree);
-        self.component_modifier_member_types =
-            match modifier_targets::build_component_modifier_member_types(
-                tree,
-                &tree.type_table,
-                &self.type_ids_by_def_id,
-                &self.source_map,
-            ) {
-                Ok(member_types) => member_types,
-                Err(error) => {
-                    self.emit_typecheck_error(*error);
-                    return;
-                }
-            };
+        let type_root_catalog = match self.construct_type_root_catalog(tree, &type_table) {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                self.emit_typecheck_error(*error);
+                return self.diagnostics;
+            }
+        };
+        if let Err(error) = self.require_standalone_external_type_ids(tree, &type_table) {
+            self.emit_typecheck_error(*error);
+            return self.diagnostics;
+        }
+        self.type_roots = type_root_catalog.roots;
+        tree.type_table = type_table;
+        self.class_members =
+            modifier_targets::build_modifier_member_catalog(tree, &self.type_ids_by_def_id);
+        self.validate_all_modifier_targets(tree, &tree.type_table);
         self.check_stored_definition(&mut tree.definitions, &mut tree.type_table);
         self.flush_eval_warnings();
+        self.diagnostics
     }
 
     fn populate_nominal_class_context(&mut self, tree: &ClassTree) {
@@ -672,6 +826,49 @@ impl TypeChecker {
                 Some((*def_id, bases))
             })
             .collect();
+    }
+
+    fn require_standalone_external_type_ids(
+        &self,
+        tree: &ClassTree,
+        type_table: &TypeTable,
+    ) -> TypeCheckResult<()> {
+        let mut visited = HashSet::new();
+        let components = tree
+            .name_map
+            .values()
+            .copied()
+            .filter(|def_id| visited.insert(*def_id))
+            .filter_map(|def_id| tree.get_class_by_def_id(def_id))
+            .flat_map(|class| class.components.values());
+        for component in components {
+            self.require_standalone_external_type_id(component, type_table)?;
+        }
+        Ok(())
+    }
+
+    fn require_standalone_external_type_id(
+        &self,
+        component: &Component,
+        type_table: &TypeTable,
+    ) -> TypeCheckResult<()> {
+        let Some(type_id) = component.type_id.filter(|type_id| !type_id.is_unknown()) else {
+            return Ok(());
+        };
+        if type_table.get(type_id).is_some() {
+            return Ok(());
+        }
+        Err(self.type_identity_invariant_error(
+            &component.type_name.to_string(),
+            Some(type_id),
+            Some(type_id),
+            None,
+            format!(
+                "component `{}` carries a non-issued external type identity",
+                component.name
+            ),
+            self.location_span(&component.location).ok(),
+        ))
     }
 
     fn populate_operator_record_capabilities(&mut self, tree: &ClassTree) {
@@ -893,157 +1090,364 @@ impl TypeChecker {
         tree: &ClassTree,
     ) -> TypeCheckResult<(TypeTable, HashMap<DefId, TypeId>)> {
         let mut type_table = tree.type_table.clone();
-        let mut type_ids_by_def_id = HashMap::new();
-        for (name, type_id) in [
-            ("Real", type_table.real()),
-            ("Integer", type_table.integer()),
-            ("Boolean", type_table.boolean()),
-            ("String", type_table.string()),
-            ("Clock", type_table.clock()),
-        ] {
-            if let Some(def_id) = tree
-                .scope_tree
-                .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
-            {
-                type_ids_by_def_id.insert(def_id, type_id);
+        let inventory = tree.type_declaration_inventory().map_err(|error| {
+            let class = tree.get_class_by_qualified_name(error.repeated_name());
+            self.type_identity_invariant_error(
+                error.repeated_name(),
+                None,
+                None,
+                None,
+                error.to_string(),
+                class.and_then(|class| self.class_type_edge_span(class)),
+            )
+        })?;
+        let mut type_ids_by_def_id = inventory.predefined().collect::<HashMap<_, _>>();
+        let declarations = self.planned_type_declarations(tree, &inventory)?;
+        let first_name = declarations
+            .first()
+            .map_or("resolved type inventory", PlannedType::name)
+            .to_string();
+        let first_class = declarations.first().map(PlannedType::class);
+        let append_plan = type_table
+            .plan_declaration_append(declarations, inventory)
+            .map_err(|error| {
+                self.type_identity_invariant_error(
+                    &first_name,
+                    None,
+                    None,
+                    None,
+                    error.to_string(),
+                    first_class.and_then(|class| self.class_type_edge_span(class)),
+                )
+            })?;
+
+        for (type_id, declaration) in append_plan.entries() {
+            let def_id = declaration.declaration();
+            if let Some(previous) = type_ids_by_def_id.insert(def_id, type_id) {
+                return Err(self.type_identity_invariant_error(
+                    declaration.name(),
+                    Some(type_id),
+                    Some(type_id),
+                    Some(previous),
+                    format!("Resolve declaration {def_id:?} was claimed by two type payloads"),
+                    self.class_type_edge_span(declaration.class()),
+                ));
             }
         }
-
-        // Register classes and enumerations first.
-        for (qualified_name, &def_id) in &tree.name_map {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-
-            if !class.enum_literals.is_empty() {
-                let id = Self::register_enumeration_type(&mut type_table, qualified_name, class);
-                type_ids_by_def_id.insert(def_id, id);
-                continue;
-            }
-
-            if matches!(class.class_type, rumoca_core::ClassType::Type) {
-                continue;
-            }
-
-            let id = Self::register_class_type(
-                &mut type_table,
-                qualified_name,
-                def_id,
-                &class.class_type,
-            );
-            type_ids_by_def_id.insert(def_id, id);
-        }
-
-        // Register aliases with placeholder targets so alias chains are representable.
-        for (qualified_name, &def_id) in &tree.name_map {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-            if !matches!(class.class_type, rumoca_core::ClassType::Type)
-                || !class.enum_literals.is_empty()
-            {
-                continue;
-            }
-
-            let id = if let Some(existing) = type_table.lookup(qualified_name) {
-                existing
-            } else {
-                type_table.add_type(Type::Alias(TypeAlias {
-                    name: qualified_name.clone(),
-                    aliased: TypeId::UNKNOWN,
-                }))
-            };
-            type_ids_by_def_id.insert(def_id, id);
-        }
-
-        // Resolve alias targets once all alias ids exist.
-        for (_qualified_name, &def_id) in &tree.name_map {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-            if !matches!(class.class_type, rumoca_core::ClassType::Type)
-                || !class.enum_literals.is_empty()
-            {
-                continue;
-            }
-
-            let Some(&alias_id) = type_ids_by_def_id.get(&def_id) else {
-                continue;
-            };
-            let Some(aliased) = self.resolve_alias_target_or_defer(
-                alias_id,
-                class,
-                &type_table,
-                &type_ids_by_def_id,
-            )?
-            else {
-                continue;
-            };
-            if let Some(Type::Alias(alias)) = type_table.get_mut(alias_id) {
-                alias.aliased = aliased;
-            }
-        }
-
+        let commit_result =
+            append_plan.commit_declared(|type_id, declaration| -> TypeCheckResult<(DefId, Type)> {
+                let def_id = declaration.declaration();
+                self.construct_planned_type(type_id, declaration, &type_ids_by_def_id)
+                    .map(|ty| (def_id, ty))
+            });
+        self.finish_type_append(tree, &type_table, commit_result)?;
         Ok((type_table, type_ids_by_def_id))
     }
 
-    /// Resolve an alias target, deferring `UndefinedType` failures.
-    ///
-    /// An unresolvable alias target anywhere in the tree (an MSL alias into a
-    /// library that is not loaded) must not fail every model in the session.
-    /// The error is recorded per alias `TypeId` and surfaced when a model's
-    /// overlay actually resolves a component to the alias; `Ok(None)` means
-    /// the alias keeps its `UNKNOWN` target. Other errors still propagate.
-    fn resolve_alias_target_or_defer(
-        &mut self,
-        alias_id: TypeId,
-        class: &ClassDef,
-        type_table: &TypeTable,
-        type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    ) -> TypeCheckResult<Option<TypeId>> {
-        match self.resolve_alias_target_type_id(class, type_table, type_ids_by_def_id) {
-            Ok(aliased) => Ok(Some(aliased)),
-            Err(error) => match error.as_ref() {
-                TypeCheckError::UndefinedType { name, span } => {
-                    self.deferred_alias_errors
-                        .insert(alias_id, (name.clone(), *span));
-                    Ok(None)
+    fn planned_type_declarations<'tree>(
+        &self,
+        tree: &'tree ClassTree,
+        inventory: &rumoca_ir_ast::TypeDeclarationInventory,
+    ) -> TypeCheckResult<Vec<PlannedType<'tree>>> {
+        inventory
+            .declarations()
+            .map(|(declaration, name)| {
+                let class = tree.get_class_by_def_id(declaration).ok_or_else(|| {
+                    self.type_identity_invariant_error(
+                        name,
+                        None,
+                        None,
+                        None,
+                        "tree-issued type declaration has no structural payload".to_string(),
+                        None,
+                    )
+                })?;
+                let name = name.to_string();
+                if !class.enum_literals.is_empty() {
+                    return Ok(PlannedType::Enumeration {
+                        name,
+                        declaration,
+                        class,
+                    });
                 }
-                _ => Err(error),
-            },
+                if matches!(class.class_type, rumoca_core::ClassType::Type) {
+                    return Ok(PlannedType::Alias {
+                        name,
+                        declaration,
+                        class,
+                    });
+                }
+                Ok(PlannedType::Class {
+                    name,
+                    declaration,
+                    class,
+                })
+            })
+            .collect()
+    }
+
+    fn construct_planned_type(
+        &self,
+        type_id: TypeId,
+        declaration: PlannedType<'_>,
+        identities: &HashMap<DefId, TypeId>,
+    ) -> TypeCheckResult<Type> {
+        if identities.get(&declaration.declaration()) != Some(&type_id) {
+            return Err(self.type_identity_invariant_error(
+                declaration.name(),
+                Some(type_id),
+                Some(type_id),
+                None,
+                "planned declaration identity is not paired with its construction payload"
+                    .to_string(),
+                self.class_type_edge_span(declaration.class()),
+            ));
+        }
+        match declaration {
+            PlannedType::Enumeration { name, class, .. } => {
+                Ok(Type::Enumeration(EnumerationType {
+                    name,
+                    literals: class
+                        .enum_literals
+                        .iter()
+                        .map(|literal| literal.ident.text.to_string())
+                        .collect(),
+                }))
+            }
+            PlannedType::Class {
+                name,
+                declaration,
+                class,
+            } => Ok(Type::Class(TypeClassType {
+                name,
+                def_id: declaration,
+                kind: Self::ast_class_kind(&class.class_type),
+            })),
+            PlannedType::Alias { name, class, .. } => {
+                let aliased =
+                    self.resolve_alias_target_type_id(name.as_str(), type_id, class, identities)?;
+                Ok(Type::Alias(TypeAlias { name, aliased }))
+            }
         }
     }
 
-    fn register_enumeration_type(
-        type_table: &mut TypeTable,
-        qualified_name: &str,
+    fn finish_type_append(
+        &self,
+        tree: &ClassTree,
+        detached: &TypeTable,
+        result: Result<(), TypeTableAppendError<Box<TypeCheckError>>>,
+    ) -> TypeCheckResult<()> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(TypeTableAppendError::Construction(error)) => Err(error),
+            Err(TypeTableAppendError::MissingDeclarationInventory) => {
+                Err(self.type_identity_invariant_error(
+                    "resolved type inventory",
+                    None,
+                    None,
+                    None,
+                    "the checked append did not consume its ClassTree declaration authority"
+                        .to_string(),
+                    None,
+                ))
+            }
+            Err(TypeTableAppendError::ExistingUnclaimedPayload) => {
+                Err(self.type_identity_invariant_error(
+                    "resolved type inventory",
+                    None,
+                    None,
+                    None,
+                    "the input TypeTable contains a payload not issued by this ClassTree declaration inventory"
+                        .to_string(),
+                    None,
+                ))
+            }
+            Err(TypeTableAppendError::DeclarationCount { expected, actual }) => {
+                Err(self.type_identity_invariant_error(
+                    "resolved type inventory",
+                    None,
+                    None,
+                    None,
+                    format!(
+                        "the ClassTree owns {expected} type declarations but the checked append received {actual} payloads"
+                    ),
+                    None,
+                ))
+            }
+            Err(TypeTableAppendError::DuplicateDeclaration {
+                type_id,
+                declaration,
+                previous,
+            }) => {
+                let class = tree.get_class_by_def_id(declaration);
+                Err(self.type_identity_invariant_error(
+                    tree.def_map
+                        .get(&declaration)
+                        .map_or("resolved type declaration", String::as_str),
+                    Some(type_id),
+                    Some(type_id),
+                    Some(previous),
+                    format!(
+                        "Resolve declaration {declaration:?} was claimed by two type payloads"
+                    ),
+                    class.and_then(|class| self.class_type_edge_span(class)),
+                ))
+            }
+            Err(TypeTableAppendError::DeclarationPayloadMismatch {
+                type_id,
+                declaration,
+                expected,
+                expected_name,
+            }) => {
+                let class = tree.get_class_by_def_id(expected);
+                Err(self.type_identity_invariant_error(
+                    &expected_name,
+                    Some(type_id),
+                    Some(type_id),
+                    None,
+                    format!(
+                        "type payload claims {declaration:?}, but the ClassTree inventory issued {expected:?}"
+                    ),
+                    class.and_then(|class| self.class_type_edge_span(class)),
+                ))
+            }
+            Err(TypeTableAppendError::DuplicateTypeName { type_id, name }) => {
+                let class = tree.get_class_by_qualified_name(&name);
+                Err(self.type_identity_invariant_error(
+                    &name,
+                    Some(type_id),
+                    Some(type_id),
+                    detached.lookup(&name),
+                    "would overwrite or reuse an existing type-name binding".to_string(),
+                    class.and_then(|class| self.class_type_edge_span(class)),
+                ))
+            }
+            Err(TypeTableAppendError::InvalidTypePayload {
+                type_id,
+                referenced,
+            }) => Err(self.invalid_type_payload_append_error(type_id, referenced)),
+            Err(TypeTableAppendError::AliasCycle {
+                type_id,
+                referenced,
+                name,
+            }) => Err(self.alias_cycle_append_error(tree, type_id, referenced, name)),
+        }
+    }
+
+    fn invalid_type_payload_append_error(
+        &self,
+        type_id: TypeId,
+        referenced: Option<TypeId>,
+    ) -> Box<TypeCheckError> {
+        self.type_identity_invariant_error(
+            &format!("{type_id:?}"),
+            Some(type_id),
+            Some(type_id),
+            referenced,
+            "planned type payload is incomplete or references an unissued identity".to_string(),
+            None,
+        )
+    }
+
+    fn alias_cycle_append_error(
+        &self,
+        tree: &ClassTree,
+        type_id: TypeId,
+        referenced: TypeId,
+        name: String,
+    ) -> Box<TypeCheckError> {
+        let class = tree.get_class_by_qualified_name(&name);
+        self.type_identity_invariant_error(
+            &name,
+            Some(type_id),
+            Some(type_id),
+            Some(referenced),
+            "closes an alias cycle".to_string(),
+            class.and_then(|class| self.class_type_edge_span(class)),
+        )
+    }
+
+    fn type_identity_invariant_error(
+        &self,
+        name: &str,
+        type_id: Option<TypeId>,
+        edge_source: Option<TypeId>,
+        edge_target: Option<TypeId>,
+        reason: String,
+        span: Option<Span>,
+    ) -> Box<TypeCheckError> {
+        Box::new(TypeCheckError::CanonicalTypeRootInvariant {
+            root_name: name.to_string(),
+            root: type_id,
+            edge_source,
+            edge_target,
+            reason,
+            span,
+        })
+    }
+
+    fn class_type_edge_span(&self, class: &ClassDef) -> Option<Span> {
+        class
+            .extends
+            .first()
+            .and_then(|extend| self.name_span(&extend.base_name).ok())
+            .or_else(|| self.location_span(&class.location).ok())
+    }
+
+    fn resolve_alias_target_type_id(
+        &self,
+        name: &str,
+        source: TypeId,
         class: &ClassDef,
-    ) -> TypeId {
-        if let Some(existing) = type_table.lookup(qualified_name) {
-            return existing;
-        }
-        let literals = class
-            .enum_literals
-            .iter()
-            .map(|lit| lit.ident.text.to_string())
-            .collect();
-        type_table.add_type(Type::Enumeration(EnumerationType {
-            name: qualified_name.to_string(),
-            literals,
-        }))
+        type_ids_by_def_id: &HashMap<DefId, TypeId>,
+    ) -> TypeCheckResult<TypeId> {
+        let [extend] = class.extends.as_slice() else {
+            let span = class
+                .extends
+                .get(1)
+                .and_then(|extra| self.name_span(&extra.base_name).ok())
+                .or_else(|| self.location_span(&class.location).ok());
+            return Err(self.type_identity_invariant_error(
+                name,
+                Some(source),
+                Some(source),
+                None,
+                format!(
+                    "Resolve-branded alias must own exactly one base edge, found {}",
+                    class.extends.len()
+                ),
+                span,
+            ));
+        };
+        let edge_span = self.name_span(&extend.base_name).ok();
+        let Some(base_def_id) = extend.base_def_id else {
+            return Err(self.type_identity_invariant_error(
+                name,
+                Some(source),
+                Some(source),
+                None,
+                format!(
+                    "Resolve-branded alias base edge `{}` has no declaration identity",
+                    extend.base_name
+                ),
+                edge_span,
+            ));
+        };
+        let Some(target) = type_ids_by_def_id.get(&base_def_id).copied() else {
+            return Err(self.type_identity_invariant_error(
+                name,
+                Some(source),
+                Some(source),
+                None,
+                format!("Resolve-branded alias target {base_def_id:?} has no issued type payload"),
+                edge_span,
+            ));
+        };
+        Ok(target)
     }
 
-    fn register_class_type(
-        type_table: &mut TypeTable,
-        qualified_name: &str,
-        def_id: DefId,
-        class_type: &rumoca_core::ClassType,
-    ) -> TypeId {
-        if let Some(existing) = type_table.lookup(qualified_name) {
-            return existing;
-        }
-
-        let kind = match class_type {
+    fn ast_class_kind(class_type: &rumoca_core::ClassType) -> ClassKind {
+        match class_type {
             rumoca_core::ClassType::Class => ClassKind::Class,
             rumoca_core::ClassType::Model => ClassKind::Model,
             rumoca_core::ClassType::Block => ClassKind::Block,
@@ -1053,43 +1457,7 @@ impl TypeChecker {
             rumoca_core::ClassType::Package => ClassKind::Package,
             rumoca_core::ClassType::Function => ClassKind::Function,
             rumoca_core::ClassType::Operator => ClassKind::Operator,
-        };
-
-        type_table.add_type(Type::Class(TypeClassType {
-            name: qualified_name.to_string(),
-            def_id,
-            kind,
-        }))
-    }
-
-    fn resolve_alias_target_type_id(
-        &self,
-        class: &ClassDef,
-        type_table: &TypeTable,
-        type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    ) -> TypeCheckResult<TypeId> {
-        let Some(ext) = class.extends.first() else {
-            return Err(Box::new(TypeCheckError::phase_diagnostic(
-                "ET001",
-                format!(
-                    "type alias `{}` does not extend a base type",
-                    class.name.text
-                ),
-                "type alias declaration here",
-                self.location_span(&class.location)?,
-            )));
-        };
-
-        if let Some(base_def_id) = ext.base_def_id
-            && let Some(&target) = type_ids_by_def_id.get(&base_def_id)
-        {
-            return Ok(target);
         }
-
-        let base_name = ext.base_name.to_string();
-        let base_span = self.name_span(&ext.base_name)?;
-        Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
-            .ok_or_else(|| Box::new(TypeCheckError::undefined_type(base_name, base_span)))
     }
 
     fn try_resolve_alias_target_type_id(
@@ -1171,10 +1539,6 @@ impl TypeChecker {
             let type_def_id = instanced::specialized_instance_type_def_id(data, &specializations)
                 .or(data.type_def_id);
             let resolved = self.resolve_type_name(&data.type_name, type_def_id, type_table);
-            if let Some((missing, span)) = self.deferred_alias_errors.get(&resolved) {
-                let error = TypeCheckError::undefined_type(missing.clone(), *span);
-                self.emit_typecheck_error(error);
-            }
             if !resolved.is_unknown() {
                 data.type_id = resolved;
                 continue;
@@ -1227,6 +1591,7 @@ impl TypeChecker {
         )
     }
 
+    #[cfg(test)]
     fn populate_overlay_type_roots_with_semantics(
         &self,
         tree: &ClassTree,
@@ -1235,7 +1600,26 @@ impl TypeChecker {
         used_functions: Vec<(DefId, Span)>,
         semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
     ) -> TypeCheckResult<()> {
-        let catalog = self.construct_type_root_catalog(tree, type_table);
+        let catalog = self.construct_type_root_catalog(tree, type_table)?;
+        self.populate_overlay_type_roots_from_catalog(
+            tree,
+            overlay,
+            type_table,
+            used_functions,
+            semantic_catalogs,
+            catalog,
+        )
+    }
+
+    fn populate_overlay_type_roots_from_catalog(
+        &self,
+        tree: &ClassTree,
+        overlay: &mut InstanceOverlay,
+        type_table: &TypeTable,
+        used_functions: Vec<(DefId, Span)>,
+        semantic_catalogs: &rumoca_ir_ast::SemanticCatalogProjection,
+        catalog: ResolvedTypeRootCatalog,
+    ) -> TypeCheckResult<()> {
         self.require_overlay_component_type_roots(
             tree,
             overlay,
@@ -1245,11 +1629,10 @@ impl TypeChecker {
             semantic_catalogs,
         )?;
 
-        let mut roots = catalog.roots.into_iter().collect::<Vec<_>>();
-        roots.sort_unstable_by_key(|(type_id, _)| type_id.index());
+        let roots = catalog.roots.into_pairs();
         let mut enumeration_roots = catalog.enumeration_roots.into_iter().collect::<Vec<_>>();
         enumeration_roots.sort_unstable_by_key(|type_id| type_id.index());
-        overlay.type_roots = roots.into_iter().collect();
+        overlay.type_roots = roots.collect();
         overlay.enumeration_type_roots = enumeration_roots.into_iter().collect();
         overlay.type_ids_by_def_id = catalog.declarations.into_iter().collect();
         Ok(())
@@ -1259,46 +1642,63 @@ impl TypeChecker {
         &self,
         tree: &ClassTree,
         type_table: &TypeTable,
-    ) -> ResolvedTypeRootCatalog {
-        let mut roots = HashMap::new();
-        let mut failures = HashMap::new();
+    ) -> TypeCheckResult<ResolvedTypeRootCatalog> {
+        let mut pairs = Vec::with_capacity(type_table.len());
         let mut enumeration_roots = HashSet::new();
-        for idx in 0..type_table.len() {
-            let ty = TypeId::new(idx as u32);
-            match self.resolve_overlay_type_root(tree, type_table, ty) {
-                Ok(root) => {
-                    roots.insert(ty, root);
-                    if matches!(type_table.get(root), Some(Type::Enumeration(_))) {
-                        enumeration_roots.insert(root);
-                    }
-                }
-                Err(error) => {
-                    failures.insert(ty, error);
-                }
-            }
+        for (ty, _) in type_table.entries() {
+            let root = self
+                .resolve_overlay_type_root(tree, type_table, ty)
+                .map_err(|failure| {
+                    self.type_root_construction_error(tree, type_table, ty, failure)
+                })?;
+            pairs.push((ty, root));
+            enumeration_roots
+                .extend(matches!(type_table.get(root), Some(Type::Enumeration(_))).then_some(root));
         }
         let mut declarations = self
             .type_ids_by_def_id
             .iter()
-            .filter_map(|(&declaration, &type_id)| {
-                roots
-                    .contains_key(&type_id)
-                    .then_some((declaration, type_id))
-            })
+            .map(|(&declaration, &type_id)| (declaration, type_id))
             .collect::<Vec<_>>();
         declarations.sort_unstable_by_key(|(declaration, _)| declaration.index());
-        ResolvedTypeRootCatalog {
-            roots,
-            failures,
+        Ok(ResolvedTypeRootCatalog {
+            roots: ResolvedTypeRoots {
+                dense: pairs.into_boxed_slice(),
+            },
             enumeration_roots,
             declarations,
-        }
+        })
     }
 
-    fn rebuild_type_roots(&mut self, tree: &ClassTree, type_table: &TypeTable) {
-        let catalog = self.construct_type_root_catalog(tree, type_table);
-        self.type_roots = catalog.roots;
-        self.type_root_failures = catalog.failures;
+    fn type_root_construction_error(
+        &self,
+        tree: &ClassTree,
+        type_table: &TypeTable,
+        type_id: TypeId,
+        failure: type_roots::TypeRootResolutionError,
+    ) -> Box<TypeCheckError> {
+        let type_name = TypeChecker::format_type_name(type_table, type_id);
+        let edge_source = failure.source();
+        let edge_target = failure.target();
+        let span = self
+            .type_ids_by_def_id
+            .iter()
+            .filter(|(_, candidate)| **candidate == edge_source)
+            .filter_map(|(declaration, _)| {
+                tree.get_class_by_def_id(*declaration)
+                    .map(|class| (*declaration, class))
+            })
+            .min_by_key(|(declaration, _)| declaration.index())
+            .and_then(|(_, class)| class.extends.first())
+            .and_then(|extend| self.name_span(&extend.base_name).ok());
+        Box::new(TypeCheckError::CanonicalTypeRootInvariant {
+            root_name: type_name,
+            root: Some(type_id),
+            edge_source: Some(edge_source),
+            edge_target,
+            reason: format_type_root_failure(failure),
+            span,
+        })
     }
 
     fn require_overlay_component_type_roots(
@@ -1312,32 +1712,45 @@ impl TypeChecker {
     ) -> TypeCheckResult<()> {
         let specializations = instanced::overlay_component_type_specializations(tree, overlay);
         for data in overlay.components.values() {
+            if !data.type_id.is_unknown() && type_table.get(data.type_id).is_none() {
+                let span = self.location_span(&data.source_location)?;
+                return Err(self.type_identity_invariant_error(
+                    &data.type_name,
+                    Some(data.type_id),
+                    Some(data.type_id),
+                    None,
+                    format!(
+                        "component `{}` carries a non-issued external type identity",
+                        data.qualified_name.to_flat_string()
+                    ),
+                    Some(span),
+                ));
+            }
             let type_def_id = instanced::specialized_instance_type_def_id(data, &specializations)
                 .or(data.type_def_id);
             let type_id = self.resolve_type_name(&data.type_name, type_def_id, type_table);
-            if let Some((missing, span)) = self.deferred_alias_errors.get(&type_id) {
+            if type_id.is_unknown() {
+                let span = self.location_span(&data.source_location)?;
                 return Err(Box::new(TypeCheckError::undefined_type(
-                    missing.clone(),
-                    *span,
+                    data.type_name.clone(),
+                    span,
                 )));
             }
-            if catalog.roots.contains_key(&type_id) {
+            if catalog.roots.get(type_id).is_some() {
                 continue;
             }
             let span = self.location_span(&data.source_location)?;
-            let failure = catalog.failures.get(&type_id);
-            return Err(Box::new(TypeCheckError::phase_diagnostic(
-                "ET000",
+            return Err(self.type_identity_invariant_error(
+                &data.type_name,
+                Some(type_id),
+                Some(type_id),
+                None,
                 format!(
-                    "cannot issue the canonical type root for component `{}` (type {:?}, declaration {:?}): {}",
+                    "component `{}` resolves to an identity absent from the issued type table (declaration {type_def_id:?})",
                     data.qualified_name.to_flat_string(),
-                    type_id,
-                    type_def_id,
-                    format_type_root_failure(failure),
                 ),
-                "component uses an incomplete type identity",
-                span,
-            )));
+                Some(span),
+            ));
         }
         self.require_used_function_type_roots(
             tree,
@@ -1380,12 +1793,12 @@ impl TypeChecker {
                 continue;
             }
             if !matches!(class.class_type, rumoca_core::ClassType::Function) {
-                if let Some(lifecycle) = semantic_catalogs.external_object(function) {
-                    used.push((lifecycle.constructor(), use_span));
-                    used.push((lifecycle.destructor(), use_span));
-                    continue;
-                }
-                return Err(invalid_checked_call_target(function, use_span));
+                let lifecycle = semantic_catalogs
+                    .external_object(function)
+                    .ok_or_else(|| invalid_checked_call_target(function, use_span))?;
+                used.push((lifecycle.constructor(), use_span));
+                used.push((lifecycle.destructor(), use_span));
+                continue;
             }
             let signature = self
                 .function_signatures
@@ -1430,21 +1843,13 @@ impl TypeChecker {
             component.type_def_id,
             type_table,
         );
-        if let Some((missing, span)) = self.deferred_alias_errors.get(&type_id) {
-            return Err(Box::new(TypeCheckError::undefined_type(
-                missing.clone(),
-                *span,
-            )));
-        }
-        let Some(&canonical) = catalog.roots.get(&type_id) else {
+        let Some(canonical) = catalog.roots.get(type_id) else {
             let span = self.location_span(&component.location)?;
             return Err(Box::new(TypeCheckError::phase_diagnostic(
                 "ET000",
                 format!(
-                    "cannot issue the canonical type root for declaration {:?} (type {:?}): {}",
-                    component.def_id,
-                    type_id,
-                    format_type_root_failure(catalog.failures.get(&type_id)),
+                    "cannot issue the canonical type root for declaration {:?} (type {:?}): the type identity is absent from the issued type table",
+                    component.def_id, type_id,
                 ),
                 "function or record declaration uses an incomplete type identity",
                 span,
@@ -1480,9 +1885,7 @@ impl TypeChecker {
             return Ok(None);
         }
         let exact_nominal = self.type_ids_by_def_id.get(&class_type.def_id).copied();
-        if exact_nominal != Some(canonical)
-            || catalog.roots.get(&canonical).copied() != Some(canonical)
-        {
+        if exact_nominal != Some(canonical) || catalog.roots.get(canonical) != Some(canonical) {
             let span = self.location_span(&component.location)?;
             return Err(Box::new(TypeCheckError::phase_diagnostic(
                 "ET000",
@@ -1588,9 +1991,9 @@ impl TypeChecker {
         type_table: &TypeTable,
         ty: TypeId,
         type_ids_by_def_id: &HashMap<DefId, TypeId>,
-    ) -> Option<TypeId> {
+    ) -> Result<Option<TypeId>, type_roots::TypeRootResolutionError> {
         match type_table.get(ty) {
-            Some(Type::Alias(alias)) => Some(alias.aliased),
+            Some(Type::Alias(alias)) => Ok(Some(alias.aliased)),
             Some(Type::Class(class_ty))
                 if class_ty.kind == ClassKind::Connector
                     || class_ty.kind == ClassKind::Type
@@ -1598,7 +2001,7 @@ impl TypeChecker {
                     || class_ty.kind == ClassKind::Record =>
             {
                 let Some(class) = tree.get_class_by_def_id(class_ty.def_id) else {
-                    return Some(TypeId::UNKNOWN);
+                    return Err(type_roots::TypeRootResolutionError::UnknownTarget { source: ty });
                 };
                 let is_wrapper = if class_ty.kind == ClassKind::Connector {
                     Self::is_connector_alias_wrapper(class)
@@ -1606,15 +2009,16 @@ impl TypeChecker {
                     Self::is_class_alias_wrapper(class)
                 };
                 if !is_wrapper {
-                    return None;
+                    return Ok(None);
                 }
-                Some(
-                    Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
-                        .unwrap_or(TypeId::UNKNOWN),
-                )
+                Self::try_resolve_alias_target_type_id(class, type_table, type_ids_by_def_id)
+                    .map(Some)
+                    .ok_or(type_roots::TypeRootResolutionError::UnknownTarget { source: ty })
             }
-            Some(Type::Unknown) | None => Some(TypeId::UNKNOWN),
-            _ => None,
+            Some(Type::Unknown) | None => {
+                Err(type_roots::TypeRootResolutionError::UnknownTarget { source: ty })
+            }
+            _ => Ok(None),
         }
     }
 
@@ -1777,6 +2181,16 @@ impl TypeChecker {
     }
 }
 
+/// Build the compile-time function catalog keyed by canonical qualified name.
+///
+/// Every algorithmic function declaration Resolve registered is published under
+/// exactly one key: its canonical qualified name from `name_map`. No import
+/// alias, terminal short name, or other spelling is published: call selection
+/// reads the call's Resolve-issued target `DefId`
+/// (`selected_user_function_name`), so an import-visible call (qualified,
+/// renamed, selective, or wildcard; MLS §13.2) selects its exact declaration by
+/// identity while two imports sharing one local alias cannot collide in this
+/// shared map.
 fn build_function_defs_for_eval(
     tree: &ClassTree,
 ) -> std::sync::Arc<rustc_hash::FxHashMap<String, ClassDef>> {
@@ -1787,7 +2201,6 @@ fn build_function_defs_for_eval(
         };
         insert_function_def(&mut functions, name, class);
     }
-    insert_import_function_aliases(tree, &mut functions);
     std::sync::Arc::new(functions)
 }
 
@@ -1802,58 +2215,6 @@ fn register_predefined_eval_functions(
     }));
 }
 
-fn insert_import_function_aliases(
-    tree: &ClassTree,
-    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
-) {
-    for idx in 0..tree.scope_tree.len() {
-        let scope_id = ScopeId::new(idx as u32);
-        let Some(scope) = tree.scope_tree.get(scope_id) else {
-            continue;
-        };
-        for import in &scope.imports {
-            insert_import_function_alias(tree, import, functions);
-        }
-    }
-}
-
-fn insert_import_function_alias(
-    tree: &ClassTree,
-    import: &ScopeImport,
-    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
-) {
-    match import {
-        ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
-            for (alias, def_id) in TypeChecker::import_constant_prefixes(import) {
-                let Some(class) = tree.get_class_by_def_id(def_id) else {
-                    continue;
-                };
-                insert_function_alias_tree(functions, &alias, class);
-            }
-        }
-        ScopeImport::Unqualified { names, .. } => {
-            for (alias, &def_id) in names {
-                let Some(class) = tree.get_class_by_def_id(def_id) else {
-                    continue;
-                };
-                insert_function_alias_tree(functions, alias.as_str(), class);
-            }
-        }
-    }
-}
-
-fn insert_function_alias_tree(
-    functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
-    prefix: &str,
-    class: &ClassDef,
-) {
-    insert_function_def(functions, prefix, class);
-    for (name, nested) in &class.classes {
-        let nested_prefix = format!("{prefix}.{name}");
-        insert_function_alias_tree(functions, &nested_prefix, nested);
-    }
-}
-
 fn insert_function_def(
     functions: &mut rustc_hash::FxHashMap<String, ClassDef>,
     name: &str,
@@ -1863,12 +2224,6 @@ fn insert_function_def(
         functions
             .entry(name.to_string())
             .or_insert_with(|| class.clone());
-    }
-}
-
-impl Default for TypeChecker {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

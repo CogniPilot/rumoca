@@ -119,7 +119,6 @@ fn test_content_split_module_roots_declare_submodules_before_imports() {
         "crates/rumoca-phase-codegen/src/codegen/render_solve.rs",
         "crates/rumoca-phase-flatten/src/ast_lower.rs",
         "crates/rumoca-phase-flatten/src/function_lowering.rs",
-        "crates/rumoca-phase-flatten/src/pipeline/context_import_shadowing.rs",
         "crates/rumoca-phase-dae/src/construction/function_shapes/mod.rs",
         "crates/rumoca-phase-dae/src/construction/analysis/loop_compaction/mod.rs",
         "crates/rumoca-phase-dae/src/construction.rs",

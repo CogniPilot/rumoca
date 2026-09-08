@@ -3,16 +3,33 @@ use std::collections::HashSet;
 use crate::{ast, flat};
 use rumoca_core::{ExpressionRewriter, StatementRewriter};
 
-pub(crate) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::ClassTree) {
-    let constructor_def_ids = tree
-        .def_map
+/// Every record class declaration: the exact targets whose call is a record
+/// constructor.
+pub(crate) fn record_constructor_def_ids(tree: &ast::ClassTree) -> HashSet<rumoca_core::DefId> {
+    tree.def_map
         .keys()
         .copied()
         .filter(|def_id| {
             tree.get_class_by_def_id(*def_id)
                 .is_some_and(|class_def| class_def.class_type == rumoca_core::ClassType::Record)
         })
-        .collect::<HashSet<_>>();
+        .collect()
+}
+
+/// Mark the record constructor calls of one expression that lives outside the
+/// Flat model, with the same target test the Flat-wide pass applies.
+pub(crate) fn mark_record_constructor_calls_in_expression(
+    expr: &mut rumoca_core::Expression,
+    constructor_def_ids: &HashSet<rumoca_core::DefId>,
+) {
+    ConstructorMarker {
+        constructor_def_ids,
+    }
+    .mark_expr(expr);
+}
+
+pub(crate) fn mark_record_constructor_calls(flat: &mut flat::Model, tree: &ast::ClassTree) {
+    let constructor_def_ids = record_constructor_def_ids(tree);
     let marker = ConstructorMarker {
         constructor_def_ids: &constructor_def_ids,
     };
@@ -185,6 +202,7 @@ impl ExpressionRewriter for ConstructorMarker<'_> {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expr
         {
@@ -192,6 +210,7 @@ impl ExpressionRewriter for ConstructorMarker<'_> {
                 name: name.clone(),
                 args: self.rewrite_expressions(args),
                 is_constructor: self.is_constructor_call(name, *is_constructor),
+                call_kind: *call_kind,
                 span: *span,
             };
         }
@@ -250,6 +269,7 @@ mod tests {
                 span: span(),
             }],
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: span(),
         }
     }
@@ -285,7 +305,8 @@ mod tests {
 
     fn model_with_constructor() -> (flat::Model, rumoca_core::FunctionInstanceId) {
         let mut model = flat::Model::new();
-        let mut constructor = rumoca_core::Function::new("Dimension", span());
+        let mut constructor =
+            rumoca_core::Function::new("Dimension", rumoca_core::DefId::new(61_006), span());
         constructor.def_id = Some(RECORD_DEF_ID);
         constructor.is_constructor = true;
         constructor.add_input(
@@ -349,7 +370,7 @@ mod tests {
     fn function_parameter_metadata_receives_constructor_certification() {
         let tree = record_tree();
         let (mut model, instance_id) = model_with_constructor();
-        let mut function = rumoca_core::Function::new("f", span());
+        let mut function = rumoca_core::Function::new("f", rumoca_core::DefId::new(61_007), span());
         let mut bounded = crate::test_support::integer_param("p", Vec::new(), span());
         bounded.default = Some(constructor_field());
         bounded.min = Some(constructor_field());

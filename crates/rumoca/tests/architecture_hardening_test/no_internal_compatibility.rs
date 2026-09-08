@@ -19,42 +19,54 @@ struct CompatibilityAttributeVisitor {
     offenders: Vec<String>,
 }
 
+impl CompatibilityAttributeVisitor {
+    fn record_serde_aliases(&mut self, path: &syn::Path, tokens: &str) {
+        for forbidden in ["alias", "aliases"] {
+            if !tokens_contain_word(tokens, forbidden) {
+                continue;
+            }
+            self.offenders
+                .push(format!("{}({forbidden})", path_key(path)));
+        }
+    }
+
+    fn record_dead_code_suppression(&mut self, path: &syn::Path, tokens: &str) {
+        if !tokens_contain_word(tokens, "dead_code") {
+            return;
+        }
+        self.offenders
+            .push(format!("{}(dead_code)", path_key(path)));
+    }
+}
+
 impl<'ast> Visit<'ast> for CompatibilityAttributeVisitor {
     fn visit_attribute(&mut self, attribute: &'ast syn::Attribute) {
         let path = attribute.path();
         if path.is_ident("deprecated") {
             self.offenders.push("deprecated".to_owned());
         }
+        let tokens = attribute_meta_tokens(attribute);
         if path.is_ident("serde") {
-            let tokens = match &attribute.meta {
-                syn::Meta::List(list) => list.tokens.to_string(),
-                syn::Meta::Path(_) | syn::Meta::NameValue(_) => String::new(),
-            };
-            for forbidden in ["alias", "aliases"] {
-                if tokens
-                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-                    .any(|word| word == forbidden)
-                {
-                    self.offenders
-                        .push(format!("{}({forbidden})", path_key(path)));
-                }
-            }
+            self.record_serde_aliases(path, &tokens);
         }
         if path.is_ident("allow") || path.is_ident("expect") {
-            let tokens = match &attribute.meta {
-                syn::Meta::List(list) => list.tokens.to_string(),
-                syn::Meta::Path(_) | syn::Meta::NameValue(_) => String::new(),
-            };
-            if tokens
-                .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-                .any(|word| word == "dead_code")
-            {
-                self.offenders
-                    .push(format!("{}(dead_code)", path_key(path)));
-            }
+            self.record_dead_code_suppression(path, &tokens);
         }
         syn::visit::visit_attribute(self, attribute);
     }
+}
+
+fn attribute_meta_tokens(attribute: &syn::Attribute) -> String {
+    match &attribute.meta {
+        syn::Meta::List(list) => list.tokens.to_string(),
+        syn::Meta::Path(_) | syn::Meta::NameValue(_) => String::new(),
+    }
+}
+
+fn tokens_contain_word(tokens: &str, expected: &str) -> bool {
+    tokens
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|word| word == expected)
 }
 
 fn path_key(path: &syn::Path) -> String {
@@ -111,24 +123,25 @@ fn serde_default_enum_fields(source: &str, enum_name: &str) -> Vec<String> {
             syn::Item::Enum(item) if item.ident == enum_name => Some(item),
             _ => None,
         })
-        .flat_map(|item| {
-            item.variants.iter().flat_map(|variant| {
-                variant.fields.iter().filter_map(|field| {
-                    field
-                        .attrs
-                        .iter()
-                        .any(serde_attribute_selects_default)
-                        .then(|| {
-                            let field = field
-                                .ident
-                                .as_ref()
-                                .map_or_else(|| "<unnamed>".to_owned(), ToString::to_string);
-                            format!("{}.{field}", variant.ident)
-                        })
-                })
-            })
-        })
+        .flat_map(enum_default_fields)
         .collect()
+}
+
+fn enum_default_fields(item: &syn::ItemEnum) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for variant in &item.variants {
+        for field in &variant.fields {
+            if !field.attrs.iter().any(serde_attribute_selects_default) {
+                continue;
+            }
+            let field_name = field
+                .ident
+                .as_ref()
+                .map_or_else(|| "<unnamed>".to_owned(), ToString::to_string);
+            offenders.push(format!("{}.{field_name}", variant.ident));
+        }
+    }
+    offenders
 }
 
 fn serde_attribute_selects_default(attribute: &syn::Attribute) -> bool {
@@ -231,7 +244,6 @@ const REQUIRED_OPTION_WIRE_FIELD_CATALOG: &[(&str, &str, &[&str])] = &[
         &[
             "unit",
             "description",
-            "fixed",
             "start",
             "minimum",
             "maximum",
@@ -279,7 +291,6 @@ const REQUIRED_OPTION_WIRE_FIELD_CATALOG: &[(&str, &str, &[&str])] = &[
             "min",
             "max",
             "nominal",
-            "fixed",
             "description",
         ],
     ),
@@ -363,7 +374,7 @@ fn required_option_wire_offenders(
                     field
                         .ident
                         .as_ref()
-                        .is_some_and(|ident| ident.to_string() == *field_name)
+                        .is_some_and(|ident| ident == *field_name)
                 })
                 .unwrap_or_else(|| {
                     panic!("missing current wire field `{struct_name}.{field_name}`")
@@ -383,7 +394,11 @@ fn required_option_wire_offenders(
             let skips_null = serde
                 .iter()
                 .any(|tokens| tokens.contains("skip_serializing_if"));
-            (!has_required_decoder || skips_null).then(|| (*field_name).to_owned())
+            if has_required_decoder && !skips_null {
+                None
+            } else {
+                Some((*field_name).to_owned())
+            }
         })
         .collect()
 }

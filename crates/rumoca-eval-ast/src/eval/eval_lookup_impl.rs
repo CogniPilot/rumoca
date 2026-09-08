@@ -1,7 +1,6 @@
 use super::*;
 
 use rumoca_core::EvalLookup;
-use std::borrow::Cow;
 
 impl EvalLookup for TypeCheckEvalContext {
     fn lookup_integer(&self, name: &str, scope: &str) -> Option<i64> {
@@ -19,10 +18,6 @@ impl EvalLookup for TypeCheckEvalContext {
     fn lookup_boolean(&self, name: &str, scope: &str) -> Option<bool> {
         lookup_with_scope(name, scope, &self.booleans).copied()
     }
-
-    fn lookup_enum<'a>(&'a self, name: &str, scope: &str) -> Option<Cow<'a, str>> {
-        lookup_with_scope(name, scope, &self.enums).map(|value| Cow::Borrowed(value.as_str()))
-    }
 }
 
 #[cfg(test)]
@@ -31,12 +26,10 @@ mod tests {
 
     #[test]
     fn lookup_trait_resolves_scope_and_enum_ordinals() {
-        let mut ctx = TypeCheckEvalContext::new();
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
         ctx.add_integer("sys.n", 4);
         ctx.add_real("sys.inner.r", 2.5);
         ctx.booleans.insert("sys.flag".to_string(), true);
-        ctx.enums
-            .insert("sys.mode".to_string(), "Pkg.Mode.Fast".to_string());
         ctx.enum_ordinals.insert("sys.phase".to_string(), 3);
 
         assert_eq!(ctx.lookup_integer("n", "sys.inner"), Some(4));
@@ -44,9 +37,5 @@ mod tests {
         assert_eq!(ctx.lookup_real("r", "sys.inner"), Some(2.5));
         assert_eq!(ctx.lookup_real("n", "sys.inner"), Some(4.0));
         assert_eq!(ctx.lookup_boolean("flag", "sys.inner"), Some(true));
-        assert_eq!(
-            ctx.lookup_enum("mode", "sys.inner").as_deref(),
-            Some("Pkg.Mode.Fast")
-        );
     }
 }

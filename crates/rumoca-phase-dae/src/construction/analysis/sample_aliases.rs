@@ -18,12 +18,11 @@ enum AliasDefinition {
 }
 
 pub(super) fn analyze_sample_aliases(
-    flat: &flat::Model,
+    equations: &ModelEquationSequence<'_>,
     roles: &HashMap<VarName, PlannedRole>,
     expression_events: &ExpressionEventPlans,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
-) -> Result<HashMap<VarName, PeriodicClockSchedule>, ToDaeError> {
+) -> HashMap<VarName, PeriodicClockSchedule> {
+    let flat = equations.model();
     let mut definitions = HashMap::new();
 
     for (name, variable) in &flat.variables {
@@ -35,23 +34,15 @@ pub(super) fn analyze_sample_aliases(
         }
     }
 
-    for (row, equation) in flat.equations.iter().enumerate() {
-        let EquationPartition::DiscreteValue(plan) = equation_partition(
-            flat,
-            row,
-            equation,
-            roles,
-            connection_ranks,
-            aggregate_connections,
-        )?
-        else {
+    for row in equations.rows() {
+        let EquationPartition::DiscreteValue(plan) = row.partition() else {
             continue;
         };
         if let Some(definition) = alias_definition(
             flat,
             roles,
             expression_events,
-            plan.target,
+            &plan.target,
             plan.value.as_ref(),
         ) {
             definitions.insert(plan.target.clone(), definition);
@@ -87,7 +78,7 @@ pub(super) fn analyze_sample_aliases(
             break;
         }
     }
-    Ok(schedules)
+    schedules
 }
 
 fn alias_definition(

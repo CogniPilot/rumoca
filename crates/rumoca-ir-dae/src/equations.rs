@@ -636,9 +636,9 @@ fn projection_domain(dimensions: &[u32]) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: dimensions
             .iter()
-            .enumerate()
-            .map(|(axis, extent)| StructuredIndexBinder {
-                id: axis,
+            .zip(0u32..)
+            .map(|(extent, axis)| StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(axis),
                 display_name: format!("$axis{}", axis + 1),
                 lower: 1,
                 upper: i64::from(*extent),

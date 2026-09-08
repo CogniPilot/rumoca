@@ -287,10 +287,10 @@ fn solve_model_count(summary: &MslSummary) -> usize {
 fn run_timed_parity_stage<F>(
     report: &mut MslParityTimingReport,
     label: &str,
-    mut run: F,
+    run: F,
 ) -> io::Result<()>
 where
-    F: FnMut() -> io::Result<()>,
+    F: FnOnce() -> io::Result<()>,
 {
     let started = Instant::now();
     match run() {
@@ -311,7 +311,7 @@ fn run_timed_parity_stage_or_panic<F>(
     context: &str,
     run: F,
 ) where
-    F: FnMut() -> io::Result<()>,
+    F: FnOnce() -> io::Result<()>,
 {
     if let Err(error) = run_timed_parity_stage(report, label, run) {
         write_msl_parity_timing_report(report).expect("Failed to write MSL parity timing report");
@@ -500,7 +500,7 @@ fn run_simulation_parity_stages(
     let stage_start = Instant::now();
     let outcome = ensure_required_msl_parity_references(summary);
     let status = match &outcome {
-        MslParityStageOutcome::Ran | MslParityStageOutcome::MergedShardArtifacts => "pass",
+        MslParityStageOutcome::Ran(_) | MslParityStageOutcome::MergedShardArtifacts(_) => "pass",
         MslParityStageOutcome::DidNotRun(reason) => {
             println!(
                 "MSL {PARITY_UNMEASURED_HEADLINE} ({}); the comparator stage produced no bands",
@@ -514,17 +514,36 @@ fn run_simulation_parity_stages(
         status,
         stage_start.elapsed(),
     );
-    run_timed_parity_stage_or_panic(
-        report,
-        "package_trace_accuracy_report",
-        "Failed to write MSL package trace accuracy report",
-        || write_msl_package_trace_accuracy_report(summary).map(|_| ()),
-    );
+    run_package_trace_accuracy_stage(&outcome, report, |trace_comparison| {
+        write_msl_package_trace_accuracy_report(summary, trace_comparison)
+    });
     println!(
         "MSL parity stage: completed in {:.2}s",
         parity_start.elapsed().as_secs_f64()
     );
     outcome
+}
+
+fn run_package_trace_accuracy_stage<Write>(
+    outcome: &MslParityStageOutcome,
+    report: &mut MslParityTimingReport,
+    write: Write,
+) where
+    Write: FnOnce(&CurrentRunTraceComparison) -> io::Result<()>,
+{
+    if let Some(trace_comparison) = outcome.trace_comparison() {
+        run_timed_parity_stage_or_panic(
+            report,
+            "package_trace_accuracy_report",
+            "Failed to write MSL package trace accuracy report",
+            || write(trace_comparison),
+        );
+    } else {
+        println!(
+            "MSL package trace accuracy: not written; this invocation produced no trace-comparison receipt"
+        );
+        report.record_stage("package_trace_accuracy_report", "not_run", Duration::ZERO);
+    }
 }
 
 fn run_quality_snapshot_stage(
@@ -606,7 +625,6 @@ fn print_simulatable_compilation_rate(summary: &MslSummary) {
 }
 
 fn run_comparator_before_quality_gate<State, Compare, Gate>(
-    simulations_attempted: bool,
     state: &mut State,
     compare: Compare,
     gate: Gate,
@@ -614,11 +632,7 @@ fn run_comparator_before_quality_gate<State, Compare, Gate>(
     Compare: FnOnce(&mut State) -> MslParityStageOutcome,
     Gate: FnOnce(&MslParityStageOutcome, &mut State),
 {
-    let parity_stage = if simulations_attempted {
-        compare(state)
-    } else {
-        MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::NoSimulationsAttempted)
-    };
+    let parity_stage = compare(state);
     gate(&parity_stage, state);
 }
 
@@ -643,7 +657,6 @@ pub(super) fn print_final_stats(summary: &MslSummary) {
     // stage, so no gate can abort before every surviving trace is measured.
     assert_msl_run_is_measurable(summary);
     run_comparator_before_quality_gate(
-        summary.sim_attempted > 0,
         &mut timing_report,
         |report| {
             let stage = run_simulation_parity_stages(summary, report);
@@ -900,6 +913,10 @@ fn print_common_undefined_variables(summary: &MslSummary) {
 mod tests {
     use super::*;
 
+    fn trace_comparison_receipt() -> CurrentRunTraceComparison {
+        fixture_trace_comparison_receipt()
+    }
+
     fn timing_report_for_render_test() -> MslParityTimingReport {
         let mut report = MslParityTimingReport {
             version: MSL_PARITY_TIMING_VERSION,
@@ -1000,15 +1017,37 @@ mod tests {
     fn explicit_selected_target_failure_gate_runs_after_comparator() {
         let mut stages = Vec::new();
         run_comparator_before_quality_gate(
-            true,
             &mut stages,
             |stages| {
                 stages.push("comparator");
-                MslParityStageOutcome::Ran
+                MslParityStageOutcome::Ran(trace_comparison_receipt())
             },
             |_stage, stages| stages.push("selected_target_success_gate"),
         );
 
         assert_eq!(stages, ["comparator", "selected_target_success_gate"]);
+    }
+
+    #[test]
+    fn absent_current_run_receipt_cannot_invoke_trace_report_writer() {
+        let stage =
+            MslParityStageOutcome::DidNotRun(MslParityUnmeasuredReason::ComparatorStageFailed {
+                detail: "comparator did not execute".to_string(),
+            });
+        let mut report = timing_report_for_render_test();
+        let mut writer_called = false;
+
+        run_package_trace_accuracy_stage(&stage, &mut report, |_| {
+            writer_called = true;
+            Ok(())
+        });
+
+        assert!(!writer_called, "no receipt means no readable report input");
+        let recorded = report
+            .stages
+            .last()
+            .expect("the unrun report stage remains visible");
+        assert_eq!(recorded.label, "package_trace_accuracy_report");
+        assert_eq!(recorded.status, "not_run");
     }
 }

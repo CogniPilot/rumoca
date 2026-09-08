@@ -29,8 +29,7 @@ use messages::{MessageActionContext, push_message_action};
 use observation_refresh::derive_observation_refresh;
 
 use integrator_history::{
-    HistoryDependencySlot, apply_integrator_history_effects, collect_linear_op_dependencies,
-    history_dependency_slot, integrator_history_effect_for_range,
+    HistoryDependencySlot, apply_integrator_history_effects, integrator_history_effect_for_range,
     integrator_history_sensitive_slots,
 };
 use structured::lower_discrete_value_owners;
@@ -39,12 +38,12 @@ pub(super) fn lower_discrete_and_events<'dae>(
     view: dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    continuous: &solve::ContinuousSolveSystem,
+    continuous: &super::ContinuousSystemDraft,
 ) -> Result<
     (
         solve::DiscreteSolveSystem,
+        solve::RuntimeAssignmentProjection,
         solve::SolveEventPartition,
-        Vec<super::typed_functions::model_events::PendingEventTransaction<'dae>>,
     ),
     LowerError,
 > {
@@ -72,26 +71,11 @@ pub(super) fn lower_discrete_and_events<'dae>(
     }
     issue_clock_partition_order(view, layout, clocks, &mut discrete)?;
     let event_iteration_plan = build_event_iteration_plan(view, layout, &discrete)?;
-    let mut discrete = discrete.finish(
-        &roots.relation_memory_targets,
-        &layout.solve_layout.relation_memory_parameter_indices,
-        &clocks.partition.activation_parameter_indices,
-        continuous,
-        layout.solve_layout.state_scalar_count,
-    )?;
-    discrete.event_iteration_plan = event_iteration_plan;
-    let root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
-        &roots.programs,
-        &discrete.runtime_assignment_rhs,
-        &discrete.runtime_assignment_targets,
-        layout.solve_layout.state_scalar_count,
-        layout.solve_layout.solver_scalar_count(),
-    )?;
-    let events = solve::SolveEventPartition {
+    let mut events = solve::SolveEventPartition {
         root_conditions: roots.programs,
         root_relation_memory_targets: roots.relation_memory_targets,
         root_zero_domains: roots.zero_domains,
-        root_relation_refresh_roles,
+        root_relation_refresh_roles: Vec::new(),
         condition_memory_parameter_indices: layout.condition_memory.clone(),
         scheduled_time_events,
         dynamic_time_event_rhs,
@@ -101,7 +85,22 @@ pub(super) fn lower_discrete_and_events<'dae>(
         delays,
         ..solve::SolveEventPartition::default()
     };
-    Ok((discrete, events, event_transactions))
+    let event_transactions = super::call_scoped_actions::append_collected_actions(
+        view,
+        layout,
+        clocks,
+        &mut events,
+        event_transactions,
+    )?;
+    let (mut discrete, runtime_projection) = discrete.finish(
+        &events.root_relation_memory_targets,
+        &layout.solve_layout,
+        &clocks.partition.activation_parameter_indices,
+        continuous,
+    )?;
+    discrete.event_iteration_plan = event_iteration_plan;
+    discrete.event_transactions = event_transactions;
+    Ok((discrete, runtime_projection, events))
 }
 
 fn build_event_iteration_plan<'dae>(
@@ -252,11 +251,6 @@ fn lower_delays<'dae>(
 
 #[derive(Default)]
 struct DiscreteRows<'dae> {
-    runtime_rows: ScalarRows,
-    runtime_targets: Vec<solve::ScalarSlot>,
-    post_commit_rows: ScalarRows,
-    post_commit_targets: Vec<solve::ScalarSlot>,
-    root_refresh_candidates: Vec<RootRefreshCandidate>,
     rows: ScalarRows,
     targets: Vec<solve::ScalarSlot>,
     roles: Vec<solve::DiscreteRowRole>,
@@ -690,19 +684,6 @@ impl<'dae> DiscreteRows<'dae> {
         Ok(())
     }
 
-    fn push_root_refresh_candidate(
-        &mut self,
-        program: Vec<solve::LinearOp>,
-        span: Span,
-        target: solve::ScalarSlot,
-    ) {
-        self.root_refresh_candidates.push(RootRefreshCandidate {
-            program,
-            span,
-            target,
-        });
-    }
-
     /// Record one clock-owned producer for SOLVE-C57 same-tick order issuance.
     fn record_clocked_producer(
         &mut self,
@@ -741,92 +722,72 @@ impl<'dae> DiscreteRows<'dae> {
     }
 
     fn finish(
-        mut self,
+        self,
         root_relation_targets: &[Option<solve::ScalarSlot>],
-        relation_memory_parameter_indices: &[usize],
+        solve_layout: &solve::SolveLayout,
         clock_activation_parameter_indices: &[usize],
-        continuous: &solve::ContinuousSolveSystem,
-        state_scalar_count: usize,
-    ) -> Result<solve::DiscreteSolveSystem, LowerError> {
-        self.partition_root_relation_refresh(root_relation_targets);
-        let runtime_assignment_rhs = self.runtime_rows.into_scalar_block()?;
-        let runtime_assignment_roles = solve::derive_runtime_assignment_roles(
-            &runtime_assignment_rhs,
-            &self.runtime_targets,
-            relation_memory_parameter_indices,
-        )?;
-        let history_sensitive = integrator_history_sensitive_slots(
-            continuous,
-            &runtime_assignment_rhs,
-            &self.runtime_targets,
-            state_scalar_count,
-        );
-        let root_reachable = solve::derive_root_reachable_runtime_rows(
-            &runtime_assignment_rhs,
-            &self.runtime_targets,
+        continuous: &super::ContinuousSystemDraft,
+    ) -> Result<
+        (
+            solve::DiscreteSolveSystem,
+            solve::RuntimeAssignmentProjection,
+        ),
+        LowerError,
+    > {
+        let rhs = self.rows.into_scalar_block()?;
+        let runtime_projection = solve::derive_runtime_assignment_projection(
+            solve_layout,
+            &rhs,
+            &self.targets,
+            &self.roles,
+            &self.pre_modes,
+            &self.clock_owners,
             root_relation_targets,
-            &runtime_assignment_roles,
         )?;
-        let mut post_commit_assignment_runtime_rows = Vec::new();
-        for (runtime_row, (role, reachable)) in runtime_assignment_roles
-            .iter()
-            .zip(root_reachable)
-            .enumerate()
-        {
-            if *role != solve::RuntimeAssignmentRole::RelationFree || !reachable {
-                continue;
-            }
-            let output = self.post_commit_targets.len();
-            self.post_commit_rows.push(
-                runtime_assignment_rhs
-                    .program(runtime_row)
-                    .expect("runtime assignment certificate is row-aligned")
-                    .to_vec(),
-                runtime_assignment_rhs
-                    .program_span(runtime_row)
-                    .expect("runtime assignment provenance is checked"),
-                output,
-            );
-            self.post_commit_targets
-                .push(self.runtime_targets[runtime_row]);
-            post_commit_assignment_runtime_rows.push(runtime_row);
-        }
-        let post_commit_assignment_rhs = self.post_commit_rows.into_scalar_block()?;
+        let runtime_assignment_rhs = runtime_projection.rhs().clone();
+        let runtime_assignment_targets = runtime_projection.targets().to_vec();
+        let runtime_assignment_source_rows = runtime_projection.source_rows().to_vec();
+        let runtime_assignment_roles = runtime_projection.roles().to_vec();
+        let history_sensitive = integrator_history_sensitive_slots(
+            continuous.history_blocks(),
+            &runtime_assignment_rhs,
+            &runtime_assignment_targets,
+            solve_layout.state_scalar_count,
+        );
+        let post_commit_assignment_rhs = runtime_projection.post_commit_rhs().clone();
+        let post_commit_assignment_targets = runtime_projection.post_commit_targets().to_vec();
+        let post_commit_assignment_runtime_rows =
+            runtime_projection.post_commit_runtime_rows().to_vec();
         let clock_partition_intermediates =
             self.clock_partition_intermediates.into_scalar_block()?;
-        let rhs = self.rows.into_scalar_block()?;
-        // `SolveProblemShapeContractError` is a construction-time contract report,
-        // not a hot-path value: boxing it would add an allocation to every
-        // rejection to save moving 128 bytes on a path that then aborts.
-        #[allow(clippy::result_large_err)]
-        let guarded_assignments = self
-            .guarded_assignments
-            .into_iter()
-            .map(|pending| {
-                let effect = pending_integrator_history_effect(
-                    &pending.target_ranges,
-                    history_sensitive.as_ref(),
-                    state_scalar_count,
-                );
-                solve::GuardedAssignmentProgram::checked(
-                    pending.program,
-                    pending.provenance,
-                    pending.target_ranges,
-                    pending.role,
-                    pending.pre_mode,
-                    false,
-                    effect,
-                    pending.clock_owner,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut guarded_assignments = Vec::with_capacity(self.guarded_assignments.len());
+        for pending in self.guarded_assignments {
+            let effect = pending_integrator_history_effect(
+                &pending.target_ranges,
+                history_sensitive.as_ref(),
+                solve_layout.state_scalar_count,
+            );
+            guarded_assignments.push(solve::GuardedAssignmentProgram::checked(
+                solve::GuardedAssignmentProgramInput {
+                    program: pending.program,
+                    provenance: pending.provenance,
+                    target_ranges: pending.target_ranges,
+                    role: pending.role,
+                    pre_mode: pending.pre_mode,
+                    observation_refresh: false,
+                    integrator_history_effect: effect,
+                    clock_owner: pending.clock_owner,
+                },
+            )?);
+        }
         let mut discrete = solve::DiscreteSolveSystem {
             event_iteration_plan: solve::EventIterationPlan::default(),
+            runtime_assignment_source_rows,
             runtime_assignment_rhs,
-            runtime_assignment_targets: self.runtime_targets,
+            runtime_assignment_targets,
             runtime_assignment_roles,
             post_commit_assignment_rhs,
-            post_commit_assignment_targets: self.post_commit_targets,
+            post_commit_assignment_targets,
             post_commit_assignment_runtime_rows,
             update_targets: self.targets,
             row_roles: self.roles,
@@ -846,42 +807,14 @@ impl<'dae> DiscreteRows<'dae> {
             rhs,
         };
         if let Some(sensitive) = history_sensitive.as_ref() {
-            apply_integrator_history_effects(&mut discrete, sensitive, state_scalar_count);
+            apply_integrator_history_effects(
+                &mut discrete,
+                sensitive,
+                solve_layout.state_scalar_count,
+            );
         }
         derive_observation_refresh(&mut discrete, clock_activation_parameter_indices)?;
-        Ok(discrete)
-    }
-
-    /// Derive the runtime refresh plan for combinational owners fed by root
-    /// relation memory.
-    ///
-    /// The source event rows remain authoritative and retain their original
-    /// order. The event-iteration plan admits every unconditional, unclocked
-    /// `FollowCurrent` owner in the transitive scalar dependency closure of an
-    /// aligned root-memory target. The post-commit plan is constructed from the
-    /// same typed candidates. The checked post-commit projection is derived
-    /// later from the finalized runtime plan and its certified relation roles.
-    /// Dependency forms that the compact proof cannot read remain event-only.
-    fn partition_root_relation_refresh(
-        &mut self,
-        root_relation_targets: &[Option<solve::ScalarSlot>],
-    ) {
-        let candidates = std::mem::take(&mut self.root_refresh_candidates);
-        let root_reachable = root_relation_targets
-            .iter()
-            .flatten()
-            .copied()
-            .filter_map(history_dependency_slot)
-            .collect::<BTreeSet<_>>();
-        let selected = select_root_refresh_candidates(&candidates, root_reachable);
-        for (candidate, selected) in candidates.into_iter().zip(selected) {
-            if selected {
-                let output = self.runtime_targets.len();
-                self.runtime_rows
-                    .push(candidate.program, candidate.span, output);
-                self.runtime_targets.push(candidate.target);
-            }
-        }
+        Ok((discrete, runtime_projection))
     }
 }
 
@@ -912,42 +845,6 @@ fn offset_runtime_slot(
             span,
         )),
     }
-}
-
-fn select_root_refresh_candidates(
-    candidates: &[RootRefreshCandidate],
-    mut reachable: BTreeSet<HistoryDependencySlot>,
-) -> Vec<bool> {
-    let mut selected = vec![false; candidates.len()];
-    loop {
-        let mut progress = false;
-        for (index, candidate) in candidates.iter().enumerate() {
-            if selected[index] {
-                continue;
-            }
-            let mut dependencies = BTreeSet::new();
-            if collect_linear_op_dependencies(&candidate.program, &mut dependencies).is_none()
-                || dependencies.is_disjoint(&reachable)
-            {
-                continue;
-            }
-            let Some(target) = history_dependency_slot(candidate.target) else {
-                continue;
-            };
-            selected[index] = true;
-            progress |= reachable.insert(target);
-        }
-        if !progress {
-            break;
-        }
-    }
-    selected
-}
-
-struct RootRefreshCandidate {
-    program: Vec<solve::LinearOp>,
-    span: Span,
-    target: solve::ScalarSlot,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2005,11 +1902,11 @@ mod integrator_history_effect_tests {
 
     fn derive_integrator_history_effects(
         discrete: &mut solve::DiscreteSolveSystem,
-        continuous: &solve::ContinuousSolveSystem,
+        continuous_blocks: [&solve::ComputeBlock; 4],
         state_scalar_count: usize,
     ) {
         let Some(sensitive) = integrator_history_sensitive_slots(
-            continuous,
+            continuous_blocks,
             &discrete.runtime_assignment_rhs,
             &discrete.runtime_assignment_targets,
             state_scalar_count,
@@ -2021,17 +1918,19 @@ mod integrator_history_effect_tests {
 
     #[test]
     fn direct_continuous_dependencies_and_state_targets_restart() {
-        let continuous = solve::ContinuousSolveSystem {
-            derivative_rhs: compute_block(vec![load_program(solve::scalar_slot_p(0))]),
-            ..Default::default()
-        };
+        let derivative_rhs = compute_block(vec![load_program(solve::scalar_slot_p(0))]);
+        let empty = solve::ComputeBlock::default();
         let mut discrete = discrete_with_targets(vec![
             solve::scalar_slot_p(0),
             solve::scalar_slot_p(1),
             solve::scalar_slot_y(0),
         ]);
 
-        derive_integrator_history_effects(&mut discrete, &continuous, 1);
+        derive_integrator_history_effects(
+            &mut discrete,
+            [&empty, &empty, &empty, &derivative_rhs],
+            1,
+        );
 
         assert_eq!(
             discrete.integrator_history_effects,
@@ -2045,15 +1944,17 @@ mod integrator_history_effect_tests {
 
     #[test]
     fn runtime_assignment_dependencies_propagate_transitively() {
-        let continuous = solve::ContinuousSolveSystem {
-            derivative_rhs: compute_block(vec![load_program(solve::scalar_slot_p(0))]),
-            ..Default::default()
-        };
+        let derivative_rhs = compute_block(vec![load_program(solve::scalar_slot_p(0))]);
+        let empty = solve::ComputeBlock::default();
         let mut discrete = discrete_with_targets(vec![solve::scalar_slot_p(1)]);
         discrete.runtime_assignment_rhs = scalar_block(vec![load_program(solve::scalar_slot_p(1))]);
         discrete.runtime_assignment_targets = vec![solve::scalar_slot_p(0)];
 
-        derive_integrator_history_effects(&mut discrete, &continuous, 0);
+        derive_integrator_history_effects(
+            &mut discrete,
+            [&empty, &empty, &empty, &derivative_rhs],
+            0,
+        );
 
         assert_eq!(
             discrete.integrator_history_effects,
@@ -2063,7 +1964,7 @@ mod integrator_history_effect_tests {
 
     #[test]
     fn disconnected_runtime_assignment_cycles_fail_closed() {
-        let continuous = solve::ContinuousSolveSystem::default();
+        let empty = solve::ComputeBlock::default();
         let mut discrete =
             discrete_with_targets(vec![solve::scalar_slot_p(2), solve::scalar_slot_p(4)]);
         discrete.runtime_assignment_rhs = scalar_block(vec![
@@ -2073,7 +1974,7 @@ mod integrator_history_effect_tests {
         discrete.runtime_assignment_targets =
             vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)];
 
-        derive_integrator_history_effects(&mut discrete, &continuous, 0);
+        derive_integrator_history_effects(&mut discrete, [&empty, &empty, &empty, &empty], 0);
 
         assert_eq!(
             discrete.integrator_history_effects,

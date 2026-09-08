@@ -77,6 +77,7 @@ manifest facts. Display names and raw TOML formatting never enter identity.
 | Source-language compatibility deviations MUST be explicit and opt-in | config/tooling | Users choose non-standard Modelica behavior |
 | Source-language compatibility docs MUST name the requiring library/model and default | deviation docs | Makes exceptions reviewable |
 | Validators/checkers MUST NOT be weakened to pass models. Deletion requires unrepresentability by construction and a mutation witness preserving refusal | validation layers | Hides producer bugs |
+| Verification ease is a first-class compiler-design benefit and MAY justify refactoring. Changes MUST preserve required source semantics and construction-safety guarantees. Adversarial review MUST weigh verification gains against maintainability, representation, and performance costs using preservation evidence and measurements, or an explicit mechanism-backed explanation of why cost is unaffected. If costs outweigh verification gains, the review MUST record `FIX`. Successful extraction alone is not preservation evidence | verification-driven development | Balance proof tractability with compiler safety, maintainability, and efficiency |
 | Hand-written compiler code MUST NOT suppress the Rust `dead_code` lint; unreachable items MUST be deleted and reintroduced only with their first real consumer. Generated parser output with explicit generator provenance is the sole carve-out | compiler crates and architecture gate | A lint allowance can preserve abandoned APIs, speculative helpers, and marker methods outside the current construction chain |
 | Temporary debug probes MUST be removed before finalization | all changes | Keeps tree clean |
 
@@ -166,6 +167,42 @@ embedded-C claims.
 | Broad claims require every scoped row `IMPLEMENTED`, oracle-correct, authenticated, and match-or-beat | reviewer | Bound claims |
 | Schema 9 is the one-shot authority to delete retired ECM-001 and replace it with pending ECM-003; schema 8 has no compatibility reader or fallback | manifest/harness | Retired products cannot remain evidence |
 | ECM-003 MUST expose no baseline, delta, outcome, or artifact history until its shipped eFMU Production C and oracle receipt are re-authenticated from raw bytes | manifest/harness | Prior-row receipts cannot authorize replacement bytes |
+
+### 6c. Working-Model Proof Admission
+
+| Rule | Owner/Where | Brief Justification |
+|---|---|---|
+| A model that compiles, simulates, or reaches strict-high trace parity is a proof candidate, not a proved compiler path | reports/campaign planning | Matching output can be vacuous or accidental |
+| A proof candidate MUST remain a blocking proof obligation until one checked record accounts for its source-semantic obligations, their intended IR owners, its production-path construction receipt, and every emitted trace coordinate | proof-cohort harness | A green aggregate cannot explain why a model works |
+| Source-semantic obligations MUST be derived from compiler-owned typed source facts; observed IR obligations MUST come from construction-issued identities or receipts, never model-name branches, display-name matching, span coincidence, or producer-authored success booleans | compiler/proof harness | Evidence must identify the semantic object it claims to cover |
+| An obligation absent from a model is recorded as not exercised and MUST NOT count as proof of that capability | proof-cohort reports | Scalar models cannot certify tensor lowering |
+| Every trace channel MUST be partitioned deterministically as compared, shared-but-unmeasured, candidate-only, or reference-only; every non-compared channel requires an explicit typed semantic relation or boundary reason and MUST NOT disappear by filtering or set intersection | trace comparator/proof harness | Omitted observables can hide incorrect or missing results |
+| A Rumoca-only coordinate MUST carry a closed compiler-issued origin reason from the phase that created it; an absent reason is unrepresentable, not an optional field attached by the proof harness | IR/trace construction | The compiler owns its generated coordinates and must preserve why they exist |
+| A reference-only coordinate blocks admission unless an MLS-grounded review proves it is not a required observable; model-name or channel-name exemption lists are prohibited | proof-cohort review | An external compiler's internal coordinates cannot be classified from spelling |
+| A proof admission MUST reject an absent receipt, an empty exercised-obligation set, an unexplained unmatched coordinate, an alternate or repeated semantic lowering, a fallback or repair path, a stale artifact identity, and any unsupported construct not closed by an early typed refusal | proof-cohort harness | Admission is fail-closed and non-vacuous |
+| Proof-cohort membership is explicit and reviewed; an incidental new pass remains a candidate and MUST NOT be admitted automatically | checked-in proof manifest | Breadth changes cannot silently redefine evidence |
+| Each proof-cohort record MUST bind the canonical source and digest, the declared endpoint cone and terminal dispositions, admission status, last compliance-review instant, reviewed revision and worktree state, the normalized compiler-production footprint and its digest, and durable review and evidence references; the checker recomputes every content digest and rejects an absent or unequal binding | checked-in proof manifest | A timestamp, model name, and green test cannot identify the compiler bytes that were reviewed |
+| A golden-coverage cone MUST be declared before measurement; coverage is discovery and scope evidence that may falsify the cone but MUST NOT generate, widen, or prove it | proof-cohort harness | A cone inferred from its tests is tautological |
+| Golden coverage is the union of instrumentable first-party production source lines executed by exact, isolated scenarios for admitted models divided by the complete instrumentable first-party production-line denominator; candidate, rejected, skipped, or failed scenarios contribute zero to that union | coverage harness | The metric names reviewed compiler code, not incidental green code |
+| Golden-coverage reports MUST publish each model's covered-line numerator, the cumulative union, marginal contributions, the denominator count and delta, and exact source digests; overlap counts once and denominator shrinkage remains visible | coverage harness | Coverage growth and code deletion are different events |
+| Scenario execution MUST run only the manifest-declared exact test identities; whole-crate or substring-filtered tests MUST NOT contribute to a model footprint | coverage harness | Unrelated tests would silently inflate the reviewed path |
+| The checker MUST reject an instrumentable semantic owner executed outside the declared cone and a declared instrumentable owner not executed; declarative, compile-time-only, and generated-artifact owners require explicit non-runtime dispositions and separate evidence | proof-cohort checker | Bidirectional closure rejects both hidden execution and vacuous declarations |
+| A generic or macro-attributed source line proves only the exact instantiation or expansion identified by the coverage tool; when a stable discriminator is unavailable, that line MUST NOT be admitted as golden-covered semantic code | coverage harness | One invocation must not launder every generated implementation |
+| Compiler source coverage proves that emission ran, not that emitted artifacts executed; every executable emitted endpoint requires a separately named generated-artifact coverage and behavior rung | proof-cohort harness | Green emitter lines cannot certify dead or bypassed generated code |
+| Campaign breadth MUST remain frozen while a working-model candidate has an unresolved proof obligation, unless the maintainer explicitly records a superseding campaign decision | campaign planning | Depth-first proof precedes breadth |
+
+The proof record explains *why* each admitted model works. It is not another
+green Boolean. At minimum it binds the exact source and compiler artifacts,
+the sole phase-product chain, the exercised and unexercised obligations, the
+checked source-to-IR receipt, complete channel accounting, strict-high trace
+evidence when the model is simulatable, and the independent checker result.
+The checker consumes evidence; it does not trust a producer's claim that the
+evidence is complete.
+
+Golden coverage is ordinary source-line coverage over those admitted model
+scenarios, not a language-feature score. For example, a model that is correctly
+refused by the eFMI capability gate contributes the executed gate and diagnostic
+lines, but contributes no coverage for the GALEC projection it never enters.
 
 ## References
 

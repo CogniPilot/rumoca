@@ -8,6 +8,9 @@ use super::program::{
     TypedProgram, TypedProgramBuilder,
 };
 use super::types::{SolveArithmeticProfile, SolveScalarType, SolveValueType};
+use crate::deserialize_required_option;
+#[cfg(test)]
+use rumoca_core::RealMatrixMultiplySemantics;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SolvePureCallOwnerId(u32);
@@ -43,10 +46,37 @@ pub enum SolvePureCallOutputKind {
     AssertionPredicate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SolvePureCallOutput {
     value_type: SolveValueType,
     kind: SolvePureCallOutputKind,
+}
+
+impl<'de> Deserialize<'de> for SolvePureCallOutput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            value_type: SolveValueType,
+            kind: SolvePureCallOutputKind,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        match wire.kind {
+            SolvePureCallOutputKind::Result => Ok(Self::result(wire.value_type)),
+            SolvePureCallOutputKind::AssertionPredicate
+                if wire.value_type == SolveValueType::scalar(SolveScalarType::Boolean) =>
+            {
+                Ok(Self::assertion_predicate())
+            }
+            SolvePureCallOutputKind::AssertionPredicate => Err(serde::de::Error::custom(
+                "a pure-call assertion predicate must have scalar Boolean type",
+            )),
+        }
+    }
 }
 
 impl SolvePureCallOutput {
@@ -115,6 +145,7 @@ pub struct SolvePureCallOwner {
 /// Real aggregate inputs/results are represented by adjacent primal and
 /// tangent typed values. Integer and Boolean values remain primal-only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SolvePureCallDirectionalSite {
     owner: SolvePureCallOwnerId,
     inputs: Box<[SolveValueType]>,
@@ -129,10 +160,12 @@ pub struct SolvePureCallDirectionalSite {
 /// its value type. Wire replay of the enclosing model additionally proves that
 /// this interface exactly matches `owner` in its sole pure-call table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SolvePureCallSite {
     owner: SolvePureCallOwnerId,
     inputs: Box<[SolveValueType]>,
     outputs: Box<[SolvePureCallOutput]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     directional: Option<Box<SolvePureCallDirectionalSite>>,
 }
 
@@ -294,19 +327,15 @@ pub struct SolvePureCallTable {
     owners: Box<[SolvePureCallOwner]>,
 }
 
-impl Default for SolvePureCallTable {
-    fn default() -> Self {
+impl SolvePureCallTable {
+    #[must_use]
+    pub fn empty(arithmetic: SolveArithmeticProfile) -> Self {
         Self {
-            arithmetic: SolveArithmeticProfile::construct(
-                super::types::SolveRealFormat::Binary64,
-                super::types::SolveIntegerDomain::FULL,
-            ),
+            arithmetic,
             owners: Box::new([]),
         }
     }
-}
 
-impl SolvePureCallTable {
     pub fn construct(
         arithmetic: SolveArithmeticProfile,
         build: impl FnOnce(&mut SolvePureCallTableBuilder) -> Result<(), SolveProgramConstructionError>,
@@ -562,12 +591,14 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             arithmetic: SolveArithmeticProfile,
             owners: Vec<OwnerWire>,
         }
 
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct OwnerWire {
             id: SolvePureCallOwnerId,
             identity: SolvePureCallIdentity,
@@ -597,6 +628,11 @@ impl<'de> Deserialize<'de> for SolvePureCallTable {
                 owner.provenance,
             )
             .map_err(serde::de::Error::custom)?;
+            if owner.body.arithmetic != wire.arithmetic {
+                return Err(serde::de::Error::custom(
+                    SolveProgramConstructionError::WireMismatch,
+                ));
+            }
             let interfaces = owners
                 .iter()
                 .map(SolvePureCallOwner::interface)
@@ -657,6 +693,7 @@ mod tests {
         SolveArithmeticProfile::construct(
             SolveRealFormat::Binary64,
             SolveIntegerDomain::construct(i64::MIN, i64::MAX).unwrap(),
+            RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
         )
     }
 
@@ -787,6 +824,96 @@ mod tests {
         let replayed: SolvePureCallTable =
             serde_json::from_str(&json).expect("call table wire replays with issued interfaces");
         assert_eq!(replayed, table);
+    }
+
+    #[test]
+    fn call_table_wire_rejects_body_arithmetic_transplant() {
+        let vector = vector_type();
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            add_passthrough_owner(table, identity(1), &vector, span(0))?;
+            Ok(())
+        })
+        .unwrap();
+        let mut wire = serde_json::to_value(&table).unwrap();
+        wire["owners"][0]["body"]["arithmetic"]["real_matrix_multiply"] =
+            serde_json::json!("separate_mul_add_ascending_positive_zero");
+        let error = serde_json::from_value::<SolvePureCallTable>(wire)
+            .expect_err("an owner body cannot carry a foreign arithmetic root");
+        assert!(
+            error
+                .to_string()
+                .contains("typed program wire does not replay through checked construction"),
+            "unexpected transplant rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn call_table_wire_rejects_unknown_root_and_owner_fields() {
+        let vector = vector_type();
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            add_passthrough_owner(table, identity(1), &vector, span(0))?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut root_wire = serde_json::to_value(&table).unwrap();
+        root_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolvePureCallTable>(root_wire).is_err());
+
+        let mut owner_wire = serde_json::to_value(&table).unwrap();
+        owner_wire["owners"][0]["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolvePureCallTable>(owner_wire).is_err());
+    }
+
+    #[test]
+    fn call_interface_wire_rejects_forged_assertion_type_and_unknown_fields() {
+        let forged_assertion = serde_json::json!({
+            "value_type": vector_type(),
+            "kind": "assertion_predicate"
+        });
+        let error = serde_json::from_value::<SolvePureCallOutput>(forged_assertion)
+            .expect_err("an assertion result cannot claim an aggregate Real type");
+        assert!(error.to_string().contains("scalar Boolean"));
+
+        let vector = vector_type();
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            add_passthrough_owner(table, identity(1), &vector, span(0))?;
+            Ok(())
+        })
+        .unwrap();
+        let site = table.owners()[0].call_site();
+
+        let mut site_wire = serde_json::to_value(&site).unwrap();
+        site_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolvePureCallSite>(site_wire).is_err());
+
+        let mut directional_wire = serde_json::to_value(
+            site.directional()
+                .expect("the differentiable passthrough owner has a directional site"),
+        )
+        .unwrap();
+        directional_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolvePureCallDirectionalSite>(directional_wire).is_err());
+    }
+
+    #[test]
+    fn pure_call_site_requires_the_directional_key_even_when_null() {
+        let vector = vector_type();
+        let table = SolvePureCallTable::construct(profile(), |table| {
+            add_passthrough_owner(table, identity(1), &vector, span(0))?;
+            Ok(())
+        })
+        .unwrap();
+        let mut wire = serde_json::to_value(table.owners()[0].call_site()).unwrap();
+        assert!(
+            wire.as_object_mut()
+                .expect("call site wire is an object")
+                .remove("directional")
+                .is_some()
+        );
+        let error = serde_json::from_value::<SolvePureCallSite>(wire)
+            .expect_err("the current call-site directional key is required");
+        assert!(error.to_string().contains("missing field `directional`"));
     }
 
     #[test]

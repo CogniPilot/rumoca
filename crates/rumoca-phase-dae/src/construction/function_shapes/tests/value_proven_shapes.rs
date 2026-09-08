@@ -11,7 +11,10 @@
 //! rather than resolved from a class tree, so the `63_6xx` band names the
 //! declarations this module writes, one value per declaration.
 
-use rumoca_core::{EffectiveType, FunctionParam, Literal, Reference, SourceMap, Subscript, TypeId};
+use rumoca_core::{
+    ComponentRefPart, ComponentReference, DefId, EffectiveType, FunctionParam, InstanceId, Literal,
+    Reference, SourceMap, Subscript, TypeId,
+};
 
 use super::*;
 
@@ -30,9 +33,44 @@ fn integer_literal(value: i64, span: Span) -> Expression {
     }
 }
 
+fn declaration_id(name: &str) -> DefId {
+    let hash = name.bytes().fold(63_600_u32, |hash, byte| {
+        hash.wrapping_mul(16_777_619) ^ u32::from(byte)
+    });
+    DefId::new(hash.max(1))
+}
+
+fn instance_id(name: &str) -> InstanceId {
+    InstanceId::new(declaration_id(name).index())
+}
+
+fn component_reference(name: &str, span: Span) -> ComponentReference {
+    ComponentReference::construct(
+        false,
+        span,
+        vec![ComponentRefPart {
+            ident: name.to_string(),
+            span,
+            subs: Vec::new(),
+            def_id: declaration_id(name),
+        }],
+    )
+    .expect("fixture reference has exact declaration identity")
+}
+
 fn var_ref(name: &str, span: Span) -> Expression {
     Expression::VarRef {
-        name: Reference::new(name),
+        name: Reference::from_component_reference(component_reference(name, span)),
+        subscripts: Vec::new(),
+        span,
+    }
+}
+
+fn model_var_ref(name: &str, span: Span) -> Expression {
+    let reference = Reference::from_component_reference(component_reference(name, span))
+        .with_instance_id(instance_id(name));
+    Expression::VarRef {
+        name: reference,
         subscripts: Vec::new(),
         span,
     }
@@ -46,7 +84,7 @@ fn param(
     span: Span,
 ) -> FunctionParam {
     let value_type = EffectiveType::new(root, root, dimensions).expect("fixture type is resolved");
-    FunctionParam::new(name, type_name, value_type, span)
+    FunctionParam::new(name, type_name, value_type, span).with_def_id(declaration_id(name))
 }
 
 /// `function f input Integer n; output Real y[n]; end f;`
@@ -198,12 +236,40 @@ fn call(argument: Expression, span: Span) -> flat::Equation {
 fn scalar_variable(name: &str, variability: Variability, span: Span) -> flat::Variable {
     let mut variable = flat::Variable::empty_with_span(span);
     variable.name = VarName::new(name);
+    variable.instance_id = instance_id(name);
+    variable.component_ref = Some(component_reference(name, span));
     variable.variability = variability;
     variable
 }
 
+fn settled_model_context(model: &flat::Model, name: &str, value: EvalValue) -> EvalContext {
+    let variable = &model.variables[&VarName::new(name)];
+    let reference = variable
+        .component_ref
+        .as_ref()
+        .expect("fixture variable has exact structured identity");
+    let identity = rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+        instance_id: variable.instance_id,
+        root_def_id: reference.root_def_id(),
+    };
+    let inventory = rumoca_eval_flat::constant::ResolvedIdentityInventory::try_from_bindings(
+        vec![rumoca_eval_flat::constant::ResolvedValueBinding { identity, value }],
+        vec![rumoca_eval_flat::constant::ResolvedShapeBinding {
+            identity,
+            dimensions: variable.dims.clone(),
+        }],
+    )
+    .expect("fixture identity inventory is unique");
+    EvalContext::resolved(
+        1,
+        0,
+        inventory,
+        rumoca_eval_flat::constant::ResolvedEnumCatalog::empty(),
+    )
+}
+
 fn analyze(model: &flat::Model) -> Result<FunctionShapeAnalysis, ToDaeError> {
-    FunctionShapeAnalysis::analyze(model, &EvalContext::new())
+    FunctionShapeAnalysis::analyze(model, &EvalContext::resolved_empty())
 }
 
 /// ACCEPTED: an Integer literal argument proves the result extent (MLS §12.2).
@@ -223,7 +289,7 @@ fn integer_literal_argument_proves_a_value_dependent_result_extent() {
     assert_eq!(certificate.results, vec![vec![3]]);
     assert_eq!(
         certificate.key.input_values,
-        vec![Some(ProvenValue::Integer(3))]
+        vec![Some(ProvenValue::Settled(ProvenSettledValue::Integer(3)))]
     );
 }
 
@@ -420,7 +486,7 @@ fn outer_product_preserves_unequal_vector_extents_in_source_order() {
     let mut sources = SourceMap::new();
     let source = sources.add("outer_product_shape.mo", "outerProduct(x,y)");
     let span = Span::from_offsets(source, 0, 17);
-    let mut values = ShapeEnvironment::with_capacity(2);
+    let mut values = ShapeEnvironment::with_capacity(2, Arc::new(RecordArrayFieldPlans::default()));
     values.insert(VarName::new("x"), vec![2]);
     values.insert(VarName::new("y"), vec![5]);
     let expression = Expression::BuiltinCall {
@@ -439,7 +505,7 @@ fn matrix_builtins_reject_invalid_vector_operands() {
     let mut sources = SourceMap::new();
     let source = sources.add("matrix_operand.mo", "diagonal(A); outerProduct(A,v)");
     let span = Span::from_offsets(source, 0, 32);
-    let mut values = ShapeEnvironment::with_capacity(2);
+    let mut values = ShapeEnvironment::with_capacity(2, Arc::new(RecordArrayFieldPlans::default()));
     values.insert(VarName::new("A"), vec![2, 2]);
     values.insert(VarName::new("v"), vec![3]);
     for expression in [
@@ -483,7 +549,7 @@ fn matrix_builtins_reject_wrong_arity() {
     let mut sources = SourceMap::new();
     let source = sources.add("builtin_arity.mo", "diagonal(); outerProduct(v)");
     let span = Span::from_offsets(source, 0, 27);
-    let values = ShapeEnvironment::with_capacity(0);
+    let values = ShapeEnvironment::with_capacity(0, Arc::new(RecordArrayFieldPlans::default()));
     let cases = [
         (
             Expression::BuiltinCall {
@@ -557,10 +623,9 @@ fn settled_model_parameter_proves_a_value_dependent_result_extent() {
     let mut declaration = scalar_variable("m", Variability::Parameter(Default::default()), span);
     declaration.binding = Some(integer_literal(3, span));
     model.variables.insert(VarName::new("m"), declaration);
-    model.add_equation(call(var_ref("m", span), span));
+    model.add_equation(call(model_var_ref("m", span), span));
 
-    let mut constants = EvalContext::new();
-    constants.add_parameter("m", EvalValue::Integer(3));
+    let constants = settled_model_context(&model, "m", EvalValue::Integer(3));
     let analysis = FunctionShapeAnalysis::analyze(&model, &constants)
         .expect("a settled parameter is an MLS §4.5 evaluable value");
     let [certificate] = analysis.certificates() else {
@@ -608,7 +673,7 @@ fn unsettled_argument_keeps_the_named_value_proof_rejection() {
         VarName::new("u"),
         scalar_variable("u", Variability::Continuous(Default::default()), span),
     );
-    model.add_equation(call(var_ref("u", span), span));
+    model.add_equation(call(model_var_ref("u", span), span));
 
     let Err(error) = analyze(&model) else {
         panic!("an extent over a simulation-time value must not be accepted");
@@ -646,10 +711,9 @@ fn a_shadowing_formal_does_not_inherit_the_model_value() {
         VarName::new("u"),
         scalar_variable("u", Variability::Continuous(Default::default()), span),
     );
-    model.add_equation(call(var_ref("u", span), span));
+    model.add_equation(call(model_var_ref("u", span), span));
 
-    let mut constants = EvalContext::new();
-    constants.add_parameter("n", EvalValue::Integer(7));
+    let constants = settled_model_context(&model, "n", EvalValue::Integer(7));
     let Err(error) = FunctionShapeAnalysis::analyze(&model, &constants) else {
         panic!("the formal `n` must not fold to the model coordinate `n`");
     };
@@ -667,8 +731,14 @@ fn a_shadowing_formal_does_not_inherit_the_model_value() {
 #[test]
 fn a_real_value_does_not_name_an_extent() {
     assert_eq!(ProvenValue::from_settled(&EvalValue::Real(3.0)), None);
-    assert_eq!(ProvenValue::Boolean(true).extent(), None);
-    assert_eq!(ProvenValue::Integer(3).extent(), Some(3));
+    assert_eq!(
+        ProvenValue::Settled(ProvenSettledValue::Boolean(true)).extent(),
+        None
+    );
+    assert_eq!(
+        ProvenValue::Settled(ProvenSettledValue::Integer(3)).extent(),
+        Some(3)
+    );
 }
 
 /// `function g input Real x[:]; output Real y[2]; protected Integer m = size(x, 1);
@@ -704,7 +774,7 @@ fn simple_target(name: &str, span: Span) -> rumoca_core::ComponentReference {
             ident: name.to_string(),
             span,
             subs: Vec::new(),
-            def_id: rumoca_core::DefId::new(1),
+            def_id: declaration_id(name),
         }],
     )
     .expect("fixture assignment target is well formed")

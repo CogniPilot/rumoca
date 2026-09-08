@@ -7,7 +7,8 @@ fn parsed_tree(source: &str) -> ClassTree {
     let parsed = parse(source);
     resolve(parsed)
         .expect("resolve should succeed")
-        .into_inner()
+        .inner()
+        .clone()
 }
 
 fn overlay_for(tree: &ClassTree, model_name: &str, component_names: &[&str]) -> InstanceOverlay {
@@ -45,7 +46,7 @@ fn unselected_parameter_if_branch_is_not_bounds_checked() {
     let tree = parsed_tree(source);
     let mut overlay = overlay_for(&tree, "Test", &["n", "x", "y"]);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("a branch removed at translation time carries no subscript obligation");
 }
 
@@ -68,7 +69,7 @@ fn selected_parameter_if_branch_is_still_bounds_checked() {
     let tree = parsed_tree(source);
     let mut overlay = overlay_for(&tree, "Test", &["n", "x", "y"]);
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("the selected branch is part of the model and keeps its bounds obligation");
     assert!(
         diagnostics
@@ -98,7 +99,7 @@ fn simulation_time_if_condition_keeps_every_branch_checked() {
     let tree = parsed_tree(source);
     let mut overlay = overlay_for(&tree, "Test", &["level", "x", "y"]);
 
-    let diagnostics = typecheck_instanced(&tree, &mut overlay, "Test")
+    let diagnostics = typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect_err("a condition that varies at simulation time keeps both branches in the model");
     assert!(
         diagnostics

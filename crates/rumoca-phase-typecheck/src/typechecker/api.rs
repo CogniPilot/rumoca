@@ -64,23 +64,34 @@ pub(crate) fn collect_structural_refs_from_equations(
     );
 }
 
-/// Type check a ResolvedTree.
+/// Type check a ResolvedTree as a standalone diagnostics query.
 ///
-/// This is the main entry point for type checking.
-/// Takes a `ResolvedTree` and returns a `TypedTree` with all TypeIds populated.
-pub fn typecheck(resolved: ResolvedTree) -> Result<TypedTree, Diagnostics> {
-    let (mut tree, _semantic_catalogs) = resolved.into_parts();
-    let mut checker = TypeChecker::new();
-    checker.check(&mut tree);
+/// Returns the checked `ClassTree` with all TypeIds populated. This is data
+/// plus diagnostics, not a proof: nothing downstream accepts this output as
+/// phase evidence, and the production pipeline mints its proof only through
+/// [`typecheck_instanced_tree`].
+///
+/// The mutable phase context is deliberately not part of the public API, so a
+/// caller cannot reuse tree-local identities or diagnostics across roots.
+///
+/// ```compile_fail
+/// use rumoca_phase_typecheck::TypeChecker;
+/// ```
+pub fn typecheck(resolved: ResolvedTree) -> Result<ClassTree, Diagnostics> {
+    // This standalone diagnostics query returns data, not a phase proof. It
+    // copies the borrowed Resolve view explicitly so the proof carrier itself
+    // exposes no owned extraction route.
+    let mut tree = resolved.inner().clone();
+    let diagnostics = TypeChecker::new().check(&mut tree);
 
-    if checker.has_errors() {
-        Err(checker.take_diagnostics())
+    if diagnostics.has_errors() {
+        Err(diagnostics)
     } else {
-        Ok(TypedTree::new(tree))
+        Ok(tree)
     }
 }
 
-/// Type check an instanced model (after instantiation).
+/// Type check an instanced model (after instantiation) and mint its proof.
 ///
 /// This function performs type checking on an already-instantiated model.
 /// It runs after instantiation, which means:
@@ -91,28 +102,28 @@ pub fn typecheck(resolved: ResolvedTree) -> Result<TypedTree, Diagnostics> {
 /// Running type checking after instantiation ensures it has access to the
 /// complete modification context for evaluating dimension expressions (MLS §10.1).
 ///
+/// This is the sole mint of [`crate::TypedInstancedTree`]. The overlay is
+/// consumed by value: type checking annotates its own working copy and, on
+/// zero errors, seals it inside the immutable proof. No mutable predecessor
+/// alias crosses this boundary in either direction; failure exposes neither
+/// a partial overlay nor a proof.
+///
 /// # Arguments
 ///
-/// * `tree` - Reference to the class tree (shared, not cloned)
-/// * `overlay` - The instance overlay with modification values
+/// * `resolved` - The Resolve-issued proof carrying the class tree
+/// * `overlay` - The instance overlay with modification values, by value
+/// * `model_name` - The qualified model name being compiled
 ///
 /// # Returns
 ///
-/// Ok(()) if type checking succeeds, or diagnostics on error.
-/// The overlay is modified in place with evaluated dimensions.
-pub fn typecheck_instanced(
+/// The minted [`crate::TypedInstancedTree`] on success, or diagnostics on
+/// error.
+pub fn typecheck_instanced_tree(
     resolved: &ResolvedTree,
-    overlay: &mut InstanceOverlay,
+    overlay: InstanceOverlay,
     model_name: &str,
-) -> Result<(), Diagnostics> {
-    let mut checker = TypeChecker::new();
-    checker.check_instanced(resolved, overlay, model_name);
-
-    if checker.has_errors() {
-        Err(checker.take_diagnostics())
-    } else {
-        Ok(())
-    }
+) -> Result<crate::TypedInstancedTree, Diagnostics> {
+    TypeChecker::new().check_instanced(resolved, overlay, model_name)
 }
 
 /// Unit-fixture entry point for deliberately hand-built or mutated ClassTree
@@ -124,19 +135,10 @@ pub(crate) fn typecheck_instanced_test_projection(
     overlay: &mut InstanceOverlay,
     model_name: &str,
 ) -> Result<(), Diagnostics> {
-    if matches!(
-        overlay.finalized_overconstrained(),
-        Err(rumoca_ir_ast::EqualityConstraintOccurrenceError::OwnerCatalogNotFinalized)
-    ) {
-        overlay
-            .finalize_overconstrained_record_owners()
-            .expect("test fixture must admit an exact overconstrained owner catalog");
-    }
-    let mut checker = TypeChecker::new();
-    checker.check_instanced_test_projection(tree, overlay, model_name);
+    let diagnostics = TypeChecker::new().check_instanced_test_projection(tree, overlay, model_name);
 
-    if checker.has_errors() {
-        Err(checker.take_diagnostics())
+    if diagnostics.has_errors() {
+        Err(diagnostics)
     } else {
         Ok(())
     }
@@ -144,8 +146,52 @@ pub(crate) fn typecheck_instanced_test_projection(
 
 #[cfg(test)]
 mod tests {
-    use super::collect_structural_refs_from_equations;
+    use super::{TypeChecker, collect_structural_refs_from_equations, typecheck};
+    use rumoca_ir_ast::{ClassTree, ParsedTree};
     use rumoca_phase_parse::parse_to_ast;
+    use rumoca_phase_resolve::{ResolvedTree, resolve};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    fn resolve_source(source: &str) -> ResolvedTree {
+        let file_name = "<one-shot-typecheck-test>";
+        let definition = parse_to_ast(source, file_name).expect("parse should succeed");
+        let mut tree = ClassTree::from_parsed(definition);
+        tree.source_map.add(file_name, source);
+        resolve(ParsedTree::new(tree)).expect("resolve should succeed")
+    }
+
+    fn rust_sources_below(root: &Path) -> Vec<(PathBuf, String)> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut sources = Vec::new();
+        while let Some(directory) = pending.pop() {
+            let entries = std::fs::read_dir(&directory)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", directory.display()));
+            for entry in entries {
+                let entry = entry.expect("source-tree directory entry must be readable");
+                collect_rust_source_path(entry.path(), &mut pending, &mut sources);
+            }
+        }
+        sources.sort_by(|left, right| left.0.cmp(&right.0));
+        sources
+    }
+
+    fn collect_rust_source_path(
+        path: PathBuf,
+        pending: &mut Vec<PathBuf>,
+        sources: &mut Vec<(PathBuf, String)>,
+    ) {
+        if path.is_dir() {
+            pending.push(path);
+            return;
+        }
+        if path.extension().is_none_or(|extension| extension != "rs") {
+            return;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read Rust source {}: {error}", path.display()));
+        sources.push((path, source));
+    }
 
     #[test]
     fn collect_structural_refs_tracks_for_ranges_and_if_conditions_only() {
@@ -178,5 +224,106 @@ end Test;
             !refs.contains("n"),
             "when-condition refs should remain excluded for parity"
         );
+    }
+
+    #[test]
+    fn sequential_public_alias_typechecks_cannot_observe_checker_state() {
+        let invalid = resolve_source(
+            r#"
+            type First = Real;
+            model Bad
+                First aliasValue;
+                Real invalid(start = true);
+            end Bad;
+            "#,
+        );
+        let diagnostics = typecheck(invalid)
+            .expect_err("the first root must issue its local modifier type error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("ET002")),
+            "expected the first root's ET002 diagnostic: {diagnostics:?}",
+        );
+
+        let valid = resolve_source(
+            r#"
+            type Second = Integer;
+            model Good
+                Second value(start = 1);
+            end Good;
+            "#,
+        );
+        typecheck(valid).expect(
+            "a subsequent public phase entry must have fresh alias identities and diagnostics",
+        );
+    }
+
+    #[test]
+    fn mutated_alias_identity_fails_at_the_one_shot_issuing_boundary() {
+        let mut tree = resolve_source(
+            r#"
+            type Exact = Real;
+            model Test
+                Exact value;
+            end Test;
+            "#,
+        )
+        .inner()
+        .clone();
+        let alias = tree
+            .definitions
+            .classes
+            .get_mut("Exact")
+            .expect("fixture has an alias declaration");
+        let base = alias
+            .extends
+            .first_mut()
+            .expect("an alias has one base declaration");
+        base.base_def_id = None;
+        base.base_name.def_id = None;
+        base.base_name.name[0].text = Arc::from("Missing");
+
+        let diagnostics = TypeChecker::new().check(&mut tree);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some("ET014")
+                    && diagnostic.message.contains("Missing")
+            }),
+            "a malformed exact alias must issue a typed error immediately: {diagnostics:?}",
+        );
+    }
+
+    #[test]
+    fn one_shot_checker_api_and_removed_alias_cache_are_tombstoned() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let checker_source = std::fs::read_to_string(source_root.join("lib.rs"))
+            .expect("checker source must be readable");
+        let instanced_source = std::fs::read_to_string(source_root.join("instanced.rs"))
+            .expect("instanced checker source must be readable");
+
+        assert!(checker_source.contains("\nstruct TypeChecker"));
+        assert!(checker_source.contains("fn check(self"));
+        assert!(checker_source.contains("fn check_detached(mut self"));
+        assert!(instanced_source.contains("fn check_instanced(\n        self"));
+        assert!(instanced_source.contains("fn check_instanced_detached(\n        mut self"));
+        let sources = rust_sources_below(&source_root);
+        for removed in [
+            concat!("pub ", "struct TypeChecker"),
+            concat!("pub(crate) ", "struct TypeChecker"),
+            concat!("impl Default ", "for TypeChecker"),
+            concat!("deferred_alias_", "errors"),
+            concat!("resolve_alias_target_", "or_defer"),
+            concat!("resolve_", "alias_root"),
+            concat!("aliased: TypeId::", "UNKNOWN"),
+            concat!("unwrap_or(TypeId::", "UNKNOWN)"),
+            concat!("take_", "diagnostics"),
+        ] {
+            let offenders = sources
+                .iter()
+                .filter_map(|(path, source)| source.contains(removed).then_some(path))
+                .collect::<Vec<_>>();
+            assert!(offenders.is_empty(), "found `{removed}` in {offenders:?}");
+        }
     }
 }

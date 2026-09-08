@@ -3,15 +3,14 @@
 
 use super::*;
 
-type ConstructorOverrideCache =
-    rustc_hash::FxHashMap<rumoca_core::DefId, rustc_hash::FxHashMap<String, OverrideTarget>>;
+type ConstructorOverrideCache = rustc_hash::FxHashMap<rumoca_core::DefId, AliasOverrideTable>;
 
 #[cfg(test)]
 pub(crate) fn component_overrides(
     instance: &rumoca_ir_ast::InstanceData,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> Result<AliasOverrideTable, FlattenError> {
     let mut cache = ConstructorOverrideCache::default();
     component_overrides_with_cache(instance, tree, class_index, &mut cache)
 }
@@ -21,16 +20,18 @@ fn component_overrides_with_cache(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     constructor_cache: &mut ConstructorOverrideCache,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> Result<AliasOverrideTable, FlattenError> {
     let mut overrides =
-        cached_component_constructor_aliases(instance, tree, class_index, constructor_cache);
+        cached_component_constructor_aliases(instance, tree, class_index, constructor_cache)?;
     for class_override in instance.class_overrides.values() {
         if let Some(target_ref) =
             resolve_package_alias_chain(tree, class_index, class_override.target_def_id)
         {
             let active = component_class_override_is_active(
+                tree,
+                class_index,
                 class_override,
-                overrides.get(&class_override.alias),
+                overrides.get(&class_override.alias_def_id),
                 &target_ref,
             );
             let function_slot =
@@ -40,9 +41,10 @@ fn component_overrides_with_cache(
                     FunctionSlot::Unrelated
                 };
             overrides.insert(
-                class_override.alias.clone(),
+                class_override.alias_def_id,
                 OverrideTarget::from_resolved_with_modifier_args(
                     class_override.alias.clone(),
+                    class_override.alias_def_id,
                     target_ref,
                     active,
                     class_override_modifier_args(&class_override.modifier_args),
@@ -51,7 +53,7 @@ fn component_overrides_with_cache(
             );
         }
     }
-    overrides
+    Ok(overrides)
 }
 
 fn class_override_modifier_args(args: &[rumoca_ir_ast::Expression]) -> Vec<FunctionModifierArg> {
@@ -65,43 +67,44 @@ fn cached_component_constructor_aliases(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     constructor_cache: &mut ConstructorOverrideCache,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
+) -> Result<AliasOverrideTable, FlattenError> {
     let Some(type_def_id) = instance.type_def_id else {
-        return rustc_hash::FxHashMap::default();
+        return Ok(AliasOverrideTable::default());
     };
     if let Some(cached) = constructor_cache.get(&type_def_id) {
-        return cached.clone();
+        return Ok(cached.clone());
     }
-    let mut overrides = rustc_hash::FxHashMap::default();
-    collect_component_constructor_aliases(instance, tree, class_index, &mut overrides);
+    let mut overrides = AliasOverrideTable::default();
+    collect_component_constructor_aliases(instance, tree, class_index, &mut overrides)?;
     constructor_cache.insert(type_def_id, overrides.clone());
-    overrides
+    Ok(overrides)
 }
 
+/// A class override is an active selection exactly when the class it selects
+/// differs, by identity, from what the alias slot selects without it: the
+/// slot's known inherited default when one is recorded, otherwise the slot's
+/// own declared alias chain. An explicit redeclare to the identical class is
+/// the default selection restated, on every spelling of it.
 pub(super) fn component_class_override_is_active(
+    tree: &ClassTree,
+    class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     class_override: &rumoca_ir_ast::ClassOverride,
     inherited_default: Option<&OverrideTarget>,
     target_ref: &ResolvedClassRef<'_>,
 ) -> bool {
-    if inherited_default.is_some_and(|default| default.def_id == target_ref.def_id) {
-        return false;
-    }
-    let redeclare_value_leaf = class_override
-        .target_ref
-        .as_ref()
-        .and_then(|target_ref| target_ref.parts.last())
-        .map(|part| part.ident.text.as_ref());
-    redeclare_value_leaf != Some(class_override.alias.as_str())
-        || inherited_default.is_some_and(|default| default.def_id != target_ref.def_id)
-        || leaf_segment(&target_ref.name) != class_override.alias.as_str()
+    let default_selection = inherited_default.map(|default| default.def_id).or_else(|| {
+        resolve_package_alias_chain(tree, class_index, class_override.alias_def_id)
+            .map(|default_ref| default_ref.def_id)
+    });
+    default_selection != Some(target_ref.def_id)
 }
 
 pub(crate) fn class_instance_component_overrides(
     class_data: &rumoca_ir_ast::ClassInstanceData,
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
-) -> Result<rustc_hash::FxHashMap<String, OverrideTarget>, FlattenError> {
-    let mut overrides = rustc_hash::FxHashMap::default();
+) -> Result<AliasOverrideTable, FlattenError> {
+    let mut overrides = AliasOverrideTable::default();
     let class_scope = class_data.source_scope.as_ref().ok_or_else(|| {
         missing_class_instance_override_scope_error(class_data, tree, "class function overrides")
     })?;
@@ -128,7 +131,7 @@ pub(crate) fn class_instance_component_overrides(
         false,
         &mut visited_classes,
         &mut overrides,
-    );
+    )?;
     Ok(overrides)
 }
 
@@ -142,7 +145,7 @@ pub(crate) fn build_component_override_map(
     insert_component_overrides(
         &mut map,
         ComponentPath::root(),
-        root_class_component_overrides(tree, class_index, model_name),
+        root_class_component_overrides(tree, class_index, model_name)?,
     );
     for class_data in overlay.classes.values() {
         insert_component_overrides(
@@ -156,7 +159,7 @@ pub(crate) fn build_component_override_map(
         insert_component_overrides(
             &mut map,
             instance.qualified_name.to_component_path(),
-            component_overrides_with_cache(instance, tree, class_index, &mut constructor_cache),
+            component_overrides_with_cache(instance, tree, class_index, &mut constructor_cache)?,
         );
     }
     Ok(map)
@@ -211,7 +214,7 @@ fn class_index_span(tree: &ClassTree, def_id: rumoca_core::DefId) -> Option<rumo
 fn insert_component_overrides(
     map: &mut ComponentOverrideMap,
     path: ComponentPath,
-    overrides: rustc_hash::FxHashMap<String, OverrideTarget>,
+    overrides: AliasOverrideTable,
 ) {
     if !overrides.is_empty() {
         map.insert(path, overrides);
@@ -222,10 +225,10 @@ fn root_class_component_overrides(
     tree: &ClassTree,
     class_index: &rumoca_ir_ast::ClassDefIndex<'_>,
     model_name: &str,
-) -> rustc_hash::FxHashMap<String, OverrideTarget> {
-    let mut overrides = rustc_hash::FxHashMap::default();
+) -> Result<AliasOverrideTable, FlattenError> {
+    let mut overrides = AliasOverrideTable::default();
     let Some(class_def) = class_index.get_by_qualified_name(model_name) else {
-        return overrides;
+        return Ok(overrides);
     };
     let mut visited_classes = FxHashSet::default();
     collect_component_constructor_aliases_for_class(
@@ -236,6 +239,6 @@ fn root_class_component_overrides(
         true,
         &mut visited_classes,
         &mut overrides,
-    );
-    overrides
+    )?;
+    Ok(overrides)
 }

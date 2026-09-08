@@ -41,11 +41,16 @@ pub(crate) trait TypeCheckTraversalCallbacks {
     /// Called after an expression and all of its children are traversed.
     fn on_expression(&mut self, _expression: &Expression, _type_table: &TypeTable) {}
 
-    /// Make a `for` iterator visible as an Integer while visiting its body.
-    fn push_integer_iterator(&mut self, _name: &str) {}
+    /// Bind a `for` iterator for the extent of its body.
+    ///
+    /// The range expression is supplied because the binder's type is the
+    /// element type of its range domain (MLS §11.2.2), never a fixed Integer.
+    /// The range has already been visited, so a nested iterator's range may
+    /// legally refer to an enclosing binder.
+    fn push_iterator_binder(&mut self, _name: &str, _range: &Expression, _type_table: &TypeTable) {}
 
     /// Leave one or more nested `for` iterator scopes.
-    fn pop_integer_iterators(&mut self, _count: usize) {}
+    fn pop_iterator_binders(&mut self, _count: usize) {}
 
     /// Called after an expression-form function call and all arguments are traversed.
     fn on_expression_function_call(
@@ -97,12 +102,15 @@ impl<C: TypeCheckTraversalCallbacks> TypeCheckTraversal<'_, C> {
         let mut pushed = 0;
         for index in indices {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_iterator_binder(
+                index.ident.text.as_ref(),
+                &index.range,
+                self.type_table,
+            );
             pushed += 1;
         }
         let result = self.visit_array_comprehension_body(expr, filter);
-        self.callbacks.pop_integer_iterators(pushed);
+        self.callbacks.pop_iterator_binders(pushed);
         result
     }
 
@@ -204,12 +212,15 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         let mut pushed = 0;
         for index in indices {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_iterator_binder(
+                index.ident.text.as_ref(),
+                &index.range,
+                self.type_table,
+            );
             pushed += 1;
         }
         let result = self.visit_each(equations, Self::visit_equation);
-        self.callbacks.pop_integer_iterators(pushed);
+        self.callbacks.pop_iterator_binders(pushed);
         result
     }
 
@@ -221,12 +232,15 @@ impl<C: TypeCheckTraversalCallbacks> Visitor for TypeCheckTraversal<'_, C> {
         let mut pushed = 0;
         for index in indices {
             self.visit_expression(&index.range)?;
-            self.callbacks
-                .push_integer_iterator(index.ident.text.as_ref());
+            self.callbacks.push_iterator_binder(
+                index.ident.text.as_ref(),
+                &index.range,
+                self.type_table,
+            );
             pushed += 1;
         }
         let result = self.visit_each(statements, Self::visit_statement);
-        self.callbacks.pop_integer_iterators(pushed);
+        self.callbacks.pop_iterator_binders(pushed);
         result
     }
 
@@ -282,7 +296,7 @@ pub(crate) fn walk_equations<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
-    let _ = visitor.visit_each(equations, TypeCheckTraversal::visit_equation);
+    let _visit_outcome = visitor.visit_each(equations, TypeCheckTraversal::visit_equation);
 }
 
 pub(crate) fn walk_equation<C: TypeCheckTraversalCallbacks>(
@@ -291,7 +305,7 @@ pub(crate) fn walk_equation<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
-    let _ = visitor.visit_equation(equation);
+    let _visit_outcome = visitor.visit_equation(equation);
 }
 
 pub(crate) fn walk_statements<C: TypeCheckTraversalCallbacks>(
@@ -300,7 +314,7 @@ pub(crate) fn walk_statements<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
-    let _ = visitor.visit_each(statements, TypeCheckTraversal::visit_statement);
+    let _visit_outcome = visitor.visit_each(statements, TypeCheckTraversal::visit_statement);
 }
 
 pub(crate) fn walk_statement<C: TypeCheckTraversalCallbacks>(
@@ -309,7 +323,7 @@ pub(crate) fn walk_statement<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
-    let _ = visitor.visit_statement(statement);
+    let _visit_outcome = visitor.visit_statement(statement);
 }
 
 pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
@@ -318,5 +332,5 @@ pub(crate) fn walk_expression<C: TypeCheckTraversalCallbacks>(
     type_table: &TypeTable,
 ) {
     let mut visitor = TypeCheckTraversal::new(callbacks, type_table);
-    let _ = visitor.visit_expression(expression);
+    let _visit_outcome = visitor.visit_expression(expression);
 }

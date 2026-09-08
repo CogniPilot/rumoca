@@ -50,50 +50,61 @@ fn initial_row() -> Vec<solve::LinearOp> {
 /// state every backend is in when the seed runs — `commit_pre_params_after_event`
 /// advances the `pre` slots only *after* the initial event.
 fn seed_fixture() -> solve::SolveModel {
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                parameter_count: 5,
-                compiled_parameter_len: 5,
-                initial_event_parameter_index: Some(INITIAL_FLAG),
-                pre_param_bindings: vec![solve::PreParamBinding {
-                    dest_p_index: PRE_SLOT,
-                    source: solve::PreParamSource::P { index: CURRENT },
-                    clock_schedule: None,
-                }],
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                condition_memory_parameter_indices: vec![THRESHOLD_BUFFER, INITIAL_BUFFER],
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                rhs: spanned_block(
-                    vec![threshold_row(PRE_SLOT), initial_row()],
-                    "condition_memory_seed.mo",
-                ),
-                update_targets: vec![
-                    solve::scalar_slot_p(THRESHOLD_BUFFER),
-                    solve::scalar_slot_p(INITIAL_BUFFER),
-                ],
-                row_roles: vec![
-                    solve::DiscreteRowRole::ConditionMemory,
-                    solve::DiscreteRowRole::ConditionMemory,
-                ],
-                pre_modes: vec![
-                    solve::DiscreteEventPreMode::FollowCurrent,
-                    solve::DiscreteEventPreMode::FollowCurrent,
-                ],
-                observation_refresh: vec![false, false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
-                clock_owners: vec![None, None],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+    let solve_layout = solve::SolveLayout {
+        parameter_count: 1,
+        static_parameter_names: vec!["s".to_string()],
+        compiled_parameter_len: 5,
+        initial_event_parameter_index: Some(INITIAL_FLAG),
+        pre_param_bindings: vec![solve::PreParamBinding {
+            dest_p_index: PRE_SLOT,
+            source: solve::PreParamSource::P { index: CURRENT },
+            clock_schedule: None,
+        }],
+        ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem {
+        rhs: spanned_block(
+            vec![threshold_row(PRE_SLOT), initial_row()],
+            "condition_memory_seed.mo",
+        ),
+        update_targets: vec![
+            solve::scalar_slot_p(THRESHOLD_BUFFER),
+            solve::scalar_slot_p(INITIAL_BUFFER),
+        ],
+        row_roles: vec![
+            solve::DiscreteRowRole::ConditionMemory,
+            solve::DiscreteRowRole::ConditionMemory,
+        ],
+        pre_modes: vec![
+            solve::DiscreteEventPreMode::FollowCurrent,
+            solve::DiscreteEventPreMode::FollowCurrent,
+        ],
+        observation_refresh: vec![false, false],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; 2],
+        clock_owners: vec![None, None],
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition {
+        condition_memory_parameter_indices: vec![THRESHOLD_BUFFER, INITIAL_BUFFER],
+        ..Default::default()
+    };
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 5),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("condition-memory fixture satisfies the checked root contract"),
         //     s      pre(s)  buf(pre(s)>2)  initial()  buf(initial())
         parameters: vec![5.0, 0.0, 0.0, 1.0, 0.0],
-        ..Default::default()
+        ..empty_binary64_first_product_model()
     }
 }
 
@@ -107,8 +118,10 @@ fn seed_fixture() -> solve::SolveModel {
 #[test]
 fn the_seed_reads_pre_variables_as_their_own_current_values() {
     let model = seed_fixture();
-    let runtime = SolveRuntime::new_fixture(&model).expect("seed fixture should prepare");
-    let mut p = model.parameters.clone();
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("seed fixture should prepare");
+    let mut p = model.parameters().to_vec();
 
     let seeded = runtime
         .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1.0e-9)
@@ -137,8 +150,10 @@ fn the_seed_reads_pre_variables_as_their_own_current_values() {
 #[test]
 fn the_seed_leaves_the_initial_activation_its_edge() {
     let model = seed_fixture();
-    let runtime = SolveRuntime::new_fixture(&model).expect("seed fixture should prepare");
-    let mut p = model.parameters.clone();
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("seed fixture should prepare");
+    let mut p = model.parameters().to_vec();
     assert_eq!(p[INITIAL_FLAG], 1.0, "the fixture runs with initial() true");
 
     runtime
@@ -164,20 +179,35 @@ fn the_seed_leaves_the_initial_activation_its_edge() {
 /// vacuously.
 #[test]
 fn a_model_without_activation_buffers_seeds_nothing() {
-    let model = solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                parameter_count: 1,
-                compiled_parameter_len: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        parameters: vec![7.0],
+    let solve_layout = solve::SolveLayout {
+        parameter_count: 1,
+        static_parameter_names: vec!["p".to_string()],
+        compiled_parameter_len: 1,
         ..Default::default()
     };
-    let runtime = SolveRuntime::new_fixture(&model).expect("bare fixture should prepare");
-    let mut p = model.parameters.clone();
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let model = crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 0, 1),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("bare fixture satisfies the checked root contract"),
+        parameters: vec![7.0],
+        ..empty_binary64_first_product_model()
+    };
+    let model = std::sync::Arc::new(model);
+    let runtime =
+        SolveRuntime::new(std::sync::Arc::clone(&model)).expect("bare fixture should prepare");
+    let mut p = model.parameters().to_vec();
 
     let seeded = runtime
         .seed_condition_memory_for_initialization(&mut [], &mut p, 0.0, 1.0e-9)

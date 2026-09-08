@@ -456,7 +456,11 @@ pub fn merge_parsed_source_roots(definitions_json: &str) -> Result<u32, WasmErro
         let count = u32::try_from(documents.len())
             .map_err(|_| WasmError::new("Parsed source count exceeds u32"))?;
         session.add_in_memory_parsed_batch(documents);
-        let _ = session.namespace_index_query("");
+        drop(
+            session.namespace_index_query("").map_err(|error| {
+                WasmError::new(format!("Namespace index rebuild failed: {error}"))
+            })?,
+        );
 
         Ok(count)
     })
@@ -476,7 +480,11 @@ pub fn merge_parsed_source_roots_binary(bytes: &[u8]) -> Result<u32, WasmError> 
 
     super::with_singleton_session(|session| {
         session.add_in_memory_parsed_batch(documents);
-        let _ = session.namespace_index_query("");
+        drop(
+            session.namespace_index_query("").map_err(|error| {
+                WasmError::new(format!("Namespace index rebuild failed: {error}"))
+            })?,
+        );
         Ok(count)
     })
 }

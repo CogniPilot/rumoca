@@ -17,7 +17,7 @@ vehicle or flight software.
 |---|---|
 | `ReusableBoosterLanding.mo` | Flatness planner, GPS/IMU filter, `SE_2(3)` controller, 6-DOF plant, actuators, and contact |
 | `rumoca-scenario.toml` | Realtime simulation, tunable parameters, viewer telemetry, and controls |
-| `rumoca-scenario.controller-galec-production.toml` | eFMI Algorithm Code + Production Code export of the shared discrete feedback law |
+| `rumoca-scenario.controller-galec.toml` | eFMI Algorithm Code export of the shared discrete feedback law |
 | `reusable_booster_scene.js` | Three.js ocean, drone ship, scale-correct booster, plumes, and trajectory display |
 | `../../../target/cmm/CMM-a642c381/LieGroups/package.mo` | Pinned CogniPilot LieGroups dependency |
 
@@ -119,26 +119,31 @@ representative cold-gas mass-flow model.
 The geometric controller is evaluated atomically at 20 Hz and held between
 updates. The physical plant remains continuous.
 
-### eFMI Production Code
+### eFMI Algorithm Code
 
 The translational force law and rotational moment law are shared by the full
 simulation controller and `ReusableBoosterEmbeddedControlLaw`. The export model
 is a fixed-sample discrete block whose vector interface begins after the
 Lie-group adapter has produced world correction, attitude error, and reference
-body rate. Generate a schema-valid eFMU containing both GALEC Algorithm Code
-and C99 Production Code with:
+body rate. Generate a schema-valid eFMU containing the GALEC Algorithm Code
+representation with:
 
 ```bash
 cargo run -p rumoca -- \
   compile examples/interactive/reusable_booster/ReusableBoosterLanding.mo \
   --model ReusableBoosterEmbeddedControlLaw \
   --source-root target/cmm/CMM-a642c381 \
-  --target galec-production \
-  --output examples/interactive/reusable_booster/gen/control_law_efmu
+  --target galec \
+  --output examples/interactive/reusable_booster/gen/control_law_alg
 ```
 
-The scenario `rumoca-scenario.controller-galec-production.toml` exposes the
+The scenario `rumoca-scenario.controller-galec.toml` exposes the
 same target in the code-generation editor.
+
+GALEC never emits C. The eventual `efmu` target is one `SolveAlgorithmProduct`
+retaining this checked `AlgorithmCodePackage` and its correlated
+`SolveAlgorithmBlock`. Each output file borrows the appropriate view, and
+Production Code C renders only from the Solve block.
 
 ## GPS/IMU Estimator
 

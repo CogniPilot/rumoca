@@ -14,9 +14,6 @@ use serde::{Deserialize, Serialize};
 /// (`rumoca_core::miette_phase_error_to_diagnostic` puts it there). Keeping only
 /// the anchor here would leave both visible to the LSP and the API, which read
 /// the diagnostic directly, and invisible to everyone who runs the compiler.
-///
-/// The label and note lists are `serde(default)` so failure records serialized
-/// by an older build still deserialize.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelFailureDiagnostic {
     pub model_name: String,
@@ -26,10 +23,8 @@ pub struct ModelFailureDiagnostic {
     /// The label the rendered report anchors on.
     pub primary_label: Option<Label>,
     /// Every other label of the originating diagnostic, in diagnostic order.
-    #[serde(default)]
     pub secondary_labels: Vec<Label>,
     /// The originating diagnostic's notes, including its help text.
-    #[serde(default)]
     pub notes: Vec<String>,
 }
 
@@ -92,5 +87,31 @@ mod tests {
     fn split_labels_reports_a_label_less_diagnostic() {
         let diagnostic = CommonDiagnostic::global_error("EI000", "no source");
         assert!(ModelFailureDiagnostic::split_labels(&diagnostic).is_none());
+    }
+
+    #[test]
+    fn current_failure_wire_requires_every_diagnostic_collection() {
+        let current = serde_json::json!({
+            "model_name": "Broken",
+            "phase": null,
+            "error_code": "EI000",
+            "error": "failed",
+            "primary_label": null,
+            "secondary_labels": [],
+            "notes": []
+        });
+        serde_json::from_value::<ModelFailureDiagnostic>(current.clone())
+            .expect("the current complete failure wire must deserialize");
+
+        for missing in ["secondary_labels", "notes"] {
+            let mut incomplete = current.clone();
+            incomplete
+                .as_object_mut()
+                .expect("fixture is an object")
+                .remove(missing);
+            let error = serde_json::from_value::<ModelFailureDiagnostic>(incomplete)
+                .expect_err("an obsolete incomplete failure wire must reject");
+            assert!(error.to_string().contains("missing field"), "{error}");
+        }
     }
 }

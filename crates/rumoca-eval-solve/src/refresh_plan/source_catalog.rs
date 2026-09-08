@@ -218,7 +218,14 @@ fn append_scalar_programs<'a>(
             operations,
             span,
         });
-        let count = solve::ScalarProgramBlock::program_output_count(operations);
+        let count = block
+            .stored_output_count_for_program(program_index)
+            .ok_or_else(|| {
+                source_error(
+                    "canonical scalar program is missing retained output width",
+                    Some(span),
+                )
+            })?;
         for output_offset in 0..count {
             let output_index = output_indices.get(output_ordinal).copied().ok_or_else(|| {
                 source_error("canonical scalar output metadata is incomplete", Some(span))

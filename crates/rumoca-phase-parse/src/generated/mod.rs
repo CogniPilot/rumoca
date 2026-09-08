@@ -8,11 +8,9 @@
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::excessive_nesting)]
 #[allow(dead_code)]
-#[allow(unused)]
 pub mod modelica_grammar_trait;
 
 #[allow(clippy::all)]
 #[allow(clippy::too_many_lines)]
 #[allow(dead_code)]
-#[allow(unused)]
 pub mod modelica_parser;

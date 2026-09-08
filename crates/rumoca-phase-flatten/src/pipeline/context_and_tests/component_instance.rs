@@ -68,7 +68,7 @@ fn modifier_binding_scope(
 }
 
 pub(crate) fn process_component_instance(
-    request: ComponentInstanceProcess<'_, '_>,
+    mut request: ComponentInstanceProcess<'_, '_>,
 ) -> Result<(), FlattenError> {
     // Skip if this is an empty path (root)
     let var_name = qualified_to_var_name(&request.instance_data.qualified_name);
@@ -85,28 +85,7 @@ pub(crate) fn process_component_instance(
     // lifecycle proof makes the opaque handle occurrence a Flat value rather
     // than a structural container.
     if !request.instance_data.is_primitive && !is_external_object {
-        if let Some(record) = variables::create_record_instance(
-            request.instance_data,
-            request.tree,
-            request.class_index,
-            request.effective_type_id,
-            request.canonical_type_id,
-        )? {
-            if !request.flat.record_types.contains_key(&record.type_def_id) {
-                let record_type = variables::create_record_type(
-                    record.type_def_id,
-                    request.tree,
-                    request.class_index,
-                    request.function_types,
-                )?;
-                request
-                    .flat
-                    .record_types
-                    .insert(record.type_def_id, record_type);
-            }
-            request.flat.record_instances.insert(var_name, record);
-        }
-        return Ok(());
+        return process_structural_component(&mut request, var_name);
     }
 
     let import_context = variable_import_context_for_instance(
@@ -124,46 +103,27 @@ pub(crate) fn process_component_instance(
         request.class_index,
         &import_context,
     )?;
-    let declaration_scope = request
-        .instance_data
-        .owner_class_id
-        .ok_or_else(|| FlattenError::internal("Flat variable has no instantiated class owner"))?;
-    let binding_scope = modifier_binding_scope(
+    attach_flat_variable_reference_scopes(
+        &mut flat_var,
         request.instance_data,
         request.scope_index,
-        flat_var.source_span,
-    )?
-    .unwrap_or(declaration_scope);
-    if let Some(expression) = flat_var.binding.as_mut() {
-        attach_reference_scope(expression, binding_scope)?;
-    }
-    for expression in [
-        &mut flat_var.start,
-        &mut flat_var.min,
-        &mut flat_var.max,
-        &mut flat_var.nominal,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        attach_reference_scope(expression, declaration_scope)?;
-    }
+    )?;
     let instance_scope = request.instance_data.qualified_name.to_component_path();
     let (override_packages, override_functions) =
         override_context_for_component_path(&instance_scope, request.component_override_map);
     let receiver_scope = instance_scope
         .parent()
         .unwrap_or_else(rumoca_core::ComponentPath::root);
-    rewrite_function_overrides_in_flat_variable(
-        &mut flat_var,
-        request.tree,
-        request.class_index,
-        &override_packages,
-        &override_functions,
-        &receiver_scope,
-        request.component_members,
-        request.semantic_catalogs,
-    )?;
+    rewrite_function_overrides_in_flat_variable(FlatVariableOverrideRewrite {
+        variable: &mut flat_var,
+        tree: request.tree,
+        class_index: request.class_index,
+        override_packages: &override_packages,
+        override_functions: &override_functions,
+        active_scope: receiver_scope,
+        component_members: request.component_members,
+        semantic_catalogs: request.semantic_catalogs,
+    })?;
     request.flat.variable_type_names.insert(
         var_name.clone(),
         variables::flat_output_type_name(
@@ -180,6 +140,88 @@ pub(crate) fn process_component_instance(
     }
     request.flat.add_variable(var_name, flat_var);
 
+    Ok(())
+}
+
+fn process_structural_component(
+    request: &mut ComponentInstanceProcess<'_, '_>,
+    var_name: rumoca_core::VarName,
+) -> Result<(), FlattenError> {
+    let Some(record) = variables::create_record_instance(
+        request.instance_data,
+        request.tree,
+        request.class_index,
+        request.effective_type_id,
+        request.canonical_type_id,
+    )?
+    else {
+        return Ok(());
+    };
+    if !request.flat.record_types.contains_key(&record.type_def_id) {
+        let record_type = variables::create_record_type(
+            record.type_def_id,
+            request.tree,
+            request.class_index,
+            request.function_types,
+        )?;
+        request
+            .flat
+            .record_types
+            .insert(record.type_def_id, record_type);
+    }
+    request.flat.record_instances.insert(var_name, record);
+    Ok(())
+}
+
+/// Class-body occurrence that scopes every reference in a component's binding.
+///
+/// A declaration binding is written in the declaring class body, so it takes
+/// `InstanceData::owner_class_id`; a modifier binding takes the modifier's
+/// body instead (see `modifier_binding_scope`). Every Flat binding of this
+/// component must carry this one scope, whether it is the binding lowered at
+/// instantiation or a replacement lowered later from the same overlay
+/// expression (an array comprehension expanded once its ranges are known):
+/// lowering issues declaration identity only, and a binding whose references
+/// lack the occurrence half of their identity cannot be ordered against the
+/// sibling parameters it names.
+pub(crate) fn flat_binding_reference_scope(
+    instance_data: &rumoca_ir_ast::InstanceData,
+    scope_index: &OverlayScopeIndex<'_>,
+    source_span: rumoca_core::Span,
+) -> Result<rumoca_core::InstanceId, FlattenError> {
+    let declaration_scope = instance_data
+        .owner_class_id
+        .ok_or_else(|| FlattenError::internal("Flat variable has no instantiated class owner"))?;
+    Ok(
+        modifier_binding_scope(instance_data, scope_index, source_span)?
+            .unwrap_or(declaration_scope),
+    )
+}
+
+fn attach_flat_variable_reference_scopes(
+    flat_var: &mut rumoca_ir_flat::Variable,
+    instance_data: &rumoca_ir_ast::InstanceData,
+    scope_index: &OverlayScopeIndex<'_>,
+) -> Result<(), FlattenError> {
+    let declaration_scope = instance_data
+        .owner_class_id
+        .ok_or_else(|| FlattenError::internal("Flat variable has no instantiated class owner"))?;
+    let binding_scope =
+        flat_binding_reference_scope(instance_data, scope_index, flat_var.source_span)?;
+    if let Some(expression) = flat_var.binding.as_mut() {
+        attach_reference_scope(expression, binding_scope)?;
+    }
+    for expression in [
+        &mut flat_var.start,
+        &mut flat_var.min,
+        &mut flat_var.max,
+        &mut flat_var.nominal,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        attach_reference_scope(expression, declaration_scope)?;
+    }
     Ok(())
 }
 

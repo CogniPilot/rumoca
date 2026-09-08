@@ -30,6 +30,65 @@ fn trace(model_name: &str, times: Vec<f64>, names: Vec<&str>, data: Vec<Vec<f64>
     }
 }
 
+fn exact_channel_partition(channel_count: usize) -> TraceChannelPartition {
+    let compared = (0..channel_count)
+        .map(|index| format!("channel-{index:08}"))
+        .collect();
+    TraceChannelPartition::checked(compared, Vec::new(), Vec::new(), Vec::new())
+        .expect("test channel partition is canonical")
+}
+
+#[test]
+fn metric_json_round_trip_retains_computed_float_bits() {
+    let value = f64::from_bits(0x3fd9_def2_5368_4d6d);
+    let source = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![value, value]]);
+    let metric = compare_model_traces("M", &source, &source).expect("exact self-comparison");
+    let original = serde_json::to_value(&metric).expect("metric value");
+    let bytes = serde_json::to_vec_pretty(&original).expect("report JSON");
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("read report JSON");
+    let magnitude_bits = decoded["worst_variables"][0]["reference_magnitude"]
+        .as_f64()
+        .expect("witness float present in report")
+        .to_bits();
+    assert_eq!(magnitude_bits, 0x3fd9_def2_5368_4d6d);
+    assert_eq!(
+        original, decoded,
+        "source-bound metrics require an exact round trip"
+    );
+}
+
+fn report_float_round_trip(bits: u64) -> u64 {
+    let original = serde_json::to_value(f64::from_bits(bits)).expect("finite report float");
+    let bytes = serde_json::to_vec_pretty(&original).expect("report JSON");
+    let decoded: serde_json::Value = serde_json::from_slice(&bytes).expect("read report JSON");
+    decoded.as_f64().expect("finite float retained").to_bits()
+}
+
+#[test]
+fn report_json_round_trip_retains_rounding_and_signed_zero_witnesses() {
+    for bits in [
+        0x3fd9_def2_5368_4d6d,
+        0x3c8c_7537_452b_55da,
+        0x3ccc_03bd_9da2_ef4e,
+        0,
+        0x8000_0000_0000_0000,
+        1,
+        0x8000_0000_0000_0001,
+        0x7fef_ffff_ffff_ffff,
+    ] {
+        assert_eq!(report_float_round_trip(bits), bits, "sample {bits:016x}");
+    }
+}
+
+proptest! {
+    #[test]
+    fn report_json_round_trip_retains_finite_float_bits(bits in any::<u64>()) {
+        let value = f64::from_bits(bits);
+        prop_assume!(value.is_finite());
+        prop_assert_eq!(report_float_round_trip(bits), bits);
+    }
+}
+
 #[test]
 fn stochastic_profile_is_typed_sorted_and_uncertified() {
     let profile = TraceCertificationProfile::stochastic(vec![
@@ -72,6 +131,37 @@ fn malformed_chaos_profile_fails_closed() {
         ],
     };
     assert!(profile.validate().is_err());
+}
+
+#[test]
+fn current_trace_rejects_an_omitted_optional_metadata_key() {
+    let mut wire = serde_json::to_value(trace(
+        "fixture",
+        vec![0.0, 1.0],
+        vec!["x"],
+        vec![vec![0.0, 1.0]],
+    ))
+    .expect("encode trace fixture");
+    wire.as_object_mut()
+        .expect("trace is an object")
+        .remove("variable_meta");
+    assert!(
+        serde_json::from_value::<SimTrace>(wire).is_err(),
+        "optional trace metadata must be explicit null when absent"
+    );
+}
+
+#[test]
+fn initial_condition_stats_reject_unknown_evidence() {
+    let mut wire = serde_json::to_value(InitialConditionStats::no_channels_compared())
+        .expect("encode initial-condition fixture");
+    wire.as_object_mut()
+        .expect("initial-condition stats are an object")
+        .insert("unreviewed_evidence".to_string(), serde_json::json!(0));
+    assert!(
+        serde_json::from_value::<InitialConditionStats>(wire).is_err(),
+        "nested report evidence must remain a closed schema"
+    );
 }
 
 #[test]
@@ -513,7 +603,7 @@ fn model_score_uses_median_bounded_l1() {
     );
 
     let metric = compare_model_traces("M", &rumoca, &omc).expect("model compare");
-    assert_eq!(metric.compared_variables, 3);
+    assert_eq!(metric.compared_variables(), 3);
     let mut channel_scores = metric
         .worst_variables
         .iter()
@@ -526,7 +616,7 @@ fn model_score_uses_median_bounded_l1() {
     assert!(!metric.worst_variables.is_empty());
     assert_eq!(
         metric.channel_high_count + metric.channel_minor_count + metric.channel_deviation_count,
-        metric.compared_variables
+        metric.compared_variables()
     );
     assert!(metric.channel_violation_mass >= 0.0);
 }
@@ -536,7 +626,136 @@ fn compare_model_requires_common_variables() {
     let rumoca = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
     let omc = trace("M", vec![0.0, 1.0], vec!["z"], vec![vec![0.0, 1.0]]);
     let err = compare_model_traces("M", &rumoca, &omc).expect_err("no common vars");
-    assert!(matches!(err, TraceCompareError::NoCommonVariables));
+    let TraceCompareError::NoCommonVariables { channel_partition } = err else {
+        panic!("expected no-common-variables evidence")
+    };
+    assert_eq!(channel_partition.rumoca_only(), ["x"]);
+    assert_eq!(channel_partition.reference_only(), ["z"]);
+    assert_eq!(channel_partition.non_compared_count(), 2);
+}
+
+#[test]
+fn comparison_retains_every_asymmetric_channel_name() {
+    let rumoca = trace(
+        "M",
+        vec![0.0, 1.0],
+        vec!["shared", "b", "a"],
+        vec![vec![0.0, 1.0], vec![2.0, 2.0], vec![1.0, 1.0]],
+    );
+    let reference = trace(
+        "M",
+        vec![0.0, 1.0],
+        vec!["z", "shared"],
+        vec![vec![3.0, 3.0], vec![0.0, 1.0]],
+    );
+
+    let metric = compare_model_traces("M", &rumoca, &reference).expect("shared channel compares");
+    assert_eq!(metric.channel_partition.compared(), ["shared"]);
+    assert!(metric.channel_partition.shared_unmeasured().is_empty());
+    assert_eq!(metric.channel_partition.rumoca_only(), ["a", "b"]);
+    assert_eq!(metric.channel_partition.reference_only(), ["z"]);
+    assert_eq!(metric.channel_partition.non_compared_count(), 3);
+}
+
+#[test]
+fn shared_channel_without_an_overlap_is_retained_in_failure_evidence() {
+    let rumoca = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let reference = trace("M", vec![2.0, 3.0], vec!["x"], vec![vec![2.0, 3.0]]);
+
+    let error = compare_model_traces("M", &rumoca, &reference)
+        .expect_err("non-overlapping shared channel is not comparable");
+    let TraceCompareError::NoComparableSamples { channel_partition } = error else {
+        panic!("expected no-comparable-samples evidence")
+    };
+    assert!(channel_partition.compared().is_empty());
+    assert_eq!(channel_partition.shared_unmeasured(), ["x"]);
+    assert_eq!(channel_partition.non_compared_count(), 1);
+}
+
+#[test]
+fn channel_partition_wire_rejects_overlap_and_noncanonical_order() {
+    let overlapping = serde_json::json!({
+        "compared": ["x"],
+        "shared_unmeasured": [],
+        "rumoca_only": ["x"],
+        "reference_only": []
+    });
+    assert!(serde_json::from_value::<TraceChannelPartition>(overlapping).is_err());
+
+    let unsorted = serde_json::json!({
+        "compared": ["z", "a"],
+        "shared_unmeasured": [],
+        "rumoca_only": [],
+        "reference_only": []
+    });
+    assert!(serde_json::from_value::<TraceChannelPartition>(unsorted).is_err());
+}
+
+#[test]
+fn channel_partition_must_match_the_source_trace_universes() {
+    let base = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let metric = compare_model_traces("M", &base, &base).expect("baseline comparison");
+    let wider = trace(
+        "M",
+        vec![0.0, 1.0],
+        vec!["x", "y"],
+        vec![vec![0.0, 1.0], vec![1.0, 1.0]],
+    );
+
+    assert!(matches!(
+        metric.verify_channel_partition(&wider, &base),
+        Err(TraceCompareError::ChannelAccountingMismatch)
+    ));
+}
+
+#[test]
+fn metric_wire_rejects_contradictory_evidence() {
+    let trace = trace("M", vec![0.0, 1.0], vec!["x"], vec![vec![0.0, 1.0]]);
+    let metric = compare_model_traces("M", &trace, &trace).expect("valid metric");
+    let valid = serde_json::to_value(metric).expect("serialize metric");
+
+    for (field, replacement) in [
+        ("channel_high_count", serde_json::json!(0)),
+        ("channel_severe_count", serde_json::json!(1)),
+        ("samples_compared", serde_json::json!(1)),
+        ("channel_high_percent", serde_json::json!(0.5)),
+    ] {
+        let mut malformed = valid.clone();
+        malformed[field] = replacement;
+        assert!(
+            serde_json::from_value::<ModelDeviationMetric>(malformed).is_err(),
+            "contradictory `{field}` was accepted"
+        );
+    }
+
+    let mut foreign_worst = valid;
+    foreign_worst["worst_variables"][0]["name"] = serde_json::json!("foreign");
+    assert!(serde_json::from_value::<ModelDeviationMetric>(foreign_worst).is_err());
+}
+
+#[test]
+fn missing_window_data_makes_the_shared_channel_unmeasured() {
+    let rumoca = SimTrace {
+        model_name: Some("M".to_string()),
+        times: vec![0.0, 1.0, 2.0],
+        names: vec!["x".to_string()],
+        data: vec![vec![Some(0.0), None, Some(2.0)]],
+        variable_meta: None,
+        certification_profile: None,
+    };
+    let reference = trace(
+        "M",
+        vec![0.0, 1.0, 2.0],
+        vec!["x"],
+        vec![vec![0.0, 1.0, 2.0]],
+    );
+
+    let error = compare_model_traces("M", &rumoca, &reference)
+        .expect_err("a partially missing horizon cannot certify as a shorter perfect horizon");
+    let TraceCompareError::NoComparableSamples { channel_partition } = error else {
+        panic!("expected no-comparable-samples evidence")
+    };
+    assert_eq!(channel_partition.shared_unmeasured(), ["x"]);
 }
 
 fn assert_malformed_trace(error: TraceCompareError, expected_reason: &str) {
@@ -742,7 +961,7 @@ fn discrete_only_model_traces_contribute_to_metrics() {
 
     let metric = compare_model_traces("M", &rumoca, &omc)
         .expect("discrete-only traces should still produce comparison metrics");
-    assert_eq!(metric.compared_variables, 1);
+    assert_eq!(metric.compared_variables(), 1);
     assert_eq!(metric.samples_compared, 4);
     assert!(metric.bounded_normalized_l1_score < 1.0e-12);
 }
@@ -796,7 +1015,7 @@ fn agreement_band_thresholds_classify_score_as_expected() {
 fn agreement_band_thresholds_classify_model_rollups_as_expected() {
     let high_metric = ModelDeviationMetric {
         model_name: "high".to_string(),
-        compared_variables: 1,
+        channel_partition: exact_channel_partition(1),
         samples_compared: 2,
         bounded_normalized_l1_score: 0.01,
         mean_channel_bounded_normalized_l1: 0.009,
@@ -810,7 +1029,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_deviation_percent: 0.0,
         channel_severe_percent: 0.0,
         channel_violation_mass: 0.0,
-        initial_condition: InitialConditionStats::default(),
+        initial_condition: InitialConditionStats::no_channels_compared(),
         worst_variables: Vec::new(),
     };
     assert_eq!(
@@ -826,7 +1045,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
 
     let near_metric = ModelDeviationMetric {
         model_name: "near".to_string(),
-        compared_variables: 1,
+        channel_partition: exact_channel_partition(1),
         samples_compared: 2,
         bounded_normalized_l1_score: 0.01,
         mean_channel_bounded_normalized_l1: 0.03,
@@ -840,7 +1059,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_deviation_percent: 0.0,
         channel_severe_percent: 0.0,
         channel_violation_mass: 0.0,
-        initial_condition: InitialConditionStats::default(),
+        initial_condition: InitialConditionStats::no_channels_compared(),
         worst_variables: Vec::new(),
     };
     assert_eq!(
@@ -856,7 +1075,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
 
     let deviation_metric = ModelDeviationMetric {
         model_name: "deviation".to_string(),
-        compared_variables: 1,
+        channel_partition: exact_channel_partition(1),
         samples_compared: 2,
         bounded_normalized_l1_score: 0.01,
         mean_channel_bounded_normalized_l1: 0.01,
@@ -870,7 +1089,7 @@ fn agreement_band_thresholds_classify_model_rollups_as_expected() {
         channel_deviation_percent: 1.0,
         channel_severe_percent: 0.0,
         channel_violation_mass: 0.1,
-        initial_condition: InitialConditionStats::default(),
+        initial_condition: InitialConditionStats::no_channels_compared(),
         worst_variables: Vec::new(),
     };
     assert_eq!(
@@ -1023,7 +1242,7 @@ fn channel_distribution_metric(
     let total = total.max(1) as f64;
     ModelDeviationMetric {
         model_name: name.to_string(),
-        compared_variables: total as usize,
+        channel_partition: exact_channel_partition(total as usize),
         samples_compared: total as usize,
         bounded_normalized_l1_score: 0.0,
         mean_channel_bounded_normalized_l1: 0.0,
@@ -1037,7 +1256,7 @@ fn channel_distribution_metric(
         channel_deviation_percent: deviation as f64 / total,
         channel_severe_percent: severe as f64 / total,
         channel_violation_mass: deviation as f64,
-        initial_condition: InitialConditionStats::default(),
+        initial_condition: InitialConditionStats::no_channels_compared(),
         worst_variables: Vec::new(),
     }
 }

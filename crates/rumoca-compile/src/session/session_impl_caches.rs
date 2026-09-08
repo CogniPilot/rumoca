@@ -22,14 +22,16 @@ impl Session {
 
     pub(super) fn compile_result_from_cache_hit(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
         cached: CachedCompileResult,
     ) -> PhaseResult {
         match cached {
             CachedCompileResult::Full(result) => result,
-            CachedCompileResult::Success => self.compile_phase_result_query(tree, mode, model_name),
+            CachedCompileResult::Success => {
+                self.compile_phase_result_query(resolved, mode, model_name)
+            }
         }
     }
 

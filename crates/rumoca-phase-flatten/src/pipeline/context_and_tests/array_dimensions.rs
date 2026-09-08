@@ -7,18 +7,28 @@ use super::*;
 
 impl Context {
     /// Initialize array dimensions from declared dims (MLS §10.1).
-    pub(super) fn init_array_dimensions(&mut self, flat: &Model) {
+    ///
+    /// Bindings are read against the identified callable catalog: a
+    /// user-function call names its shape through the callee's declared
+    /// output, and the call carries its exact occurrence from the early
+    /// canonicalization pass, so the catalog can answer without a name guess.
+    pub(super) fn init_array_dimensions(&mut self, flat: &Model) -> Result<(), FlattenError> {
         for (name, var) in &flat.variables {
             if var.dims.is_empty() {
                 continue;
             }
-            let dims_to_use = try_infer_better_dims(var);
+            let dims_to_use = map_dimension_evaluation(
+                try_infer_better_dims_with_functions(var, &self.functions),
+                var.binding.as_ref(),
+                "inferring declared array dimensions",
+            )?;
             self.array_dimensions.insert(name.to_string(), dims_to_use);
         }
+        Ok(())
     }
 
     /// Infer dimensions from array literal bindings (MLS §10.1).
-    pub(super) fn infer_dims_from_literals(&mut self, flat: &Model) {
+    pub(super) fn infer_dims_from_literals(&mut self, flat: &Model) -> Result<(), FlattenError> {
         for (name, var) in &flat.variables {
             if self
                 .array_dimensions
@@ -27,7 +37,11 @@ impl Context {
                 continue;
             }
             if let Some(binding) = &var.binding
-                && let Some(inferred_dims) = infer_array_dimensions(binding)
+                && let Some(inferred_dims) = map_dimension_evaluation(
+                    infer_array_dimensions_checked_with_functions(binding, &self.functions),
+                    Some(binding),
+                    "inferring array literal dimensions",
+                )?
             {
                 #[cfg(feature = "tracing")]
                 tracing::debug!(var = %name, dims = ?inferred_dims, "inferred array dimensions from binding");
@@ -35,6 +49,7 @@ impl Context {
                     .insert(name.to_string(), inferred_dims);
             }
         }
+        Ok(())
     }
 
     /// Try to infer array dimensions using known integer parameters (MLS §10.4).
@@ -47,7 +62,10 @@ impl Context {
     ///
     /// Also handles conditional expressions like `table = if cond then A else B`
     /// by evaluating conditions using known boolean and enum parameters.
-    pub(super) fn eval_array_dimensions(&mut self, var_bindings: &[ParamBinding<'_>]) -> bool {
+    pub(super) fn eval_array_dimensions(
+        &mut self,
+        var_bindings: &[ParamBinding<'_>],
+    ) -> Result<bool, FlattenError> {
         let mut new_dims = false;
         for ParamBinding {
             name,
@@ -56,9 +74,9 @@ impl Context {
             ..
         } in var_bindings
         {
-            new_dims |= self.try_infer_array_dims(name, binding, *binding_from_modification);
+            new_dims |= self.try_infer_array_dims(name, binding, *binding_from_modification)?;
         }
-        new_dims
+        Ok(new_dims)
     }
 
     /// Try to infer array dimensions for a single binding.
@@ -67,7 +85,7 @@ impl Context {
         name: &str,
         binding: &Expression,
         binding_from_modification: bool,
-    ) -> bool {
+    ) -> Result<bool, FlattenError> {
         // Skip when the variable is inside an expanded array component element.
         // During array expansion, sub-component modifications (e.g., `L=fill(L1sigma,m)`)
         // are NOT indexed for each element. So `inductor[1].L` gets the same unindexed
@@ -76,24 +94,32 @@ impl Context {
         if has_embedded_array_subscript_in_parent(name)
             && !(binding_from_modification && is_array_literal_binding(binding))
         {
-            return false;
+            return Ok(false);
         }
 
-        let inferred = infer_array_dimensions_full_with_functions(
-            binding,
-            &ParamEvalContext::new(
-                &self.parameter_values,
-                &self.real_parameter_values,
-                &self.boolean_parameter_values,
-                &self.enum_parameter_values,
-                &self.array_dimensions,
-                &self.functions,
-                Some(name),
+        let inferred = map_dimension_evaluation(
+            infer_array_dimensions_full_with_functions(
+                binding,
+                &ParamEvalContext::new_resolved(
+                    &self.parameter_values,
+                    &self.real_parameter_values,
+                    &self.boolean_parameter_values,
+                    &self.array_dimensions,
+                    &self.functions,
+                    rumoca_eval_flat::phase_constant::ResolvedParamInventory::new(
+                        &self.parameter_values_by_identity,
+                        &self.array_dimensions_by_identity,
+                        &self.resolved_enum_catalog,
+                    ),
+                    Some(name),
+                ),
             ),
-        );
+            Some(binding),
+            "inferring parameter-dependent array dimensions",
+        )?;
         let inferred_dims = match inferred {
             Some(dims) => dims,
-            None => return false,
+            None => return Ok(false),
         };
 
         // Check if we should update (MLS §10.1)
@@ -107,9 +133,9 @@ impl Context {
             tracing::debug!(var = %name, dims = ?inferred_dims, "inferred array dimensions from builtin");
             self.array_dimensions
                 .insert(name.to_string(), inferred_dims);
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -192,5 +218,20 @@ impl Context {
             return self.array_dimensions.get(&resolved).cloned();
         }
         None
+    }
+}
+
+fn map_dimension_evaluation<T>(
+    result: Result<T, rumoca_eval_flat::constant::EvalError>,
+    owner: Option<&Expression>,
+    operation: &'static str,
+) -> Result<T, FlattenError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(crate::constant_eval::map_evaluation_error(
+            error,
+            operation,
+            owner.and_then(Expression::span),
+        )?),
     }
 }

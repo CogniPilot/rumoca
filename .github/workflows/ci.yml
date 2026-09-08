@@ -209,6 +209,72 @@ jobs:
             .#checks.x86_64-linux.rumoca \
             .#checks.x86_64-linux.mlir-cpu
 
+  embedded-head-to-head:
+    name: Embedded generated-source instruction ratchet
+    # SUSPENDED with the retirement of the `embedded-c-galec` generation
+    # target: GALEC never emits C. The closed comparison row keeps its last
+    # authenticated evidence in the checked-in manifest; the job returns as a
+    # NEW comparison identity when the `efmu` SolveAlgorithmProduct lands.
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ github.token }}
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+          diagnostic-endpoint: ''
+
+      - name: Enforce embedded generated-source instruction ratchet
+        shell: bash
+        env:
+          EMBEDDED_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          nix develop .#embedded-benchmark --command bash -s -- <<'EMBEDDED_GATE'
+            set -euo pipefail
+            arm_gcc="$(command -v arm-none-eabi-gcc)"
+            qemu="$(command -v qemu-system-arm)"
+            python="$(command -v python)"
+            prlimit="$(command -v prlimit)"
+            arm_root="$(dirname "$(dirname "$arm_gcc")")"
+            cargo xtask verify embedded-head-to-head \
+              --arm-toolchain "$arm_root" \
+              --qemu "$qemu" \
+              --python "$python" \
+              --prlimit "$prlimit" \
+              --baseline-git-revision "$EMBEDDED_BASE_SHA"
+          EMBEDDED_GATE
+
+      - name: Require embedded head-to-head evidence on success
+        if: success()
+        run: test -f target/verification/embedded-head-to-head-summary.json
+
+      - name: Upload embedded head-to-head evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-embedded-head-to-head
+          path: |
+            target/verification/embedded-head-to-head-summary.json
+            target/verification/embedded-head-to-head/evidence-bundle/**
+          if-no-files-found: error
+
   kani:
     name: Kani symbolic event-history contract
     runs-on: ubuntu-24.04
@@ -246,6 +312,48 @@ jobs:
           name: kani-proof-summary
           path: target/verification/kani-summary.json
           if-no-files-found: warn
+
+  lean-pilot:
+    name: Lean production-fragment replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: 4
+      RUST_TEST_THREADS: 4
+      RAYON_NUM_THREADS: 4
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
+
+      - name: GitHub Actions Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
+          diagnostic-endpoint: ''
+
+      - name: Replay the pinned production Rust-to-Lean proofs
+        run: |
+          nix develop .#lean-pilot --command bash -euo pipefail <<'LEAN_PILOT'
+            read -r lean_pilot_toolchain < infra/verification/lean-pilot/lean-toolchain
+            lean_pilot_aeneas_bin="$(dirname "$(command -v aeneas)")"
+            lean_pilot_lean_bin="$(elan run --install "$lean_pilot_toolchain" lean --print-prefix)/bin"
+            export PATH="$lean_pilot_lean_bin:$PATH"
+            (
+              cd infra/verification/lean-pilot
+              lake exe cache get
+            )
+            cargo xtask verify lean-pilot \
+              --aeneas-bin "$lean_pilot_aeneas_bin" \
+              --lean-bin "$lean_pilot_lean_bin"
+          LEAN_PILOT
 
   test:
     name: Test (${{ matrix.os }})
@@ -1121,7 +1229,6 @@ jobs:
             --shard ${{ matrix.shard }}/4 \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
             --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
-            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
@@ -1592,7 +1699,6 @@ jobs:
             --sim-set full \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
             --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
-            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \
@@ -1607,6 +1713,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p target/msl
+          exec 9>target/msl/omc-differential-required.lock
+          flock 9
+          trap 'rm -f target/msl/omc-differential-required' EXIT
           touch target/msl/omc-differential-required
           cargo test --package rumoca --test suite_core \
             omc_differential_semantics::encapsulated_scope_rejection_matches_omc \
@@ -1632,7 +1741,6 @@ jobs:
             --sim-set full \
             --prebuilt-test-binary "$PWD/result-msl-artifacts/bin/msl_tests" \
             --prebuilt-model-worker "$PWD/result-msl-artifacts/bin/rumoca-worker" \
-            --prebuilt-sim-worker "$PWD/result-msl-artifacts/bin/rumoca-sim-worker" \
             --stage-parallelism 3 \
             --sim-parallelism 3 \
             --sim-worker-memory-mb 2048 \

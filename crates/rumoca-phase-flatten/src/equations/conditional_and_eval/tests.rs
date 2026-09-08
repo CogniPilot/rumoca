@@ -456,11 +456,10 @@ fn whole_matrix_equation_creates_compact_structured_family() {
         span: test_span(),
     };
 
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &equation,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("whole-array equation should flatten");
@@ -490,11 +489,10 @@ fn direct_equation_helpers_reject_empty_recovery_nodes_at_owner_span() {
         span,
     };
 
-    let top_level = flatten_equation_with_def_map(
+    let top_level = flatten_equation(
         &ctx,
         &equation,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .err()
@@ -516,7 +514,6 @@ fn direct_equation_helpers_reject_empty_recovery_nodes_at_owner_span() {
         &QualifiedName::new(),
         span,
         &origin,
-        None,
         &crate::test_support::connection_operators(),
     )
     .err()
@@ -554,11 +551,10 @@ fn multi_output_equation_preserves_only_direct_omitted_receivers() {
         span,
     };
 
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &equation(make_call("threeResults", vec![])),
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .expect("an invocation tuple may preserve a direct omitted result slot");
@@ -578,11 +574,10 @@ fn multi_output_equation_preserves_only_direct_omitted_receivers() {
         }
     ));
 
-    let error = flatten_equation_with_def_map(
+    let error = flatten_equation(
         &ctx,
         &equation(make_int(1)),
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .err()
@@ -617,7 +612,7 @@ end OmittedReceiver;
     tree.source_map.add(file_name, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("fixture resolves");
-    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
         resolved.inner(),
         "OmittedReceiver",
     ) {
@@ -629,12 +624,12 @@ end OmittedReceiver;
             panic!("fixture instantiation failed: {error}")
         }
     };
-    rumoca_phase_typecheck::typecheck_instanced(&resolved, &mut overlay, "OmittedReceiver")
-        .expect("fixture typechecks");
-    let tree = resolved.into_inner();
-    let source_map = tree.source_map.clone();
-    let flat =
-        crate::flatten_ref(&tree, &overlay, "OmittedReceiver").expect("omitted receiver flattens");
+    let typed =
+        rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "OmittedReceiver")
+            .expect("fixture typechecks");
+    let source_map = resolved.inner().source_map.clone();
+    let flat = crate::flatten_typed(typed, crate::FlattenOptions::default())
+        .expect("omitted receiver flattens");
     assert!(flat.equations.iter().any(|equation| {
         matches!(
             &equation.residual,
@@ -643,7 +638,7 @@ end OmittedReceiver;
                     if matches!(elements.get(1), Some(rumoca_core::Expression::Empty { .. })))
         )
     }));
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("DAE construction consumes the preserved omitted receiver");
 }
 
@@ -799,11 +794,10 @@ fn test_lookup_parameter_in_scope_does_not_drop_type_alias_segment() {
 fn test_flatten_for_equation_records_iteration_grouping() {
     let ctx = Context::new();
     let inst_eq = simple_index_for_equation(1, 3);
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &inst_eq,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .unwrap();
@@ -826,11 +820,10 @@ fn test_flatten_for_equation_records_iteration_grouping() {
 fn test_flatten_empty_for_equation_produces_zero_rows() {
     let ctx = Context::new();
     let inst_eq = simple_index_for_equation(1, 0);
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &inst_eq,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .unwrap();
@@ -860,11 +853,10 @@ fn test_flatten_nested_for_equation_records_cartesian_iterations() {
         span: test_span(),
     };
 
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &inst_eq,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .unwrap();
@@ -908,11 +900,10 @@ fn test_flatten_nested_for_equation_lifts_inner_grouping() {
         span: test_span(),
     };
 
-    let flattened = flatten_equation_with_def_map(
+    let flattened = flatten_equation(
         &ctx,
         &inst_eq,
         &QualifiedName::new(),
-        None,
         &crate::test_support::connection_operators(),
     )
     .unwrap();
@@ -1012,13 +1003,19 @@ fn test_eval_fallback_timing_stats_record_calls() {
         Some(7)
     );
     assert!(ctx.has_cached_eval_fallback_context());
-    let first_ctx_ptr = ctx.eval_fallback_context() as *const _;
+    let Ok(first_ctx) = ctx.eval_fallback_context() else {
+        panic!("valid empty function catalog must build");
+    };
+    let first_ctx_ptr = first_ctx as *const _;
 
     assert_eq!(
         try_eval_with_rumoca_eval_const(&ctx, &make_int(11), &prefix),
         Some(11)
     );
-    let second_ctx_ptr = ctx.eval_fallback_context() as *const _;
+    let Ok(second_ctx) = ctx.eval_fallback_context() else {
+        panic!("cached valid function catalog must remain available");
+    };
+    let second_ctx_ptr = second_ctx as *const _;
     assert_eq!(first_ctx_ptr, second_ctx_ptr);
 
     let stats = crate::flatten_phase_timing_stats();
@@ -1028,4 +1025,52 @@ fn test_eval_fallback_timing_stats_record_calls() {
         stats.eval_fallback.calls,
         baseline,
     );
+}
+
+#[test]
+fn eval_fallback_context_retains_pending_identity_without_poisoning_unrelated_evaluation() {
+    let mut ctx = Context::new();
+    let function = rumoca_core::Function::new(
+        "Pkg.invalid",
+        rumoca_core::DefId::new(31_001),
+        rumoca_core::Span::DUMMY,
+    );
+    ctx.functions.insert("Pkg.invalid".to_string(), function);
+
+    let Ok(first_ctx) = ctx.eval_fallback_context() else {
+        panic!("a pending callable is retained as pending authority");
+    };
+    let first_ctx_ptr = first_ctx as *const _;
+    assert!(ctx.has_cached_eval_fallback_context());
+
+    let prefix = QualifiedName::new();
+    assert_eq!(
+        try_eval_with_rumoca_eval_const(&ctx, &make_int(7), &prefix),
+        Some(7),
+        "an unrelated constant must remain evaluable"
+    );
+    let Ok(second_ctx) = ctx.eval_fallback_context() else {
+        panic!("the cached mixed-authority context must remain available");
+    };
+    assert_eq!(first_ctx_ptr, second_ctx as *const _);
+}
+
+#[test]
+fn eval_fallback_catalog_treats_alias_map_repetition_as_one_exact_fact() {
+    let mut ctx = Context::new();
+    let mut function = rumoca_core::Function::new(
+        "Pkg.f",
+        rumoca_core::DefId::new(31_002),
+        rumoca_core::Span::DUMMY,
+    );
+    function.def_id = Some(rumoca_core::DefId::new(31_002));
+    function.instance_id = Some(rumoca_core::FunctionInstanceId::new(31_002));
+    ctx.functions.insert("Pkg.f".to_string(), function.clone());
+    ctx.functions.insert("f".to_string(), function.clone());
+
+    let Ok(eval_ctx) = ctx.eval_fallback_context() else {
+        panic!("two map exposures of one exact function fact must issue once");
+    };
+    let mut catalog = eval_ctx.clone();
+    assert!(catalog.try_add_function(function).is_err());
 }

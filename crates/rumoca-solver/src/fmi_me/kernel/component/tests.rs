@@ -10,6 +10,8 @@
 use super::*;
 use rumoca_ir_solve as solve;
 
+use crate::test_support::empty_binary64_first_product_model;
+
 fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
     let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2);
     solve::ScalarProgramBlock::with_source_span(
@@ -26,6 +28,111 @@ fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarPr
 /// probe instead of the event time differs by ~`ALGEBRAIC_SLOPE * 2 * tol`,
 /// which no bit-exact comparison can absorb.
 const ALGEBRAIC_SLOPE: f64 = 1.0e6;
+
+struct SteepAlgebraicSystems {
+    solve_layout: solve::SolveLayout,
+    continuous: solve::ContinuousSolveSystem,
+    discrete: solve::DiscreteSolveSystem,
+    events: solve::SolveEventPartition,
+    clocks: solve::SolveClockPartition,
+}
+
+fn steep_algebraic_implicit_program() -> solve::ScalarProgramBlock {
+    use solve::LinearOp::{Binary, Const, LoadTime, LoadY, StoreOutput};
+
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi_me_event_entry_implicit.mo"),
+        1,
+        2,
+    )
+    .require_provenance("fmi_me event-entry implicit fixture")
+    .expect("fixture span is source-backed");
+    solve::ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            LoadY { dst: 0, index: 1 },
+            LoadTime { dst: 1 },
+            Const {
+                dst: 2,
+                value: ALGEBRAIC_SLOPE,
+            },
+            Binary {
+                dst: 3,
+                op: solve::BinaryOp::Mul,
+                lhs: 1,
+                rhs: 2,
+            },
+            Binary {
+                dst: 4,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 3,
+            },
+            StoreOutput { src: 4 },
+        ]],
+        vec![span.into()],
+        vec![1],
+    )
+    .expect("event-entry implicit program is computable")
+}
+
+fn steep_algebraic_systems(
+    implicit: solve::ScalarProgramBlock,
+    derivative: solve::ScalarProgramBlock,
+) -> SteepAlgebraicSystems {
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string(), "a".to_string()],
+            ..Default::default()
+        },
+        state_scalar_count: 1,
+        algebraic_scalar_count: 1,
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition {
+        root_conditions: block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::LoadTime { dst: 1 },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ]],
+            "fmi_me_event_entry_root.mo",
+        ),
+        root_relation_memory_targets: vec![None],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+        scheduled_time_events: vec![1.0],
+        ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+        implicit_row_targets: vec![None, Some(solve::scalar_slot_y(1))],
+        derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+        algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+            blocks: vec![solve::AlgebraicProjectionBlock {
+                rows: vec![1],
+                y_indices: vec![1],
+                tearing: None,
+            }],
+        },
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    SteepAlgebraicSystems {
+        solve_layout,
+        continuous,
+        discrete,
+        events,
+        clocks,
+    }
+}
 
 #[test]
 fn a_coincident_dynamic_deadline_keeps_the_latest_owner_coordinate() {
@@ -47,83 +154,47 @@ fn a_coincident_dynamic_deadline_keeps_the_latest_owner_coordinate() {
 
 /// `der(x) = 1`, `a = ALGEBRAIC_SLOPE * time`, with a time event at `t = 1`.
 fn steep_algebraic_time_event_model() -> solve::SolveModel {
-    use solve::LinearOp::{Binary, Const, LoadSeed, LoadTime, LoadY, StoreOutput};
+    use solve::LinearOp::{Const, LoadSeed, StoreOutput};
+
     let derivative = block(
         vec![vec![Const { dst: 0, value: 1.0 }, StoreOutput { src: 0 }]],
         "fmi_me_event_entry_derivative.mo",
     );
-    let implicit = block(
-        vec![
-            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
-            vec![
-                LoadY { dst: 0, index: 1 },
-                LoadTime { dst: 1 },
-                Const {
-                    dst: 2,
-                    value: ALGEBRAIC_SLOPE,
-                },
-                Binary {
-                    dst: 3,
-                    op: solve::BinaryOp::Mul,
-                    lhs: 1,
-                    rhs: 2,
-                },
-                Binary {
-                    dst: 4,
-                    op: solve::BinaryOp::Sub,
-                    lhs: 0,
-                    rhs: 3,
-                },
-                StoreOutput { src: 4 },
-            ],
-        ],
-        "fmi_me_event_entry_implicit.mo",
+    let implicit = steep_algebraic_implicit_program();
+    let implicit_jvp_span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi_me_event_entry_implicit_jvp.mo"),
+        1,
+        2,
     );
-    let implicit_jvp = block(
-        vec![
-            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
-            vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }],
-        ],
-        "fmi_me_event_entry_implicit_jvp.mo",
-    );
+    let implicit_jvp = solve::ScalarProgramBlock::with_output_indices(
+        vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        vec![implicit_jvp_span],
+        vec![1],
+    )
+    .expect("event-entry implicit JVP matches the sparse implicit row owner");
     let derivative_jvp = block(
         vec![vec![Const { dst: 0, value: 0.0 }, StoreOutput { src: 0 }]],
         "fmi_me_event_entry_derivative_jvp.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            continuous: solve::ContinuousSolveSystem {
-                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
-                implicit_row_targets: vec![
-                    Some(solve::scalar_slot_y(0)),
-                    Some(solve::scalar_slot_y(1)),
-                ],
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
-                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
-                    blocks: vec![solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                    }],
-                },
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                scheduled_time_events: vec![1.0],
-                ..Default::default()
-            },
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string(), "a".to_string()],
-                    ..Default::default()
-                },
-                state_scalar_count: 1,
-                algebraic_scalar_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        artifacts: solve::SolveArtifacts {
+    let SteepAlgebraicSystems {
+        solve_layout,
+        continuous,
+        discrete,
+        events,
+        clocks,
+    } = steep_algebraic_systems(implicit, derivative);
+    let model = crate::test_support::custom_artifact_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(Default::default(), 2, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("event-entry fixture satisfies the checked root contract"),
+        artifacts: solve::SolveArtifactInputs {
             continuous: solve::ContinuousSolveArtifacts {
                 implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
                     implicit_jvp.clone(),
@@ -132,22 +203,70 @@ fn steep_algebraic_time_event_model() -> solve::SolveModel {
                 full_jacobian_v: derivative_jvp,
                 ..Default::default()
             },
-            ..Default::default()
+            ..solve::SolveArtifactInputs::empty()
         },
         initial_y: vec![0.0, 0.0],
         solver_nominals: vec![1.0, 1.0],
-        visible_names: vec!["x".to_string(), "a".to_string()],
-        ..Default::default()
-    }
+        ..empty_binary64_first_product_model()
+    };
+    with_steep_algebraic_event_catalog(model)
 }
 
-fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
-    let mut model = model.clone();
-    model.problem.continuous.refresh_owners =
-        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
-            .expect("event-entry fixture refresh owners construct");
+/// Attach the explicit Real scalar catalog for the steep-algebraic event
+/// model. Split out for length; every fixture field is unchanged.
+fn with_steep_algebraic_event_catalog(model: solve::SolveModel) -> solve::SolveModel {
+    let provenance = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("fmi_me_event_entry_variables.mo"),
+        1,
+        2,
+    );
+    crate::test_support::with_explicit_real_scalar_catalog(
+        model,
+        vec![
+            crate::test_support::RealScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(1),
+                name: "x".to_string(),
+                storage: solve::scalar_slot_y(0),
+                role: solve::SolveVariableStorageRole::State,
+                causality: solve::SolveVariableCausality::Local,
+                variability: solve::SolveVariableVariability::Continuous,
+                fixed: rumoca_core::Fixity::Fixed,
+                start: 0.0,
+                nominal: Some(1.0),
+                provenance,
+            },
+            crate::test_support::RealScalarVariableFixture {
+                source_occurrence: crate::test_support::fixture_source_occurrence(2),
+                name: "a".to_string(),
+                storage: solve::scalar_slot_y(1),
+                role: solve::SolveVariableStorageRole::Algebraic,
+                causality: solve::SolveVariableCausality::Local,
+                variability: solve::SolveVariableVariability::Continuous,
+                fixed: rumoca_core::Fixity::Free,
+                start: 0.0,
+                nominal: Some(1.0),
+                provenance,
+            },
+        ],
+        block(
+            vec![
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            "fmi_me_event_entry_visible.mo",
+        ),
+    )
+}
+
+fn instantiate(model: solve::SolveModel) -> SolveMeKernel {
     SolveMeKernel::instantiate(
-        MeModelSource::fixture(&model),
+        MeModelSource::fixture(crate::test_support::fmi_component(model)),
         &MeInstanceConfig::new("fmi-me-event-entry", 1.0e-4, 0.0, 2.0)
             .expect("event-entry instance configuration constructs"),
     )
@@ -156,9 +275,9 @@ fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
 
 #[test]
 fn a_scheduled_event_snapshot_uses_a_one_ulp_left_limit() {
-    let mut kernel = instantiate(&steep_algebraic_time_event_model());
+    let mut kernel = instantiate(steep_algebraic_time_event_model());
     let event_time = 1.0_f64;
-    let probe_time = timeline::event_left_probe_time(event_time, kernel.tolerance);
+    let probe_time = timeline::event_left_probe_time(event_time, kernel.body.tolerance);
     let left_time = timeline::event_left_limit_time(event_time);
     assert!(
         probe_time < event_time,
@@ -170,26 +289,28 @@ fn a_scheduled_event_snapshot_uses_a_one_ulp_left_limit() {
     // continuous state is already at the event time, while the retained
     // solver guess was last refreshed at the widened left probe.
     let stale_guess = kernel
+        .body
         .runtime
         .full_solver_y(
             probe_time,
             &[probe_time],
-            &kernel.params,
+            &kernel.body.params,
             settle.tol,
             settle.max_iters,
         )
         .expect("the probe-time evaluation succeeds");
-    kernel.states = vec![event_time];
-    kernel.time = event_time;
-    kernel.advance_state_to_event_right_limit = true;
-    *kernel.solver_y_guess.borrow_mut() = stale_guess.clone();
+    kernel.body.states = vec![event_time];
+    kernel.body.time = event_time;
+    kernel.body.advance_state_to_event_right_limit = true;
+    *kernel.body.solver_y_guess.borrow_mut() = stale_guess.clone();
 
     let left = kernel
+        .body
         .runtime
         .full_solver_y(
             left_time,
             &[event_time],
-            &kernel.params,
+            &kernel.body.params,
             settle.tol,
             settle.max_iters,
         )
@@ -204,12 +325,19 @@ fn a_scheduled_event_snapshot_uses_a_one_ulp_left_limit() {
         "the retained guess must be distinguishable from the adjacent left limit"
     );
 
-    let (event_pre_y, _) = kernel
-        .event_pre_for_update(
+    kernel
+        .body
+        .prepare_event_pre_for_update(
             event_time,
             RuntimeEventStop::static_event(EventPreMode::EventEntry),
         )
         .expect("the event-entry snapshot is available");
+    let event_pre_y = kernel
+        .body
+        .pending_event_pre_y
+        .get("test event-entry snapshot")
+        .expect("test latch")
+        .to_vec();
 
     assert_eq!(
         event_pre_y.len(),
@@ -235,42 +363,51 @@ fn a_scheduled_event_snapshot_uses_a_one_ulp_left_limit() {
 
 #[test]
 fn a_located_root_snapshot_uses_its_left_probe() {
-    let mut kernel = instantiate(&steep_algebraic_time_event_model());
+    let mut kernel = instantiate(steep_algebraic_time_event_model());
     let event_time = 1.0_f64;
-    let probe_time = timeline::event_left_probe_time(event_time, kernel.tolerance);
+    let probe_time = timeline::event_left_probe_time(event_time, kernel.body.tolerance);
     let settle = kernel.numerics_settle();
-    kernel.states = vec![event_time];
-    kernel.time = event_time;
-    kernel.advance_state_to_event_right_limit = false;
-    *kernel.solver_y_guess.borrow_mut() = vec![event_time, -1.0];
+    kernel.body.states = vec![event_time];
+    kernel.body.time = event_time;
+    kernel.body.advance_state_to_event_right_limit = false;
+    *kernel.body.solver_y_guess.borrow_mut() = vec![event_time, -1.0];
 
     let left = kernel
+        .body
         .runtime
         .full_solver_y(
             probe_time,
             &[event_time],
-            &kernel.params,
+            &kernel.body.params,
             settle.tol,
             settle.max_iters,
         )
         .expect("the left-probe evaluation succeeds");
     let exact = kernel
+        .body
         .runtime
         .full_solver_y(
             event_time,
             &[event_time],
-            &kernel.params,
+            &kernel.body.params,
             settle.tol,
             settle.max_iters,
         )
         .expect("the event-time evaluation succeeds");
 
-    let (event_pre_y, _) = kernel
-        .event_pre_for_update(
+    kernel
+        .body
+        .prepare_event_pre_for_update(
             event_time,
             RuntimeEventStop::static_event(EventPreMode::EventEntry),
         )
         .expect("the event-entry snapshot is available");
+    let event_pre_y = kernel
+        .body
+        .pending_event_pre_y
+        .get("test event-entry snapshot")
+        .expect("test latch")
+        .to_vec();
 
     assert_eq!(event_pre_y[0].to_bits(), event_time.to_bits());
     assert_eq!(event_pre_y[1].to_bits(), left[1].to_bits());
@@ -291,57 +428,114 @@ fn observation_clock_alias_model() -> solve::SolveModel {
         ]],
         "fmi_me_observation_clock_alias.mo",
     );
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(indexmap::IndexMap::new(), 0, 2),
-            discrete: solve::DiscreteSolveSystem {
-                rhs,
-                update_targets: vec![solve::scalar_slot_p(1)],
-                row_roles: vec![solve::DiscreteRowRole::Equation],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
-                observation_refresh: vec![true],
-                observation_refresh_reads_y: false,
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![None],
-                ..Default::default()
-            },
-            clocks: solve::SolveClockPartition {
-                periodic_event_schedules: vec![schedule],
-                activation_parameter_indices: vec![0],
-            },
-            solve_layout: solve::SolveLayout {
-                parameter_count: 2,
-                compiled_parameter_len: 2,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        parameters: vec![1.0, 1.0],
+    let solve_layout = solve::SolveLayout {
+        compiled_parameter_len: 2,
         ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem {
+        rhs,
+        update_targets: vec![solve::scalar_slot_p(1)],
+        row_roles: vec![solve::DiscreteRowRole::EventAction],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+        observation_refresh: vec![true],
+        observation_refresh_reads_y: false,
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+        clock_owners: vec![None],
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition {
+        periodic_event_schedules: vec![schedule],
+        activation_parameter_indices: vec![0],
+    };
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(indexmap::IndexMap::new(), 0, 2),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("observation fixture satisfies the checked root contract"),
+        parameters: vec![1.0, 1.0],
+        ..empty_binary64_first_product_model()
     }
 }
 
 #[test]
-fn public_observation_refreshes_clock_alias_without_mutating_event_state() {
+fn private_observation_refreshes_clock_alias_without_mutating_event_state() {
     let event_time = 0.1_f64;
     for observation_time in [event_time.next_down(), event_time, event_time.next_up()] {
-        let mut kernel = instantiate(&observation_clock_alias_model());
-        kernel.time = observation_time;
-        kernel.params = vec![1.0, 1.0];
+        let mut kernel = instantiate(observation_clock_alias_model());
+        kernel.body.time = observation_time;
+        kernel.body.params = vec![1.0, 1.0];
 
-        let observation = kernel
-            .observe()
-            .expect("the public clock-alias observation refresh converges");
+        let (_, observed_parameters) = kernel
+            .body
+            .observation_coordinate()
+            .expect("the private clock-alias observation refresh converges");
 
         assert_eq!(
-            observation.parameters,
+            observed_parameters,
             vec![0.0, 0.0],
             "public observation sees neither the event-engine clock leaf nor its alias"
         );
         assert_eq!(
-            kernel.params,
+            kernel.body.params,
             vec![1.0, 1.0],
             "observation must not change the canonical event-iteration coordinate"
         );
+    }
+}
+
+#[test]
+fn snapshot_oracle_detects_a_frozen_indicator_domain_bit_ablation() {
+    let mut kernel = instantiate(steep_algebraic_time_event_model());
+    kernel
+        .enter_initialization_mode(0.0)
+        .expect("initialization starts");
+    kernel
+        .exit_initialization_mode()
+        .expect("initialization settles");
+    kernel
+        .update_discrete_states()
+        .expect("the initial event settles");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("continuous-time entry freezes the settled indicator domain");
+    assert_eq!(kernel.body.indicator_storage.frozen_domains().len(), 1);
+    let saved = kernel.fmu_state();
+    assert!(kernel.verification_matches_snapshot(&saved));
+
+    kernel.body.indicator_storage.flip_frozen_domain(0);
+    assert!(!kernel.verification_matches_snapshot(&saved));
+}
+
+#[test]
+fn nonfinite_evaluator_event_timestamps_are_not_replaced() {
+    let mut kernel = instantiate(steep_algebraic_time_event_model());
+    for outcome in [
+        EventActionOutcome::AssertionFailed {
+            time: f64::NAN,
+            message: "invalid assertion time".to_owned(),
+        },
+        EventActionOutcome::Terminated {
+            time: f64::INFINITY,
+            message: "invalid termination time".to_owned(),
+        },
+    ] {
+        let error = kernel
+            .body
+            .record_event_action_outcome(outcome, 1.25)
+            .expect_err("the component must preserve evaluator timestamp refusal");
+        assert!(matches!(
+            error.kind(),
+            MeError::NonFiniteEventActionTime { .. }
+        ));
+        assert!(kernel.body.termination.is_none());
     }
 }

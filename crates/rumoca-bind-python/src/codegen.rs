@@ -2,7 +2,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use rumoca_compile::codegen::targets::RenderedTargetFile;
+use rumoca_compile::codegen::targets::CompletedRenderedFile;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -41,14 +41,14 @@ pub struct CodegenResult {
 }
 
 impl CodegenResult {
-    pub(crate) fn new(target: String, files: Vec<RenderedTargetFile>) -> Self {
+    pub(crate) fn new(target: String, files: Vec<CompletedRenderedFile>) -> Self {
         Self {
             target,
             files: files
                 .into_iter()
                 .map(|f| GeneratedFile {
-                    path: f.path,
-                    content: f.content,
+                    path: f.path().to_owned(),
+                    content: f.content().to_owned(),
                 })
                 .collect(),
         }

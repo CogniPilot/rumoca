@@ -173,7 +173,7 @@ impl ExpressionRewriter for InstanceScopeRewriter {
         subscripts: &[rumoca_core::Subscript],
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
-        let name = if name.component_ref().is_none() {
+        let name = if name.component_ref().is_none() || name.structured_binder().is_some() {
             name.clone()
         } else {
             if name
@@ -225,6 +225,28 @@ mod tests {
             subscripts: Vec::new(),
             span,
         }
+    }
+
+    #[test]
+    fn instance_scope_attachment_preserves_structured_binder_identity() {
+        let binder = rumoca_core::StructuredIndexBinderId::new(0);
+        let mut expression = reference_expression("i", 91);
+        let Expression::VarRef { name, .. } = &mut expression else {
+            panic!("test expression is a variable reference");
+        };
+        *name = name
+            .clone()
+            .with_structured_binder(binder)
+            .expect("source loop token accepts its domain-local identity");
+
+        attach_reference_scope(&mut expression, rumoca_core::InstanceId::new(7))
+            .expect("instance-scope attachment preserves lexical binders");
+
+        let Expression::VarRef { name, .. } = expression else {
+            panic!("scope attachment preserves the expression shape");
+        };
+        assert_eq!(name.structured_binder(), Some(binder));
+        assert_eq!(name.instance_id(), None);
     }
 
     fn target_reference_with_index(index: Expression, span: Span) -> ComponentReference {
@@ -376,12 +398,22 @@ mod tests {
         tree.source_map.add(file_name, IDENTITY_AUDIT_SOURCE);
         let resolved = rumoca_phase_resolve::resolve(rumoca_ir_ast::ParsedTree::new(tree))
             .expect("fixture resolves");
-        let instanced = rumoca_phase_instantiate::instantiate(resolved, "IdentityAudit")
-            .expect("fixture instantiates");
-        let rumoca_ir_ast::InstancedTree { tree, mut overlay } = instanced;
-        rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "IdentityAudit")
-            .expect("fixture typechecks");
-        crate::flatten_ref(&tree, &overlay, "IdentityAudit").expect("fixture flattens")
+        let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+            resolved.inner(),
+            "IdentityAudit",
+        ) {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+        let typed =
+            rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "IdentityAudit")
+                .expect("fixture typechecks");
+        crate::flatten_typed(typed, crate::FlattenOptions::default()).expect("fixture flattens")
     }
 
     #[test]

@@ -3,10 +3,10 @@
 use rumoca_eval_solve as solve_eval;
 use rumoca_ir_solve as solve;
 
-use crate::RuntimeSolveError;
+use crate::{NativeExecutionOwner, RuntimeSolveError};
 
-use super::SolveRuntime;
 use super::event_update::{DiscretePreSnapshot, EventUpdateRowFilter};
+use super::{ExecutionArm, SolveRuntime};
 
 /// Result of one atomic transaction invocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,11 +25,13 @@ pub(super) struct PreparedEventTransactionCoverage {
 
 impl PreparedEventTransactionCoverage {
     pub(super) fn new(model: &solve::SolveModel) -> Self {
-        let mut discrete_rows = vec![false; model.problem.discrete.rhs.len()];
-        let mut guarded_assignments = vec![false; model.problem.discrete.guarded_assignments.len()];
-        let mut structured_updates = vec![false; model.problem.discrete.structured_updates.len()];
-        let mut event_actions = vec![false; model.problem.events.actions.len()];
-        for transaction in &model.problem.discrete.event_transactions {
+        let mut discrete_rows = vec![false; model.problem().discrete().rhs.len()];
+        let mut guarded_assignments =
+            vec![false; model.problem().discrete().guarded_assignments.len()];
+        let mut structured_updates =
+            vec![false; model.problem().discrete().structured_updates.len()];
+        let mut event_actions = vec![false; model.problem().events().actions.len()];
+        for transaction in &model.problem().discrete().event_transactions {
             mark_producer_coverage(
                 transaction,
                 &mut discrete_rows,
@@ -96,8 +98,8 @@ impl SolveRuntime {
         }
         let mut evaluated = Vec::new();
         for transaction_index in 0..self.event_transaction_programs.len() {
-            let clock_owned =
-                self.model.problem.discrete.event_transactions[transaction_index].is_clock_owned();
+            let clock_owned = self.model.problem().discrete().event_transactions[transaction_index]
+                .is_clock_owned();
             // Clock-owned transactions are issued outer-producer steps in the
             // clock partition and must evaluate there against its evolving
             // private work state. This path retains only future unclocked
@@ -151,8 +153,8 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         for (transaction_index, transaction) in self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .event_transactions
             .iter()
             .enumerate()
@@ -199,8 +201,8 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         let owner = self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .event_transactions
             .get(transaction_index)
             .ok_or_else(|| RuntimeSolveError::solve_ir("event transaction is out of bounds"))?;
@@ -210,8 +212,8 @@ impl SolveRuntime {
         for &clock in owner.clock_owners() {
             let schedule = self
                 .model
-                .problem
-                .clocks
+                .problem()
+                .clocks()
                 .periodic_schedule(clock)
                 .ok_or_else(|| RuntimeSolveError::solve_ir("transaction clock is out of bounds"))?;
             if crate::timeline::periodic_schedule_matches_time(schedule, time) {
@@ -227,8 +229,8 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         let program = self
             .model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .event_transactions
             .get(transaction_index)
             .ok_or_else(|| RuntimeSolveError::solve_ir("event transaction is out of bounds"))?;
@@ -280,20 +282,26 @@ impl SolveRuntime {
         let output = outputs.get_mut(transaction_index).ok_or_else(|| {
             RuntimeSolveError::solve_ir("event transaction output scratch is out of bounds")
         })?;
-        if let Some(compiled) = self
-            .compiled_event_transactions
+        let arm = self
+            .execution_plan
+            .event_transactions
             .get(transaction_index)
-            .and_then(Option::as_ref)
-        {
-            compiled.call(&input, output).map_err(|error| {
-                RuntimeSolveError::solve_ir(format!(
-                    "compiled event transaction {transaction_index} failed: {error}"
-                ))
+            .ok_or_else(|| {
+                RuntimeSolveError::solve_ir("event transaction execution arm is out of bounds")
             })?;
-            return Ok(());
+        match arm {
+            ExecutionArm::Native(compiled) => compiled.call(&input, output).map_err(|reason| {
+                RuntimeSolveError::native_call(
+                    NativeExecutionOwner::EventTransaction {
+                        index: transaction_index,
+                    },
+                    reason,
+                )
+            }),
+            ExecutionArm::Interpreter(_selected_arm) => transaction
+                .eval_payload(self.model.pure_calls(), &input, output)
+                .map_err(Into::into),
         }
-        transaction.eval_payload(&self.model.pure_calls, &input, output)?;
-        Ok(())
     }
 
     /// Return the first failed checked assertion without committing any
@@ -394,8 +402,8 @@ fn prevalidate_target_storage(
 ) -> Result<(), RuntimeSolveError> {
     for target in targets {
         let valid = match target {
-            solve::ScalarSlot::Y { index, .. } => *index < y.len(),
-            solve::ScalarSlot::P { index, .. } => *index < p.len(),
+            solve::ScalarSlot::Y { index } => *index < y.len(),
+            solve::ScalarSlot::P { index } => *index < p.len(),
             solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => false,
         };
         if !valid {
@@ -427,14 +435,25 @@ mod tests {
             .unwrap();
         let (pure_calls, transaction) = transaction_program(span, provenance);
         let problem = transaction_problem(provenance, transaction);
-        let model = solve::SolveModel {
-            problem,
-            pure_calls,
+        crate::test_support::checked_solve_model! {
+            problem: problem,
+            pure_calls: pure_calls,
             parameters: vec![0.0; 4],
-            ..solve::SolveModel::default()
-        };
-        model.validate().unwrap();
-        model
+            visible_value_rows: solve::ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 2 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                provenance,
+            )
+            .expect("event transaction visibility row is computable"),
+            variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+                crate::test_support::RealScalarVariableFixture::discrete_real(
+                    1, "target", 2, 0.0, span,
+                ),
+            ]),
+            ..crate::test_support::empty_binary64_first_product_model()
+        }
     }
 
     fn transaction_program(
@@ -445,6 +464,7 @@ mod tests {
         let arithmetic = solve::SolveArithmeticProfile::construct(
             solve::SolveRealFormat::Binary64,
             integer_domain,
+            rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
         );
         let real = solve::SolveValueType::scalar(solve::SolveScalarType::real(arithmetic));
         let boolean = solve::SolveValueType::scalar(solve::SolveScalarType::Boolean);
@@ -515,43 +535,52 @@ mod tests {
             provenance,
         )
         .unwrap();
-        solve::SolveProblem {
-            layout: solve::VarLayout::from_parts(IndexMap::new(), 0, 4),
-            solve_layout: transaction_solve_layout(),
-            discrete: solve::DiscreteSolveSystem {
-                rhs: rhs.clone(),
-                update_targets: vec![solve::scalar_slot_p(2)],
-                row_roles: vec![solve::DiscreteRowRole::Equation],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
-                observation_refresh: vec![false],
-                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
-                clock_owners: vec![None],
-                event_iteration_plan: solve::EventIterationPlan {
-                    runs: vec![solve::EventIterationRun {
-                        variable: 0,
-                        pre_binding_start: 0,
-                        owner: solve::EventIterationOwner::EventTransaction {
-                            program_index: 0,
-                            target_index: 0,
-                        },
-                    }],
-                },
-                event_transactions: vec![transaction],
-                ..solve::DiscreteSolveSystem::default()
+        let solve_layout = transaction_solve_layout();
+        let discrete = solve::DiscreteSolveSystem {
+            rhs: rhs.clone(),
+            update_targets: vec![solve::scalar_slot_p(2)],
+            row_roles: vec![solve::DiscreteRowRole::Equation],
+            pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+            observation_refresh: vec![false],
+            integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+            clock_owners: vec![None],
+            event_iteration_plan: solve::EventIterationPlan {
+                runs: vec![solve::EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: solve::EventIterationOwner::EventTransaction {
+                        program_index: 0,
+                        target_index: 0,
+                    },
+                }],
             },
-            events: solve::SolveEventPartition {
-                actions,
-                action_conditions: rhs,
-                ..solve::SolveEventPartition::default()
-            },
-            ..solve::SolveProblem::default()
-        }
+            event_transactions: vec![transaction],
+            ..solve::DiscreteSolveSystem::default()
+        };
+        let events = solve::SolveEventPartition {
+            actions,
+            action_conditions: rhs,
+            ..solve::SolveEventPartition::default()
+        };
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture::empty();
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, 4),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("event transaction fixture satisfies the checked root contract")
     }
 
     fn transaction_solve_layout() -> solve::SolveLayout {
         solve::SolveLayout {
             variable_storage_runs: vec![solve::SolveVariableStorageRun {
-                base: solve::scalar_slot_p(2),
+                base: solve::SolveStorageCoordinate::P(2),
                 scalar_count: 1,
                 role: solve::SolveVariableStorageRole::DiscreteReal,
                 value_kind: solve::SolveVariableValueKind::Real,
@@ -574,7 +603,8 @@ mod tests {
     #[test]
     fn failed_predicate_commits_no_target_and_success_commits_whole_tuple() {
         let model = transaction_model();
-        let runtime = SolveRuntime::new_fixture(&model).unwrap();
+        let model = std::sync::Arc::new(model);
+        let runtime = SolveRuntime::new(std::sync::Arc::clone(&model)).unwrap();
         let mut y = Vec::new();
         let mut p = vec![4.5, 0.0, 9.0, 9.0];
 
@@ -597,7 +627,8 @@ mod tests {
     #[test]
     fn checked_transaction_replaces_scalar_row_and_executes_only_on_first_pass() {
         let model = transaction_model();
-        let runtime = SolveRuntime::new_fixture(&model).unwrap();
+        let model = std::sync::Arc::new(model);
+        let runtime = SolveRuntime::new(std::sync::Arc::clone(&model)).unwrap();
         let mut y = Vec::new();
         let mut p = vec![7.25, 1.0, 9.0, 9.0];
         let first = super::super::event_update::DiscretePreSnapshot {

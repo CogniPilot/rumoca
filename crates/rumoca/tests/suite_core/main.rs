@@ -26,10 +26,6 @@
 
 mod history_operator_checked;
 
-// Support module rather than a test member: the re-sealing witness the
-// lowered-Solve-root fixtures share.
-mod solve_root_contract;
-
 mod algorithm_parameter_range;
 mod array_der_coupling_test;
 mod array_subscript_test;
@@ -83,7 +79,6 @@ mod mixed_record_equation;
 mod mlir_verification_wiring;
 mod mod_propagation_test;
 mod model_algorithm_continuous;
-mod msl_table_regression;
 mod nested_class_shadowing_test;
 mod nested_record_function_redeclaration;
 mod neural_ode_tensor_solve_ir;

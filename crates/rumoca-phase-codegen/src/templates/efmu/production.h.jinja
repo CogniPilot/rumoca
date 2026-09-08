@@ -1,0 +1,25 @@
+#ifndef {{ production.presentation.header_guard }}
+#define {{ production.presentation.header_guard }}
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef {{ production.real_abi.c_scalar_type }} {{ production.presentation.real_type }};
+typedef int32_t {{ production.presentation.integer32_type }};
+typedef uint32_t {{ production.presentation.unsigned_integer32_type }};
+typedef bool {{ production.presentation.boolean_type }};
+typedef int32_t {{ production.presentation.status_type }};
+static const {{ production.presentation.status_type }} {{ production.presentation.success_status.identifier }} = INT32_C({{ production.presentation.success_status.signed_i32 }});
+
+typedef struct {{ production.presentation.storage_type }} {
+{%- for declaration in production.declarations %}
+    {{ declaration.type_identifier }} {{ declaration.presentation.component }}{%- for dimension in declaration.dimensions %}[{{ dimension.size }}]{%- endfor %};
+{%- endfor %}
+    {{ production.presentation.unsigned_integer32_type }} {{ production.presentation.error_status_component }};
+} {{ production.presentation.storage_type }};
+
+{%- for method in production.methods %}
+{{ method.return_type }} {{ method.presentation.function }}({{ method.self_parameter_type }} *{{ method.presentation.self_parameter }});
+{%- endfor %}
+
+#endif

@@ -1,6 +1,7 @@
 //! Flatten phase for the Rumoca compiler.
 //!
-//! This crate implements the flattening pass that converts an ast::InstancedTree to a flat::Model.
+//! This crate implements the flattening pass that consumes one Typecheck-minted
+//! `TypedInstancedTree` proof and constructs a flat::Model.
 //! It produces a flat equation system with globally unique variable names (MLS §5.6).
 //!
 //! # Overview
@@ -31,7 +32,11 @@
 //!     }
 //!     InstantiationOutcome::Error(error) => return Err(error),
 //! };
-//! let flat = rumoca_phase_flatten::flatten_ref(resolved.inner(), &overlay, "MyModel")?;
+//! let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "MyModel")?;
+//! let flat = rumoca_phase_flatten::flatten_typed(
+//!     typed,
+//!     rumoca_phase_flatten::FlattenOptions::default(),
+//! )?;
 //! ```
 
 mod algorithms;
@@ -46,6 +51,8 @@ mod constant_eval;
 mod constant_extraction;
 #[cfg(test)]
 mod context_suffix_tests;
+#[cfg(test)]
+mod deferred_receiver_tests;
 mod enum_literals;
 mod equations;
 mod errors;
@@ -117,10 +124,9 @@ use record_constant_arrays::{
     try_extract_record_array_constructor_constant,
 };
 use rumoca_eval_flat::phase_constant::{
-    ParamEvalContext, ParamEvaluator, eval_user_func_real, infer_array_dimensions,
-    infer_array_dimensions_checked, infer_array_dimensions_full_with_functions,
-    looks_like_enum_literal_path, try_eval_flat_expr_enum, try_eval_integer_with_context,
-    try_infer_better_dims,
+    ParamEvalContext, ParamEvaluator, infer_array_dimensions_checked,
+    infer_array_dimensions_checked_with_functions, infer_array_dimensions_full_with_functions,
+    looks_like_enum_literal_path, try_infer_better_dims_with_functions,
 };
 
 /// Options controlling flatten strictness.
@@ -289,49 +295,36 @@ fn concrete_dim_product(dims: &[i64]) -> Option<i64> {
     })
 }
 
-/// Flatten an ast::InstancedTree into a flat::Model.
+/// Flatten one typechecked instanced model into a `flat::Model`.
 ///
-/// This is the main entry point for the flatten phase.
+/// This is the sole production entry point for the flatten phase (SPEC_0029
+/// §4 `flatten -> typecheck` forward proof edge). It consumes the
+/// Typecheck-minted [`rumoca_phase_typecheck::TypedInstancedTree`] by value
+/// (the proof moves exactly once) and reads only its immutable query views.
+/// No raw tree/overlay pair is accepted, so an unchecked or foreign overlay
+/// cannot enter flattening.
 ///
 /// # Arguments
 ///
-/// * `instanced` - The instantiated tree from the instantiate phase
+/// * `typed` - The Typecheck proof, consumed by value
+/// * `options` - Flattening strictness/materialization options
 ///
 /// # Returns
 ///
 /// A `flat::Model` with globally unique variable names and flat equations.
-pub fn flatten(instanced: ast::InstancedTree) -> Result<flat::Model, FlattenError> {
-    flatten_ref_with_options(
-        instanced.inner(),
-        instanced.overlay(),
-        "",
-        FlattenOptions::default(),
+pub fn flatten_typed(
+    typed: rumoca_phase_typecheck::TypedInstancedTree,
+    options: FlattenOptions,
+) -> Result<flat::Model, FlattenError> {
+    flatten_impl(
+        typed.resolved_tree(),
+        typed.overlay(),
+        typed.model_name(),
+        options,
     )
 }
 
-/// Flatten a model from tree and overlay references.
-///
-/// This is more efficient for batch compilation as it doesn't require
-/// ownership of the tree or overlay.
-///
-/// # Arguments
-///
-/// * `tree` - Reference to the class tree
-/// * `overlay` - Reference to the instance overlay
-///
-/// # Returns
-///
-/// A `flat::Model` with globally unique variable names and flat equations.
-pub fn flatten_ref(
-    tree: &ast::ClassTree,
-    overlay: &ast::InstanceOverlay,
-    model_name: &str,
-) -> Result<flat::Model, FlattenError> {
-    flatten_ref_with_options(tree, overlay, model_name, FlattenOptions::default())
-}
-
-/// Flatten a model from references with configurable strictness.
-pub fn flatten_ref_with_options(
+fn flatten_impl(
     tree: &ast::ClassTree,
     overlay: &ast::InstanceOverlay,
     model_name: &str,
@@ -424,15 +417,15 @@ fn finalized_overconstrained_catalog(
         .map(|connection| match connection {
             ast::InstanceConnection::Scalar(connection) => connection.span(),
             ast::InstanceConnection::Family(family) => family.span(),
-        })
-        .unwrap_or(rumoca_core::Span::DUMMY);
+        });
     overlay.finalized_overconstrained().map_err(|error| {
-        FlattenError::invalid_connection_evidence(
-            format!(
-                "flattening requires the finalized overconstrained occurrence catalog: {error}"
-            ),
-            span,
-        )
+        let reason = format!(
+            "flattening requires the finalized overconstrained occurrence catalog: {error}"
+        );
+        match span {
+            Some(span) => FlattenError::invalid_connection_evidence(reason, span),
+            None => FlattenError::internal(reason),
+        }
     })
 }
 
@@ -446,6 +439,62 @@ fn seed_flat_functions_from_context(ctx: &Context, flat: &mut flat::Model) {
             flat.add_function(func.clone());
         }
     }
+}
+
+/// Give the pre-collected callables their Flat instance identity before any
+/// structural fold runs.
+///
+/// The declaration-level folds of `prepare_context_for_equation_flattening`
+/// (declared and literal dimension inference, structural component bindings,
+/// structural Boolean equations) evaluate against `ctx.functions` long before
+/// `finalize_flat_model` collects the Flat catalog, and the evaluator resolves
+/// a user-function call only through the exact occurrence that collected-call
+/// canonicalization attaches. Issuing the identity here, from the very Flat
+/// catalog finalization later extends, gives each pre-collected callable the
+/// one instance it carries in Flat: `Model::add_function` keeps the instance
+/// already minted for a name, so nothing issued here is renumbered later.
+///
+/// The Flat bindings and the seeded function bodies are canonicalized in the
+/// same order finalization uses, so the declared-dimension folds read exact
+/// occurrences from the bindings and a body's nested call (one collected
+/// function calling another) carries its occurrence when the evaluator
+/// executes it. The context catalog is then rebuilt from those identified
+/// Flat entries, keyed by exact callable name: its alias keys served
+/// insertion-time deduplication only, and exact instance resolution requires
+/// one entry per identity.
+pub(crate) fn seed_precollected_callable_identity(
+    ctx: &mut Context,
+    flat: &mut flat::Model,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> Result<(), FlattenError> {
+    seed_flat_functions_from_context(ctx, flat);
+    canonicalize_seeded_flat_calls(flat, tree, class_index)?;
+    let seeded_names = ctx
+        .functions
+        .values()
+        .map(|function| function.name.clone())
+        .collect::<HashSet<_>>();
+    ctx.functions = seeded_names
+        .into_iter()
+        .map(|name| {
+            let identified = flat.functions[&name].clone();
+            (name.to_string(), identified)
+        })
+        .collect();
+    Ok(())
+}
+
+/// Restate the calls Flat holds so far against the seeded catalog.
+pub(crate) fn canonicalize_seeded_flat_calls(
+    flat: &mut flat::Model,
+    tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
+) -> Result<(), FlattenError> {
+    mark_record_constructor_calls(flat, tree);
+    functions::canonicalize_collected_function_calls(flat, class_index)?;
+    mark_record_constructor_calls(flat, tree);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -636,7 +685,7 @@ fn extract_record_aliases(
 
     // Compute transitive closure of aliases (MLS §7.2.3)
     // If A -> B and B -> C, we should have A -> C for efficient resolution.
-    compute_transitive_alias_closure(&mut ctx.record_aliases);
+    compute_transitive_alias_closure(&mut ctx.record_aliases)?;
     Ok(())
 }
 
@@ -657,9 +706,25 @@ fn extract_record_aliases(
 /// Then we infer: stack.cell.stackData -> stack.stackData
 fn compute_transitive_alias_closure(
     aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
-) {
+) -> Result<(), FlattenError> {
     synthesize_intermediate_aliases(aliases);
-    compute_closure_iterations(aliases, 20);
+    loop {
+        let mut entries = aliases
+            .iter()
+            .map(|(source, target)| (source.clone(), target.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+        let mut updates = Vec::new();
+        for (source, target) in entries {
+            if let Some(resolved) = resolve_alias_chain(&target, &source, aliases)? {
+                updates.push((source, resolved));
+            }
+        }
+        if updates.is_empty() {
+            return Ok(());
+        }
+        aliases.extend(updates);
+    }
 }
 
 /// Find parent path alias for a prefix (e.g., "stack.cell.stackData" -> "stack.stackData").
@@ -701,7 +766,8 @@ fn synthesize_intermediate_aliases(
     let mut synthetic: Vec<(rumoca_core::ComponentPath, rumoca_core::ComponentPath)> = Vec::new();
     for target in aliases.values() {
         for i in (2..target.len()).rev() {
-            let prefix = target.prefix(i).expect("prefix index is in range");
+            let prefix =
+                rumoca_core::ComponentPath::from_parts(target.parts().iter().take(i).cloned());
             let already_exists =
                 aliases.contains_key(&prefix) || synthetic.iter().any(|(s, _)| s == &prefix);
             if already_exists {
@@ -721,37 +787,27 @@ fn resolve_alias_chain(
     target: &rumoca_core::ComponentPath,
     source: &rumoca_core::ComponentPath,
     aliases: &rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
-) -> Option<rumoca_core::ComponentPath> {
+) -> Result<Option<rumoca_core::ComponentPath>, FlattenError> {
     let mut current = target.clone();
-    for _ in 0..10 {
-        if let Some(resolved) =
-            alias_paths::resolve_component_alias_once(&current, Some(source), aliases)
-        {
-            current = resolved;
-            continue;
-        }
-        break;
-    }
-    (&current != target && &current != source).then_some(current)
-}
-
-/// Compute transitive closure through iterative resolution.
-fn compute_closure_iterations(
-    aliases: &mut rustc_hash::FxHashMap<rumoca_core::ComponentPath, rumoca_core::ComponentPath>,
-    max_iter: usize,
-) {
-    for _ in 0..max_iter {
-        let updates: Vec<(rumoca_core::ComponentPath, rumoca_core::ComponentPath)> = aliases
-            .iter()
-            .filter_map(|(source, target)| {
-                resolve_alias_chain(target, source, aliases).map(|new| (source.clone(), new))
-            })
-            .collect();
-        if updates.is_empty() {
+    let mut visited = rustc_hash::FxHashSet::default();
+    visited.insert(source.clone());
+    visited.insert(current.clone());
+    while let Some(resolved) =
+        alias_paths::resolve_component_alias_once(&current, Some(source), aliases)
+    {
+        if resolved == current {
             break;
         }
-        aliases.extend(updates);
+        if !visited.insert(resolved.clone()) {
+            return Err(FlattenError::internal(format!(
+                "record alias cycle reaches `{}` while closing `{}`",
+                resolved.as_str(),
+                source.as_str()
+            )));
+        }
+        current = resolved;
     }
+    Ok((&current != target).then_some(current))
 }
 
 /// Resolve constant values from the ast::ClassTree into the evaluation context.
@@ -977,7 +1033,8 @@ mod nested_class_constant_scope_tests {
             .classes
             .insert("CCCV_Cell".to_string(), non_package_class);
 
-        extract_nested_class_constants(&tree, &class_index, &outer, "Outer", &mut ctx);
+        extract_nested_class_constants(&tree, &class_index, &outer, "Outer", &mut ctx)
+            .expect("sourced nested-class fixture extracts constants");
 
         assert_eq!(ctx.parameter_values.get("PkgAlias.nX"), Some(&2));
         assert_eq!(ctx.parameter_values.get("nX"), Some(&2));
@@ -1039,7 +1096,8 @@ mod nested_class_constant_scope_tests {
             "Modelica.Media.Water.IF97_Utilities.BaseIF97",
             "Modelica.Media.Water.IF97_Utilities.BaseIF97",
             &mut ctx,
-        );
+        )
+        .expect("sourced nested-class fixture extracts prefixed constants");
 
         assert!(
             ctx.constant_values
@@ -1107,7 +1165,8 @@ mod nested_class_constant_scope_tests {
                 ("Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties".to_string()),
             ]),
             &mut ctx,
-        );
+        )
+        .expect("sourced referenced-class fixture extracts constants");
 
         assert!(ctx.constant_values.contains_key(
             "Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties.T_start"
@@ -1188,7 +1247,8 @@ mod nested_class_constant_scope_tests {
                 ("Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties".to_string()),
             ]),
             &mut ctx,
-        );
+        )
+        .expect("sourced inherited-class fixture extracts constants");
 
         assert!(ctx.constant_values.contains_key(
             "Modelica.Media.Incompressible.Examples.Glycol47.BaseProperties.T_start"
@@ -1227,7 +1287,7 @@ fn inject_enclosing_class_constants(
         return Ok(());
     }
     for ancestor in &ancestors {
-        extract_nested_class_constants(tree, class_index, ancestor, enclosing_name, ctx);
+        extract_nested_class_constants(tree, class_index, ancestor, enclosing_name, ctx)?;
     }
     extract_ancestor_constants_multi_pass(tree, class_index, enclosing_name, &ancestors, ctx)
 }

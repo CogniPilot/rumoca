@@ -1,10 +1,11 @@
-use crate::compiled::CompiledMlirResidual;
+use crate::compiled::{CompiledMlirResidual, MlirResidualAbi};
 use crate::error::MlirError;
 use crate::options::{MlirBackendOptions, MlirTarget};
-use rumoca_ir_solve::{SolveArtifacts, SolveProblem};
-use rumoca_phase_codegen::{render_solve_template_with_name, templates};
+use rumoca_ir_solve::SolveModel;
+use rumoca_phase_codegen::templates;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 type EvalFnRaw = unsafe extern "C" fn(
@@ -57,11 +58,10 @@ struct CpuCompileArtifacts {
 
 /// Compile using default options (`CpuNative`, `O2`).
 pub fn compile_derivative_rhs(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
     model_name: &str,
 ) -> Result<CompiledMlirResidual, MlirError> {
-    compile_derivative_rhs_with_opts(solve, artifacts, model_name, &MlirBackendOptions::default())
+    compile_derivative_rhs_with_opts(model, model_name, &MlirBackendOptions::default())
 }
 
 /// Compile `solve.continuous.derivative_rhs` to a native shared library via MLIR toolchain
@@ -71,8 +71,7 @@ pub fn compile_derivative_rhs(
 /// For `GpuCuda`/`GpuRocm` targets the required GPU toolchain is not yet wired up
 /// and the function returns `MlirError::ToolNotFound`.
 pub fn compile_derivative_rhs_with_opts(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
     model_name: &str,
     opts: &MlirBackendOptions,
 ) -> Result<CompiledMlirResidual, MlirError> {
@@ -97,46 +96,29 @@ pub fn compile_derivative_rhs_with_opts(
         }
         _ => {}
     }
-    compile_cpu(solve, artifacts, model_name, opts)
+    compile_cpu(model, model_name, opts)
 }
 
 fn compile_cpu(
-    solve: &SolveProblem,
-    artifacts: &SolveArtifacts,
+    model: Arc<SolveModel>,
     model_name: &str,
     opts: &MlirBackendOptions,
 ) -> Result<CompiledMlirResidual, MlirError> {
-    let mlir_text = render_solve_template_with_name(solve, artifacts, mlir_template()?, model_name)
-        .map_err(|e| MlirError::Template(e.to_string()))?;
-    let rows = solve
-        .continuous
-        .derivative_rhs
-        .output_count("mlir derivative_rhs output count")?;
-    let implicit_rows = solve
-        .continuous
-        .implicit_rhs
-        .output_count("mlir implicit_rhs output count")?;
+    let mlir_text = crate::render_mlir_model(Arc::clone(&model), model_name)?;
+    let abi = MlirResidualAbi::from_model(&model);
     let artifacts = compile_cpu_shared_library(&mlir_text, opts)?;
 
-    load_compiled_residual(artifacts, rows, implicit_rows)
-}
-
-fn mlir_template() -> Result<&'static str, MlirError> {
-    templates::builtin_target("mlir")
-        .and_then(|target| target.template_source("mlir.mlir.jinja"))
-        .ok_or(MlirError::MissingBuiltinTemplate {
-            target: "mlir",
-            template: "mlir.mlir.jinja",
-        })
+    load_compiled_residual(artifacts, abi)
 }
 
 fn mlir_asset(path: &'static str) -> Result<&'static [u8], MlirError> {
-    templates::builtin_target("mlir")
-        .and_then(|target| target.asset_bytes(path))
-        .ok_or(MlirError::MissingBuiltinAsset {
+    match path {
+        "runtime/rumoca_runtime.c" => Ok(templates::mlir_runtime_support_c()),
+        _ => Err(MlirError::MissingBuiltinAsset {
             target: "mlir",
             asset: path,
-        })
+        }),
+    }
 }
 
 fn compile_cpu_shared_library(
@@ -226,8 +208,7 @@ fn compile_cpu_shared_library(
 
 fn load_compiled_residual(
     artifacts: CpuCompileArtifacts,
-    rows: usize,
-    implicit_rows: usize,
+    abi: MlirResidualAbi,
 ) -> Result<CompiledMlirResidual, MlirError> {
     let lib = unsafe { libloading::Library::new(&artifacts.so_path) }?;
 
@@ -252,8 +233,7 @@ fn load_compiled_residual(
         eval_fn,
         implicit_fn,
         jvp_fn,
-        rows,
-        implicit_rows,
+        abi,
     ))
 }
 

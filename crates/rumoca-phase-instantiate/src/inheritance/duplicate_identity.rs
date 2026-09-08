@@ -16,6 +16,10 @@
 
 use super::InheritedContent;
 use rumoca_ir_ast::{self as ast, ExpressionTransformer};
+use rumoca_ir_ast::{
+    CalleeSite, ComponentReferenceSite, SemanticReferenceEditor, transform_expression_in_place,
+    transform_subscripts_in_place,
+};
 use std::collections::HashSet;
 
 /// Element names contributed by both the merged content and the incoming base.
@@ -75,31 +79,35 @@ struct MergedReferenceNormalizer<'a> {
 }
 
 impl MergedReferenceNormalizer<'_> {
-    fn names_merged_element(&self, reference: &ast::ComponentReference) -> bool {
+    fn names_merged_element(&self, reference: ast::ComponentReferenceView<'_>) -> bool {
         reference
-            .parts
-            .first()
-            .is_some_and(|part| self.merged.contains(part.ident.text.as_ref()))
+            .parts()
+            .next()
+            .is_some_and(|part| self.merged.contains(part.ident_text()))
+    }
+}
+
+impl MergedReferenceNormalizer<'_> {
+    fn normalize_reference(&mut self, mut reference: SemanticReferenceEditor<'_>) {
+        if self.names_merged_element(reference.view())
+            && let Some(mut root) = reference.part_identity_slots().next()
+        {
+            root.clear_def_id();
+        }
     }
 }
 
 impl ExpressionTransformer for MergedReferenceNormalizer<'_> {
-    fn transform_component_ref_inner(
+    fn transform_component_reference(
         &mut self,
-        mut reference: ast::ComponentReference,
-    ) -> ast::ComponentReference {
-        for part in &mut reference.parts {
-            if let Some(subscripts) = &mut part.subs {
-                *subscripts = subscripts
-                    .drain(..)
-                    .map(|subscript| self.transform_subscript(subscript))
-                    .collect();
-            }
-        }
-        if self.names_merged_element(&reference) {
-            reference.set_root_def_id(None);
-        }
-        reference
+        reference: SemanticReferenceEditor<'_>,
+        _site: ComponentReferenceSite,
+    ) {
+        self.normalize_reference(reference);
+    }
+
+    fn transform_callee(&mut self, callee: SemanticReferenceEditor<'_>, _site: CalleeSite) {
+        self.normalize_reference(callee);
     }
 }
 
@@ -108,23 +116,17 @@ fn normalized_component(component: &ast::Component, merged: &HashSet<String>) ->
     let mut normalized = component.clone();
     let mut normalizer = MergedReferenceNormalizer { merged };
 
-    normalized.start = normalizer.transform_expression(normalized.start);
-    normalized.binding = normalized
-        .binding
-        .map(|binding| normalizer.transform_expression(binding));
-    normalized.condition = normalized
-        .condition
-        .map(|condition| normalizer.transform_expression(condition));
-    normalized.shape_expr = normalized
-        .shape_expr
-        .into_iter()
-        .map(|subscript| normalizer.transform_subscript(subscript))
-        .collect();
-    normalized.modifications = normalized
-        .modifications
-        .into_iter()
-        .map(|(name, value)| (name, normalizer.transform_expression(value)))
-        .collect();
+    transform_expression_in_place(&mut normalizer, &mut normalized.start);
+    if let Some(binding) = normalized.binding.as_mut() {
+        transform_expression_in_place(&mut normalizer, binding);
+    }
+    if let Some(condition) = normalized.condition.as_mut() {
+        transform_expression_in_place(&mut normalizer, condition);
+    }
+    transform_subscripts_in_place(&mut normalizer, &mut normalized.shape_expr);
+    for value in normalized.modifications.values_mut() {
+        transform_expression_in_place(&mut normalizer, value);
+    }
 
     if type_name_is_merged(&normalized.type_name, merged) {
         normalized.type_def_id = None;
@@ -211,7 +213,8 @@ mod tests {
         tree.source_map.add("duplicates.mo", source);
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("source resolves")
-            .into_inner()
+            .inner()
+            .clone()
     }
 
     fn merge_bases_of(source: &str, class_name: &str) -> super::super::InstantiateResult<()> {
@@ -277,6 +280,52 @@ end Conflict;
         assert!(
             merge_bases_of(source, "Conflict").is_err(),
             "bases that bind the same name to different values are not identical"
+        );
+    }
+
+    #[test]
+    fn duplicate_empty_nested_classes_are_identical() {
+        let source = r#"
+partial model LeftBase
+  class Helper
+  end Helper;
+end LeftBase;
+partial model RightBase
+  class Helper
+  end Helper;
+end RightBase;
+model Accepted
+  extends LeftBase;
+  extends RightBase;
+end Accepted;
+"#;
+
+        assert!(
+            merge_bases_of(source, "Accepted").is_ok(),
+            "equal nested declarations from distinct bases must still merge"
+        );
+    }
+
+    #[test]
+    fn duplicate_nested_functions_with_different_purity_conflict() {
+        let source = r#"
+partial model LeftBase
+  pure function Helper
+  end Helper;
+end LeftBase;
+partial model RightBase
+  impure function Helper
+  end Helper;
+end RightBase;
+model Conflict
+  extends LeftBase;
+  extends RightBase;
+end Conflict;
+"#;
+
+        assert!(
+            merge_bases_of(source, "Conflict").is_err(),
+            "equal display text must not hide a nested function purity conflict"
         );
     }
 }

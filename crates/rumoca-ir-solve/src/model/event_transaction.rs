@@ -130,6 +130,7 @@ struct EventTransactionInputWire {
 struct EventTransactionTargetWire {
     base: ScalarSlot,
     value_type: SolveValueType,
+    #[serde(deserialize_with = "deserialize_required_option")]
     clock_owner: Option<PeriodicClockId>,
 }
 

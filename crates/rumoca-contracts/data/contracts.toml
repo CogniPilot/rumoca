@@ -1,5 +1,18 @@
-# Contract registry data — source of truth for SPEC_0022.
-# Regenerate with: cargo run -p xtask -- dump-contracts
+# Contract registry data.
+#
+# Authority direction, stated here and nowhere else: SPEC_0022 section 4 is the
+# semantic catalog authority. It owns which contracts exist and, for each one,
+# the category, name, MLS reference, and requirement. This file is that
+# catalog's machine-readable mirror, and it is the sole authority for the
+# operational fields the catalog does not carry: status, notes, and tier.
+#
+# What is gated today: set equality of the contract IDs, by
+# `crates/rumoca-contracts/tests/registry_invariants.rs`. Equality of the other
+# four semantic values is not gated anywhere; rows whose name, MLS reference, or
+# requirement disagree with the catalog exist and are recorded in the freeze
+# narrative under `dev/`. Resolving each one is an MLS reading, not an edit.
+#
+# There is no generator: this file is hand-maintained alongside SPEC_0022.
 
 [[contracts]]
 id = 'ALG-001'
@@ -31,10 +44,11 @@ tier = 1
 [[contracts]]
 id = 'ALG-004'
 category = 'Algorithm'
-name = 'For no array overwrite'
-mls_ref = '§11.2'
-requirement = 'No assignments to entire arrays subscripted with loop variable inside for'
-status = 'Implemented'
+name = 'For implicit-range stability'
+mls_ref = '§11.2.2.1'
+requirement = "An omitted iterator range requires that the iterator subscript at least one subscripted expression outside an expandable-connector component, and is deduced from that expression's dimension; where it subscripts several, their ranges must be identical; no assignment may target an entire array subscripted by that iterator, while element and slice assignments remain legal."
+status = 'Partial'
+notes = 'Bounded and enforced: explicit ranges stay accepted in every iterator syntax, and one parser-owned converter refuses an omitted range with EP004 for for-equations, for-statements, comprehensions, and reductions alike. Resolve independently refuses a forged or deserialized ParsedTree that carries an omitted range with ER129, so an unsupported iterator cannot receive a ResolvedTree proof; those witnesses live in crates/rumoca-phase-resolve/src/tests/semantic_rules.rs and are not mappable as contract cases from this crate. Not implemented and unowned: inference of an omitted range from the dimensions the iterator subscripts, the requirement that several subscripted expressions agree, and the whole-array assignment restriction, which the MLS scopes to omitted ranges and which therefore cannot be checked before inference exists. A post-instantiation or Flat owner must take the whole-array rule once inference lands.'
 tier = 1
 
 [[contracts]]
@@ -943,7 +957,7 @@ category = 'Connection'
 name = 'Expandable declared'
 mls_ref = '§9.1.3'
 requirement = 'At least one connector must reference a declared component'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -2488,6 +2502,16 @@ notes = 'Only the first clause is enforced: Resolve rejects explicit constructor
 tier = 1
 
 [[contracts]]
+id = 'FUNC-039'
+category = 'Function'
+name = 'External error is non-returning'
+mls_ref = '§12.3, §12.9.7.1'
+requirement = 'A call to an external function may terminate in a typed error rather than a value; ModelicaError, ModelicaFormatError, and ModelicaVFormatError do not return control to the caller, so the call produces no output, and no output value or numeric sentinel may represent the evaluation as success'
+status = 'Partial'
+notes = 'Source external calls are rejected before executable lowering, so they cannot publish a sentinel as success. Full external-function execution and its typed non-returning invocation boundary remain unsupported.'
+tier = 1
+
+[[contracts]]
 id = 'INST-001'
 category = 'Instantiation'
 name = 'Modification context'
@@ -2790,7 +2814,7 @@ category = 'Instantiation'
 name = 'Encapsulated lookup stop'
 mls_ref = '§5.3.1'
 requirement = 'Lookup stops if enclosing class is encapsulated (except predefined types/operators)'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -2799,7 +2823,7 @@ category = 'Instantiation'
 name = 'Record/enum lookup ignore'
 mls_ref = '§5.3'
 requirement = 'Names of record classes and enumeration types are ignored during function name lookup'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -2808,7 +2832,7 @@ category = 'Instantiation'
 name = 'Constructor lookup ignore'
 mls_ref = '§5.3'
 requirement = 'Implicitly defined names of record constructors and enum conversions ignored during type lookup'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -2862,7 +2886,7 @@ category = 'Instantiation'
 name = 'Break removes expression'
 mls_ref = '§7.2.7'
 requirement = 'Remaining break modifications treated as if expression was missing'
-status = 'Implemented'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -2961,7 +2985,16 @@ category = 'Instantiation'
 name = 'Conditional component removal'
 mls_ref = '§5.6.2'
 requirement = 'Conditional components with false condition are removed and not part of simulation model'
-status = 'Implemented'
+status = 'Partial'
+tier = 1
+
+[[contracts]]
+id = 'INST-054'
+category = 'Instantiation'
+name = 'Scope lookup order'
+mls_ref = '§5.3.1'
+requirement = 'Lookup order per scope: declared elements including inherited, then qualified and selective imports, then unqualified imports'
+status = 'Partial'
 tier = 1
 
 [[contracts]]
@@ -3376,7 +3409,7 @@ name = 'Clocked event-iteration participation'
 mls_ref = 'App B'
 requirement = 'Clocked variables use previous values, and a clock partition is solved once per tick, in the first event iteration of that tick; that restriction governs fixed-point re-iteration of the partition, not value exchange between producers inside that single solution, and clocked lanes do not participate in ordinary z == pre(z), m == pre(m) convergence'
 status = 'Partial'
-notes = 'Partial as of 2026-08-12. Implemented and covered: the first-event-iteration restriction on clock solving and the exclusion of clocked lanes from the ordinary z == pre(z), m == pre(m) fixed point — bounded-proof covered by crates/rumoca-solver/src/verification/event_iteration.rs, whose atomic pre-advance property leaves clocked lanes unchanged, and exercised by tests/sim_contracts.rs::sim_010_clocked_counter_advances_once_per_tick. Same-tick value exchange between producers inside that single partition solution is implemented by the SPEC_0040 SOLVE-C57 owner (SPEC_0046): construction issues DiscreteSolveSystem::clock_partition_order and the runtime replays it over private work state, exercised by the sim_010 exchange tests in tests/sim_contracts.rs. Credit is NOT claimed: SDO-227 fails a green SIM-010 claim without the SPEC_0046 ResidualSccOwner, and a coupled simultaneous discrete residual SCC is still a typed rejection with that owner only preregistered (SPEC_0046 SDO-021/SDO-023). Per the crate Partial convention the tests are therefore absent from data/contract_cases.toml and SIM-010 is absent from IMPLEMENTED_CONTRACT_IDS.'
+notes = 'Partial as of 2026-08-12. Implemented and covered: the first-event-iteration restriction on clock solving and the exclusion of clocked lanes from the ordinary z == pre(z), m == pre(m) fixed point — bounded-proof covered by crates/rumoca-solver/src/verification/event_iteration.rs, whose atomic pre-advance property leaves clocked lanes unchanged, and exercised by tests/sim_contracts.rs::sim_010_clocked_counter_advances_once_per_tick. Same-tick value exchange between producers inside that single partition solution is implemented by the SPEC_0040 SOLVE-C57 owner (SPEC_0046): construction issues DiscreteSolveSystem::clock_partition_order and the runtime replays it over private work state, exercised by the sim_010 exchange tests in tests/sim_contracts.rs. Credit is NOT claimed: SDO-227 fails a green SIM-010 claim without the SPEC_0046 ResidualSccOwner, and a coupled simultaneous discrete residual SCC is still a typed rejection with that owner only preregistered (SPEC_0046 SDO-021/SDO-023). Per the crate Partial convention the tests are therefore absent from data/contract_cases.toml and SIM-010 remains Partial in the registry.'
 tier = 1
 
 [[contracts]]

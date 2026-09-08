@@ -14,5 +14,10 @@ homepage.workspace = true
 # object here does not compile in production or tests.
 rumoca-solver = { workspace = true }
 
+[dev-dependencies]
+# Backend tests obtain opaque checked FMI ME inputs from the feature-gated
+# harness; production code still cannot construct a numerical setup.
+rumoca-solver = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

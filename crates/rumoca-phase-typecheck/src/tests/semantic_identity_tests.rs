@@ -38,27 +38,29 @@ fn semantic_instance(
     // path; take it from the structured qualified name, not from the text.
     let declared_ident = declared_part.0.clone();
     declared_part.1 = instance_subscripts;
-    overlay.add_component(InstanceData {
-        instance_id,
-        component_ref: Some(
-            rumoca_core::ComponentReference::construct(
-                false,
-                rumoca_core::Span::DUMMY,
-                vec![rumoca_core::ComponentRefPart {
-                    ident: declared_ident,
-                    span: rumoca_core::Span::DUMMY,
-                    subs: Vec::new(),
-                    def_id: source_def_id,
-                }],
-            )
-            .expect("test declaration reference has exact identity"),
-        ),
-        qualified_name,
-        type_id,
-        variability,
-        dims,
-        ..Default::default()
-    });
+    overlay
+        .add_component(InstanceData {
+            instance_id,
+            component_ref: Some(
+                rumoca_core::ComponentReference::construct(
+                    false,
+                    rumoca_core::Span::DUMMY,
+                    vec![rumoca_core::ComponentRefPart {
+                        ident: declared_ident,
+                        span: rumoca_core::Span::DUMMY,
+                        subs: Vec::new(),
+                        def_id: source_def_id,
+                    }],
+                )
+                .expect("test declaration reference has exact identity"),
+            ),
+            qualified_name,
+            type_id,
+            variability,
+            dims,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
 }
 
 fn resolved_reference(name: &str, def_id: DefId) -> ComponentReference {
@@ -76,7 +78,8 @@ fn partially_evaluated_declaration_shape_remains_unknown() {
     "#;
     let tree = resolve(parse(source))
         .expect("resolve should succeed")
-        .into_inner();
+        .inner()
+        .clone();
     let lines = &tree.definitions.classes["Test"].components["lines"];
     let semantics = ComponentSemantics::from_declaration_with_type(lines, TypeId::new(91));
 
@@ -199,6 +202,124 @@ fn literal_subscripts_select_instances_and_symbolic_family_conflicts_are_ambiguo
         SemanticLookup::Ambiguous,
         "an unresolved family with disagreeing instance metadata must not select the first path"
     );
+
+    for symbolic_subscript in [
+        Subscript::Range {
+            token: Token::default(),
+        },
+        Subscript::Expression(Expression::ComponentReference(make_comp_ref("i"))),
+    ] {
+        let mut symbolic = resolved_reference("values", array_def_id);
+        symbolic.parts[0].subs = Some(vec![symbolic_subscript]);
+        assert_eq!(
+            scope.lookup_reference(&symbolic, 1, None, Some(&root_scope)),
+            SemanticLookup::Ambiguous,
+            "Range and symbolic selections must preserve whole-family consensus behavior"
+        );
+    }
+
+    let mut recovered = resolved_reference("values", array_def_id);
+    recovered.parts[0].subs = Some(vec![Subscript::Empty]);
+    assert_eq!(
+        scope.lookup_reference(&recovered, 1, None, Some(&root_scope)),
+        SemanticLookup::InvalidAstSubscript,
+        "a recovery subscript must refuse lookup before candidate consensus"
+    );
+
+    let mut nested_invalid = resolved_reference("values", array_def_id);
+    nested_invalid.parts[0].subs = Some(vec![Subscript::Expression(Expression::Parenthesized {
+        inner: Arc::new(Expression::Empty { span: Span::DUMMY }),
+        span: Span::DUMMY,
+    })]);
+    assert_eq!(
+        scope.lookup_reference(&nested_invalid, 1, None, Some(&root_scope)),
+        SemanticLookup::InvalidAstSubscript,
+        "nested invalid value syntax must refuse lookup before candidate consensus"
+    );
+
+    let invalid_index = Expression::ArrayIndex {
+        base: Arc::new(Expression::ComponentReference(make_comp_ref("missing"))),
+        subscripts: vec![Subscript::Expression(Expression::Parenthesized {
+            inner: Arc::new(Expression::Empty { span: Span::DUMMY }),
+            span: Span::DUMMY,
+        })],
+        span: Span::DUMMY,
+    };
+    assert_eq!(
+        scope.lookup_expression(&invalid_index, None, Some(&root_scope)),
+        SemanticLookup::InvalidAstSubscript,
+        "an invalid ArrayIndex selector must refuse before even a missing base is resolved"
+    );
+}
+
+#[test]
+fn recovered_subscript_emits_et005_at_typecheck_preflight() {
+    let source = r#"
+        model Test
+            Real a[2];
+            Real y;
+        equation
+            y = a[1];
+        end Test;
+    "#;
+    for nested in [false, true] {
+        let mut tree = resolve(parse(source))
+            .expect("resolve should succeed before the invalid fixture is planted")
+            .inner()
+            .clone();
+        let model = tree
+            .definitions
+            .classes
+            .get_mut("Test")
+            .expect("test model exists");
+        let rumoca_ir_ast::Equation::Simple { rhs, .. } = model
+            .equations
+            .first_mut()
+            .expect("test model has one equation")
+        else {
+            panic!("test equation must be simple");
+        };
+        let Expression::ComponentReference(reference) = rhs else {
+            panic!("test right-hand side must be a component reference");
+        };
+        let subscript = if nested {
+            Subscript::Expression(Expression::Parenthesized {
+                inner: Arc::new(Expression::Empty {
+                    span: reference.span,
+                }),
+                span: reference.span,
+            })
+        } else {
+            Subscript::Empty
+        };
+        reference.parts[0].subs = Some(vec![subscript]);
+
+        let diagnostics = TypeChecker::new().check(&mut tree);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some("ET005")
+                    && diagnostic.message.contains("invalid subscript")
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "typecheck must reject direct and nested invalid subscripts with ET005: {diagnostics:?}"
+                )
+            });
+        assert!(
+            diagnostic
+                .labels
+                .iter()
+                .any(|label| label.primary && !label.span.is_dummy()),
+            "ET005 must retain an honest source-backed selector/owner span: {diagnostic:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code.as_deref() != Some("ET001")),
+            "invalid input must not be mislabeled as identity ambiguity: {diagnostics:?}"
+        );
+    }
 }
 
 #[test]

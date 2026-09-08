@@ -114,9 +114,44 @@ fn provenance_and_foundation_messages_are_exact() {
 }
 
 #[test]
-fn expression_and_numeric_messages_are_exact() {
+fn clock_plan_messages_are_exact() {
     let at = span();
     assert_cases([
+        Case {
+            error: DaeConstructionError::InvalidClockParameter {
+                operator: "subSample",
+                detail: "factor must be an Integer".to_string(),
+                span: at,
+            },
+            message: "invalid parameter of clocked builtin `subSample`: factor must be an Integer",
+            span: Some(at),
+        },
+        Case {
+            error: DaeConstructionError::ConflictingExpressionClockDomains {
+                established: Span::from_offsets(at.source, 0, 1),
+                attempted: at,
+            },
+            message: "expression combines distinct exact clock domains (first at Span { source: SourceId(1350506341627150748), start: BytePos(0), end: BytePos(1) }, then at Span { source: SourceId(1350506341627150748), start: BytePos(2), end: BytePos(5) })",
+            span: Some(at),
+        },
+    ]);
+}
+
+#[test]
+fn expression_and_numeric_messages_are_exact() {
+    assert_expression_messages_are_exact();
+    assert_numeric_messages_are_exact();
+}
+
+/// The expression-shaped construction errors, up to the first numeric case.
+fn assert_expression_messages_are_exact() {
+    let at = span();
+    assert_cases([
+        Case {
+            error: DaeConstructionError::MissingDerivativeCertificate { span: at },
+            message: "derivative expression has no matching checked occurrence certificate",
+            span: Some(at),
+        },
         Case {
             error: DaeConstructionError::TypeMismatch {
                 expected: ScalarType::Real,
@@ -136,6 +171,13 @@ fn expression_and_numeric_messages_are_exact() {
             message: "expected a scalar expression",
             span: Some(at),
         },
+    ]);
+}
+
+/// The numeric-typed construction errors, from `ExpectedNumeric` onward.
+fn assert_numeric_messages_are_exact() {
+    let at = span();
+    assert_cases([
         Case {
             error: DaeConstructionError::ExpectedNumeric {
                 found: ScalarType::String,

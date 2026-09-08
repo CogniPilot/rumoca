@@ -6,11 +6,10 @@
 //! with its dimensions intact — `gate.x`, dims `[2]`. The model owns no
 //! declaration named `gate.x[1]`.
 //!
-//! Flat's current connected-state owner is declaration-wide. Accepting only
-//! `gate.x[1]` would therefore falsely mark the whole compact declaration
-//! connected. Until Flat owns checked connected subdomains, flattening must
-//! reject at the selected endpoint before a partially mutated Flat root can
-//! escape.
+//! Flat's connected-state owner is the per-element `ConnectedDomain`, so the
+//! connection marks exactly `gate.x[1]`: the equality equation names that
+//! element, the declaration stays compact, and `gate.x[2]` remains
+//! unconnected.
 
 use rumoca_ir_ast as ast;
 
@@ -39,13 +38,13 @@ end Wired;
 
 fn flatten_model(
     model_name: &str,
-) -> Result<rumoca_ir_flat::Model, rumoca_phase_flatten::FlattenError> {
+) -> Result<rumoca_ir_flat::Model, Box<rumoca_phase_flatten::FlattenError>> {
     let stored = rumoca_phase_parse::parse_to_ast(SOURCE, SOURCE_NAME).expect("source parses");
     let mut tree = ast::ClassTree::from_parsed(stored);
     tree.source_map.add(SOURCE_NAME, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let mut overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
         resolved.inner(),
         model_name,
     ) {
@@ -57,15 +56,10 @@ fn flatten_model(
             panic!("fixture instantiation failed: {error}")
         }
     };
-    rumoca_phase_typecheck::typecheck_instanced(&resolved, &mut overlay, model_name)
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model_name)
         .expect("instanced model typechecks");
-    let tree = resolved.into_inner();
-    rumoca_phase_flatten::flatten_ref_with_options(
-        &tree,
-        &overlay,
-        model_name,
-        rumoca_phase_flatten::FlattenOptions::default(),
-    )
+    rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+        .map_err(Box::new)
 }
 
 fn declared_names(model: &rumoca_ir_flat::Model) -> Vec<String> {
@@ -101,28 +95,54 @@ fn simple_connector_array_stays_one_declaration() {
 }
 
 #[test]
-fn partial_compact_connector_connection_refuses_before_a_flat_product_escapes() {
-    let error = flatten_model("Wired")
-        .expect_err("partial compact connectivity must not expose a successful Flat product");
-    let rumoca_phase_flatten::FlattenError::InvalidConnectionEvidence { description, span } = error
-    else {
-        panic!("expected typed connection-evidence refusal, got {error:?}");
-    };
+fn partial_compact_connector_connection_marks_exactly_the_selected_element() {
+    let model = flatten_model("Wired").expect("one element of a compact connector array lowers");
+    let names = declared_names(&model);
     assert!(
-        description.contains("partial connectivity of a compact array is not representable"),
-        "the first owner must name the unsupported connected-subdomain relation: {description}"
+        !names.iter().any(|name| name.starts_with("gate.x[")),
+        "the connection must not split the compact declaration, got {names:?}"
     );
-    let connection_provenance = SOURCE
-        .find("connect(a, gate.x[1])")
-        .expect("fixture contains the first rejected connection")
-        + "connect(".len();
+
+    let connection_rows: Vec<(String, String, usize)> = model
+        .equations
+        .iter()
+        .filter_map(|equation| match &equation.origin {
+            rumoca_ir_flat::EquationOrigin::Connection { lhs, rhs } => {
+                Some((lhs.clone(), rhs.clone(), equation.scalar_count))
+            }
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        span,
-        rumoca_core::Span::from_offsets(
-            rumoca_core::SourceId::from_source_name(SOURCE_NAME),
-            connection_provenance,
-            connection_provenance + 1,
-        ),
-        "the refusal must retain the exact source connection provenance owned by Instance IR"
+        connection_rows,
+        vec![("a".to_string(), "gate.x[1]".to_string(), 1)],
+        "exactly the selected element joins the connection set"
+    );
+    assert!(
+        !model.equations.iter().any(|equation| matches!(
+            equation.origin,
+            rumoca_ir_flat::EquationOrigin::FlowSum { .. }
+                | rumoca_ir_flat::EquationOrigin::UnconnectedFlow { .. }
+        )),
+        "a causal connector array owns no flow rows"
+    );
+
+    let gate_x = model
+        .variables
+        .get(&rumoca_core::VarName::new("gate.x"))
+        .expect("the compact connector array is declared");
+    assert_eq!(gate_x.dims, vec![2]);
+    assert_eq!(
+        gate_x.connected.selections().collect::<Vec<_>>(),
+        vec![&[1][..]],
+        "only the selected element is connected"
+    );
+    assert_eq!(
+        gate_x.connected.coverage(&[2]),
+        Ok(rumoca_ir_flat::ConnectedCoverage::Partial)
+    );
+    assert_eq!(
+        gate_x.connected.unconnected_coordinates(&[2]),
+        Ok(vec![vec![2]])
     );
 }

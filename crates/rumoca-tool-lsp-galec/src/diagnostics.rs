@@ -9,7 +9,9 @@
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Range};
 
-use rumoca_phase_parse_galec::{DocumentDiagnostic, GalecSyntaxError, parse_document};
+use rumoca_phase_parse_galec::{
+    DocumentDiagnostic, DocumentDiagnosticsError, GalecSyntaxError, parse_document,
+};
 
 use crate::text_position::span_to_range;
 
@@ -19,15 +21,32 @@ const DIAGNOSTIC_SOURCE: &str = "rumoca-galec";
 /// Compute LSP diagnostics for one GALEC `.alg` document. A syntax error is
 /// reported on its own (no AST to analyse); an accepted document reports its
 /// validator findings, or none when it is well-formed.
-#[must_use]
-pub fn compute_diagnostics(source: &str, file_name: &str) -> Vec<Diagnostic> {
+pub fn compute_diagnostics(
+    source: &str,
+    file_name: &str,
+) -> Result<Vec<Diagnostic>, DocumentDiagnosticsError> {
     match parse_document(source, file_name) {
-        Err(error) => vec![parse_error_to_diagnostic(&error, source)],
-        Ok(document) => document
-            .diagnostics()
+        Err(error) => Ok(vec![parse_error_to_diagnostic(&error, source)]),
+        Ok(document) => Ok(document
+            .diagnostics()?
             .iter()
             .map(|error| validator_error_to_diagnostic(error, source))
-            .collect(),
+            .collect()),
+    }
+}
+
+/// Adapt a source-free document-analysis failure at the LSP boundary without
+/// minting a language diagnostic code for an internal constructor error.
+pub(crate) fn internal_error_to_diagnostic(
+    error: &DocumentDiagnosticsError,
+    source: &str,
+) -> Diagnostic {
+    Diagnostic {
+        range: first_line_range(source),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some(DIAGNOSTIC_SOURCE.to_owned()),
+        message: error.to_string(),
+        ..Default::default()
     }
 }
 
@@ -90,7 +109,9 @@ end DoStep;
 end Ok;
 ";
         assert!(
-            compute_diagnostics(text, "ok.alg").is_empty(),
+            compute_diagnostics(text, "ok.alg")
+                .expect("document analysis succeeds")
+                .is_empty(),
             "a well-formed block should produce no diagnostics"
         );
     }
@@ -102,7 +123,7 @@ end Ok;
                    method Recalibrate\nalgorithm\nend Recalibrate;\n\
                    method DoStep\nalgorithm\n1 := 2;\nend DoStep;\n\
                    end Bad;\n";
-        let diags = compute_diagnostics(bad, "bad.alg");
+        let diags = compute_diagnostics(bad, "bad.alg").expect("document analysis succeeds");
         assert_eq!(diags.len(), 1, "one syntax error expected");
         let diag = &diags[0];
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
@@ -120,7 +141,7 @@ end Ok;
                    method Recalibrate\nalgorithm\nend Recalibrate;\n\
                    method DoStep\nalgorithm\nend DoStep;\n\
                    end Bar;\n";
-        let diags = compute_diagnostics(bad, "mismatch.alg");
+        let diags = compute_diagnostics(bad, "mismatch.alg").expect("document analysis succeeds");
         let diag = diags
             .iter()
             .find(|d| matches!(&d.code, Some(NumberOrString::String(c)) if c == "EG051"))
@@ -155,7 +176,7 @@ end DoStep;
 end Dup;
 ";
 
-        let diags = compute_diagnostics(text, "dup.alg");
+        let diags = compute_diagnostics(text, "dup.alg").expect("document analysis succeeds");
         let dup = diags
             .iter()
             .find(|d| matches!(&d.code, Some(NumberOrString::String(c)) if c == "EG012"))

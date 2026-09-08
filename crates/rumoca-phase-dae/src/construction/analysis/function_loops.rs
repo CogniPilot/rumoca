@@ -54,7 +54,7 @@ fn validate_function_loop_domain(
     let mut loop_shapes = context.shapes.clone();
     let mut binders = Vec::with_capacity(indices.len());
     let mut binder_spans = Vec::with_capacity(indices.len());
-    for (ordinal, index) in indices.iter().enumerate() {
+    for (index, ordinal) in indices.iter().zip(0u32..) {
         let range_span = expression_span(&index.range)?;
         // Each index is proven in the scope of the ones before it: MLS §11.2.2
         // opens the binders left to right, so `for i in 1:n, j in 1:i` reads `j`
@@ -78,7 +78,7 @@ fn validate_function_loop_domain(
             ));
         };
         binders.push(StructuredIndexBinder {
-            id: ordinal,
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: index.ident.clone(),
             lower,
             upper,
@@ -143,14 +143,10 @@ fn validate_nested_function_loop(
     else {
         unreachable!("recursive function-loop validation returns a loop")
     };
-    let offset = validated.domain.binders.len();
-    validated
-        .domain
-        .binders
-        .extend(nested_domain.binders.into_iter().map(|mut binder| {
-            binder.id += offset;
-            binder
-        }));
+    validated.domain.binders.extend(nested_domain.binders);
+    for (binder, ordinal) in validated.domain.binders.iter_mut().zip(0u32..) {
+        binder.id = rumoca_core::StructuredIndexBinderId::new(ordinal);
+    }
     validated.binder_spans.extend(nested_spans);
     validated.domain.scalar_count().map_err(|error| {
         ToDaeError::unsupported_flat(

@@ -352,7 +352,7 @@ impl Drop for ChildGuard {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        let _ = child.kill();
-        let _ = child.wait();
+        let _already_exited = child.kill();
+        let _reap_error = child.wait();
     }
 }

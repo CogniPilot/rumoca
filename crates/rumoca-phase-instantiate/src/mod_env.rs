@@ -5,21 +5,22 @@ mod record_projection;
 mod tests;
 
 use super::inheritance::{
-    find_class_in_tree, get_effective_components, is_type_subtype,
-    resolve_effective_components_for_eval,
+    find_class_in_tree, get_effective_components, resolve_effective_components_for_eval,
 };
 use super::nested_scope::remap_redeclare_class_modifier;
-use super::type_overrides::{TypeOverrideMap, find_nested_class_in_hierarchy};
+use super::type_overrides::{
+    TypeOverrideMap, class_redeclare_alias_ref, contains_component_by_def_id_in_hierarchy,
+    direct_source_redeclare, find_nested_class_by_def_id_in_hierarchy,
+};
 use super::{InstantiateContext, InstantiateError, InstantiateResult};
 use rumoca_eval_ast::eval_instantiate::{
     InstantiateEvalCtx, evaluate_component_condition, try_eval_integer_expr, try_eval_string_expr,
 };
 use rumoca_ir_ast as ast;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
+use rustc_hash::FxHashSet;
 
 pub(super) use record_projection::{RecordBindingProjection, propagate_record_binding_to_fields};
-
-const MAX_MOD_RESOLVE_DEPTH: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModificationResolveMode {
@@ -46,7 +47,7 @@ pub(super) struct PopulateModEnvInput<'a> {
     pub(super) parent_snapshot: &'a IndexMap<ast::QualifiedName, rumoca_ir_ast::ModificationValue>,
     pub(super) shifted_parent_keys: &'a IndexMap<ast::QualifiedName, ()>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
-    pub(super) modifier_imports: &'a [(String, String)],
+    pub(super) modifier_imports: crate::dims::ImportRewrite<'a>,
 }
 
 struct ScopedInsertContext<'a> {
@@ -54,11 +55,12 @@ struct ScopedInsertContext<'a> {
     shifted_parent_keys: &'a IndexMap<ast::QualifiedName, ()>,
     source_scope: Option<ast::QualifiedName>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
-    imports: &'a [(String, String)],
+    imports: crate::dims::ImportRewrite<'a>,
 }
 
 struct ModifierEvalContext<'a> {
     tree: &'a ast::ClassTree,
+    comp: &'a ast::Component,
     effective_components: &'a IndexMap<String, ast::Component>,
     type_overrides: &'a TypeOverrideMap,
     target_class: Option<&'a ast::ClassDef>,
@@ -82,7 +84,7 @@ struct NestedModificationContext<'a> {
     tree: &'a ast::ClassTree,
     source_scope: Option<ast::QualifiedName>,
     /// Import aliases of the class that wrote these modifications (MLS §13.2).
-    imports: &'a [(String, String)],
+    imports: crate::dims::ImportRewrite<'a>,
 }
 
 struct NestedModificationFlags<'a> {
@@ -115,6 +117,7 @@ pub(super) fn populate_modification_environment(
     } = input;
     let eval_ctx = ModifierEvalContext {
         tree,
+        comp,
         effective_components,
         type_overrides,
         target_class,
@@ -126,12 +129,18 @@ pub(super) fn populate_modification_environment(
         },
     };
 
+    let mod_env_snapshot = ctx.mod_env().clone();
     for (target_name, mod_expr) in &comp.modifications {
         let prefixes = ModifierPrefixes {
             final_: comp.final_attributes.contains(target_name),
             each: comp.each_modifications.contains(target_name),
         };
-        apply_component_modifier(ctx, target_name, mod_expr, prefixes, &eval_ctx)?;
+        if let Err(error) =
+            apply_component_modifier(ctx, target_name, mod_expr, prefixes, &eval_ctx)
+        {
+            *ctx.mod_env_mut() = mod_env_snapshot;
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -287,7 +296,7 @@ fn apply_component_modifier(
                 each_flags,
                 final_flags,
             )?;
-            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, eval_ctx);
+            preserve_redeclare_class_modifier(ctx, target_name, mod_expr, eval_ctx)?;
         }
         // Nested class modification WITH binding: field(start=X) = expr.
         // MLS §7.2: process both nested attribute modifications and binding.
@@ -381,17 +390,58 @@ fn preserve_redeclare_class_modifier(
     target_name: &str,
     mod_expr: &ast::Expression,
     eval_ctx: &ModifierEvalContext<'_>,
-) {
+) -> InstantiateResult<()> {
     // MLS §7.3: preserve class/package redeclare bindings in mod_env so
     // downstream type resolution sees component-level redeclare overrides.
-    let is_redeclare_class_target = eval_ctx.target_class.is_some_and(|tc| {
-        find_nested_class_in_hierarchy(eval_ctx.tree, tc, target_name)
-            .is_some_and(|nested| nested.is_replaceable)
-    });
+    let is_redeclare_class_target = match (
+        eval_ctx.target_class,
+        direct_source_redeclare(eval_ctx.comp, target_name),
+    ) {
+        (Some(target_class), Some(source_redeclare)) => {
+            let alias_def_id = class_redeclare_alias_ref(source_redeclare)
+                .and_then(ast::ComponentReference::target_def_id)
+                .ok_or_else(|| {
+                    Box::new(InstantiateError::redeclare_error(
+                        target_name,
+                        "direct redeclare LHS has no Resolve-issued receiver-slot identity",
+                        source_redeclare.span(),
+                    ))
+                })?;
+            match find_nested_class_by_def_id_in_hierarchy(
+                eval_ctx.tree,
+                target_class,
+                alias_def_id,
+            )? {
+                Some(nested) => nested.is_replaceable,
+                None if contains_component_by_def_id_in_hierarchy(
+                    eval_ctx.tree,
+                    target_class,
+                    alias_def_id,
+                )? =>
+                {
+                    false
+                }
+                None => {
+                    return Err(Box::new(InstantiateError::redeclare_error(
+                        target_name,
+                        format!(
+                            "Resolve-issued LHS {alias_def_id:?} is not an exact direct or inherited receiver slot"
+                        ),
+                        source_redeclare.span(),
+                    )));
+                }
+            }
+        }
+        _ => false,
+    };
     if is_redeclare_class_target {
         let qn = ast::QualifiedName::from_ident(target_name);
-        let resolved_class_mod =
-            remap_redeclare_class_modifier(mod_expr, target_name, eval_ctx.type_overrides);
+        let resolved_class_mod = remap_redeclare_class_modifier(
+            eval_ctx.tree,
+            mod_expr,
+            target_name,
+            eval_ctx.type_overrides,
+        )?;
         ctx.mod_env_mut().add(
             qn,
             ast::ModificationValue::with_source_scope(
@@ -401,6 +451,7 @@ fn preserve_redeclare_class_modifier(
             ),
         );
     }
+    Ok(())
 }
 
 fn modifier_target_component(
@@ -567,7 +618,7 @@ struct ModifierResolveScope<'a> {
     tree: &'a ast::ClassTree,
     /// Import aliases visible where the expression was written (MLS §13.2), used
     /// to reach a constant that the writing class named through an `import`.
-    imports: &'a [(String, String)],
+    imports: crate::dims::ImportRewrite<'a>,
 }
 
 /// Resolve a modification expression by evaluating component references in scope.
@@ -576,12 +627,12 @@ fn resolve_modification_expr(
     scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
 ) -> InstantiateResult<ast::Expression> {
-    resolve_modification_expr_with_depth(
+    resolve_modification_expr_checked(
         expr,
         scope,
         allow_string_eval,
         ModificationResolveMode::Modifier,
-        0,
+        &mut FxHashSet::default(),
     )
 }
 
@@ -590,18 +641,19 @@ pub(super) fn resolve_declaration_binding_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
+    class_index: &ast::ClassDefIndex<'_>,
 ) -> InstantiateResult<ast::Expression> {
-    resolve_modification_expr_with_depth(
+    resolve_modification_expr_checked(
         expr,
         ModifierResolveScope {
             mod_env,
             effective_components,
             tree,
-            imports: &[],
+            imports: crate::dims::ImportRewrite::without_imports(class_index),
         },
         false,
         ModificationResolveMode::DeclarationBinding,
-        0,
+        &mut FxHashSet::default(),
     )
 }
 
@@ -618,32 +670,29 @@ fn decide_boolean_modifier(
     expr: &ast::Expression,
     scope: ModifierResolveScope<'_>,
     eval_ctx: &InstantiateEvalCtx<'_>,
-) -> Option<bool> {
+) -> InstantiateResult<Option<bool>> {
     if let Some(value) = evaluate_component_condition(eval_ctx, expr) {
-        return Some(value);
+        return Ok(Some(value));
     }
     if !crate::dims::expr_mentions_import_alias(expr, scope.imports) {
-        return None;
+        return Ok(None);
     }
-    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, expr, scope.imports);
-    evaluate_component_condition(eval_ctx, &qualified)
+    let qualified = crate::dims::qualify_shape_expr_imports(scope.tree, expr, scope.imports)?;
+    Ok(evaluate_component_condition(eval_ctx, &qualified))
 }
 
-fn resolve_modification_expr_with_depth(
+fn resolve_modification_expr_checked(
     expr: &ast::Expression,
     scope: ModifierResolveScope<'_>,
     allow_string_eval: bool,
     mode: ModificationResolveMode,
-    depth: usize,
+    active: &mut FxHashSet<rumoca_core::DefId>,
 ) -> InstantiateResult<ast::Expression> {
-    if depth > MAX_MOD_RESOLVE_DEPTH {
-        return Ok(expr.clone());
-    }
     let ModifierResolveScope {
         mod_env,
         effective_components,
         tree,
-        imports: _,
+        imports,
     } = scope;
 
     let eval_ctx = InstantiateEvalCtx {
@@ -655,7 +704,7 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve booleans first (e.g., useFilter=useFilter) so conditional
     // components in nested classes evaluate against the parent's value.
-    if let Some(value) = decide_boolean_modifier(expr, scope, &eval_ctx) {
+    if let Some(value) = decide_boolean_modifier(expr, scope, &eval_ctx)? {
         return Ok(ast::Expression::Terminal {
             terminal_type: rumoca_ir_ast::TerminalType::Bool,
             token: rumoca_core::Token {
@@ -693,30 +742,59 @@ fn resolve_modification_expr_with_depth(
 
     // Resolve direct references in current scope (e.g. resolveInFrame=resolveInFrame).
     if mode == ModificationResolveMode::Modifier
-        && let Some(resolved_ref) =
-            resolve_single_part_ref_expr(expr, mod_env, effective_components, tree)
+        && let Some((edge_def_id, resolved_ref)) = resolve_single_part_ref_expr(
+            expr,
+            mod_env,
+            effective_components,
+            tree,
+            imports.class_index,
+        )?
     {
-        return resolve_modification_expr_with_depth(
+        return resolve_modifier_edge(
+            edge_def_id,
             &resolved_ref,
             scope,
             allow_string_eval,
             mode,
-            depth + 1,
+            active,
         );
     }
 
     // MLS §7.2: Resolve multi-part references through sibling modifications.
-    if let Some(resolved) = resolve_sibling_modification(expr, effective_components) {
-        return resolve_modification_expr_with_depth(
+    if let Some((edge_def_id, resolved)) =
+        resolve_sibling_modification(expr, effective_components, imports.class_index)?
+    {
+        return resolve_modifier_edge(
+            edge_def_id,
             &resolved,
             scope,
             allow_string_eval,
             mode,
-            depth + 1,
+            active,
         );
     }
 
     Ok(expr.clone())
+}
+
+fn resolve_modifier_edge(
+    edge_def_id: rumoca_core::DefId,
+    resolved: &ast::Expression,
+    scope: ModifierResolveScope<'_>,
+    allow_string_eval: bool,
+    mode: ModificationResolveMode,
+    active: &mut FxHashSet<rumoca_core::DefId>,
+) -> InstantiateResult<ast::Expression> {
+    if !active.insert(edge_def_id) {
+        return Err(Box::new(InstantiateError::instantiation_cycle(
+            format!("modifier reference {edge_def_id:?}"),
+            resolved.span(),
+        )));
+    }
+    let result =
+        resolve_modification_expr_checked(resolved, scope, allow_string_eval, mode, active);
+    active.remove(&edge_def_id);
+    result
 }
 
 fn resolve_single_part_ref_expr(
@@ -724,26 +802,51 @@ fn resolve_single_part_ref_expr(
     mod_env: &ast::ModificationEnvironment,
     effective_components: &IndexMap<String, ast::Component>,
     tree: &ast::ClassTree,
-) -> Option<ast::Expression> {
+    class_index: &ast::ClassDefIndex<'_>,
+) -> InstantiateResult<Option<(rumoca_core::DefId, ast::Expression)>> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
-        return None;
+        return Ok(None);
     };
     if comp_ref.parts.len() != 1 {
-        return None;
+        return Ok(None);
     }
 
     let name = comp_ref.parts[0].ident.text.as_ref();
     let qn = ast::QualifiedName::from_ident(name);
+    let reference_def_id = comp_ref.root_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("modifier reference `{comp_ref}`"),
+            comp_ref.span,
+        ))
+    })?;
+    let Some(component) = exact_modifier_component(
+        class_index,
+        effective_components,
+        name,
+        reference_def_id,
+        comp_ref.span,
+    )?
+    else {
+        return Ok(None);
+    };
 
     if let Some(subscripts) = comp_ref.parts[0].subs.as_ref() {
-        let mod_value = mod_env.get(&qn)?;
-        return select_array_value(&mod_value.value, subscripts);
+        let Some(mod_value) = mod_env.get(&qn) else {
+            return Ok(None);
+        };
+        return match select_array_value(&mod_value.value, subscripts) {
+            ArrayValueSelection::NotStatic => Ok(None),
+            ArrayValueSelection::Selected(value) => Ok(Some((reference_def_id, value))),
+            ArrayValueSelection::Invalid(reason) => Err(Box::new(
+                InstantiateError::invalid_mod_path(format!("{comp_ref}: {reason}"), comp_ref.span),
+            )),
+        };
     }
 
     if let Some(mod_value) = mod_env.get(&qn)
         && mod_value.value != *expr
     {
-        return Some(mod_value.value.clone());
+        return Ok(Some((reference_def_id, mod_value.value.clone())));
     }
 
     // A modifier is evaluated in the scope where it is written (MLS §7.2.4).
@@ -751,7 +854,6 @@ fn resolve_single_part_ref_expr(
     // parameter's declaration binding here until the chain settles to a literal.
     // Other component references deliberately retain their identity: inlining a
     // numeric binding, for example, would change tensor-family ownership.
-    let component = effective_components.get(name)?;
     let type_table_proves_enum = matches!(
         component
             .type_id
@@ -763,54 +865,215 @@ fn resolve_single_part_ref_expr(
         .and_then(|def_id| tree.get_class_by_def_id(def_id))
         .is_some_and(|class| !class.enum_literals.is_empty());
     if !type_table_proves_enum && !declaration_proves_enum {
-        return None;
+        return Ok(None);
     }
-    component.binding.clone()
+    Ok(component
+        .binding
+        .clone()
+        .map(|value| (reference_def_id, value)))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum ArrayValueSelection {
+    /// This phase cannot see enough to decide the selection. Either a selector
+    /// is not a static one-based index, or the modifier value is not a literal
+    /// array whose element the index could name here. Both defer to a later
+    /// phase rather than refusing: a modifier value that is a component
+    /// reference, `fill`/`zeros`, an arithmetic expression, or even a scalar
+    /// broadcast into an array component carries no static evidence of the
+    /// value's shape at this point, so the modification is preserved unchanged.
+    NotStatic,
+    /// Every selector was a valid one-based index into the known modifier.
+    Selected(ast::Expression),
+    /// Static evidence proves the selection malformed. This is reserved for the
+    /// cases the value alone already refutes: a selector outside the one-based
+    /// domain (zero, negative, unrepresentable), or an index beyond the extent
+    /// of a literal array whose full length is visible here.
+    Invalid(String),
 }
 
 fn select_array_value(
     mut expr: &ast::Expression,
     subscripts: &[ast::Subscript],
-) -> Option<ast::Expression> {
-    subscripts.first()?;
+) -> ArrayValueSelection {
+    if subscripts.is_empty() {
+        return ArrayValueSelection::NotStatic;
+    }
     for subscript in subscripts {
-        let ast::Subscript::Expression(ast::Expression::Terminal {
+        let ast::Subscript::Expression(selector) = subscript else {
+            return ArrayValueSelection::NotStatic;
+        };
+        let index = match literal_array_index(selector) {
+            Ok(Some(index)) => index,
+            Ok(None) => return ArrayValueSelection::NotStatic,
+            Err(reason) => return ArrayValueSelection::Invalid(reason),
+        };
+        let ast::Expression::Array { elements, .. } = expr else {
+            // The modifier value is not a literal array, so its element extent is
+            // invisible here. A component reference, `fill`/`zeros`, or an
+            // arithmetic expression may still be array-valued, and a scalar
+            // literal may be a legitimate broadcast into an array component
+            // (`Real x[3] = 1`). Deciding the shape needs the component's
+            // declared dimensionality, which a later phase owns. Refusing now
+            // would reject valid programs, so defer with the reference intact.
+            return ArrayValueSelection::NotStatic;
+        };
+        let Some(selected) = elements.get(index - 1) else {
+            return ArrayValueSelection::Invalid(format!(
+                "array index {index} is out of bounds for extent {}",
+                elements.len()
+            ));
+        };
+        expr = selected;
+    }
+    ArrayValueSelection::Selected(expr.clone())
+}
+
+/// Recognize only literal signed syntax here. General structural evaluation is
+/// owned elsewhere, but unary `+`/`-` around an integer token is already exact
+/// evidence and must not be conflated with a genuinely dynamic selector.
+fn literal_array_index(selector: &ast::Expression) -> Result<Option<usize>, String> {
+    let (sign, token) = match selector {
+        ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token,
             ..
-        }) = subscript
-        else {
-            return None;
-        };
-        let ast::Expression::Array { elements, .. } = expr else {
-            return None;
-        };
-        expr = elements.get(token.text.parse::<usize>().ok()?.checked_sub(1)?)?;
+        } => (1_i8, token),
+        ast::Expression::Unary { op, rhs, .. } => {
+            let ast::Expression::Terminal {
+                terminal_type: ast::TerminalType::UnsignedInteger,
+                token,
+                ..
+            } = rhs.as_ref()
+            else {
+                return Ok(None);
+            };
+            match op {
+                rumoca_core::OpUnary::Plus => (1, token),
+                rumoca_core::OpUnary::Minus => (-1, token),
+                _ => return Ok(None),
+            }
+        }
+        _ => return Ok(None),
+    };
+    let magnitude = token.text.parse::<usize>().map_err(|_| {
+        format!(
+            "array index `{}` is not representable as a positive integer",
+            token.text
+        )
+    })?;
+    if sign < 0 {
+        return Err(format!(
+            "Modelica array index -{magnitude} is negative; indices are one-based"
+        ));
     }
-    Some(expr.clone())
+    if magnitude == 0 {
+        return Err("Modelica array indices are one-based; zero is invalid".to_string());
+    }
+    Ok(Some(magnitude))
 }
 
 /// Resolve a multi-part component reference by following sibling modifications.
 fn resolve_sibling_modification(
     expr: &ast::Expression,
     effective_components: &IndexMap<String, ast::Component>,
-) -> Option<ast::Expression> {
+    class_index: &ast::ClassDefIndex<'_>,
+) -> InstantiateResult<Option<(rumoca_core::DefId, ast::Expression)>> {
     let ast::Expression::ComponentReference(comp_ref) = expr else {
-        return None;
+        return Ok(None);
     };
     if comp_ref.parts.len() < 2 {
-        return None;
+        return Ok(None);
     }
     let first = comp_ref.parts[0].ident.text.as_ref();
     let second = comp_ref.parts[1].ident.text.as_ref();
-    let comp = effective_components.get(first)?;
-    let mod_expr = comp.modifications.get(second)?;
+    let root_def_id = comp_ref.root_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("sibling modifier reference `{comp_ref}`"),
+            comp_ref.span,
+        ))
+    })?;
+    let Some(comp) = exact_modifier_component(
+        class_index,
+        effective_components,
+        first,
+        root_def_id,
+        comp_ref.span,
+    )?
+    else {
+        // A resolved package, class, or enumeration root is not a sibling
+        // component modifier. Preserve it for its semantic owner.
+        return Ok(None);
+    };
+    let Some(mod_expr) = comp.modifications.get(second) else {
+        return Ok(None);
+    };
     // Keep record/class-modification bindings as references so declaration
     // defaults remain visible during record-field projection.
     if is_non_scalar_sibling_modifier_expr(mod_expr) {
-        return None;
+        return Ok(None);
     }
-    Some(mod_expr.clone())
+    let edge_def_id = comp_ref.target_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("sibling modifier target `{comp_ref}`"),
+            comp_ref.span,
+        ))
+    })?;
+    Ok(Some((edge_def_id, mod_expr.clone())))
+}
+
+/// Select the declaration named by a resolved modifier reference.
+///
+/// A modifier is evaluated in its lexical source scope (MLS §7.2.4), so the
+/// reference may intentionally identify a component in an enclosing class
+/// rather than the same-spelled active target slot. Exact `DefId` ownership is
+/// the authority; spelling is used only to query an already-proven active slot.
+/// `None` positively classifies the root as a class/package rather than a
+/// component.
+fn exact_modifier_component<'a>(
+    index: &'a ast::ClassDefIndex<'a>,
+    effective_components: &'a IndexMap<String, ast::Component>,
+    name: &str,
+    reference_def_id: rumoca_core::DefId,
+    span: rumoca_core::Span,
+) -> InstantiateResult<Option<&'a ast::Component>> {
+    if let Some(component) = effective_components.get(name)
+        && component.def_id == Some(reference_def_id)
+    {
+        return Ok(Some(component));
+    }
+
+    if index.get(reference_def_id).is_some() {
+        return Ok(None);
+    }
+    // Predefined builtin classes (e.g. `StateSelect`, MLS §4.4.4.2) have no
+    // `ClassDef` in the user tree; their resolved identities live in the
+    // index's predefined-type authority. A reference rooted at one of them is
+    // a class reference, never a sibling component.
+    if rumoca_core::BUILTIN_TYPES
+        .iter()
+        .any(|builtin| index.predefined_def_id(builtin) == Some(reference_def_id))
+    {
+        return Ok(None);
+    }
+    let component = index
+        .parent_def_id(reference_def_id)
+        .and_then(|owner| index.get(owner))
+        .and_then(|owner| {
+            owner
+                .components
+                .values()
+                .find(|component| component.def_id == Some(reference_def_id))
+        })
+        .ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                format!(
+                    "modifier reference `{name}` identifies {reference_def_id:?}, which is absent from the exact component/class declaration graph"
+                ),
+                span,
+            ))
+        })?;
+    Ok(Some(component))
 }
 
 fn is_non_scalar_sibling_modifier_expr(expr: &ast::Expression) -> bool {
@@ -821,7 +1084,9 @@ fn is_non_scalar_sibling_modifier_expr(expr: &ast::Expression) -> bool {
         | ast::Expression::Tuple { .. }
         | ast::Expression::Range { .. }
         | ast::Expression::ArrayComprehension { .. } => true,
-        ast::Expression::Modification { value, .. } => is_non_scalar_sibling_modifier_expr(value),
+        ast::Expression::Modification {
+            value: Some(value), ..
+        } => is_non_scalar_sibling_modifier_expr(value),
         ast::Expression::Parenthesized { inner, .. } => is_non_scalar_sibling_modifier_expr(inner),
         _ => false,
     }
@@ -843,9 +1108,12 @@ fn process_nested_modifications_recursive(
             final_: flags.prefixes.final_ || flags.final_flags.get(idx).copied().unwrap_or(false),
         };
         match nested_mod {
+            // A value-less modifier (`x(start)`) binds nothing, so the
+            // modification environment records no entry for it (MLS §7.2).
+            ast::Expression::Modification { value: None, .. } => {}
             ast::Expression::Modification {
                 target: attr_target,
-                value,
+                value: Some(value),
                 ..
             } => {
                 let attr_name = attr_target.to_string();

@@ -28,25 +28,31 @@ type, not a preserved record; ordinary records stay scalarized.
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
 | Solve IR values are real or complex tensors | `rumoca-ir-solve` | Numeric types hardware understands |
-| Complex is a precision-neutral `TensorElementType` | `ir-solve/src/tensor.rs` | Not a record, not a pair |
+| Complex source meaning is independent of deployment width | frontend / DAE | Not a record, not a pair |
 | Ordinary records stay scalarized | Flat/DAE | Organizational structure, no numeric semantics |
 | Element type and layout are separate | tensor metadata | Interleaved vs planar is a backend concern |
-| Canonical element types contain no deployment width | DAE/Solve | One target-neutral problem |
+| DAE types contain no deployment width | DAE | One target-neutral source meaning |
+| Executable Solve roots bind one checked numeric profile | Solve construction | Rounding changes executable identity |
 
-**Width is a target policy, not a Modelica type.** MLS §4.8.1 defines exactly
-one floating-point type, `Real`, with implementation-defined precision; there is
-no `Real32`/`Real64` in the language, and GALEC likewise declares only `Real`
-(`rumoca-ir-galec` `ScalarType`). The width is chosen at the codegen boundary
-from the target's capability — eFMI's production-code manifest already carries
-`efmiFloat32`/`efmiFloat64` for exactly this reason, and embedded control
-targets commonly want the 32-bit form.
+**Width is a required target-build selection, not a Modelica type.** MLS §4.8.1
+defines exactly one floating-point type, `Real`, with implementation-defined
+precision; there is no `Real32`/`Real64` in the language, and GALEC syntax
+likewise declares only `Real` (`rumoca-ir-galec` `ScalarType`). The target
+selection binds before Algorithm Code package evaluation and before executable
+Solve-root construction. It therefore specializes executable semantics and
+root identity; it is never a renderer-time choice. eFMI 1.0.0 Beta 1
+`ProductionCode/efmiTargetTypes.xsd` defines `efmiFloat32` and `efmiFloat64`
+as enumeration values of `efmiTargetDataTypeKind`, with the latter documented
+as a 64-bit floating-point data type. Those are final checked lexical mappings,
+not authority to select width during rendering.
 
 | Rule | Owner/Where | Brief Justification |
 |---|---|---|
-| Source and GALEC declare `Real`, never a width | frontend / algorithm code | MLS has one float type |
-| Canonical DAE/Solve use `Real` and `Complex` | compiler IR | Precision-neutral semantics |
-| The target selects the width | codegen | Precision is a deployment property |
-| A narrowing selection is explicit and recorded | export manifest | Silent precision loss is a defect |
+| Source, DAE, and GALEC syntax declare `Real`, never a width | frontend / DAE / algorithm code | MLS has one float type |
+| Target construction requires `source_real` and `source_integer` once | `rumoca-compile` | Omission cannot inherit a width |
+| The Algorithm Code package retains the complete normalized numeric profile | package construction | Every consumer cites one authority |
+| Executable Solve roots are specialized before folding, CSE, AD, or evaluation | Solve construction | Intermediate rounding affects results |
+| Preparation maps the bound profile to a proved target ABI | target preparation | C spelling alone proves nothing |
 
 Target projection uses total-width ecosystem names:
 
@@ -135,7 +141,9 @@ over complex elements keeps both the domain and the element type.
 
 ## Current State
 
-DRAFT because the codebase does none of this yet:
+DRAFT because the Complex capability itself is unimplemented. The orthogonal
+target-width/profile cutover described in §1 is partially implemented and does
+not promote the Complex rules:
 
 | Observation | Evidence |
 |---|---|

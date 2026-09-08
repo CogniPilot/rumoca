@@ -355,7 +355,7 @@ static CACHE_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 /// Set the cache-root override for this process. Call once at startup, before
 /// any compilation touches the cache. A later call is ignored.
 pub fn set_cache_root_override(dir: PathBuf) {
-    let _ = CACHE_ROOT_OVERRIDE.set(dir);
+    let _already_initialized = CACHE_ROOT_OVERRIDE.set(dir);
 }
 
 fn cache_root_override() -> Option<PathBuf> {

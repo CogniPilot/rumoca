@@ -5,7 +5,7 @@ use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use rumoca_compile::compile::FailedPhase;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 
 mod diagnostic_codes;
 mod failure_classification;
@@ -32,6 +32,14 @@ pub const MSL_SIM_TIMEOUT_SECS: f64 = 12.0;
 /// intervals. Solver event instants remain additional output points.
 pub const MSL_SIM_OUTPUT_INTERVALS: usize = 500;
 
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 /// Select the observation interval for an MSL simulation.
 ///
 /// A valid Modelica experiment interval owns the grid. Otherwise the grid is
@@ -54,7 +62,7 @@ pub fn msl_sim_output_dt(
         })
 }
 
-pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 2;
+pub const MODEL_WORKER_PROTOCOL_VERSION: u32 = 3;
 pub const MODEL_WORKER_RESULT_FILE: &str = "result.json";
 pub const MODEL_WORKER_PARTIAL_RESULT_FILE: &str = "partial_result.json";
 /// Resident-plus-swap ceiling for one persistent MSL model worker.
@@ -82,33 +90,28 @@ pub struct ModelWorkerRequest {
     /// Per-model solver wall budget. `None` selects
     /// [`MSL_SIM_TIMEOUT_SECS`]; workers clamp explicit values to that floor so
     /// callers can only raise the parity budget.
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_timeout_secs: Option<f64>,
     /// Emit the machine-exact IR JSON (`ir-*.json`) for each stage. Off by
-    /// default for interactive debugging (the readable `ir-*.mo` Modelica dumps
-    /// are preferred); enable when exact op/index or span detail is needed.
+    /// default for interactive debugging; enable when exact op/index or span
+    /// detail is needed.
     pub emit_json: bool,
     /// Enable NaN/non-finite runtime tracing (a first-class debug flag rather
     /// than an env var) — see `rumoca_eval_solve::nan_trace`.
-    #[serde(default)]
     pub nan_trace: bool,
-    /// Emit human-readable Modelica reconstructions of each IR stage
-    /// (`<model>_<stage>.mo`) so transforms can be diffed stage-to-stage.
-    #[serde(default)]
-    pub emit_modelica: bool,
     pub source_root_path: PathBuf,
     pub output_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelWorkerCommand {
     Run { request: ModelWorkerRequest },
     Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelWorkerControlMessage {
     Ready {
         protocol_version: u32,
@@ -123,6 +126,7 @@ pub enum ModelWorkerControlMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelWorkerResponse {
     pub protocol_version: u32,
     pub elapsed_secs: f64,
@@ -130,12 +134,13 @@ pub struct ModelWorkerResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerProgressEvent {
     pub model_name: String,
     pub phase: WorkerProgressPhase,
     pub event: WorkerProgressEventKind,
     pub elapsed_secs: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub memory: Option<WorkerMemorySnapshot>,
 }
 
@@ -195,15 +200,24 @@ pub enum WorkerProgressEventKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerMemorySnapshot {
     pub label: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub rss_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub pss_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub private_clean_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub private_dirty_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub shared_clean_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub shared_dirty_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub anonymous_kb: Option<u64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub swap_kb: Option<u64>,
 }
 
@@ -223,15 +237,15 @@ impl ModelWorkerPhaseMonitor {
         }
     }
 
-    pub fn update(&mut self, progress_jsonl: &Path) -> Option<WorkerProgressPhase> {
-        let state = worker_progress_state(progress_jsonl);
+    pub fn update(&mut self, progress_jsonl: &Path) -> Result<Option<WorkerProgressPhase>, String> {
+        let state = worker_progress_state(progress_jsonl)?;
         self.seen_progress = state.seen_progress;
         let active_phase = state.active_phase;
         if active_phase != self.active_phase {
             self.active_phase = active_phase;
             self.active_since = Instant::now();
         }
-        self.active_phase
+        Ok(self.active_phase)
     }
 
     pub fn phase_elapsed(&self) -> Duration {
@@ -367,7 +381,13 @@ impl ModelWorkerDaemon {
         let start = Instant::now();
         let mut phase_monitor = ModelWorkerPhaseMonitor::new();
         loop {
-            let active_phase = phase_monitor.update(progress_jsonl);
+            let active_phase = match phase_monitor.update(progress_jsonl) {
+                Ok(active_phase) => active_phase,
+                Err(error) => {
+                    self.kill_and_join();
+                    return ModelWorkerRunOutcome::Failed(error);
+                }
+            };
             let timeout_secs = phase_timeouts.timeout_secs_for(active_phase);
             if let Some(active_phase) = active_phase
                 && phase_monitor.phase_elapsed() >= Duration::from_secs_f64(timeout_secs)
@@ -450,8 +470,8 @@ impl ModelWorkerDaemon {
     }
 
     pub fn shutdown_and_join(&mut self) {
-        let _ = self.send_command(&ModelWorkerCommand::Shutdown);
-        let _ = self.child.wait();
+        let _shutdown_result = self.send_command(&ModelWorkerCommand::Shutdown);
+        let _wait_result = self.child.wait();
     }
 
     fn wait_for_ready(&mut self, timeout_secs: f64) -> Result<(), String> {
@@ -518,8 +538,8 @@ impl ModelWorkerDaemon {
     }
 
     fn kill_and_join(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _kill_result = self.child.kill();
+        let _wait_result = self.child.wait();
     }
 }
 
@@ -740,7 +760,8 @@ fn spawn_model_worker_message_reader(
             let line = match line {
                 Ok(line) => line,
                 Err(error) => {
-                    let _ = tx.send(Err(format!("failed to read model worker stdout: {error}")));
+                    let _receiver_closed =
+                        tx.send(Err(format!("failed to read model worker stdout: {error}")));
                     return;
                 }
             };
@@ -758,102 +779,149 @@ fn spawn_model_worker_message_reader(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkerModelResult {
     pub model_name: String,
     pub phase_reached: String,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub error: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub error_code: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub num_states: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub num_algebraics: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub num_f_x: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub balance: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub is_balanced: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub is_partial: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub class_type: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub scalar_equations: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub scalar_unknowns: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_equation_scalars: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_algorithm_scalars: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_balance_deficit_before: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_closure_used: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_balance_deficit_after: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_balance_ok: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub compile_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub instantiate_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub typecheck_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub flatten_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub dae_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub compile_perf_profile_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_ast_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_flat_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_status: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_error: Option<String>,
     /// Stable SPEC_0008 code for `sim_error` (`EX0xx` for runtime failures,
     /// delegated `EL0xx`/`ES0xx` when the defect came from solve lowering or
     /// structural analysis). `None` for failures that are model behaviour
     /// rather than a compiler defect (timeout, `assert`, `terminate`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_error_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_error_span: Option<rumoca_core::Span>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ic_status: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ic_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ic_error_span: Option<rumoca_core::Span>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ic_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_build_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_structural_dae_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_lower_seconds: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tensor_family_bodies: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tensor_preserved_family_bodies: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tensor_scalarized_family_rows: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tensor_preservation_percent: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub tensor_preservation_error: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_backend_build_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_run_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_wall_seconds: Option<f64>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_trace_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_perf_profile_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub sim_trace_error: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_dae_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_file: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_error: Option<String>,
     /// Stable SPEC_0008 code for `ir_solve_error` (`EL0xx`/`ES0xx`). `None` when
     /// the solve stage failed for a non-diagnostic reason such as an artifact
     /// write error.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub ir_solve_error_code: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub timeout_phase: Option<WorkerProgressPhase>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub timeout_seconds: Option<f64>,
     /// Component breakdown for an unbalanced (ED001) ToDae failure, so the MSL
     /// harness can triage a balance cohort without recompiling.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub balance_detail: Option<Box<rumoca_compile::analysis::BalanceDetail>>,
     /// Pipeline phase the failing attempt stopped in, as a typed enum rather
     /// than the free-form `phase_reached` string. `None` for a successful
     /// attempt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub failure_phase: Option<WorkerProgressPhase>,
     /// Typed failure family, minted from producer knowledge (the compile phase,
     /// the `SimError` variant, or the `SimFailureStage` the failing path
     /// recorded) — never from the rendered message. `None` for a successful
     /// attempt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub failure_bucket: Option<ModelFailureBucket>,
     /// Owner of [`Self::failure_bucket`], carried so report tooling can group by
     /// owner without linking this crate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub owner_category: Option<ModelFailureOwner>,
     /// The SPEC_0008 code that identifies the classified failure, selected from
     /// the stage-specific code fields so consumers have one field to read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub failure_error_code: Option<String>,
 }
 
@@ -970,24 +1038,42 @@ pub fn write_model_worker_response_file(
     write_json_file(path, response)
 }
 
+#[derive(Debug)]
 struct WorkerProgressState {
     active_phase: Option<WorkerProgressPhase>,
     seen_progress: bool,
 }
 
-fn worker_progress_state(progress_jsonl: &Path) -> WorkerProgressState {
-    let Ok(raw) = std::fs::read_to_string(progress_jsonl) else {
-        return WorkerProgressState {
-            active_phase: None,
-            seen_progress: false,
-        };
+fn worker_progress_state(progress_jsonl: &Path) -> Result<WorkerProgressState, String> {
+    let raw = match std::fs::read_to_string(progress_jsonl) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WorkerProgressState {
+                active_phase: None,
+                seen_progress: false,
+            });
+        }
+        Err(error) => {
+            return Err(format!(
+                "failed to read model worker progress '{}': {error}",
+                progress_jsonl.display()
+            ));
+        }
     };
     let mut active = None;
     let mut seen_progress = false;
-    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(event) = serde_json::from_str::<WorkerProgressEvent>(line) else {
-            continue;
-        };
+    for (line_number, line) in raw
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+    {
+        let event = serde_json::from_str::<WorkerProgressEvent>(line).map_err(|error| {
+            format!(
+                "failed to parse model worker progress '{}', line {}: {error}",
+                progress_jsonl.display(),
+                line_number + 1
+            )
+        })?;
         seen_progress = true;
         match event.event {
             WorkerProgressEventKind::Started => active = Some(event.phase),
@@ -996,10 +1082,10 @@ fn worker_progress_state(progress_jsonl: &Path) -> WorkerProgressState {
             WorkerProgressEventKind::Snapshot => {}
         }
     }
-    WorkerProgressState {
+    Ok(WorkerProgressState {
         active_phase: active,
         seen_progress,
-    }
+    })
 }
 
 fn read_json_file<T: DeserializeOwned>(path: &std::path::Path) -> Result<T, String> {
@@ -1027,6 +1113,119 @@ fn write_json_file<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_every_serialized_key_is_required<T>(value: &T)
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let serialized = serde_json::to_value(value).expect("serialize current worker wire");
+        serde_json::from_value::<T>(serialized.clone())
+            .expect("current worker writer output must satisfy its exact reader");
+        let object = serialized
+            .as_object()
+            .expect("current worker wire root is an object");
+        for key in object.keys() {
+            let mut mutation = serialized.clone();
+            mutation
+                .as_object_mut()
+                .expect("current worker wire root stays an object")
+                .remove(key);
+            assert!(
+                serde_json::from_value::<T>(mutation).is_err(),
+                "deleting current worker wire key `{key}` must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn current_worker_wire_rejects_every_deleted_key() {
+        let request = ModelWorkerRequest {
+            protocol_version: MODEL_WORKER_PROTOCOL_VERSION,
+            model_name: "M".to_string(),
+            run_simulation: false,
+            selected_for_simulation: false,
+            explicit_sim_target: false,
+            sim_timeout_secs: None,
+            emit_json: false,
+            nan_trace: false,
+            source_root_path: PathBuf::from("source"),
+            output_dir: PathBuf::from("output"),
+        };
+        assert_every_serialized_key_is_required(&request);
+
+        let result = WorkerModelResult::phase_failure(
+            "M".to_string(),
+            "Compile",
+            "failed",
+            Some("ER001".to_string()),
+        );
+        assert_every_serialized_key_is_required(&result);
+
+        let snapshot = WorkerMemorySnapshot {
+            label: "compile".to_string(),
+            rss_kb: None,
+            pss_kb: None,
+            private_clean_kb: None,
+            private_dirty_kb: None,
+            shared_clean_kb: None,
+            shared_dirty_kb: None,
+            anonymous_kb: None,
+            swap_kb: None,
+        };
+        assert_every_serialized_key_is_required(&snapshot);
+
+        let progress = WorkerProgressEvent {
+            model_name: "M".to_string(),
+            phase: WorkerProgressPhase::Compile,
+            event: WorkerProgressEventKind::Snapshot,
+            elapsed_secs: 0.0,
+            memory: Some(snapshot),
+        };
+        assert_every_serialized_key_is_required(&progress);
+    }
+
+    #[test]
+    fn progress_monitor_rejects_malformed_or_incomplete_current_events() {
+        let temporary = tempfile::tempdir().expect("temporary progress directory");
+        let progress_path = temporary.path().join("progress.jsonl");
+        std::fs::write(&progress_path, "not-json\n").expect("write malformed progress");
+        let malformed = worker_progress_state(&progress_path)
+            .expect_err("malformed progress is a current protocol failure");
+        assert!(malformed.contains("line 1"));
+
+        let event = WorkerProgressEvent {
+            model_name: "M".to_string(),
+            phase: WorkerProgressPhase::Compile,
+            event: WorkerProgressEventKind::Started,
+            elapsed_secs: 0.0,
+            memory: None,
+        };
+        let mut incomplete = serde_json::to_value(event).expect("serialize current progress");
+        incomplete
+            .as_object_mut()
+            .expect("progress event is an object")
+            .remove("memory");
+        std::fs::write(
+            &progress_path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&incomplete).expect("render incomplete event")
+            ),
+        )
+        .expect("write incomplete progress");
+        let incomplete = worker_progress_state(&progress_path)
+            .expect_err("missing current progress key is a protocol failure");
+        assert!(incomplete.contains("line 1"));
+    }
+
+    #[test]
+    fn progress_monitor_treats_an_absent_file_as_unseen_startup() {
+        let temporary = tempfile::tempdir().expect("temporary progress directory");
+        let state = worker_progress_state(&temporary.path().join("absent.jsonl"))
+            .expect("an absent progress file is normal before worker startup");
+        assert_eq!(state.active_phase, None);
+        assert!(!state.seen_progress);
+    }
 
     #[test]
     fn cpu_core_plan_has_one_entry_per_worker() {

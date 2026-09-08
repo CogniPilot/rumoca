@@ -8,10 +8,9 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-serde = { workspace = true }
 serde_json = { workspace = true }
-tracing = { workspace = true }
 tungstenite = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

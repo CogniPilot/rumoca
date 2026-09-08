@@ -8,7 +8,7 @@
 //! `outer World world` was unevaluable, so both arms of a mutually exclusive
 //! pair were instantiated and the resulting system was structurally singular.
 
-use crate::instantiate_model;
+use crate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_ir_ast as ast;
 use rumoca_phase_parse::parse_to_ast;
 use rumoca_phase_resolve::resolve;
@@ -46,14 +46,14 @@ const INNER_OUTER_CONDITION: &str = r"
     end PlantDefault;
 ";
 
-fn instantiate(source: &str, model: &str) -> ast::InstanceOverlay {
+fn instantiation_outcome(source: &str, model: &str) -> InstantiationOutcome {
     let file_name = "<conditional_outer_test>";
     let stored = parse_to_ast(source, file_name).expect("parse should succeed");
     let mut tree = ast::ClassTree::from_parsed(stored);
     tree.source_map.add(file_name, source);
     let resolved = resolve(ast::ParsedTree::new(tree)).expect("resolve should succeed");
-    let tree = resolved.into_inner();
-    instantiate_model(&tree, model).expect("instantiation should succeed")
+    let tree = resolved.inner().clone();
+    instantiate_model_with_outcome(&tree, model)
 }
 
 fn component_paths(overlay: &ast::InstanceOverlay) -> Vec<String> {
@@ -74,7 +74,13 @@ fn disabled_paths(overlay: &ast::InstanceOverlay) -> Vec<String> {
 
 #[test]
 fn outer_parameter_modified_at_inner_disables_the_false_arm() {
-    let overlay = instantiate(INNER_OUTER_CONDITION, "Plant");
+    let overlay = match instantiation_outcome(INNER_OUTER_CONDITION, "Plant") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let paths = component_paths(&overlay);
     let disabled = disabled_paths(&overlay);
 
@@ -98,7 +104,13 @@ fn outer_parameter_modified_at_inner_disables_the_false_arm() {
 
 #[test]
 fn outer_parameter_declaration_default_disables_the_other_arm() {
-    let overlay = instantiate(INNER_OUTER_CONDITION, "PlantDefault");
+    let overlay = match instantiation_outcome(INNER_OUTER_CONDITION, "PlantDefault") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let paths = component_paths(&overlay);
     let disabled = disabled_paths(&overlay);
 
@@ -154,7 +166,13 @@ const REAL_CONDITION_THROUGH_OUTER: &str = r"
 
 #[test]
 fn real_condition_through_outer_reference_keeps_the_component() {
-    let overlay = instantiate(REAL_CONDITION_THROUGH_OUTER, "Plant");
+    let overlay = match instantiation_outcome(REAL_CONDITION_THROUGH_OUTER, "Plant") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let disabled = disabled_paths(&overlay);
     assert!(
         disabled.is_empty(),
@@ -173,7 +191,13 @@ fn real_condition_through_outer_reference_keeps_the_component() {
 /// makes `sphereDiameter > 0` false.
 #[test]
 fn inner_modification_propagates_to_derived_real_parameters() {
-    let overlay = instantiate(REAL_CONDITION_THROUGH_OUTER, "FlatWorld");
+    let overlay = match instantiation_outcome(REAL_CONDITION_THROUGH_OUTER, "FlatWorld") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let disabled = disabled_paths(&overlay);
     let paths = component_paths(&overlay);
     assert!(
@@ -206,7 +230,13 @@ fn local_parameter_still_wins_over_outer_resolution() {
             Local local1;
         end Plant;
     ";
-    let overlay = instantiate(source, "Plant");
+    let overlay = match instantiation_outcome(source, "Plant") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
+    };
     let disabled = disabled_paths(&overlay);
     assert!(
         disabled.is_empty(),

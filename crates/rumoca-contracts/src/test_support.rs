@@ -8,6 +8,7 @@ use rumoca_compile::parsing::{
     ParseError, parse_source_to_ast as parse_to_ast, parse_source_to_ast_with_errors,
 };
 use rumoca_compile::{Session, SessionConfig};
+use rumoca_core::PhaseError;
 
 /// Compile a model from source, expecting success.
 /// Returns the CompilationResult for further assertions.
@@ -319,31 +320,65 @@ pub fn expect_parse_ok(source: &str) {
 /// # Panics
 /// Panics if parsing succeeds or no parse diagnostic code matches.
 pub fn expect_parse_err_with_code(source: &str, expected_code: &str) {
+    let codes = parse_error_codes(source, expected_code);
+    let matched = codes
+        .iter()
+        .any(|code| error_code_matches(code.as_str(), expected_code));
+    assert!(
+        matched,
+        "Expected parse diagnostic code {expected_code}, got codes: {:?}",
+        codes
+    );
+}
+
+/// Assert that the given Modelica source fails to parse and that *every*
+/// reported parse diagnostic carries `expected_code`.
+///
+/// [`expect_parse_err_with_code`] only proves a code is present, so a rejection
+/// that fired for an unrelated reason can satisfy it as long as the intended
+/// code appears somewhere. This helper is the decisive form: it also fails when
+/// a different rejection is mixed in, which is what keeps an
+/// omitted-iterator-range witness from being satisfied by ordinary syntax
+/// corruption, and vice versa.
+///
+/// # Panics
+/// Panics if parsing succeeds or any reported diagnostic carries another code.
+pub fn expect_parse_err_with_only_code(source: &str, expected_code: &str) {
+    let codes = parse_error_codes(source, expected_code);
+    assert!(
+        codes
+            .iter()
+            .all(|code| error_code_matches(code.as_str(), expected_code)),
+        "Expected every parse diagnostic to be {expected_code}, got codes: {:?}",
+        codes
+    );
+}
+
+fn parse_error_codes(source: &str, expected_code: &str) -> Vec<String> {
     match parse_source_to_ast_with_errors(source, "test.mo") {
         Ok(_) => panic!("Expected parse failure with code {expected_code}, but parsing succeeded"),
         Err(parse_errors) => {
-            let codes: Vec<String> = parse_errors
-                .iter()
-                .map(|e| parse_error_code(e).to_string())
-                .collect();
-            let matched = codes
-                .iter()
-                .any(|code| error_code_matches(code.as_str(), expected_code));
             assert!(
-                matched,
-                "Expected parse diagnostic code {expected_code}, got codes: {:?}",
-                codes
+                !parse_errors.is_empty(),
+                "Expected parse diagnostic code {expected_code}, but the parser reported no errors"
             );
+            parse_errors.iter().map(parse_error_code).collect()
         }
     }
 }
 
-fn parse_error_code(error: &ParseError) -> &'static str {
-    match error {
-        ParseError::SyntaxError { .. } => "EP001",
-        ParseError::NoAstProduced { .. } => "EP002",
-        ParseError::IoError { .. } => "EP003",
-    }
+/// The production diagnostic code for a parse error.
+///
+/// This reads the code the compiler actually emits through `PhaseError` rather
+/// than a variant-to-code table maintained beside it: a shadow table can agree
+/// with itself while disagreeing with the compiler, so a contract witness built
+/// on one proves nothing about shipped diagnostics.
+fn parse_error_code(error: &ParseError) -> String {
+    let diagnostic = error.to_diagnostic();
+    let Some(code) = diagnostic.code else {
+        panic!("parse diagnostic must carry a code: {error:?}");
+    };
+    code
 }
 
 /// Compile and simulate a model, returning the simulation trace for
@@ -354,7 +389,7 @@ fn parse_error_code(error: &ParseError) -> &'static str {
 pub fn simulate_model(source: &str, model: &str, t_end: f64) -> SimTrace {
     let result = expect_success(source, model);
     let opts = contract_sim_options(t_end);
-    let sim = rumoca_sim::simulate_with_diagnostics(&result.dae, &opts)
+    let sim = rumoca_sim::simulate_dae(&result.dae, &opts)
         .unwrap_or_else(|e| panic!("Simulation failed for {model}: {e}"));
     SimTrace {
         times: sim.times,

@@ -50,14 +50,26 @@ pub enum DaeConstructionError {
     MissingPreviousClockOwner { span: Span },
     #[error("clocked builtin `{operator}` does not have its required checked operand")]
     InvalidClockedOperand { operator: &'static str, span: Span },
+    #[error("invalid parameter of clocked builtin `{operator}`: {detail}")]
+    InvalidClockParameter {
+        operator: &'static str,
+        detail: String,
+        span: Span,
+    },
     #[error("expression form is outside the checked DAE lowering grammar")]
     InvalidExpressionForm { span: Span },
+    #[error("derivative expression has no matching checked occurrence certificate")]
+    MissingDerivativeCertificate { span: Span },
     #[error(
         "event-generating relation in a structured equation requires a compact structured event owner"
     )]
     UnsupportedStructuredEvent { span: Span },
     #[error("clock-domain analysis did not construct the required exact clock owner")]
     MissingClockDomainOwner { span: Span },
+    #[error(
+        "expression combines distinct exact clock domains (first at {established:?}, then at {attempted:?})"
+    )]
+    ConflictingExpressionClockDomains { established: Span, attempted: Span },
     #[error("{arena} exceeded its u32 identity capacity at {attempted_index}")]
     CapacityExceeded {
         arena: &'static str,
@@ -128,6 +140,10 @@ pub enum DaeConstructionError {
     InvalidRangeBound { span: Span },
     #[error("range extent exceeds the DAE u32 domain")]
     RangeExtentOverflow { span: Span },
+    #[error("array extent {extent} exceeds the DAE u32 domain")]
+    ArrayExtentOverflow { extent: usize, span: Span },
+    #[error("source array extent {extent} exceeds the DAE u32 domain")]
+    SourceArrayExtentOverflow { extent: i64, span: Span },
     #[error("array extent must be a nonnegative literal Integer")]
     InvalidArrayExtent { span: Span },
     #[error("expected a finite, strictly-positive parameter expression")]
@@ -167,6 +183,20 @@ pub enum DaeConstructionError {
         found_definition: u32,
         span: Span,
     },
+    #[error(
+        "callable source region {source_region} does not dominate capture target region {target_region}"
+    )]
+    InvalidCallableCaptureRegion {
+        source_region: u32,
+        target_region: u32,
+        span: Span,
+    },
+    #[error("callable source region {region} has no owner for binder domain {domain}")]
+    MissingCallableBinderRegion {
+        domain: u32,
+        region: u32,
+        span: Span,
+    },
     #[error("model coordinate `{coordinate}` cannot be captured by a pure function")]
     InvalidFunctionCoordinate {
         coordinate: &'static str,
@@ -182,6 +212,13 @@ pub enum DaeConstructionError {
     InvalidRecursiveFunctionGroup { span: Span },
     #[error("variable `{name}` has the wrong DAE coordinate role")]
     InvalidVariableRole { name: VarName, span: Span },
+    #[error("variable `{name}` has no allocated source occurrence identity")]
+    UnsetSourceOccurrence { name: VarName, span: Span },
+    #[error("source occurrence {occurrence} is assigned to more than one DAE variable")]
+    DuplicateSourceOccurrence {
+        occurrence: rumoca_core::InstanceId,
+        span: Span,
+    },
     #[error("variable `{name}` of type {found:?} cannot be a {role:?} DAE coordinate")]
     InvalidVariableType {
         name: VarName,
@@ -323,7 +360,9 @@ impl DaeConstructionError {
             | Self::InvalidClockLattice { span, .. }
             | Self::MissingPreviousClockOwner { span }
             | Self::InvalidClockedOperand { span, .. }
+            | Self::InvalidClockParameter { span, .. }
             | Self::InvalidExpressionForm { span }
+            | Self::MissingDerivativeCertificate { span }
             | Self::UnsupportedStructuredEvent { span }
             | Self::MissingClockDomainOwner { span }
             | Self::CapacityExceeded { span, .. }
@@ -349,6 +388,8 @@ impl DaeConstructionError {
             | Self::ZeroRangeStep { span }
             | Self::InvalidRangeBound { span }
             | Self::RangeExtentOverflow { span }
+            | Self::ArrayExtentOverflow { span, .. }
+            | Self::SourceArrayExtentOverflow { span, .. }
             | Self::InvalidArrayExtent { span }
             | Self::InvalidPositiveParameter { span }
             | Self::InvalidDynamicTimeEventDeadline { span }
@@ -359,10 +400,14 @@ impl DaeConstructionError {
             | Self::InvalidBinderScope { span, .. }
             | Self::InvalidFunctionScope { span, .. }
             | Self::InvalidFunctionValueRead { span, .. }
+            | Self::InvalidCallableCaptureRegion { span, .. }
+            | Self::MissingCallableBinderRegion { span, .. }
             | Self::InvalidFunctionCoordinate { span, .. }
             | Self::InvalidFunctionDependency { span, .. }
             | Self::InvalidRecursiveFunctionGroup { span }
             | Self::InvalidVariableRole { span, .. }
+            | Self::UnsetSourceOccurrence { span, .. }
+            | Self::DuplicateSourceOccurrence { span, .. }
             | Self::InvalidVariableType { span, .. }
             | Self::DuplicateDefinition { span, .. }
             | Self::DuplicateKey { span, .. }
@@ -379,6 +424,7 @@ impl DaeConstructionError {
             | Self::InvalidExternalLinkage { span }
             | Self::IllegalImpureCallContext { span, .. }
             | Self::IncompleteDefinition { span, .. } => Some(*span),
+            Self::ConflictingExpressionClockDomains { attempted, .. } => Some(*attempted),
             Self::ConflictingClockOwnership { attempted, .. } => Some(attempted.span()),
             Self::ConflictingEffectiveType { attempted, .. } => Some(attempted.span()),
             Self::DuplicateTopology { span, .. } => *span,

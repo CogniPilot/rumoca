@@ -19,16 +19,16 @@ impl Clone for TornSweepCache {
 }
 
 pub(super) fn prepare_refresh_plan(
-    plan: solve::RefreshPlan,
+    plan: solve::IssuedRefreshPlan,
     structural: &solve::ContinuousStructuralArtifacts,
     program_catalog: &PreparedRefreshProgramCatalog<'_>,
 ) -> Result<PreparedRefreshPlan, RuntimeSolveError> {
     let program_rows = plan
-        .rows
+        .rows()
         .iter()
         .map(|row| program_catalog.bind(row.source()))
         .collect::<Result<Box<[_]>, RuntimeSolveError>>()?;
-    let execution = if plan.causal_solution_certified {
+    let execution = if plan.causal_solution_certified() {
         PreparedRefreshExecution::CertifiedCausal
     } else {
         match prepared_refresh_stages(&plan) {
@@ -46,29 +46,29 @@ pub(super) fn prepare_refresh_plan(
 }
 
 fn refresh_stage_schedule_is_certified(
-    plan: &solve::RefreshPlan,
+    plan: &solve::IssuedRefreshPlan,
     structural: &solve::ContinuousStructuralArtifacts,
 ) -> bool {
     let algebraic = structural.algebraic_projection();
-    !plan.value_stages.is_empty()
-        && plan.simultaneous_block_indices.len() == plan.simultaneous_plan.blocks.len()
+    !plan.value_stages().is_empty()
+        && plan.simultaneous_block_indices().len() == plan.simultaneous_plan().blocks.len()
         && plan
-            .simultaneous_block_indices
+            .simultaneous_block_indices()
             .iter()
             .all(|&index| algebraic.get(index).is_some())
         && plan
-            .simultaneous_block_indices
+            .simultaneous_block_indices()
             .iter()
             .skip(1)
             .all(|&index| structural.algebraic_invalidates_earlier(index) == Some(false))
 }
 
-fn prepared_refresh_stages(plan: &solve::RefreshPlan) -> Option<Box<[PreparedRefreshStage]>> {
-    let mut stages = Vec::with_capacity(plan.value_stages.len());
-    for stage in &plan.value_stages {
+fn prepared_refresh_stages(plan: &solve::IssuedRefreshPlan) -> Option<Box<[PreparedRefreshStage]>> {
+    let mut stages = Vec::with_capacity(plan.value_stages().len());
+    for stage in plan.value_stages() {
         match stage {
-            solve::RefreshStage::CausalSeedSweep { .. } => return None,
-            solve::RefreshStage::ExactAssignments {
+            solve::IssuedRefreshStage::CausalSeedSweep { .. } => return None,
+            solve::IssuedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
@@ -79,7 +79,7 @@ fn prepared_refresh_stages(plan: &solve::RefreshPlan) -> Option<Box<[PreparedRef
                 static_rows: static_rows.clone(),
                 dynamic_rows: dynamic_rows.clone(),
             }),
-            solve::RefreshStage::ProjectionBlock {
+            solve::IssuedRefreshStage::ProjectionBlock {
                 block_index, plan, ..
             } => stages.push(PreparedRefreshStage::ProjectionBlock {
                 block_index: *block_index,
@@ -228,9 +228,9 @@ pub(super) fn trace_reverse_projection_coverage(
     let mut reverse_rows = 0usize;
     let mut unsupported_kinds = BTreeSet::new();
     for row in model
-        .problem
+        .problem()
         .continuous()
-        .algebraic_projection_plan
+        .algebraic_projection_plan()
         .blocks
         .iter()
         .filter(|block| block.rows.len() > 1)
@@ -322,12 +322,11 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
     }
 
     fn manifold_projection_plan(&self) -> &solve::AlgebraicProjectionPlan {
-        &self
-            .runtime
+        self.runtime
             .model
-            .problem
+            .problem()
             .continuous()
-            .manifold_projection_plan
+            .manifold_projection_plan()
     }
 
     fn manifold_projection_block_structure(
@@ -341,7 +340,7 @@ impl ManifoldProjectionModel for RuntimeManifoldProjection<'_> {
     }
 
     fn manifold_variable_scale(&self, y_index: usize) -> f64 {
-        self.runtime.model.solver_variable_scale(y_index)
+        self.runtime.model.solver_variable_scales()[y_index]
     }
 }
 
@@ -380,6 +379,61 @@ impl<'a> ProjectionJacobian<'a> {
     }
 }
 
+impl RefreshProjectionModel<'_> {
+    fn eval_solver_y_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        match &self.runtime.execution_plan.implicit_projection_jacobian {
+            ExecutionArm::Native(compiled) => compiled.call(y, p, t, v, out).map_err(|reason| {
+                RuntimeSolveError::native_call(
+                    NativeExecutionOwner::ImplicitProjectionJacobian,
+                    reason,
+                )
+            }),
+            ExecutionArm::Interpreter(selected_arm) => self
+                .jacobian_v
+                .eval(
+                    y,
+                    p,
+                    t,
+                    selected_arm.seeded_row_eval_context(self.runtime, v),
+                    out,
+                )
+                .map_err(Into::into),
+        }
+    }
+
+    fn eval_full_jacobian_v(
+        &self,
+        y: &[f64],
+        p: &[f64],
+        t: f64,
+        v: &[f64],
+        out: &mut [f64],
+    ) -> Result<(), RuntimeSolveError> {
+        match &self.runtime.execution_plan.implicit_full_jacobian {
+            ExecutionArm::Native(compiled) => compiled.call(y, p, t, v, out).map_err(|reason| {
+                RuntimeSolveError::native_call(NativeExecutionOwner::ImplicitFullJacobian, reason)
+            }),
+            ExecutionArm::Interpreter(selected_arm) => self
+                .jacobian_v
+                .eval(
+                    y,
+                    p,
+                    t,
+                    selected_arm.seeded_row_eval_context(self.runtime, v),
+                    out,
+                )
+                .map_err(Into::into),
+        }
+    }
+}
+
 impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn eval_residual(
         &self,
@@ -389,11 +443,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         match &self.runtime.execution_plan.implicit_rhs {
-            ExecutionArm::Native(compiled) => compiled
-                .call(y, p, t, self.runtime.model.external_tables.as_slice(), out)
-                .map_err(|reason| {
-                    RuntimeSolveError::native_call(NativeExecutionOwner::ImplicitResidual, reason)
-                })?,
+            ExecutionArm::Native(compiled) => compiled.call(y, p, t, out).map_err(|reason| {
+                RuntimeSolveError::native_call(NativeExecutionOwner::ImplicitResidual, reason)
+            })?,
             ExecutionArm::Interpreter(selected_arm) => self
                 .runtime
                 .implicit_rhs
@@ -414,63 +466,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
         match self.jacobian_v {
-            ProjectionJacobian::SolverY { .. } => {
-                match &self.runtime.execution_plan.implicit_projection_jacobian {
-                    ExecutionArm::Native(compiled) => compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            out,
-                        )
-                        .map_err(|reason| {
-                            RuntimeSolveError::native_call(
-                                NativeExecutionOwner::ImplicitProjectionJacobian,
-                                reason,
-                            )
-                        }),
-                    ExecutionArm::Interpreter(selected_arm) => self
-                        .jacobian_v
-                        .eval(
-                            y,
-                            p,
-                            t,
-                            selected_arm.seeded_row_eval_context(self.runtime, v),
-                            out,
-                        )
-                        .map_err(Into::into),
-                }
-            }
+            ProjectionJacobian::SolverY { .. } => self.eval_solver_y_jacobian_v(y, p, t, v, out),
             ProjectionJacobian::SolverYAndParameters(_) => {
-                match &self.runtime.execution_plan.implicit_full_jacobian {
-                    ExecutionArm::Native(compiled) => compiled
-                        .call(
-                            y,
-                            p,
-                            t,
-                            v,
-                            self.runtime.model.external_tables.as_slice(),
-                            out,
-                        )
-                        .map_err(|reason| {
-                            RuntimeSolveError::native_call(
-                                NativeExecutionOwner::ImplicitFullJacobian,
-                                reason,
-                            )
-                        }),
-                    ExecutionArm::Interpreter(selected_arm) => self
-                        .jacobian_v
-                        .eval(
-                            y,
-                            p,
-                            t,
-                            selected_arm.seeded_row_eval_context(self.runtime, v),
-                            out,
-                        )
-                        .map_err(Into::into),
-                }
+                self.eval_full_jacobian_v(y, p, t, v, out)
             }
         }
     }
@@ -783,9 +781,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn implicit_target(&self, row_idx: usize) -> Option<solve::ScalarSlot> {
         self.runtime
             .model
-            .problem
+            .problem()
             .continuous()
-            .implicit_row_targets
+            .implicit_row_targets()
             .get(row_idx)
             .copied()
             .flatten()
@@ -803,9 +801,9 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     fn target_name_for_row(&self, row_idx: usize) -> Option<&str> {
         self.runtime
             .model
-            .problem
+            .problem()
             .continuous()
-            .implicit_row_targets
+            .implicit_row_targets()
             .get(row_idx)
             .copied()
             .flatten()
@@ -816,7 +814,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
             .and_then(|index| {
                 self.runtime
                     .model
-                    .problem
+                    .problem()
                     .solve_layout()
                     .solver_maps
                     .names
@@ -826,7 +824,7 @@ impl ImplicitProjectionModel for RefreshProjectionModel<'_> {
     }
 
     fn variable_scale_for_y_index(&self, y_index: usize) -> f64 {
-        self.runtime.model.solver_variable_scale(y_index)
+        self.runtime.model.solver_variable_scales()[y_index]
     }
 }
 
@@ -1030,7 +1028,7 @@ impl SolveRuntime {
         let projection_args = crate::runtime::projection::AlgebraicProjectionArgs {
             parameters: args.params,
             time: args.t,
-            state_count: self.state_count,
+            state_count: self.state_count(),
             tolerance: args.tol,
         };
         if args.certify_coordinates {

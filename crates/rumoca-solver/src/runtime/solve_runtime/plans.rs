@@ -6,7 +6,9 @@ use std::hash::Hasher;
 use std::io::{self, Write};
 
 use crate::RuntimeSolveError;
-use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock, RowEvalContext};
+use rumoca_eval_solve::{EvalSolveError, PreparedComputeBlock};
+
+use super::PreparationConstantRootsPermit;
 
 #[derive(Clone, Copy)]
 pub(super) enum DirectVisibleSource {
@@ -69,9 +71,9 @@ pub(super) struct RootConditionPlan {
 }
 
 pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleValuePlan> {
-    let rows = &model.visible_value_rows;
-    if rows.row_count() != model.visible_names.len()
-        || rows.output_count() != model.visible_names.len()
+    let rows = model.visible_value_rows();
+    if rows.row_count() != model.visible_name_count()
+        || rows.output_count() != model.visible_name_count()
         || !rows.uses_local_contiguous_output_indices()
     {
         return None;
@@ -81,7 +83,7 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
     let mut expression_groups = Vec::new();
     let mut expression_groups_by_fingerprint = FxHashMap::<u64, Vec<usize>>::default();
     for (row_idx, row) in rows.programs().iter().enumerate() {
-        let output_count = solve::ScalarProgramBlock::program_output_count(row);
+        let output_count = rows.stored_output_count_for_program(row_idx)?;
         if output_count != 1 {
             return None;
         }
@@ -123,11 +125,12 @@ pub(super) fn visible_value_plan(model: &solve::SolveModel) -> Option<VisibleVal
 
 pub(super) fn root_condition_plan(
     model: &solve::SolveModel,
-    root_refresh: &solve::RefreshPlan,
-) -> Option<RootConditionPlan> {
-    let roots = &model.problem.events.root_conditions;
+    root_refresh: &solve::IssuedRefreshPlan,
+    preparation: PreparationConstantRootsPermit,
+) -> Result<Option<RootConditionPlan>, RuntimeSolveError> {
+    let roots = &model.problem().events().root_conditions;
     if !roots.uses_local_contiguous_output_indices() {
-        return None;
+        return Ok(None);
     }
     let mut entries = Vec::with_capacity(roots.output_count());
     let mut evaluated_rows = Vec::new();
@@ -139,9 +142,11 @@ pub(super) fn root_condition_plan(
         .collect::<BTreeSet<_>>();
     let mut output = 0;
     for (program, row) in roots.programs().iter().enumerate() {
-        let output_count = solve::ScalarProgramBlock::program_output_count(row);
+        let Some(output_count) = roots.stored_output_count_for_program(program) else {
+            return Ok(None);
+        };
         if output_count == 0 {
-            return None;
+            return Ok(None);
         }
         let span = roots.program_span(program);
         if output_count == 1
@@ -152,7 +157,7 @@ pub(super) fn root_condition_plan(
             continue;
         }
         if output_count == 1
-            && let Some(value) = constant_nonzero_root_value(row)
+            && let Some(value) = constant_nonzero_root_value(row, model, preparation)?
         {
             entries.push(RootConditionPlanEntry::ConstantNonZero(value));
             output += 1;
@@ -174,21 +179,21 @@ pub(super) fn root_condition_plan(
         output += output_count;
     }
     if output != roots.output_count() {
-        return None;
+        return Ok(None);
     }
     tracing::debug!(
         target: "rumoca_solver::root_plan",
         roots = entries.len(),
         evaluated = evaluated_rows.len(),
         search = search_rows.len(),
-        scheduled = model.problem.events.scheduled_root_conditions.len(),
+        scheduled = model.problem().events().scheduled_root_conditions.len(),
         "root condition execution plan"
     );
-    Some(RootConditionPlan {
+    Ok(Some(RootConditionPlan {
         entries,
         evaluated_rows,
         search_rows,
-    })
+    }))
 }
 
 fn direct_time_root(
@@ -253,13 +258,22 @@ fn time_and_param_loads(
     }
 }
 
-fn constant_nonzero_root_value(row: &[solve::LinearOp]) -> Option<f64> {
+fn constant_nonzero_root_value(
+    row: &[solve::LinearOp],
+    model: &solve::SolveModel,
+    preparation: PreparationConstantRootsPermit,
+) -> Result<Option<f64>, RuntimeSolveError> {
     if !row.iter().all(constant_root_op_allowed) {
-        return None;
+        return Ok(None);
     }
-    let value =
-        solve_eval::eval_row_with_context(row, &[], &[], 0.0, RowEvalContext::default()).ok()?;
-    (value.is_finite() && value != 0.0).then_some(value)
+    let value = solve_eval::eval_row_with_context(
+        row,
+        &[],
+        &[],
+        0.0,
+        preparation.row_eval_context_for_model(model),
+    )?;
+    Ok((value.is_finite() && value != 0.0).then_some(value))
 }
 
 fn constant_root_op_allowed(op: &solve::LinearOp) -> bool {
@@ -462,11 +476,11 @@ pub(super) fn prepare_manifold_projection_programs(
 ) -> Result<(PreparedComputeBlock, PreparedComputeBlock), EvalSolveError> {
     Ok((
         PreparedComputeBlock::new_with_label(
-            &model.problem.continuous.manifold_residual,
+            model.problem().continuous().manifold_residual(),
             "runtime_manifold_residual",
         )?,
         PreparedComputeBlock::new_with_label(
-            &model.artifacts.continuous.manifold_jacobian_v,
+            &model.artifacts().continuous().manifold_jacobian_v,
             "runtime_manifold_jacobian_v",
         )?,
     ))
@@ -479,8 +493,8 @@ pub(super) fn total_root_condition_count(
     delay_event_roots: usize,
 ) -> Result<usize, EvalSolveError> {
     model
-        .problem
-        .events
+        .problem()
+        .events()
         .root_conditions
         .len()
         .checked_add(delay_event_roots)

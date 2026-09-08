@@ -178,12 +178,10 @@ impl SemiLinearRowFilter<'_> {
 
 /// Prove the MLS §3.7.4.5 rule transformations over the model equation set.
 pub(super) fn analyze_semi_linear_rules(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
+    equations: &ModelEquationSequence<'_>,
     filter: &SemiLinearRowFilter<'_>,
 ) -> SemiLinearRules {
+    let flat = equations.model();
     let facts: Vec<usize> = flat
         .equations
         .iter()
@@ -195,21 +193,12 @@ pub(super) fn analyze_semi_linear_rules(
         .iter()
         .copied()
         .filter(|index| {
-            let equation = &flat.equations[*index];
+            let row = &equations.rows()[*index];
+            let equation = row.equation();
             filter.admits_rewrite(
                 *index,
                 equation,
-                matches!(
-                    equation_partition(
-                        flat,
-                        *index,
-                        equation,
-                        roles,
-                        connection_ranks,
-                        aggregate_connections,
-                    ),
-                    Ok(EquationPartition::Continuous)
-                ),
+                matches!(row.partition(), EquationPartition::Continuous),
             )
         })
         .collect();

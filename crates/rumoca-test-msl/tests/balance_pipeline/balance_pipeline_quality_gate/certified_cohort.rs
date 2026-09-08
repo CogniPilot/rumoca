@@ -6,7 +6,7 @@
 //! strict-high in the current full-cohort table.
 
 use super::*;
-use rumoca_test_msl::msl_tools::band_table::{BandLabel, BandRow};
+use rumoca_test_msl::msl_tools::band_table::BandRow;
 
 pub(super) fn validate_certified_strict_high_roster(
     baseline: &MslQualityBaseline,
@@ -15,10 +15,10 @@ pub(super) fn validate_certified_strict_high_roster(
         .trace_accuracy_stats
         .as_ref()
         .ok_or_else(|| io::Error::other("MSL quality baseline has no trace-accuracy statistics"))?;
-    if baseline.certified_strict_high_models.len() != trace.agreement_high {
+    if baseline.certified_strict_high_models.len() != trace.strict_high_models {
         return Err(io::Error::other(format!(
             "MSL quality baseline certifies {} strict-high models but owns {} model identities",
-            trace.agreement_high,
+            trace.strict_high_models,
             baseline.certified_strict_high_models.len()
         )));
     }
@@ -41,10 +41,10 @@ pub(super) fn certified_cohort_regression_reasons(
     let Some(trace) = baseline.trace_accuracy_stats.as_ref() else {
         return vec!["resolved baseline has no trace-accuracy evidence".to_string()];
     };
-    if baseline.certified_strict_high_models.len() != trace.agreement_high {
+    if baseline.certified_strict_high_models.len() != trace.strict_high_models {
         return vec![format!(
             "resolved baseline certifies {} strict-high models but owns {} model identities",
-            trace.agreement_high,
+            trace.strict_high_models,
             baseline.certified_strict_high_models.len()
         )];
     }
@@ -67,7 +67,7 @@ fn certified_model_regression(model: &str, current: Option<&BandRow>) -> Option<
             "baseline-certified strict-high model {model} has no current cohort row"
         ));
     };
-    if row.band == BandLabel::High {
+    if row.is_strict_high_certified() {
         return None;
     }
     let detail = row.exit_reason.map_or_else(

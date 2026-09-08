@@ -116,32 +116,50 @@ impl InitialContinuationCoverage {
     pub(super) fn certify_runtime_blocks(
         model: &solve::SolveModel,
         implicit_scalar_rhs: &PreparedScalarProgramBlock,
-        algebraic_refresh: &solve::RefreshPlan,
+        algebraic_refresh: &solve::IssuedRefreshPlan,
     ) -> Result<(solve::ScalarProgramBlock, Option<Self>), EvalSolveError> {
         let initial_scalar_residual =
-            to_scalar_program_block(&model.problem.initialization.residual)?;
-        let coverage = Self::certify(
+            to_scalar_program_block(model.problem().initialization().residual())?;
+        let coverage = Self::certify_with_refresh_equations(
             model,
             implicit_scalar_rhs.block(),
             &initial_scalar_residual,
-            algebraic_refresh,
+            algebraic_refresh_equations_issued(algebraic_refresh),
         )?;
         Ok((initial_scalar_residual, coverage))
     }
 
-    /// Certify that the continuation can steer every solve λ reaches.
-    ///
-    /// Returns `Ok(None)` when the model allocates no continuation parameter.
+    /// Test seam for injecting already scalarized blocks while retaining the
+    /// production-issued refresh owner.
+    #[cfg(test)]
     pub(crate) fn certify(
         model: &solve::SolveModel,
         implicit_block: &solve::ScalarProgramBlock,
         initial_block: &solve::ScalarProgramBlock,
-        algebraic_refresh: &solve::RefreshPlan,
+        algebraic_refresh: &solve::IssuedRefreshPlan,
     ) -> Result<Option<Self>, EvalSolveError> {
-        let Some(lambda_index) = model.problem.solve_layout.initial_homotopy_parameter_index else {
+        Self::certify_with_refresh_equations(
+            model,
+            implicit_block,
+            initial_block,
+            algebraic_refresh_equations_issued(algebraic_refresh),
+        )
+    }
+
+    fn certify_with_refresh_equations(
+        model: &solve::SolveModel,
+        implicit_block: &solve::ScalarProgramBlock,
+        initial_block: &solve::ScalarProgramBlock,
+        refresh_equations: BTreeSet<usize>,
+    ) -> Result<Option<Self>, EvalSolveError> {
+        let Some(lambda_index) = model
+            .problem()
+            .solve_layout()
+            .initial_homotopy_parameter_index
+        else {
             return Ok(None);
         };
-        let parameter_len = model.problem.solve_layout.compiled_parameter_len;
+        let parameter_len = model.problem().solve_layout().compiled_parameter_len;
         if lambda_index >= parameter_len {
             return Err(EvalSolveError::ShapeContract {
                 message: format!(
@@ -170,7 +188,6 @@ impl InitialContinuationCoverage {
 
         let steered_initialization_equations =
             certify_initialization_rows(model, initial_block, &initial_reads)?;
-        let refresh_equations = algebraic_refresh_equations(algebraic_refresh);
         let steered_implicit_equations =
             certify_implicit_rows(model, implicit_block, &implicit_reads, &refresh_equations)?;
 
@@ -213,13 +230,13 @@ fn certify_initialization_rows(
     initial_block: &solve::ScalarProgramBlock,
     initial_reads: &BTreeMap<usize, usize>,
 ) -> Result<BTreeSet<usize>, EvalSolveError> {
-    let plan = &model.problem.initialization.projection_plan;
+    let plan = model.problem().initialization().projection_plan();
     let mut steered = BTreeSet::new();
     for (&equation, &program_index) in initial_reads {
         let Some(target) = model
-            .problem
-            .initialization
-            .row_targets
+            .problem()
+            .initialization()
+            .row_targets()
             .get(equation)
             .copied()
             .flatten()
@@ -306,7 +323,13 @@ fn lambda_reading_equations(
         let program_reads = program
             .iter()
             .any(|op| linear_op_reads_parameter(op, index));
-        for _ in 0..solve::ScalarProgramBlock::program_output_count(program) {
+        let output_count = block
+            .stored_output_count_for_program(program_index)
+            .ok_or_else(|| EvalSolveError::ShapeContract {
+                message: "missing retained scalar program output width".to_string(),
+                span: block.program_span(program_index),
+            })?;
+        for _ in 0..output_count {
             let Some(equation) = block.output_indices().get(ordinal).copied() else {
                 return Err(EvalSolveError::ShapeContract {
                     message: format!(
@@ -344,11 +367,6 @@ fn lambda_reading_equations(
 fn linear_op_reads_parameter(op: &solve::LinearOp, index: usize) -> bool {
     match op {
         solve::LinearOp::LoadP { index: slot, .. } => *slot == index,
-        // A runtime-indexed load can land anywhere in `base..base+count`, so
-        // treat the whole run as a read of the slot.
-        solve::LinearOp::LoadIndexedP { base, count, .. } => {
-            (*base..base.saturating_add(*count)).contains(&index)
-        }
         solve::LinearOp::TensorLoad {
             input: solve::TensorInputKind::P,
             input_start,
@@ -358,17 +376,17 @@ fn linear_op_reads_parameter(op: &solve::LinearOp, index: usize) -> bool {
         solve::LinearOp::FunctionFold { program, .. }
         | solve::LinearOp::GuardedFunctionFold { program, .. }
         | solve::LinearOp::StoreOutputFunctionFold { program, .. } => program
-            .update
+            .update()
             .iter()
             .any(|nested| linear_op_reads_parameter(nested, index)),
         solve::LinearOp::FunctionConditional { program, .. } => {
-            program.arms.iter().any(|arm| {
-                arm.condition
+            program.arms().iter().any(|arm| {
+                arm.condition()
                     .iter()
-                    .chain(&arm.result)
+                    .chain(arm.result())
                     .any(|nested| linear_op_reads_parameter(nested, index))
             }) || program
-                .fallback
+                .fallback()
                 .iter()
                 .any(|nested| linear_op_reads_parameter(nested, index))
         }
@@ -390,11 +408,14 @@ fn model_reads_parameter(model: &solve::SolveModel, index: usize) -> bool {
         index,
         found: false,
     };
-    let _ = scan.visit_solve_problem(&model.problem);
+    let _ = scan.visit_solve_problem(model.problem());
     if scan.found {
         return true;
     }
-    let _ = scan.visit_scalar_program_block(&model.visible_value_rows);
+    let _ = scan.visit_scalar_program_block(
+        solve::visitor::ScalarProgramBlockOwner::VisibleValueRows,
+        model.visible_value_rows(),
+    );
     scan.found
 }
 
@@ -408,7 +429,7 @@ impl solve::visitor::SolveVisitor for ParameterReadScan {
 
     fn visit_linear_op(
         &mut self,
-        _kind: solve::visitor::LinearOpSliceKind,
+        _owner: solve::visitor::LinearOpSliceOwner,
         _op_index: usize,
         op: &solve::LinearOp,
     ) -> Result<(), Self::Error> {
@@ -417,17 +438,14 @@ impl solve::visitor::SolveVisitor for ParameterReadScan {
     }
 }
 
-/// Equation indices the algebraic refresh re-solves at every continuation value.
-fn algebraic_refresh_equations(plan: &solve::RefreshPlan) -> BTreeSet<usize> {
-    plan.rows
+fn algebraic_refresh_equations_issued(plan: &solve::IssuedRefreshPlan) -> BTreeSet<usize> {
+    plan.rows()
         .iter()
-        .chain(plan.causal_rows().iter())
-        .map(|row| row.equation_index())
+        .map(solve::AlgebraicRefreshRow::equation_index)
         .chain(
-            plan.simultaneous_plan
+            plan.simultaneous_plan()
                 .blocks
                 .iter()
-                .chain(plan.value_projection_plan.blocks.iter())
                 .flat_map(|block| block.rows.iter().copied()),
         )
         .collect()
@@ -445,21 +463,21 @@ fn implicit_equation_is_initialization_solved(model: &solve::SolveModel, equatio
     let state_count = model.state_scalar_count();
     matches!(
         model
-            .problem
-            .continuous
-            .implicit_row_targets
+            .problem()
+            .continuous()
+            .implicit_row_targets()
             .get(equation)
             .copied()
             .flatten(),
-        Some(solve::ScalarSlot::Y { index, .. }) if index >= state_count
+        Some(solve::ScalarSlot::Y { index }) if index >= state_count
     )
 }
 
 /// Storage-space identity of a projection unknown, ignoring byte offsets.
 fn slot_key(slot: &solve::ScalarSlot) -> Option<(u8, usize)> {
     match slot {
-        solve::ScalarSlot::Y { index, .. } => Some((0, *index)),
-        solve::ScalarSlot::P { index, .. } => Some((1, *index)),
+        solve::ScalarSlot::Y { index } => Some((0, *index)),
+        solve::ScalarSlot::P { index } => Some((1, *index)),
         solve::ScalarSlot::Time | solve::ScalarSlot::Constant(_) => None,
     }
 }
@@ -469,6 +487,8 @@ mod tests {
     use rumoca_core::{BytePos, SourceId, Span};
 
     use super::*;
+
+    use crate::test_support::empty_binary64_first_product_model;
 
     fn span() -> Span {
         Span::new(
@@ -544,41 +564,11 @@ mod tests {
         assert!(!linear_op_reads_parameter(&op, 0));
     }
 
-    fn refresh_row(equation_index: usize, row_idx: usize) -> solve::AlgebraicRefreshRow {
-        solve::AlgebraicRefreshRow::checked(solve::AlgebraicRefreshRowDraft {
-            owner_id: Default::default(),
-            source: solve::RefreshScalarProgramSource::checked(0, row_idx).unwrap(),
-            equation_index,
-            output_offset: 0,
-            target_index: 0,
-            assignment_target: None,
-            assignment_shape: None,
-            direct_assignment_certified: false,
-            exact_assignment_certified: false,
-        })
-        .unwrap()
-    }
-
     fn plain_program() -> Vec<solve::LinearOp> {
         vec![
             solve::LinearOp::LoadY { dst: 0, index: 0 },
             solve::LinearOp::StoreOutput { src: 0 },
         ]
-    }
-
-    fn model_with_lambda(lambda: Option<usize>) -> solve::SolveModel {
-        solve::SolveModel {
-            problem: solve::SolveProblem {
-                solve_layout: solve::SolveLayout {
-                    state_scalar_count: 0,
-                    compiled_parameter_len: 2,
-                    initial_homotopy_parameter_index: lambda,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        }
     }
 
     fn covered_plan() -> solve::InitializationProjectionPlan {
@@ -590,14 +580,137 @@ mod tests {
         }
     }
 
+    struct PermutationFixtureSpec {
+        algebraic_count: usize,
+        parameter_count: usize,
+        lambda_parameter_index: usize,
+        projection_row_groups: Vec<Vec<usize>>,
+        refresh_row_groups: Vec<Vec<usize>>,
+    }
+
+    struct PermutationCoverageFixture {
+        model: solve::SolveModel,
+    }
+
+    fn algebraic_projection_blocks(
+        row_groups: Vec<Vec<usize>>,
+    ) -> Vec<solve::AlgebraicProjectionBlock> {
+        row_groups
+            .into_iter()
+            .map(|rows| solve::AlgebraicProjectionBlock {
+                y_indices: rows.clone(),
+                rows,
+                tearing: None,
+            })
+            .collect()
+    }
+
+    fn permutation_coverage_fixture(spec: PermutationFixtureSpec) -> PermutationCoverageFixture {
+        let PermutationFixtureSpec {
+            algebraic_count,
+            parameter_count,
+            lambda_parameter_index,
+            projection_row_groups,
+            refresh_row_groups,
+        } = spec;
+        let refresh_block_count = refresh_row_groups.len();
+        let names = std::iter::once("x".to_string())
+            .chain((0..algebraic_count).map(|index| format!("a{index}")))
+            .collect();
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names,
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            algebraic_scalar_count: algebraic_count,
+            compiled_parameter_len: parameter_count,
+            initial_homotopy_parameter_index: Some(lambda_parameter_index),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let identity_programs = std::iter::repeat_with(plain_program)
+            .take(algebraic_count)
+            .collect();
+        let refresh_plan = solve::RefreshPlan {
+            simultaneous_plan: solve::AlgebraicProjectionPlan {
+                blocks: algebraic_projection_blocks(refresh_row_groups),
+            },
+            simultaneous_block_indices: (0..refresh_block_count).collect(),
+            ..solve::RefreshPlan::empty()
+        };
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            implicit_rhs: solve::ComputeBlock::from_scalar_program_block(permuted_block(
+                identity_programs,
+                (1..=algebraic_count).collect(),
+            )),
+            implicit_row_targets: std::iter::once(None)
+                .chain((1..=algebraic_count).map(|index| Some(solve::scalar_slot_y(index))))
+                .collect(),
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                blocks: algebraic_projection_blocks(projection_row_groups),
+            },
+            derivative_rhs: crate::test_support::zero_derivative_rhs(1, span()),
+            refresh_plans: Some(solve::ContinuousRefreshPlanInputs::new(
+                refresh_plan,
+                solve::RefreshPlan::empty(),
+                solve::RefreshPlan::empty(),
+                solve::RefreshPlan::empty(),
+                Vec::new(),
+            )),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(
+                    Default::default(),
+                    algebraic_count + 1,
+                    parameter_count,
+                ),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("permutation fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; algebraic_count + 1],
+            solver_nominals: vec![1.0; algebraic_count + 1],
+            parameters: vec![0.0; parameter_count],
+            ..empty_binary64_first_product_model()
+        };
+        PermutationCoverageFixture { model }
+    }
+
     #[test]
     fn coverage_is_absent_without_a_continuation_parameter() {
-        let model = model_with_lambda(None);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve::SolveLayout {
+                    compiled_parameter_len: 2,
+                    initial_homotopy_parameter_index: None,
+                    ..Default::default()
+                },
+                crate::test_support::ContinuousSystemFixture::empty(),
+                solve::InitializationSolveSystem::empty(),
+                solve::DiscreteSolveSystem::default(),
+                solve::SolveEventPartition::default(),
+                solve::SolveClockPartition::default(),
+            )
+            .expect("no-continuation fixture satisfies the checked root contract"),
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
+        };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("a model without homotopy certifies");
 
@@ -606,14 +719,56 @@ mod tests {
 
     #[test]
     fn covered_initialization_row_certifies() {
-        let mut model = model_with_lambda(Some(1));
-        model.problem.initialization.row_targets = vec![Some(solve::scalar_slot_y(0))];
-        model.problem.initialization.projection_plan = covered_plan();
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            compiled_parameter_len: 2,
+            initial_homotopy_parameter_index: Some(1),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: crate::test_support::zero_derivative_rhs(1, span()),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        }
+        .seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 1, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::construct(
+                    solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                        plain_program(),
+                    ])),
+                    vec![Some(solve::scalar_slot_y(0))],
+                    vec![solve::InitializationRowRole::Solved],
+                    1,
+                    vec![solve::scalar_slot_y(0)],
+                    covered_plan(),
+                    (solve::ScalarProgramBlock::default(), Vec::new()),
+                )
+                .expect("the covered fixture initialization system is exactly correlated"),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("covered-initialization fixture satisfies the checked root contract"),
+            initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
+        };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![reads_lambda_program(1)]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("a plan-covered homotopy row certifies")
         .expect("a continuation parameter yields coverage");
@@ -627,17 +782,55 @@ mod tests {
 
     #[test]
     fn refresh_covered_implicit_row_drives_the_algebraic_refresh() {
-        let mut model = model_with_lambda(Some(1));
-        model.problem.continuous.implicit_row_targets = vec![Some(solve::scalar_slot_y(0))];
-        let refresh = solve::RefreshPlan {
-            rows: vec![refresh_row(0, 0)],
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["a".to_string()],
+                ..Default::default()
+            },
+            algebraic_scalar_count: 1,
+            compiled_parameter_len: 2,
+            initial_homotopy_parameter_index: Some(1),
             ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            implicit_rhs: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                plain_program(),
+            ])),
+            implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![solve::AlgebraicProjectionBlock {
+                    rows: vec![0],
+                    y_indices: vec![0],
+                    tearing: None,
+                }],
+            },
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 1, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("refresh-covered fixture satisfies the checked root contract"),
+            initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
         };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![reads_lambda_program(1)]),
             &scalar_block(vec![plain_program()]),
-            &refresh,
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("a refresh-covered homotopy row certifies")
         .expect("a continuation parameter yields coverage");
@@ -652,29 +845,79 @@ mod tests {
     /// `[2, 1]`. The λ row is program 1 / equation 1.
     #[test]
     fn bistable_loop_permutation_resolves_the_lambda_row_to_its_equation() {
-        let mut model = model_with_lambda(Some(2));
-        model.problem.solve_layout.compiled_parameter_len = 3;
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.continuous.implicit_row_targets = vec![
-            None,
-            Some(solve::scalar_slot_y(1)),
-            Some(solve::scalar_slot_y(2)),
-        ];
-        let refresh = solve::RefreshPlan {
-            simultaneous_plan: solve::AlgebraicProjectionPlan {
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string(), "a0".to_string(), "a1".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            algebraic_scalar_count: 2,
+            compiled_parameter_len: 3,
+            initial_homotopy_parameter_index: Some(2),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            implicit_rhs: solve::ComputeBlock::from_scalar_program_block(permuted_block(
+                vec![plain_program(), plain_program()],
+                vec![1, 2],
+            )),
+            implicit_row_targets: vec![
+                None,
+                Some(solve::scalar_slot_y(1)),
+                Some(solve::scalar_slot_y(2)),
+            ],
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
                 blocks: vec![solve::AlgebraicProjectionBlock {
                     rows: vec![1, 2],
                     y_indices: vec![1, 2],
                     tearing: None,
                 }],
             },
-            ..Default::default()
+            derivative_rhs: crate::test_support::zero_derivative_rhs(1, span()),
+            refresh_plans: Some(solve::ContinuousRefreshPlanInputs::new(
+                solve::RefreshPlan {
+                    simultaneous_plan: solve::AlgebraicProjectionPlan {
+                        blocks: vec![solve::AlgebraicProjectionBlock {
+                            rows: vec![1, 2],
+                            y_indices: vec![1, 2],
+                            tearing: None,
+                        }],
+                    },
+                    simultaneous_block_indices: vec![0],
+                    ..solve::RefreshPlan::empty()
+                },
+                solve::RefreshPlan::empty(),
+                solve::RefreshPlan::empty(),
+                solve::RefreshPlan::empty(),
+                Vec::new(),
+            )),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 3, 3),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("BistableLoop fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; 3],
+            solver_nominals: vec![1.0; 3],
+            parameters: vec![0.0; 3],
+            ..empty_binary64_first_product_model()
         };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &permuted_block(vec![plain_program(), reads_lambda_program(2)], vec![2, 1]),
             &scalar_block(vec![]),
-            &refresh,
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("the BistableLoop shape certifies")
         .expect("a continuation parameter yields coverage");
@@ -692,50 +935,20 @@ mod tests {
     /// steer.
     #[test]
     fn mixed_vector_permutation_steers_the_algebraic_row_at_its_equation_index() {
-        let mut model = model_with_lambda(Some(0));
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.continuous.implicit_row_targets = vec![
-            None,
-            Some(solve::scalar_slot_y(1)),
-            Some(solve::scalar_slot_y(2)),
-            Some(solve::scalar_slot_y(3)),
-            Some(solve::scalar_slot_y(4)),
-        ];
+        let fixture = permutation_coverage_fixture(PermutationFixtureSpec {
+            algebraic_count: 4,
+            parameter_count: 1,
+            lambda_parameter_index: 0,
+            projection_row_groups: vec![vec![4], vec![1], vec![2], vec![3]],
+            refresh_row_groups: vec![vec![4], vec![1], vec![2], vec![3]],
+        });
         assert!(
-            model.problem.continuous.implicit_row_targets[0].is_none(),
+            fixture.model.problem().continuous().implicit_row_targets()[0].is_none(),
             "the program-index reading of the lambda row must resolve to None, \
              so this fixture proves the translation and not an accident"
         );
-        let refresh = solve::RefreshPlan {
-            simultaneous_plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![
-                    solve::AlgebraicProjectionBlock {
-                        rows: vec![4],
-                        y_indices: vec![4],
-                        tearing: None,
-                    },
-                    solve::AlgebraicProjectionBlock {
-                        rows: vec![1],
-                        y_indices: vec![1],
-                        tearing: None,
-                    },
-                    solve::AlgebraicProjectionBlock {
-                        rows: vec![2],
-                        y_indices: vec![2],
-                        tearing: None,
-                    },
-                    solve::AlgebraicProjectionBlock {
-                        rows: vec![3],
-                        y_indices: vec![3],
-                        tearing: None,
-                    },
-                ],
-            },
-            ..Default::default()
-        };
         let coverage = InitialContinuationCoverage::certify(
-            &model,
+            &fixture.model,
             &permuted_block(
                 vec![
                     reads_lambda_program(0),
@@ -746,7 +959,12 @@ mod tests {
                 vec![4, 1, 2, 3],
             ),
             &scalar_block(vec![]),
-            &refresh,
+            fixture
+                .model
+                .problem()
+                .continuous()
+                .refresh_owners()
+                .algebraic(),
         )
         .expect("the E10_Mixed shape certifies")
         .expect("a continuation parameter yields coverage");
@@ -762,29 +980,15 @@ mod tests {
     /// 1 is equation 4, not equation 1.
     #[test]
     fn shifted_permutation_steers_the_algebraic_row_at_its_equation_index() {
-        let mut model = model_with_lambda(Some(2));
-        model.problem.solve_layout.compiled_parameter_len = 3;
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.continuous.implicit_row_targets = vec![
-            None,
-            Some(solve::scalar_slot_y(1)),
-            Some(solve::scalar_slot_y(2)),
-            Some(solve::scalar_slot_y(3)),
-            Some(solve::scalar_slot_y(4)),
-            Some(solve::scalar_slot_y(5)),
-        ];
-        let refresh = solve::RefreshPlan {
-            simultaneous_plan: solve::AlgebraicProjectionPlan {
-                blocks: vec![solve::AlgebraicProjectionBlock {
-                    rows: vec![4, 5],
-                    y_indices: vec![4, 5],
-                    tearing: None,
-                }],
-            },
-            ..Default::default()
-        };
+        let fixture = permutation_coverage_fixture(PermutationFixtureSpec {
+            algebraic_count: 5,
+            parameter_count: 3,
+            lambda_parameter_index: 2,
+            projection_row_groups: vec![vec![4, 5], vec![1], vec![2], vec![3]],
+            refresh_row_groups: vec![vec![4, 5]],
+        });
         let coverage = InitialContinuationCoverage::certify(
-            &model,
+            &fixture.model,
             &permuted_block(
                 vec![
                     plain_program(),
@@ -796,7 +1000,12 @@ mod tests {
                 vec![5, 4, 1, 2, 3],
             ),
             &scalar_block(vec![]),
-            &refresh,
+            fixture
+                .model
+                .problem()
+                .continuous()
+                .refresh_owners()
+                .algebraic(),
         )
         .expect("the E11_Shifted shape certifies")
         .expect("a continuation parameter yields coverage");
@@ -810,12 +1019,29 @@ mod tests {
 
     #[test]
     fn dead_continuation_parameter_is_rejected() {
-        let model = model_with_lambda(Some(1));
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve::SolveLayout {
+                    compiled_parameter_len: 2,
+                    initial_homotopy_parameter_index: Some(1),
+                    ..Default::default()
+                },
+                crate::test_support::ContinuousSystemFixture::empty(),
+                solve::InitializationSolveSystem::empty(),
+                solve::DiscreteSolveSystem::default(),
+                solve::SolveEventPartition::default(),
+                solve::SolveClockPartition::default(),
+            )
+            .expect("dead-continuation fixture satisfies the checked root contract"),
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
+        };
         let error = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect_err("an allocated slot that nothing reads must be rejected");
 
@@ -827,12 +1053,29 @@ mod tests {
 
     #[test]
     fn out_of_range_continuation_parameter_is_rejected() {
-        let model = model_with_lambda(Some(7));
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve::SolveLayout {
+                    compiled_parameter_len: 2,
+                    initial_homotopy_parameter_index: Some(7),
+                    ..Default::default()
+                },
+                crate::test_support::ContinuousSystemFixture::empty(),
+                solve::InitializationSolveSystem::empty(),
+                solve::DiscreteSolveSystem::default(),
+                solve::SolveEventPartition::default(),
+                solve::SolveClockPartition::default(),
+            )
+            .expect("out-of-range continuation metadata remains a runtime contract fixture"),
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
+        };
         let error = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![plain_program()]),
             &scalar_block(vec![plain_program()]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect_err("an out-of-range continuation slot must be rejected");
 
@@ -850,18 +1093,47 @@ mod tests {
     /// λ = 1, MLS §3.7.4.3's trivial implementation.
     #[test]
     fn derivative_row_lambda_read_is_legal_and_unsteered() {
-        let mut model = model_with_lambda(Some(0));
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.continuous.derivative_rhs =
-            solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            compiled_parameter_len: 1,
+            initial_homotopy_parameter_index: Some(0),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
                 reads_lambda_program(0),
-            ]));
+            ])),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 1, 1),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("derivative-homotopy fixture satisfies the checked root contract"),
+            initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0],
+            ..empty_binary64_first_product_model()
+        };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("der(y) = homotopy(..) is legal MLS and must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -875,14 +1147,90 @@ mod tests {
     /// `E2_WhenHomotopy`: the only λ read is in `discrete.rhs`.
     #[test]
     fn discrete_row_lambda_read_is_legal_and_unsteered() {
-        let mut model = model_with_lambda(Some(0));
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.discrete.rhs = scalar_block(vec![reads_lambda_program(0)]);
+        let provenance = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("discrete_homotopy_variables.mo"),
+            1,
+            2,
+        );
+        let solve_layout = solve::SolveLayout {
+            variable_storage_runs: vec![solve::SolveVariableStorageRun {
+                base: solve::SolveStorageCoordinate::P(1),
+                scalar_count: 1,
+                role: solve::SolveVariableStorageRole::DiscreteReal,
+                value_kind: solve::SolveVariableValueKind::Real,
+            }],
+            variable_declarations: vec![solve::SolveVariableDeclaration::new(
+                solve::SolveVariableStorageRole::DiscreteReal,
+                solve::SolveVariableValueKind::Real,
+            )],
+            compiled_parameter_len: 3,
+            discrete_real_scalar_names: vec!["mode".to_string()],
+            initial_homotopy_parameter_index: Some(0),
+            pre_param_bindings: vec![solve::PreParamBinding {
+                dest_p_index: 2,
+                source: solve::PreParamSource::P { index: 1 },
+                clock_schedule: None,
+            }],
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem {
+            event_iteration_plan: solve::EventIterationPlan {
+                runs: vec![solve::EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+                }],
+            },
+            rhs: scalar_block(vec![vec![
+                solve::LinearOp::LoadP { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]]),
+            update_targets: vec![solve::scalar_slot_p(1)],
+            row_roles: vec![solve::DiscreteRowRole::Equation],
+            pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+            observation_refresh: vec![false],
+            integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+            clock_owners: vec![None],
+            ..Default::default()
+        };
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture::empty();
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 3),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("discrete-homotopy fixture satisfies the checked root contract"),
+            parameters: vec![0.0; 3],
+            visible_value_rows: solve::ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 1 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                provenance
+                    .require_provenance("discrete homotopy visibility fixture")
+                    .expect("fixture provenance is source-backed"),
+            )
+            .expect("discrete homotopy visibility is computable"),
+            variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+                crate::test_support::RealScalarVariableFixture::discrete_real(
+                    1, "mode", 1, 0.0, provenance,
+                ),
+            ]),
+            ..empty_binary64_first_product_model()
+        };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("when-clause homotopy is legal MLS and must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -891,21 +1239,64 @@ mod tests {
     }
 
     /// `E6_SteadyState`: `initial equation der(x) = 0` against
-    /// `der(x) = homotopy(x^3 - x, x + 1)` lowers to one λ-reading
-    /// `initialization.residual` row with **no** row target and an empty
-    /// projection plan. Initialization solves nothing through that row, so the
-    /// continuation owes it no coverage and the model must be accepted.
+    /// A λ-reading `initialization.residual` row with **no** row target and an
+    /// empty projection plan: a stated-value check the projection owes nothing.
+    /// Initialization solves nothing through that row, so the continuation owes
+    /// it no coverage and the model must be accepted.
     #[test]
     fn steady_state_initialization_row_without_a_projection_owner_certifies() {
-        let mut model = model_with_lambda(Some(0));
-        model.problem.solve_layout.compiled_parameter_len = 1;
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.initialization.row_targets = vec![None];
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            compiled_parameter_len: 1,
+            initial_homotopy_parameter_index: Some(0),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                reads_lambda_program(0),
+            ])),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        }
+        .seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 1, 1),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::construct(
+                    solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                        plain_program(),
+                    ])),
+                    vec![None],
+                    vec![solve::InitializationRowRole::StatedValueCheck],
+                    0,
+                    Vec::new(),
+                    solve::InitializationProjectionPlan::default(),
+                    (solve::ScalarProgramBlock::default(), Vec::new()),
+                )
+                .expect("the stated-value-check fixture initialization system is exactly correlated"),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("steady-state fixture satisfies the checked root contract"),
+            initial_y: vec![0.0],
+            solver_nominals: vec![1.0],
+            parameters: vec![0.0],
+            ..empty_binary64_first_product_model()
+        };
         let coverage = InitialContinuationCoverage::certify(
             &model,
             &scalar_block(vec![]),
             &scalar_block(vec![reads_lambda_program(0)]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().algebraic(),
         )
         .expect("a steady-state initialization row no plan solves must not be rejected")
         .expect("a continuation parameter yields coverage");
@@ -913,32 +1304,35 @@ mod tests {
         assert!(!coverage.drives_algebraic_refresh());
     }
 
-    /// The genuine initialization hole: the plan claims the row's unknown but
-    /// solves it from other rows, so the sweep never steers the λ row.
+    /// The genuine initialization hole, now closed at mint: a plan that claims
+    /// a row's unknown while solving it from another row cannot reach any
+    /// runtime, because the aggregate issuer refuses the miscorrelation before
+    /// a `SolveProblem` exists. The sweep-coverage certificate no longer needs
+    /// to catch this shape; the issuer's refusal is the stronger guard.
     #[test]
-    fn unsteered_initialization_row_is_rejected() {
-        let mut model = model_with_lambda(Some(1));
-        model.problem.initialization.row_targets =
-            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))];
-        model.problem.initialization.projection_plan = solve::InitializationProjectionPlan {
-            blocks: vec![solve::InitializationProjectionBlock {
-                rows: vec![1],
-                unknowns: vec![solve::scalar_slot_y(0)],
-            }],
-        };
-        let error = InitialContinuationCoverage::certify(
-            &model,
-            &scalar_block(vec![]),
-            &scalar_block(vec![reads_lambda_program(1), plain_program()]),
-            &solve::RefreshPlan::default(),
+    fn unsteered_initialization_row_is_unconstructible() {
+        let error = solve::InitializationSolveSystem::construct(
+            solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                plain_program(),
+                plain_program(),
+            ])),
+            vec![Some(solve::scalar_slot_y(0)), Some(solve::scalar_slot_y(1))],
+            vec![solve::InitializationRowRole::Solved; 2],
+            2,
+            vec![solve::scalar_slot_y(0)],
+            solve::InitializationProjectionPlan {
+                blocks: vec![solve::InitializationProjectionBlock {
+                    rows: vec![1],
+                    unknowns: vec![solve::scalar_slot_y(0)],
+                }],
+            },
+            (solve::ScalarProgramBlock::default(), Vec::new()),
         )
-        .expect_err("a homotopy row its own solve block omits must be rejected");
+        .expect_err("a row recorded solved with no owning block must not mint");
 
         assert!(
-            error
-                .to_string()
-                .contains("initialization.residual equation 0"),
-            "unexpected message: {error}"
+            error.to_string().contains("row 0"),
+            "the refusal names the row no block claims, got: {error}"
         );
     }
 
@@ -946,18 +1340,68 @@ mod tests {
     /// the check both name the equation index.
     #[test]
     fn unsteered_implicit_algebraic_row_is_rejected() {
-        let mut model = model_with_lambda(Some(1));
-        model.problem.solve_layout.state_scalar_count = 1;
-        model.problem.continuous.implicit_row_targets = vec![
-            None,
-            Some(solve::scalar_slot_y(1)),
-            Some(solve::scalar_slot_y(2)),
-        ];
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string(), "a0".to_string(), "a1".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 1,
+            algebraic_scalar_count: 2,
+            compiled_parameter_len: 2,
+            initial_homotopy_parameter_index: Some(1),
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            implicit_rhs: solve::ComputeBlock::from_scalar_program_block(scalar_block(vec![
+                plain_program(),
+                plain_program(),
+            ])),
+            implicit_row_targets: vec![
+                Some(solve::scalar_slot_y(1)),
+                Some(solve::scalar_slot_y(2)),
+            ],
+            algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                blocks: vec![
+                    solve::AlgebraicProjectionBlock {
+                        rows: vec![0],
+                        y_indices: vec![1],
+                        tearing: None,
+                    },
+                    solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![2],
+                        tearing: None,
+                    },
+                ],
+            },
+            derivative_rhs: crate::test_support::zero_derivative_rhs(1, span()),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 3, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("unsteered-implicit fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; 3],
+            solver_nominals: vec![1.0; 3],
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
+        };
         let error = InitialContinuationCoverage::certify(
             &model,
             &permuted_block(vec![plain_program(), reads_lambda_program(1)], vec![2, 1]),
             &scalar_block(vec![]),
-            &solve::RefreshPlan::default(),
+            model.problem().continuous().refresh_owners().root(),
         )
         .expect_err("an algebraic homotopy row no refresh plan solves must be rejected");
 

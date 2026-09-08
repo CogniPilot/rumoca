@@ -4,7 +4,7 @@ use std::ops::ControlFlow::Continue;
 pub(super) fn run_chained_relational_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut visitor = ChainedRelationalVisitor { diags: &mut diags };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 
@@ -55,7 +55,7 @@ pub(super) fn run_der_in_function_checks(def: &StoredDefinition) -> Vec<Diagnost
         diags: &mut diags,
         in_function_class: false,
     };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 
@@ -82,28 +82,22 @@ impl ast::Visitor for DerInFunctionVisitor<'_> {
         Continue(())
     }
 
-    fn visit_expr_function_call_ctx(
-        &mut self,
-        comp: &ComponentReference,
-        args: &[Expression],
-        ctx: ast::FunctionCallContext,
-    ) -> std::ops::ControlFlow<()> {
+    fn visit_expression(&mut self, expr: &Expression) -> std::ops::ControlFlow<()> {
         if self.in_function_class
-            && matches!(ctx, ast::FunctionCallContext::Expression)
-            && let Some(first) = comp.parts.first()
-            && &*first.ident.text == "der"
+            && matches!(expr, Expression::DerivativeCall { .. })
+            && let Some(label) = label_from_expression(
+                expr,
+                "check_der_in_expr/der_in_function",
+                "der() is not allowed in function algorithms",
+            )
         {
             self.diags.push(semantic_error(
                 ER030_DER_IN_FUNCTION,
                 "der() is not allowed in functions (MLS §12.2)",
-                label_from_token(
-                    &first.ident,
-                    "check_der_in_expr/der_in_function",
-                    "der() is not allowed in function algorithms",
-                ),
+                label,
             ));
         }
-        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
+        walk_expression_default(self, expr)
     }
 }
 
@@ -117,7 +111,7 @@ pub(super) fn check_der_on_discrete_eq(
         discrete_vars,
         diags,
     };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 struct DerOnDiscreteVisitor<'a> {
@@ -155,15 +149,8 @@ impl ast::Visitor for DerOnDiscreteVisitor<'_> {
         }
     }
 
-    fn visit_expr_function_call_ctx(
-        &mut self,
-        comp: &ComponentReference,
-        args: &[Expression],
-        ctx: ast::FunctionCallContext,
-    ) -> std::ops::ControlFlow<()> {
-        if matches!(ctx, ast::FunctionCallContext::Expression)
-            && let Some(first) = comp.parts.first()
-            && &*first.ident.text == "der"
+    fn visit_expression(&mut self, expr: &Expression) -> std::ops::ControlFlow<()> {
+        if let Expression::DerivativeCall { args, .. } = expr
             && let Some(arg) = args.first()
             && let Expression::ComponentReference(cref) = arg
             && let Some(part) = cref.parts.first()
@@ -182,7 +169,7 @@ impl ast::Visitor for DerOnDiscreteVisitor<'_> {
                 ),
             ));
         }
-        ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
+        walk_expression_default(self, expr)
     }
 }
 
@@ -194,7 +181,7 @@ pub(super) fn check_protected_access_eq(
     diags: &mut Vec<Diagnostic>,
 ) {
     let mut visitor = ProtectedAccessVisitor { class, def, diags };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 struct ProtectedAccessVisitor<'a> {
@@ -295,7 +282,7 @@ pub(super) fn check_connect_requires_connectors_eq(
     diags: &mut Vec<Diagnostic>,
 ) {
     let mut visitor = ConnectRequiresConnectorsVisitor { class, def, diags };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 struct ConnectRequiresConnectorsVisitor<'a> {
@@ -437,7 +424,7 @@ pub(super) fn check_end_outside_subscript_eq(eq: &Equation, diags: &mut Vec<Diag
         diags,
         subscript_depth: 0,
     };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 struct EndOutsideSubscriptVisitor<'a> {
@@ -525,7 +512,7 @@ pub(super) fn check_expr_type_issues_eq(
         real_vars,
         diags,
     };
-    let _ = visitor.visit_equation(eq);
+    let _visit_outcome = visitor.visit_equation(eq);
 }
 
 struct ExprTypeIssuesVisitor<'a> {

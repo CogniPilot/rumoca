@@ -1,5 +1,15 @@
 use super::*;
 
+struct PreparedUpdateRows<'a, P> {
+    block: &'a solve_eval::PreparedScalarProgramBlock,
+    selected_arm: &'a P,
+    targets: &'a [solve::ScalarSlot],
+    y: &'a mut [f64],
+    p: &'a mut [f64],
+    t: f64,
+    max_iters: usize,
+}
+
 impl SolveRuntime {
     pub fn update_relation_memory_from_state(
         &self,
@@ -30,8 +40,8 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         if self
             .model
-            .problem
-            .events
+            .problem()
+            .events()
             .root_relation_memory_targets
             .iter()
             .all(Option::is_none)
@@ -50,7 +60,7 @@ impl SolveRuntime {
         params: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        let block = &self.model.problem.events.dynamic_time_event_rhs;
+        let block = &self.model().problem().events().dynamic_time_event_rhs;
         validate_runtime_output_len("dynamic-time deadline output", block.len(), out.len())?;
         if block.is_empty() {
             return Ok(());
@@ -60,7 +70,10 @@ impl SolveRuntime {
             solver_y,
             params,
             t,
-            self.row_eval_context(),
+            self.execution_plan
+                .interpreter
+                .dynamic_time_events
+                .row_eval_context(self),
             out,
         )?;
         Ok(())
@@ -72,7 +85,14 @@ impl SolveRuntime {
         params: &[f64],
         current_t: f64,
     ) -> Result<Option<RuntimeEventStop>, RuntimeSolveError> {
-        current_dynamic_time_event_stop(&self.model, &self.runtime_state, y, params, current_t)
+        current_dynamic_time_event_stop(
+            self.execution_plan.interpreter.dynamic_time_events,
+            self.model(),
+            &self.runtime_state,
+            y,
+            params,
+            current_t,
+        )
     }
 
     pub fn next_runtime_event_stop(
@@ -83,19 +103,25 @@ impl SolveRuntime {
         current_t: f64,
         target: f64,
     ) -> Result<(f64, Option<RuntimeEventStop>), RuntimeSolveError> {
-        next_runtime_event_stop(
-            &self.model,
-            &self.runtime_state,
+        next_runtime_event_stop(RuntimeEventStopRequest {
+            execution: self.execution_plan.interpreter.dynamic_time_events,
+            model: self.model(),
+            runtime_state: &self.runtime_state,
             y,
             params,
             stop_schedule,
             current_t,
             target,
-        )
+        })
     }
 
     pub fn dynamic_time_event_stop_reads_solver_y(&self) -> bool {
-        !self.model.problem.events.dynamic_time_event_rhs.is_empty()
+        !self
+            .model
+            .problem()
+            .events()
+            .dynamic_time_event_rhs
+            .is_empty()
     }
 
     pub fn apply_initialization_updates(
@@ -107,12 +133,16 @@ impl SolveRuntime {
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
         solve_eval::eval_and_apply_update_rows(solve_eval::UpdateRowApplication {
-            block: &self.model.problem.initialization.update_rhs,
-            targets: &self.model.problem.initialization.update_targets,
+            block: self.model().problem().initialization().update_rhs(),
+            targets: self.model().problem().initialization().update_targets(),
             y,
             p,
             t,
-            context: self.row_eval_context(),
+            context: self
+                .execution_plan
+                .interpreter
+                .initialization_updates
+                .row_eval_context(self),
             max_iters,
         })
         .map_err(Into::into)
@@ -126,14 +156,15 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        self.apply_prepared_update_rows_until_stable(
-            &self.runtime_assignment_rhs,
-            &self.model.problem.discrete.runtime_assignment_targets,
+        self.apply_prepared_update_rows_until_stable(PreparedUpdateRows {
+            block: &self.runtime_assignment_rhs,
+            selected_arm: &self.execution_plan.interpreter.runtime_assignments,
+            targets: &self.model().problem().discrete().runtime_assignment_targets,
             y,
             p,
             t,
             max_iters,
-        )
+        })
     }
 
     pub fn apply_post_commit_assignments_until_stable(
@@ -144,25 +175,34 @@ impl SolveRuntime {
         _tol: f64,
         max_iters: usize,
     ) -> Result<bool, RuntimeSolveError> {
-        self.apply_prepared_update_rows_until_stable(
-            &self.post_commit_assignment_rhs,
-            &self.model.problem.discrete.post_commit_assignment_targets,
+        self.apply_prepared_update_rows_until_stable(PreparedUpdateRows {
+            block: &self.post_commit_assignment_rhs,
+            selected_arm: &self.execution_plan.interpreter.post_commit_assignments,
+            targets: &self
+                .model
+                .problem()
+                .discrete()
+                .post_commit_assignment_targets,
             y,
             p,
             t,
             max_iters,
-        )
+        })
     }
 
-    fn apply_prepared_update_rows_until_stable(
+    fn apply_prepared_update_rows_until_stable<P: InterpreterPermit>(
         &self,
-        block: &solve_eval::PreparedScalarProgramBlock,
-        targets: &[solve::ScalarSlot],
-        y: &mut [f64],
-        p: &mut [f64],
-        t: f64,
-        max_iters: usize,
+        update: PreparedUpdateRows<'_, P>,
     ) -> Result<bool, RuntimeSolveError> {
+        let PreparedUpdateRows {
+            block,
+            selected_arm,
+            targets,
+            y,
+            p,
+            t,
+            max_iters,
+        } = update;
         if block.is_empty() {
             return Ok(false);
         }
@@ -177,7 +217,7 @@ impl SolveRuntime {
         values.resize(targets.len(), 0.0);
         let mut changed_any = false;
         for _ in 0..max_iters {
-            block.eval_with_context(y, p, t, self.row_eval_context(), &mut values)?;
+            block.eval_with_context(y, p, t, selected_arm.row_eval_context(self), &mut values)?;
             let changed = solve_eval::apply_scalar_slot_values_exact(targets, &values, y, p)?;
             if !changed {
                 return Ok(changed_any);
@@ -197,7 +237,6 @@ impl SolveRuntime {
     where
         P: FnMut(&mut [f64], &mut [f64]) -> Result<bool, RuntimeSolveError>,
     {
-        self.validate_discrete_event_rows()?;
         let ProjectedEventUpdateInput {
             y,
             p,
@@ -209,12 +248,12 @@ impl SolveRuntime {
             row_filter,
             root_relation_overrides,
         } = input;
-        seed_event_entry_pre_params(&self.model, event_pre_y, event_pre_p, p)?;
+        seed_event_entry_pre_params(self.model(), event_pre_y, event_pre_p, p)?;
         // Hidden mixed-condition clock lanes are compiler-owned projections of
         // their typed schedules. Materialize them in the canonical event P
         // view before any row evaluates; row-wide clock owners are only an
         // execution filter and cannot stand in for these expression leaves.
-        write_clock_activation_params(&self.model, p, t);
+        write_clock_activation_params(self.model(), p, t);
         for event_iteration in 0..max_iters {
             // Appendix B fixes `pre` for one complete equation pass, then
             // advances ordinary event history atomically from that pass before
@@ -234,7 +273,7 @@ impl SolveRuntime {
                 false
             } else {
                 advance_event_iteration_pre_params(
-                    &self.model,
+                    self.model(),
                     iter_pre_y.as_slice(),
                     iter_pre_p.as_slice(),
                     p,
@@ -302,17 +341,13 @@ impl SolveRuntime {
                 changed |= project_algebraics(y, p)?;
                 changed |= self.apply_runtime_assignments_until_stable(y, p, t, tol, max_iters)?;
             }
-            if !changed && event_iteration_plan_settled(&self.model, y, p)? {
+            if !changed && event_iteration_plan_settled(self.model(), y, p)? {
                 return self.eval_event_actions(y, p, event_pre_p, t, row_filter);
             }
         }
         Err(RuntimeSolveError::solve_ir(format!(
             "event update iteration did not converge at t={t}"
         )))
-    }
-
-    pub(super) fn validate_discrete_event_rows(&self) -> Result<(), RuntimeSolveError> {
-        validate_discrete_event_rows(&self.model)
     }
 
     pub(super) fn override_relation_memory_row_values(
@@ -323,8 +358,8 @@ impl SolveRuntime {
         for (root_idx, value) in root_relation_overrides {
             let Some(Some(target)) = self
                 .model
-                .problem
-                .events
+                .problem()
+                .events()
                 .root_relation_memory_targets
                 .get(*root_idx)
                 .copied()
@@ -351,8 +386,8 @@ impl SolveRuntime {
         for (root_idx, value) in root_relation_overrides {
             let Some(Some(target)) = self
                 .model
-                .problem
-                .events
+                .problem()
+                .events()
                 .root_relation_memory_targets
                 .get(*root_idx)
                 .copied()
@@ -374,8 +409,8 @@ impl SolveRuntime {
     ) -> Result<bool, RuntimeSolveError> {
         if self
             .model
-            .problem
-            .events
+            .problem()
+            .events()
             .root_relation_memory_targets
             .iter()
             .all(Option::is_none)
@@ -399,9 +434,9 @@ impl SolveRuntime {
             p,
             root_relation_overrides,
             |root_index| {
-                self.model
-                    .problem
-                    .events
+                self.model()
+                    .problem()
+                    .events()
                     .root_relation_refresh_roles
                     .get(root_index)
                     .is_some_and(|role| *role == solve::RootRelationRefreshRole::AlgebraicDependent)
@@ -436,7 +471,7 @@ impl SolveRuntime {
         let mut changed = false;
         for (root_index, (root, target)) in roots
             .iter()
-            .zip(&self.model.problem.events.root_relation_memory_targets)
+            .zip(&self.model().problem().events().root_relation_memory_targets)
             .enumerate()
         {
             if !include(root_index) {
@@ -494,9 +529,9 @@ impl SolveRuntime {
                 return false;
             }
             matches!(
-                self.model
-                    .problem
-                    .events
+                self.model()
+                    .problem()
+                    .events()
                     .root_relation_memory_targets
                     .get(root_index),
                 Some(Some(solve::ScalarSlot::P { index, .. })) if *index == parameter_index
@@ -514,7 +549,7 @@ impl SolveRuntime {
         if root_count == 0 {
             return Ok(Vec::new());
         }
-        let model_root_count = self.model.problem.events.root_conditions.len();
+        let model_root_count = self.model().problem().events().root_conditions.len();
         let mut values = zero_runtime_values(root_count, "root condition output")?;
         self.eval_root_conditions_from_refreshed_solver_y(
             t,
@@ -526,7 +561,10 @@ impl SolveRuntime {
             t,
             y,
             p,
-            self.row_eval_context(),
+            self.execution_plan
+                .interpreter
+                .delay_expressions
+                .row_eval_context(self),
             &mut values[model_root_count..],
         )?;
         validate_finite_runtime_output("root condition output", &values)?;
@@ -541,9 +579,9 @@ impl SolveRuntime {
         t: f64,
         row_filter: EventUpdateRowFilter,
     ) -> Result<EventActionOutcome, RuntimeSolveError> {
-        let events = &self.model.problem.events;
+        let events = &self.model().problem().events();
         let mut action_p = event_action_params(events, p, event_pre_p)?;
-        write_clock_activation_params(&self.model, &mut action_p, t);
+        write_clock_activation_params(self.model(), &mut action_p, t);
         let mut values = vec![0.0; events.actions.len()];
         let mut active_rows = self.event_action_active_row_indices.borrow_mut();
         active_rows.clear();
@@ -559,11 +597,10 @@ impl SolveRuntime {
                 active_rows.push(row);
             }
         }
-        self.eval_selected_outputs_with_native(
-            SpecializedRows {
+        self.eval_selected_outputs(
+            &self.execution_plan.interpreter.event_action_conditions,
+            SelectedRows {
                 block: &self.event_action_conditions,
-                cache: &self.compiled_event_action_rows,
-                failed: &self.failed_event_action_rows,
             },
             &active_rows,
             RowEvalPoint { y, p: &action_p, t },
@@ -575,7 +612,10 @@ impl SolveRuntime {
             y,
             &action_p,
             t,
-            self.row_eval_context(),
+            self.execution_plan
+                .interpreter
+                .event_action_conditions
+                .row_eval_context(self),
             values,
         )? {
             solve_eval::EventActionRequest::Continue => Ok(EventActionOutcome::Continue),
@@ -623,19 +663,30 @@ impl SolveRuntime {
             self.write_planned_visible_values(plan, y, params, t, values)?;
             return Ok(());
         }
-        if self.visible_value_rows.len() == self.model.visible_names.len() {
+        if self.visible_value_rows.len() == self.model().visible_name_count() {
             resize_runtime_values(values, self.visible_value_rows.len(), 0.0, "visible values")?;
             self.visible_value_rows.eval_with_context(
                 y,
                 params,
                 t,
-                self.row_eval_context(),
+                self.execution_plan
+                    .interpreter
+                    .visible_values
+                    .row_eval_context(self),
                 values,
             )?;
             return Ok(());
         }
-        let computed =
-            visible_values_with_context(&self.model, y, params, t, self.row_eval_context())?;
+        let computed = visible_values_with_context(
+            self.model(),
+            y,
+            params,
+            t,
+            self.execution_plan
+                .interpreter
+                .visible_values
+                .row_eval_context(self),
+        )?;
         copy_runtime_values_into(values, &computed, "visible values")
     }
 
@@ -653,11 +704,10 @@ impl SolveRuntime {
             }
         }
         if !plan.expression_rows.is_empty() {
-            self.eval_single_output_rows_with_native(
-                SpecializedRows {
+            self.eval_single_output_rows(
+                &self.execution_plan.interpreter.visible_values,
+                SelectedRows {
                     block: &self.visible_value_rows,
-                    cache: &self.compiled_visible_rows,
-                    failed: &self.failed_visible_rows,
                 },
                 &plan.expression_rows,
                 RowEvalPoint { y, p: params, t },
@@ -675,7 +725,7 @@ impl SolveRuntime {
         t: f64,
         names: &[String],
     ) -> Result<IndexMap<String, f64>, RuntimeSolveError> {
-        if self.visible_value_rows.len() == self.model.visible_names.len() {
+        if self.visible_value_rows.len() == self.model().visible_name_count() {
             return self.visible_values_for_names_from_rows(y, params, t, names);
         }
         let all_values = self.visible_values(y, params, t)?;
@@ -733,7 +783,10 @@ impl SolveRuntime {
             y,
             params,
             t,
-            self.row_eval_context(),
+            self.execution_plan
+                .interpreter
+                .visible_values
+                .row_eval_context(self),
         )?;
         Ok(Some(value))
     }
@@ -743,8 +796,12 @@ impl SolveRuntime {
         solver_y: &mut Vec<f64>,
         state: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        copy_runtime_values_into(solver_y, &self.model.initial_y, "solver y initial values")?;
-        resize_runtime_values(solver_y, self.solver_count, 0.0, "solver y")?;
+        copy_runtime_values_into(
+            solver_y,
+            self.model().initial_y(),
+            "solver y initial values",
+        )?;
+        resize_runtime_values(solver_y, self.solver_count(), 0.0, "solver y")?;
         for (dst, src) in solver_y.iter_mut().zip(state.iter().copied()) {
             *dst = src;
         }
@@ -756,10 +813,10 @@ impl SolveRuntime {
         solver_y: &mut [f64],
         state: &[f64],
     ) -> Result<(), RuntimeSolveError> {
-        if solver_y.len() != self.solver_count {
+        if solver_y.len() != self.solver_count() {
             return Err(RuntimeSolveError::solve_ir(format!(
                 "algebraic warm-start length mismatch: expected {}, got {}",
-                self.solver_count,
+                self.solver_count(),
                 solver_y.len()
             )));
         }
@@ -783,7 +840,7 @@ impl SolveRuntime {
         // non-finite derivatives, so trace before propagating: on failure `out`
         // and `solver_y` still hold the offending values to name for the user.
         let eval_result = self.eval_derivative_rhs_from_solver_y(t, solver_y, params, out);
-        solve_eval::nan_trace::report_state_derivative(&self.model, t, solver_y, out);
+        solve_eval::nan_trace::report_state_derivative(self.model(), t, solver_y, out);
         eval_result
     }
 
@@ -794,22 +851,21 @@ impl SolveRuntime {
         params: &[f64],
         out: &mut [f64],
     ) -> Result<(), RuntimeSolveError> {
-        validate_derivative_output_len(out, self.state_count)?;
-        if let Some(compiled) = self.compiled_derivative_rhs.as_ref()
-            && compiled
-                .call(
-                    solver_y,
-                    params,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out,
-                )
-                .is_ok()
-        {
-            return self.validate_finite_derivatives(out);
+        validate_derivative_output_len(out, self.state_count())?;
+        match &self.execution_plan.derivative_rhs {
+            ExecutionArm::Native(compiled) => {
+                compiled.call(solver_y, params, t, out).map_err(|reason| {
+                    RuntimeSolveError::native_call(NativeExecutionOwner::DerivativeRhs, reason)
+                })?
+            }
+            ExecutionArm::Interpreter(selected_arm) => self.derivative_rhs.eval_with_context(
+                solver_y,
+                params,
+                t,
+                selected_arm.row_eval_context(self),
+                out,
+            )?,
         }
-        self.derivative_rhs
-            .eval_with_context(solver_y, params, t, self.row_eval_context(), out)?;
         self.validate_finite_derivatives(out)
     }
 
@@ -819,12 +875,8 @@ impl SolveRuntime {
     ) -> Result<(), RuntimeSolveError> {
         for (idx, value) in derivative.iter().enumerate() {
             if !value.is_finite() {
-                let state_name = self
-                    .model
-                    .visible_names
-                    .get(idx)
-                    .cloned()
-                    .unwrap_or_else(|| format!("state[{idx}]"));
+                let state_name =
+                    self.model().problem().solve_layout().solver_maps.names[idx].clone();
                 return Err(RuntimeSolveError::NonFiniteDerivative { state_name });
             }
         }

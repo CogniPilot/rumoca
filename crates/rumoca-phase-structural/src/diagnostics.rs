@@ -1,7 +1,7 @@
 use rumoca_core::{Diagnostic, Label, PrimaryLabel, Span};
 use rumoca_ir_dae as dae;
 
-use crate::diagnostic_codes::{ES001_STRUCTURAL_SINGULARITY, ES002_ALGEBRAIC_LOOP};
+use crate::diagnostic_codes::{WS001_STRUCTURAL_SINGULARITY, WS002_ALGEBRAIC_LOOP};
 use crate::incidence::Incidence;
 
 #[derive(Debug, Default)]
@@ -47,7 +47,7 @@ pub(crate) fn collect_warnings<'dae>(
             .filter_map(|index| incidence.equation_spans.get(*index).copied())
             .collect::<Vec<_>>();
         let mut diagnostic = structural_warning(
-            ES002_ALGEBRAIC_LOOP,
+            WS002_ALGEBRAIC_LOOP,
             format!(
                 "algebraic loop detected: {} equations must be solved simultaneously",
                 component.len()
@@ -79,7 +79,7 @@ pub(crate) fn singular_warning(
     unknown_count: usize,
 ) -> Diagnostic {
     let mut diagnostic = structural_warning(
-        ES001_STRUCTURAL_SINGULARITY,
+        WS001_STRUCTURAL_SINGULARITY,
         format!(
             "structurally singular system: matching size {matched} (equations={equation_count}, unknowns={unknown_count})"
         ),

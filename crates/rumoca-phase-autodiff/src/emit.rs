@@ -30,17 +30,6 @@ pub(crate) fn tangent_name(function: &str) -> String {
     format!("{function}{TANGENT_FUNCTION_SUFFIX}")
 }
 
-/// Escape a provenance string for embedding in a Modelica string literal.
-///
-/// The provenance carries the raw source text of the differentiated call, which
-/// can contain a String literal argument whose quotes would otherwise close the
-/// description string early and produce unparseable output. Modelica string
-/// literals escape a backslash as `\\` and a double quote as `\"`; the backslash
-/// pass runs first so an escaped quote is not doubly escaped.
-fn escape_modelica_string(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 /// The generated name of a Jacobian wrapper.
 pub(crate) fn wrapper_name(function: &str, formal: &str) -> String {
     format!("{function}_jacobian_{formal}")
@@ -70,7 +59,7 @@ pub(crate) fn tangent_function(
     let name = tangent_name(&model.name);
     let mut lines = vec![format!(
         "function {name} \"{}\"",
-        escape_modelica_string(provenance)
+        rumoca_core::escape_modelica_string(provenance)
     )];
     for port in model.ports_with(PortRole::Input) {
         lines.push(format!("  input {};", port.primal_declaration()));
@@ -125,7 +114,7 @@ pub(crate) fn jacobian_wrapper(
     let name = wrapper_name(&model.name, &formal.name);
     let mut lines = vec![format!(
         "function {name} \"{}\"",
-        escape_modelica_string(provenance)
+        rumoca_core::escape_modelica_string(provenance)
     )];
     for port in model.ports_with(PortRole::Input) {
         lines.push(format!("  input {};", port.primal_declaration()));

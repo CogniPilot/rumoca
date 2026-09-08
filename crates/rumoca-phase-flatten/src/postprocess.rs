@@ -25,9 +25,12 @@ use super::*;
 
 pub(crate) use constant_lookup::constant_expr_preserves_array_shape;
 pub(crate) use constant_substituter::substitute_known_constants_expr;
-pub(crate) use constructor_calls::mark_record_constructor_calls;
+pub(crate) use constructor_calls::{
+    mark_record_constructor_calls, mark_record_constructor_calls_in_expression,
+    record_constructor_def_ids,
+};
 pub(super) use field_access::{
-    drop_invalid_field_access_bindings, normalize_record_array_field_access_bindings,
+    normalize_record_array_field_access_bindings, reject_invalid_field_access_bindings,
     resolve_nested_constructor_field_access_bindings,
 };
 pub(crate) use index_collapse::{collapse_index_refs_to_known_varrefs, field_access_flat_path};
@@ -41,47 +44,91 @@ use function_shape_constants::materialize_function_shape_constants;
 use indexed_dimension_recovery::constant_integer_bound;
 use record_alias::*;
 
+/// Redirect every read through a record alias to the Flat variable the alias
+/// target owns.
+///
+/// The redirected read keeps the exact identity of that variable: a rewritten
+/// spelling alone would drop the structured component reference and allocated
+/// occurrence the original read carried, and every later owner that proves
+/// identity rather than spelling (a `der` operand is the first) would then
+/// refuse a well-formed model.
 pub(super) fn canonicalize_varrefs_via_record_aliases(flat: &mut flat::Model, ctx: &Context) {
     if ctx.record_aliases.is_empty() {
         return;
     }
-    let known_variables: HashSet<String> = flat.variables.keys().map(ToString::to_string).collect();
-    for equation in &mut flat.equations {
-        canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
+    let flat::Model {
+        variables,
+        equations,
+        initial_equations,
+        when_chains,
+        algorithms,
+        initial_algorithms,
+        ..
+    } = flat;
+    let targets = RecordAliasTargets { ctx, variables };
+    for equation in equations.iter_mut() {
+        canonicalize_record_alias_expr(&mut equation.residual, &targets);
     }
-    for equation in &mut flat.initial_equations {
-        canonicalize_record_alias_expr(&mut equation.residual, ctx, &known_variables);
+    for equation in initial_equations.iter_mut() {
+        canonicalize_record_alias_expr(&mut equation.residual, &targets);
     }
-    for chain in &mut flat.when_chains {
+    for chain in when_chains.iter_mut() {
         for branch in chain.branches_mut() {
-            canonicalize_record_alias_expr(&mut branch.condition, ctx, &known_variables);
-            canonicalize_record_alias_when_equations(&mut branch.equations, ctx, &known_variables);
+            canonicalize_record_alias_expr(&mut branch.condition, &targets);
+            canonicalize_record_alias_when_equations(&mut branch.equations, &targets);
         }
     }
-    for algorithm in &mut flat.algorithms {
-        canonicalize_record_alias_statements(&mut algorithm.statements, ctx, &known_variables);
+    for algorithm in algorithms.iter_mut() {
+        canonicalize_record_alias_statements(&mut algorithm.statements, &targets);
     }
-    for algorithm in &mut flat.initial_algorithms {
-        canonicalize_record_alias_statements(&mut algorithm.statements, ctx, &known_variables);
+    for algorithm in initial_algorithms.iter_mut() {
+        canonicalize_record_alias_statements(&mut algorithm.statements, &targets);
     }
 }
 
-fn record_alias_rewrite_name(
-    name: &str,
-    ctx: &Context,
-    known_variables: &HashSet<String>,
-) -> Option<String> {
-    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
-    ctx.record_aliases.iter().find_map(|(alias, target)| {
-        if !name_path.starts_with(alias) || name_path.len() == alias.len() {
-            return None;
+/// The record aliases of one flattening together with the Flat variables a
+/// canonical spelling may resolve to.
+pub(super) struct RecordAliasTargets<'a> {
+    ctx: &'a Context,
+    variables: &'a flat::VarNameIndexMap<flat::Variable>,
+}
+
+impl RecordAliasTargets<'_> {
+    /// The exact reference of the Flat variable that `name` denotes through a
+    /// record alias, or `None` when no alias applies or the canonical spelling
+    /// is not a Flat variable.
+    pub(super) fn canonical_reference(&self, name: &str) -> Option<rumoca_core::Reference> {
+        let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+        self.ctx.record_aliases.iter().find_map(|(alias, target)| {
+            if !name_path.starts_with(alias) || name_path.len() == alias.len() {
+                return None;
+            }
+            let suffix = name_path
+                .suffix_from(alias.len())
+                .expect("suffix index is in range");
+            let candidate = target.join(&suffix).to_flat_string();
+            self.variables
+                .get(&rumoca_core::VarName::new(candidate))
+                .map(flat_variable_reference)
+        })
+    }
+}
+
+/// The reference Flat issues for one of its own variables: the declaration's
+/// structured component reference and allocated occurrence, whenever the model
+/// carries them, under the variable's flat spelling.
+fn flat_variable_reference(variable: &flat::Variable) -> rumoca_core::Reference {
+    let reference = match variable.component_ref.clone() {
+        Some(component_ref) => {
+            rumoca_core::Reference::with_component_reference(variable.name.as_str(), component_ref)
         }
-        let suffix = name_path
-            .suffix_from(alias.len())
-            .expect("suffix index is in range");
-        let candidate = target.join(&suffix).to_flat_string();
-        known_variables.contains(&candidate).then_some(candidate)
-    })
+        None => rumoca_core::Reference::from_var_name(variable.name.clone()),
+    };
+    if variable.instance_id.is_unset() {
+        reference
+    } else {
+        reference.with_instance_id(variable.instance_id)
+    }
 }
 
 pub(super) fn substitute_known_constants_in_flat(
@@ -181,11 +228,14 @@ fn equation_origin_scope(origin: &flat::EquationOrigin) -> String {
         | flat::EquationOrigin::Algorithm { component } => component.clone(),
         flat::EquationOrigin::Binding { variable }
         | flat::EquationOrigin::Reinit { state: variable }
-        | flat::EquationOrigin::WhenAssignment { target: variable }
-        | flat::EquationOrigin::UnconnectedFlow { variable } => parent_component_scope(variable),
-        flat::EquationOrigin::Connection { .. } | flat::EquationOrigin::FlowSum { .. } => {
-            String::new()
+        | flat::EquationOrigin::WhenAssignment { target: variable } => {
+            parent_component_scope(variable)
         }
+        flat::EquationOrigin::Connection { .. }
+        | flat::EquationOrigin::OutsideStream { .. }
+        | flat::EquationOrigin::EqualityConstraint { .. }
+        | flat::EquationOrigin::FlowSum { .. }
+        | flat::EquationOrigin::UnconnectedFlow { .. } => String::new(),
     }
 }
 

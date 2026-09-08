@@ -170,7 +170,7 @@ impl Session {
         model_key: &ModelKey,
         mode: ResolveBuildMode,
         fingerprint: Fingerprint,
-    ) -> Option<TypedModelOutcome> {
+    ) -> Option<TypedModelRecord> {
         let key = TypedModelCacheKey::new(model_key.clone(), mode);
         let artifact = self
             .query_state
@@ -179,13 +179,13 @@ impl Session {
             .artifacts
             .shift_remove(&key)?;
         let is_hit = artifact.fingerprint == fingerprint;
-        let outcome = artifact.outcome.clone();
+        let record = artifact.record.clone();
         self.query_state
             .flat
             .typed_models
             .artifacts
             .insert(key, artifact);
-        is_hit.then_some(outcome)
+        is_hit.then_some(record)
     }
 
     fn insert_typed_model(
@@ -193,7 +193,7 @@ impl Session {
         model_key: ModelKey,
         mode: ResolveBuildMode,
         fingerprint: Fingerprint,
-        outcome: TypedModelOutcome,
+        record: TypedModelRecord,
     ) {
         let key = TypedModelCacheKey::new(model_key, mode);
         self.query_state
@@ -205,7 +205,7 @@ impl Session {
             key,
             TypedModelArtifact {
                 fingerprint,
-                outcome,
+                record,
             },
         );
         Self::trim_lru_cache(
@@ -214,13 +214,18 @@ impl Session {
         );
     }
 
-    fn typed_model_query_impl(
+    /// Build the typecheck outcome by running the sole mint, without
+    /// consulting the record cache. The consumable proof is never cached:
+    /// consuming it is a static move, so a pipeline that needs a proof runs
+    /// the mint (SPEC_0029 §4), and only the `Clone`-able record is stored.
+    fn typed_model_outcome_build(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
         record_compile_timings: bool,
     ) -> TypedModelOutcome {
+        let tree = resolved.inner();
         let instantiate_started = if record_compile_timings {
             maybe_start_timer()
         } else {
@@ -228,7 +233,6 @@ impl Session {
         };
 
         let Some(model_key) = self.model_key_query(model_name) else {
-            record_typed_model_cache_miss();
             record_instantiated_model_cache_miss();
             let instantiated = self.build_instantiated_model(tree, model_name);
             record_instantiated_model_build();
@@ -241,7 +245,7 @@ impl Session {
                 None
             };
             let (typed, typechecked_built) =
-                typed_model_outcome_from_instantiated(tree, model_name, instantiated);
+                typed_model_outcome_from_instantiated(resolved, model_name, instantiated);
             if record_compile_timings && typechecked_built {
                 maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_started);
             }
@@ -252,12 +256,6 @@ impl Session {
         };
 
         let fingerprint = self.model_dependency_fingerprint(tree, mode, model_name);
-        if let Some(cached) = self.cached_typed_model(&model_key, mode, fingerprint) {
-            record_typed_model_cache_hit();
-            return cached;
-        }
-
-        record_typed_model_cache_miss();
         let (instantiated, instantiated_built) =
             self.instantiated_model_query_with_status(tree, mode, model_name);
         if record_compile_timings && instantiated_built {
@@ -270,7 +268,7 @@ impl Session {
             None
         };
         let (typed, typechecked_built) =
-            typed_model_outcome_from_instantiated(tree, model_name, instantiated);
+            typed_model_outcome_from_instantiated(resolved, model_name, instantiated);
         if record_compile_timings && typechecked_built {
             maybe_record_compile_phase_timing(FailedPhase::Typecheck, typecheck_started);
         }
@@ -278,17 +276,55 @@ impl Session {
             record_typed_model_build();
         }
 
-        self.insert_typed_model(model_key, mode, fingerprint, typed.clone());
+        self.insert_typed_model(model_key, mode, fingerprint, typed.record());
         typed
     }
 
-    pub(in crate::session) fn typed_model_query(
+    /// Pipeline query: a cached failure short-circuits the rebuild, while a
+    /// cached success cannot supply the affine proof and therefore re-runs
+    /// the sole mint.
+    fn typed_model_query_impl(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
+        record_compile_timings: bool,
     ) -> TypedModelOutcome {
-        self.typed_model_query_impl(tree, mode, model_name, false)
+        if let Some(model_key) = self.model_key_query(model_name) {
+            let tree = resolved.inner();
+            let fingerprint = self.model_dependency_fingerprint(tree, mode, model_name);
+            if let Some(failure) = self
+                .cached_typed_model(&model_key, mode, fingerprint)
+                .and_then(TypedModelRecord::into_failure_outcome)
+            {
+                record_typed_model_cache_hit();
+                return failure;
+            }
+        }
+        record_typed_model_cache_miss();
+        self.typed_model_outcome_build(resolved, mode, model_name, record_compile_timings)
+    }
+
+    /// Read-only diagnostics query over the `Clone`-able typecheck record.
+    /// Success records are served from the cache; the proof a rebuild mints
+    /// here has no flatten consumer and is dropped unconsumed.
+    pub(in crate::session) fn typed_model_record_query(
+        &mut self,
+        resolved: &ResolvedTree,
+        mode: ResolveBuildMode,
+        model_name: &str,
+    ) -> TypedModelRecord {
+        if let Some(model_key) = self.model_key_query(model_name) {
+            let tree = resolved.inner();
+            let fingerprint = self.model_dependency_fingerprint(tree, mode, model_name);
+            if let Some(record) = self.cached_typed_model(&model_key, mode, fingerprint) {
+                record_typed_model_cache_hit();
+                return record;
+            }
+        }
+        record_typed_model_cache_miss();
+        self.typed_model_outcome_build(resolved, mode, model_name, false)
+            .record()
     }
 
     fn cached_flat_model(
@@ -342,20 +378,22 @@ impl Session {
 
     pub(super) fn flat_model_query_impl(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
         record_compile_timings: bool,
     ) -> FlatModelOutcome {
+        let tree = resolved.inner();
         let Some(model_key) = self.model_key_query(model_name) else {
             record_flat_model_cache_miss();
-            let typed = self.typed_model_query_impl(tree, mode, model_name, record_compile_timings);
+            let typed =
+                self.typed_model_query_impl(resolved, mode, model_name, record_compile_timings);
             let flatten_started = if record_compile_timings {
                 maybe_start_timer()
             } else {
                 None
             };
-            let (flat, flattened_built) = flat_model_outcome_from_typed(tree, model_name, typed);
+            let (flat, flattened_built) = flat_model_outcome_from_typed(typed);
             if record_compile_timings && flattened_built {
                 maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_started);
             }
@@ -372,13 +410,13 @@ impl Session {
         }
 
         record_flat_model_cache_miss();
-        let typed = self.typed_model_query_impl(tree, mode, model_name, record_compile_timings);
+        let typed = self.typed_model_query_impl(resolved, mode, model_name, record_compile_timings);
         let flatten_started = if record_compile_timings {
             maybe_start_timer()
         } else {
             None
         };
-        let (flat, flattened_built) = flat_model_outcome_from_typed(tree, model_name, typed);
+        let (flat, flattened_built) = flat_model_outcome_from_typed(typed);
         if record_compile_timings && flattened_built {
             maybe_record_compile_phase_timing(FailedPhase::Flatten, flatten_started);
         }
@@ -428,14 +466,16 @@ impl Session {
 
     fn dae_model_query_impl(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
         record_compile_timings: bool,
     ) -> DaeModelOutcome {
+        let tree = resolved.inner();
         let Some(model_key) = self.model_key_query(model_name) else {
             record_dae_model_cache_miss();
-            let flat = self.flat_model_query_impl(tree, mode, model_name, record_compile_timings);
+            let flat =
+                self.flat_model_query_impl(resolved, mode, model_name, record_compile_timings);
             let todae_started = if record_compile_timings {
                 maybe_start_timer()
             } else {
@@ -458,7 +498,7 @@ impl Session {
         }
 
         record_dae_model_cache_miss();
-        let flat = self.flat_model_query_impl(tree, mode, model_name, record_compile_timings);
+        let flat = self.flat_model_query_impl(resolved, mode, model_name, record_compile_timings);
         let todae_started = if record_compile_timings {
             maybe_start_timer()
         } else {
@@ -478,30 +518,30 @@ impl Session {
 
     pub(in crate::session) fn dae_model_query(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
     ) -> DaeModelOutcome {
-        self.dae_model_query_impl(tree, mode, model_name, false)
+        self.dae_model_query_impl(resolved, mode, model_name, false)
     }
 
     pub(in crate::session) fn dae_phase_result_query(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
     ) -> DaePhaseResult {
-        let dae = self.dae_model_query_impl(tree, mode, model_name, true);
-        dae_phase_result_from_dae(tree, model_name, dae)
+        let dae = self.dae_model_query_impl(resolved, mode, model_name, true);
+        dae_phase_result_from_dae(resolved.inner(), model_name, dae)
     }
 
     pub(in crate::session) fn compile_phase_result_query(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_name: &str,
     ) -> PhaseResult {
-        let dae = self.dae_model_query_impl(tree, mode, model_name, true);
-        compile_phase_result_from_dae(tree, model_name, dae)
+        let dae = self.dae_model_query_impl(resolved, mode, model_name, true);
+        compile_phase_result_from_dae(resolved.inner(), model_name, dae)
     }
 }

@@ -1,5 +1,6 @@
 //! Acceptance-surface gate: every path that renders an artifact names the
-//! checked view standing between its IR and the emitted bytes.
+//! checked view standing between its IR and the emitted bytes; a retained
+//! unsupported spelling is classified as a named refusal instead.
 //!
 //! Two registries feed this gate: the built-in code-gen targets bundled by
 //! `rumoca-phase-codegen`, and the `--emit <stage>` IR dumps declared by
@@ -14,22 +15,27 @@
 
 use super::*;
 
-use rumoca_compile::codegen::targets::{TargetTemplateIr, parse_target_manifest};
-use rumoca_compile::codegen::templates::builtin_targets;
+use rumoca_compile::codegen::targets::{TargetRequiredProduct, builtin_target_descriptors};
 
-/// What a surface proves about an artifact before emitting its bytes.
+/// What a surface proves before it can emit bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CheckedView {
+    /// A retained CLI spelling that emits no artifact and returns one stable
+    /// `unsupported-feature:*` refusal before semantic compilation.
+    NamedRefusal,
     /// The checked DAE semantic projection (`dae_backend::project`), admitted
     /// by the manifest's `[capabilities]` table.
     CheckedDaeProjection,
-    /// The lowered `SolveProblem`/`SolveArtifacts` render handle, admitted by
-    /// `SolveProblem::validate` plus the Solve capability gate.
-    CheckedSolveProblem,
-    /// The event-free checked FMI component view.
+    /// The complete checked `SolveModel`, admitted by its construction plus
+    /// the Solve capability gate.
+    CheckedSolveModel,
+    /// The event-free checked `rumoca_ir_solve::fmi::FmiComponent` view.
     CheckedFmiComponent,
     /// The GALEC Algorithm Code projection.
     AlgorithmCodeProjection,
+    /// One correlated Algorithm Code package plus its checked
+    /// `SolveAlgorithmBlock` refinement.
+    CheckedSolveAlgorithmProduct,
     /// The materialized Flat scalar-equation view, whose refusal is
     /// `rumoca::codegen::EC007`.
     MaterializedFlatEquations,
@@ -47,26 +53,32 @@ enum CheckedView {
 /// Every classification, so the bijection gate below reads one list rather
 /// than a second copy of the enum.
 const ALL_CHECKED_VIEWS: &[CheckedView] = &[
+    CheckedView::NamedRefusal,
     CheckedView::CheckedDaeProjection,
-    CheckedView::CheckedSolveProblem,
+    CheckedView::CheckedSolveModel,
     CheckedView::CheckedFmiComponent,
     CheckedView::AlgorithmCodeProjection,
+    CheckedView::CheckedSolveAlgorithmProduct,
     CheckedView::MaterializedFlatEquations,
     CheckedView::ResolvedAstTree,
     CheckedView::SelfDescribing,
 ];
 
 impl CheckedView {
-    /// The manifest `ir` a target consuming this view must declare, or `None`
-    /// for a view no code-gen target can consume.
-    fn target_ir(self) -> Option<TargetTemplateIr> {
+    /// The single construction-issued product the manifest context set
+    /// requires, or `None` for a view no code-generation target consumes.
+    fn required_product(self) -> Option<TargetRequiredProduct> {
         match self {
-            Self::CheckedDaeProjection => Some(TargetTemplateIr::Dae),
-            Self::CheckedSolveProblem => Some(TargetTemplateIr::Solve),
-            Self::CheckedFmiComponent => Some(TargetTemplateIr::Fmi),
-            Self::AlgorithmCodeProjection => Some(TargetTemplateIr::AlgorithmCode),
-            Self::MaterializedFlatEquations => Some(TargetTemplateIr::Flat),
-            Self::ResolvedAstTree => Some(TargetTemplateIr::Ast),
+            Self::NamedRefusal => None,
+            Self::CheckedDaeProjection => Some(TargetRequiredProduct::Dae),
+            Self::CheckedSolveModel => Some(TargetRequiredProduct::SolveModel),
+            Self::CheckedFmiComponent => Some(TargetRequiredProduct::FmiComponent),
+            Self::AlgorithmCodeProjection => Some(TargetRequiredProduct::AlgorithmCodePackage),
+            Self::CheckedSolveAlgorithmProduct => {
+                Some(TargetRequiredProduct::SolveAlgorithmProduct)
+            }
+            Self::MaterializedFlatEquations => Some(TargetRequiredProduct::Flat),
+            Self::ResolvedAstTree => Some(TargetRequiredProduct::Ast),
             Self::SelfDescribing => None,
         }
     }
@@ -80,32 +92,29 @@ impl CheckedView {
         matches!(
             self,
             Self::CheckedDaeProjection
-                | Self::CheckedSolveProblem
+                | Self::CheckedSolveModel
                 | Self::CheckedFmiComponent
                 | Self::AlgorithmCodeProjection
+                | Self::CheckedSolveAlgorithmProduct
         )
     }
 }
 
 /// One row per built-in code-gen target, keyed by registry name.
 const BUILTIN_TARGET_SURFACES: &[(&str, CheckedView)] = &[
-    ("base-modelica", CheckedView::MaterializedFlatEquations),
-    ("casadi-ode", CheckedView::CheckedSolveProblem),
-    ("c-ode", CheckedView::CheckedSolveProblem),
-    ("cuda-ode", CheckedView::CheckedSolveProblem),
+    ("casadi-ode", CheckedView::CheckedSolveModel),
+    ("cuda-ode", CheckedView::CheckedSolveModel),
     ("dae-modelica", CheckedView::CheckedDaeProjection),
-    ("embedded-c-galec", CheckedView::AlgorithmCodeProjection),
-    ("flat-modelica", CheckedView::MaterializedFlatEquations),
+    ("efmu", CheckedView::CheckedSolveAlgorithmProduct),
     ("fmi2", CheckedView::CheckedFmiComponent),
     ("fmi3", CheckedView::CheckedFmiComponent),
     ("fmi-ls-wasm", CheckedView::CheckedFmiComponent),
     ("galec", CheckedView::AlgorithmCodeProjection),
-    ("galec-production", CheckedView::AlgorithmCodeProjection),
-    ("jax-ode", CheckedView::CheckedSolveProblem),
-    ("mlir", CheckedView::CheckedSolveProblem),
-    ("rust-fixed-ode", CheckedView::CheckedSolveProblem),
-    ("rust-ode", CheckedView::CheckedSolveProblem),
-    ("wgsl-ode", CheckedView::CheckedSolveProblem),
+    ("jax-ode", CheckedView::CheckedSolveModel),
+    ("mlir", CheckedView::CheckedSolveModel),
+    ("rust-fixed-ode", CheckedView::CheckedSolveModel),
+    ("rust-ode", CheckedView::CheckedSolveModel),
+    ("wgsl-ode", CheckedView::CheckedSolveModel),
 ];
 
 /// One row per `compile --emit` stage, keyed by the clap value name.
@@ -116,7 +125,7 @@ const BUILTIN_TARGET_SURFACES: &[(&str, CheckedView)] = &[
 /// materialized scalar view.
 const EMIT_SURFACES: &[(&str, CheckedView)] = &[
     ("ast-json", CheckedView::SelfDescribing),
-    ("flat-mo", CheckedView::MaterializedFlatEquations),
+    ("flat-mo", CheckedView::NamedRefusal),
     ("flat-json", CheckedView::SelfDescribing),
     ("dae-mo", CheckedView::CheckedDaeProjection),
     ("dae-json", CheckedView::SelfDescribing),
@@ -182,9 +191,10 @@ fn registered_emit_stages() -> Vec<String> {
 
 #[test]
 fn every_builtin_target_declares_the_checked_view_it_consumes() {
-    let registered: Vec<String> = builtin_targets()
-        .iter()
-        .map(|target| target.name.to_owned())
+    let registered: Vec<String> = builtin_target_descriptors()
+        .expect("check every built-in target bundle")
+        .into_iter()
+        .map(|target| target.id)
         .collect();
     let (undeclared, stale) = surface_table_drift(&registered, &declared_target_names());
     assert!(
@@ -216,36 +226,32 @@ fn every_emit_stage_declares_the_checked_view_it_consumes() {
 }
 
 #[test]
-fn declared_checked_views_agree_with_each_target_manifest() {
-    for target in builtin_targets() {
-        let manifest = parse_target_manifest(target.manifest)
-            .unwrap_or_else(|error| panic!("parse `{}` target manifest: {error}", target.name));
-        let view = declared_view(target.name);
+fn declared_checked_views_agree_with_each_checked_target_descriptor() {
+    for target in builtin_target_descriptors().expect("check every built-in target bundle") {
+        let view = declared_view(&target.id);
         assert_eq!(
-            view.target_ir(),
-            Some(manifest.ir),
-            "target `{}` declares the {view:?} checked view but its manifest consumes {:?} IR",
-            target.name,
-            manifest.ir
+            view.required_product(),
+            Some(target.required_product),
+            "target `{}` declares the {view:?} checked view but its context set requires {:?}",
+            target.id,
+            target.required_product
         );
     }
 }
 
 #[test]
 fn capability_gated_targets_declare_a_capabilities_table() {
-    for target in builtin_targets() {
-        let view = declared_view(target.name);
+    for target in builtin_target_descriptors().expect("check every built-in target bundle") {
+        let view = declared_view(&target.id);
         if !view.requires_declared_capabilities() {
             continue;
         }
-        let manifest = parse_target_manifest(target.manifest)
-            .unwrap_or_else(|error| panic!("parse `{}` target manifest: {error}", target.name));
         assert!(
-            manifest.capabilities.is_some(),
+            target.capabilities.is_some(),
             "target `{}` consumes the {view:?} checked view, whose whole admissibility proof \
              runs through [capabilities]; an absent table is refused at render time, so a \
              built-in shipping without one can never emit",
-            target.name
+            target.id
         );
     }
 }
@@ -267,32 +273,21 @@ fn surface_table_drift_reports_a_stale_row() {
 }
 
 #[test]
-fn checked_views_and_target_ir_kinds_are_a_bijection() {
-    // A new `TargetTemplateIr` variant is a new acceptance surface, so it must
-    // arrive with the view that proves it rather than inheriting another's.
-    let mapped: BTreeSet<String> = ALL_CHECKED_VIEWS
+fn checked_views_map_to_their_exact_required_product() {
+    let mapped = ALL_CHECKED_VIEWS
         .iter()
-        .filter_map(|view| view.target_ir())
-        .map(|ir| format!("{ir:?}"))
-        .collect();
-    let source =
-        fs::read_to_string(workspace_root().join("crates/rumoca-compile/src/codegen_target.rs"))
-            .expect("read the target manifest definitions");
-    let body = source
-        .split_once("pub enum TargetTemplateIr {")
-        .expect("codegen_target.rs declares `pub enum TargetTemplateIr`")
-        .1
-        .split_once("\n}")
-        .expect("the `TargetTemplateIr` declaration is brace-terminated")
-        .0;
-    let declared: BTreeSet<String> = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("//"))
-        .map(|line| line.trim_end_matches(',').to_owned())
-        .collect();
+        .filter_map(|view| view.required_product())
+        .collect::<Vec<_>>();
     assert_eq!(
-        mapped, declared,
-        "every TargetTemplateIr variant needs exactly one CheckedView that consumes it"
+        CheckedView::CheckedFmiComponent.required_product(),
+        Some(TargetRequiredProduct::FmiComponent),
+        "FMI files must consume the real checked FmiComponent root"
+    );
+    assert!(
+        mapped.contains(&TargetRequiredProduct::SolveModel)
+            && mapped.contains(&TargetRequiredProduct::FmiComponent)
+            && mapped.contains(&TargetRequiredProduct::AlgorithmCodePackage)
+            && mapped.contains(&TargetRequiredProduct::SolveAlgorithmProduct),
+        "registered acceptance views must retain each exact checked product"
     );
 }

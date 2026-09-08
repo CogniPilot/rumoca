@@ -3,42 +3,36 @@
 //!
 //! Each target's `[[files]]` render through [`rumoca::render_target_files`] —
 //! the in-memory twin of `compile --target` — so CI exercises the exact CLI
-//! path: capability validation plus the name-dispatched renderers
-//! (`wgsl-ode`, `galec`, `embedded-c-galec`) that the generic DAE-JSON
-//! template context cannot reach. Targets that declare
-//! `continuous_states = false` (the GALEC-derived targets) render against a
-//! dedicated fixed-sample discrete fixture; every other target keeps the
-//! continuous fixture. No target is skipped.
-//!
-//! # Support partials
-//!
-//! Not every bundled template renders a product file. A **support partial**
-//! (`[[partials]]` in `target.toml`) renders none by definition: it exists to
-//! be `import`ed, `include`d, or `extends`ed, and rendering it standalone
-//! yields nothing. "Every bundled template must be a `[[files]]` entry" is
-//! therefore the wrong invariant; the right one, checked here, is that every
-//! bundled template is declared exactly once — as a `[[files]]` artifact or as
-//! a `[[partials]]` support partial — and that the two sets are disjoint. That
-//! keeps render coverage total (no template goes unclassified) without a
-//! per-file carve-out.
+//! path: construction-issued product dispatch, capability validation, and the
+//! exact checked context/view declared by each file. Every target first sees
+//! the continuous fixture. A target that explicitly refuses continuous states
+//! records that typed refusal before its declared outputs are rendered from a
+//! dedicated fixed-sample discrete fixture. No checked target descriptor or
+//! declared output is skipped, and a discrete render is never evidence that
+//! the continuous fixture rendered.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
+use miette::Diagnostic as _;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use rumoca::{CompilationResult, Compiler, render_target_files};
 use rumoca_compile::codegen::targets::{
-    RenderedTargetFile, TargetManifest, TargetTemplateIr, parse_target_manifest,
+    BuiltinTargetDescriptor, CompletedRenderedFile, builtin_target_descriptors,
 };
+use rumoca_core::Span;
+use rumoca_phase_codegen::CodegenError;
 use rumoca_phase_codegen::templates;
-use rumoca_phase_codegen::templates::BuiltinTemplateRole;
+use sha1::{Digest as _, Sha1};
+
+use crate::artifact_session::pinned_artifact_input;
 
 const SMOKE_MODEL: &str = "Smoke";
 const SMOKE_SOURCE: &str = r#"
 model Smoke
-  Real x(start = 1);
+  Real x(start = 1, fixed = true);
   parameter Real k = 2;
 equation
   der(x) = -k * x;
@@ -46,32 +40,39 @@ end Smoke;
 "#;
 
 /// Fixed-sample discrete fixture for targets that reject continuous states:
-/// a parameter, a `pre()` state, an output, and one `when sample(...)` clock.
+/// an output updated by one `when sample(...)` clock.
 const DISCRETE_SMOKE_MODEL: &str = "DiscreteSmoke";
 const DISCRETE_SMOKE_SOURCE: &str = r#"
 model DiscreteSmoke
   constant Real samplePeriod = 0.1;
-  parameter Real gain = 2.0;
   discrete output Real y(start = 0.0);
 equation
   when sample(0.0, samplePeriod) then
-    y = gain * (pre(y) + 1.0);
+    y = 1.25;
   end when;
 end DiscreteSmoke;
 "#;
 
 /// A compiled smoke model plus the name the CLI would render it under.
 struct Fixture {
+    identity: FixtureIdentity,
     model_name: &'static str,
     compiled: CompilationResult,
 }
 
-fn compile_fixture(model_name: &'static str, source: &str) -> Fixture {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureIdentity {
+    ContinuousSmoke,
+    DiscreteSmoke,
+}
+
+fn compile_fixture(identity: FixtureIdentity, model_name: &'static str, source: &str) -> Fixture {
     let compiled = Compiler::new()
         .model(model_name)
         .compile_str(source, &format!("{model_name}.mo"))
         .unwrap_or_else(|err| panic!("compile template target fixture {model_name}: {err}"));
     Fixture {
+        identity,
         model_name,
         compiled,
     }
@@ -86,24 +87,16 @@ struct Fixtures {
 impl Fixtures {
     fn compile() -> Self {
         Self {
-            continuous: compile_fixture(SMOKE_MODEL, SMOKE_SOURCE),
-            discrete: compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE),
-        }
-    }
-
-    /// A target that declares it cannot take continuous states renders
-    /// against the discrete fixture; everything else keeps the continuous
-    /// one. Driven by the manifest capability, not by target name, so new
-    /// discrete-only targets are routed automatically.
-    fn for_manifest(&self, manifest: &TargetManifest) -> &Fixture {
-        let rejects_continuous = manifest
-            .capabilities
-            .as_ref()
-            .is_some_and(|capabilities| capabilities.continuous_states == Some(false));
-        if rejects_continuous {
-            &self.discrete
-        } else {
-            &self.continuous
+            continuous: compile_fixture(
+                FixtureIdentity::ContinuousSmoke,
+                SMOKE_MODEL,
+                SMOKE_SOURCE,
+            ),
+            discrete: compile_fixture(
+                FixtureIdentity::DiscreteSmoke,
+                DISCRETE_SMOKE_MODEL,
+                DISCRETE_SMOKE_SOURCE,
+            ),
         }
     }
 }
@@ -116,7 +109,7 @@ fn codegen_template_root() -> PathBuf {
 fn discovered_codegen_template_dirs() -> BTreeSet<String> {
     fs::read_dir(codegen_template_root())
         .expect("read codegen template root")
-        .filter_map(Result::ok)
+        .map(|entry| entry.expect("read codegen template directory entry"))
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .map(|path| {
@@ -129,7 +122,7 @@ fn discovered_codegen_template_dirs() -> BTreeSet<String> {
 }
 
 #[test]
-fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
+fn every_builtin_template_target_renders_every_declared_artifact() {
     let fixtures = Fixtures::compile();
     let builtin_names = templates::builtin_targets()
         .iter()
@@ -144,38 +137,29 @@ fn builtin_template_targets_render_or_are_explicit_readiness_zero_manifests() {
 
     let coverage = render_builtin_template_targets(&fixtures);
 
-    assert!(
-        coverage.rendered_targets.contains(&"c-ode"),
-        "c-ode must be covered by target render CI"
-    );
-    assert!(
-        coverage.rendered_targets.contains(&"galec"),
-        "galec must be covered by target render CI (GAL-012)"
-    );
-    assert!(coverage.rendered_targets.contains(&"fmi2"));
-    assert!(coverage.rendered_targets.contains(&"fmi3"));
-    assert!(
-        coverage.manifest_only_targets.is_empty(),
-        "built-in targets must emit artifacts, found manifest-only targets: {:?}",
-        coverage.manifest_only_targets
-    );
-    // Support partials are the only bundled templates the sweep does not
-    // render as a product file, and they are exempt because a manifest
-    // declares them so — not because CI skips them.
     assert_eq!(
-        coverage.support_partials,
-        vec![
-            "embedded-c-galec:scratch.jinja".to_string(),
-            "embedded-c-galec:symbols.jinja".to_string(),
-        ],
-        "the declared support partials changed"
+        coverage.keys().cloned().collect::<BTreeSet<_>>(),
+        builtin_names,
+        "every checked built-in target descriptor must have an exact fixture outcome"
     );
+
+    assert_continuous_refusal_and_discrete_render(
+        coverage.get("galec").expect("galec target coverage"),
+        "galec",
+    );
+    assert_continuous_refusal_and_discrete_render(
+        coverage.get("efmu").expect("efmu target coverage"),
+        "efmu",
+    );
+    assert_continuous_render(coverage.get("fmi2").expect("fmi2 target coverage"), "fmi2");
+    assert_continuous_render(coverage.get("fmi3").expect("fmi3 target coverage"), "fmi3");
 }
 
 #[test]
 fn removed_targets_are_rejected_before_rendering() {
-    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    let fixture = compile_fixture(FixtureIdentity::ContinuousSmoke, SMOKE_MODEL, SMOKE_SOURCE);
     for target in [
+        "base-modelica",
         "casadi-mx",
         "casadi-solve",
         "casadi-sx",
@@ -183,6 +167,7 @@ fn removed_targets_are_rejected_before_rendering() {
         "cranelift-solve-jit",
         "cuda-c",
         "cuda-nvrtc-solve-jit",
+        "flat-modelica",
         "jax",
         "jax-solve",
         "julia-mtk",
@@ -195,7 +180,7 @@ fn removed_targets_are_rejected_before_rendering() {
         "wgsl-rhs",
         "wgsl-solve",
     ] {
-        let error = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+        let error = render_target_files(&fixture.compiled, target, pinned_artifact_input())
             .expect_err("removed target must not render");
         let message = format!("{error:#}");
         assert!(
@@ -207,11 +192,15 @@ fn removed_targets_are_rejected_before_rendering() {
 
 #[test]
 fn fmi_targets_render_the_checked_continuous_fixture() {
-    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
+    let fixture = compile_fixture(FixtureIdentity::ContinuousSmoke, SMOKE_MODEL, SMOKE_SOURCE);
     for target in ["fmi2", "fmi3"] {
-        let files = render_target_files(&fixture.compiled, fixture.model_name, target, None)
+        let files = render_target_files(&fixture.compiled, target, pinned_artifact_input())
             .unwrap_or_else(|error| panic!("{target} must render: {error:#}"));
-        assert!(files.iter().any(|file| file.path == "modelDescription.xml"));
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path() == "modelDescription.xml")
+        );
     }
 }
 
@@ -220,26 +209,30 @@ fn fmi_targets_render_the_checked_continuous_fixture() {
 /// `manifest.xml` for the discrete fixture, through the real CLI path.
 #[test]
 fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
-    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
-    let files = render_target_files(&fixture.compiled, fixture.model_name, "galec", None)
+    let fixture = compile_fixture(
+        FixtureIdentity::DiscreteSmoke,
+        DISCRETE_SMOKE_MODEL,
+        DISCRETE_SMOKE_SOURCE,
+    );
+    let files = render_target_files(&fixture.compiled, "galec", pinned_artifact_input())
         .expect("galec target should render the discrete smoke fixture");
 
     // The galec target renders the eFMU AlgorithmCode/ container layout plus
     // the root `__content.xml` registry through the declarative checksum web
     // (contract §9 WI-5).
-    let alg = find_rendered_file(&files, &format!("AlgorithmCode/{DISCRETE_SMOKE_MODEL}.alg"));
+    let alg = find_rendered_file(&files, "AlgorithmCode/model.alg");
     assert!(
-        alg.content.contains("method DoStep"),
+        alg.content().contains("method DoStep"),
         "galec .alg output must contain the DoStep method:\n{}",
-        alg.content
+        alg.content()
     );
 
     let manifest = find_rendered_file(&files, "AlgorithmCode/manifest.xml");
     assert!(
-        !manifest.content.trim().is_empty(),
+        !manifest.content().trim().is_empty(),
         "galec manifest.xml must not be empty"
     );
-    let root = assert_well_formed_xml(&manifest.content);
+    let root = assert_well_formed_xml(manifest.content());
     assert_eq!(
         root, "Manifest",
         "Algorithm Code manifest root element must be <Manifest>"
@@ -248,13 +241,13 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
     // The web-injected representation checksum flows into `__content.xml`: it
     // is the SHA-1 of the exact rendered manifest bytes (GAL-021, no placeholder).
     let content = find_rendered_file(&files, "__content.xml");
-    let manifest_sha1 = rumoca::sha1_hex(manifest.content.as_bytes());
+    let manifest_sha1 = format!("{:x}", Sha1::digest(manifest.content().as_bytes()));
     assert!(
         content
-            .content
+            .content()
             .contains(&format!("checksum=\"{manifest_sha1}\"")),
         "__content.xml must carry the SHA-1 of the rendered manifest.xml:\n{}",
-        content.content
+        content.content()
     );
 }
 
@@ -263,8 +256,8 @@ fn galec_target_renders_alg_and_wellformed_manifest_for_discrete_fixture() {
 /// paper over that gate.
 #[test]
 fn galec_target_rejects_continuous_fixture_via_capability_gate() {
-    let fixture = compile_fixture(SMOKE_MODEL, SMOKE_SOURCE);
-    let error = render_target_files(&fixture.compiled, fixture.model_name, "galec", None)
+    let fixture = compile_fixture(FixtureIdentity::ContinuousSmoke, SMOKE_MODEL, SMOKE_SOURCE);
+    let error = render_target_files(&fixture.compiled, "galec", pinned_artifact_input())
         .expect_err("galec must reject the continuous smoke fixture");
     let message = format!("{error:#}");
     assert!(
@@ -273,14 +266,17 @@ fn galec_target_rejects_continuous_fixture_via_capability_gate() {
     );
 }
 
-fn find_rendered_file<'a>(files: &'a [RenderedTargetFile], path: &str) -> &'a RenderedTargetFile {
+fn find_rendered_file<'a>(
+    files: &'a [CompletedRenderedFile],
+    path: &str,
+) -> &'a CompletedRenderedFile {
     files
         .iter()
-        .find(|file| file.path == path)
+        .find(|file| file.path() == path)
         .unwrap_or_else(|| {
             let paths = files
                 .iter()
-                .map(|file| file.path.as_str())
+                .map(CompletedRenderedFile::path)
                 .collect::<Vec<_>>();
             panic!("expected rendered file '{path}', got {paths:?}")
         })
@@ -305,188 +301,212 @@ fn assert_well_formed_xml(xml: &str) -> String {
     root.expect("XML document has no root element")
 }
 
-struct TemplateTargetCoverage {
-    rendered_targets: Vec<&'static str>,
-    manifest_only_targets: Vec<&'static str>,
-    /// `target:path` of every declared support partial seen in the sweep.
-    support_partials: Vec<String>,
+#[derive(Debug, PartialEq, Eq)]
+enum TargetFixtureOutcome {
+    Rendered {
+        fixture: FixtureIdentity,
+    },
+    RefusedByCapability {
+        fixture: FixtureIdentity,
+        feature: &'static str,
+        code: String,
+        span: Span,
+    },
 }
 
-fn render_builtin_template_targets(fixtures: &Fixtures) -> TemplateTargetCoverage {
-    let mut coverage = TemplateTargetCoverage {
-        rendered_targets: Vec::new(),
-        manifest_only_targets: Vec::new(),
-        support_partials: Vec::new(),
-    };
-    for target in templates::builtin_targets() {
-        render_builtin_template_target(fixtures, target, &mut coverage);
+#[derive(Debug, PartialEq, Eq)]
+struct TemplateTargetCoverage {
+    original: TargetFixtureOutcome,
+    capability_compatible_render: Option<TargetFixtureOutcome>,
+}
+
+fn render_builtin_template_targets(
+    fixtures: &Fixtures,
+) -> std::collections::BTreeMap<String, TemplateTargetCoverage> {
+    let mut coverage = std::collections::BTreeMap::new();
+    let descriptors = builtin_target_descriptors().expect("check every built-in target bundle");
+    for descriptor in &descriptors {
+        let previous = coverage.insert(
+            descriptor.id.clone(),
+            render_builtin_template_target(fixtures, descriptor),
+        );
+        assert!(
+            previous.is_none(),
+            "built-in target {} was covered more than once",
+            descriptor.id
+        );
     }
     coverage
 }
 
 fn render_builtin_template_target(
     fixtures: &Fixtures,
-    target: &'static templates::BuiltinTarget,
-    coverage: &mut TemplateTargetCoverage,
-) {
-    let manifest = parse_target_manifest(target.manifest)
-        .unwrap_or_else(|err| panic!("target {} manifest should parse: {err}", target.name));
-    assert_target_manifest_metadata(target, &manifest);
-    if manifest.files.is_empty() {
-        assert_manifest_only_target(target, &manifest);
-        coverage.manifest_only_targets.push(target.name);
-        return;
+    descriptor: &BuiltinTargetDescriptor,
+) -> TemplateTargetCoverage {
+    assert_target_descriptor(descriptor);
+    let rejects_continuous = descriptor
+        .capabilities
+        .as_ref()
+        .is_some_and(|capabilities| capabilities.continuous_states == Some(false));
+
+    match render_target_descriptor_files(&fixtures.continuous, descriptor) {
+        Ok(()) if !rejects_continuous => TemplateTargetCoverage {
+            original: TargetFixtureOutcome::Rendered {
+                fixture: fixtures.continuous.identity,
+            },
+            capability_compatible_render: None,
+        },
+        Ok(()) => panic!(
+            "target {} rendered continuous fixture despite continuous_states = false",
+            descriptor.id
+        ),
+        Err(error) if rejects_continuous => {
+            let refusal = capability_refusal_outcome(&fixtures.continuous, descriptor, &error);
+            render_target_descriptor_files(&fixtures.discrete, descriptor).unwrap_or_else(|err| {
+                panic!(
+                    "target {} refused its capability-compatible {} fixture: {err:#}",
+                    descriptor.id, fixtures.discrete.model_name
+                )
+            });
+            TemplateTargetCoverage {
+                original: refusal,
+                capability_compatible_render: Some(TargetFixtureOutcome::Rendered {
+                    fixture: fixtures.discrete.identity,
+                }),
+            }
+        }
+        Err(error) => panic!(
+            "target {} unexpectedly refused the continuous fixture: {error:#}",
+            descriptor.id
+        ),
     }
-    let fixture = fixtures.for_manifest(&manifest);
-    assert_template_declarations(target, &manifest, &mut coverage.support_partials);
-    render_manifest_target_files(fixture, target, &manifest);
-    coverage.rendered_targets.push(target.name);
 }
 
-fn assert_target_manifest_metadata(target: &templates::BuiltinTarget, manifest: &TargetManifest) {
-    assert_eq!(manifest.name.as_deref(), Some(target.name));
-    assert!(
-        manifest.readiness_level.is_some(),
-        "target {} must declare readiness_level explicitly",
-        target.name
-    );
-    if target.name == "c-ode" {
-        assert_eq!(manifest.ir, TargetTemplateIr::Solve);
-    }
-}
-
-fn assert_manifest_only_target(target: &templates::BuiltinTarget, manifest: &TargetManifest) {
-    assert_eq!(manifest.readiness_level, Some(0));
-    assert!(
-        target.templates.is_empty(),
-        "manifest-only readiness-0 target {} must not contain unrendered template files",
-        target.name
-    );
-}
-
-/// Render every `[[files]]` entry through the real CLI path (capability
-/// validation, path templates, name-dispatched renderers) and assert each
-/// rendered file is non-empty.
-fn render_manifest_target_files(
+fn capability_refusal_outcome(
     fixture: &Fixture,
-    target: &'static templates::BuiltinTarget,
-    manifest: &TargetManifest,
-) {
-    let files = render_target_files(&fixture.compiled, fixture.model_name, target.name, None)
-        .unwrap_or_else(|err| {
-            panic!(
-                "target {} must render against the {} fixture: {err:#}",
-                target.name, fixture.model_name
-            )
-        });
-    assert_eq!(
-        files.len(),
-        manifest.files.len(),
-        "target {} rendered a different file count than its manifest declares",
-        target.name
-    );
-    for file in &files {
-        assert!(
-            !file.path.is_empty(),
-            "target {} rendered an empty output path",
-            target.name
+    descriptor: &BuiltinTargetDescriptor,
+    error: &anyhow::Error,
+) -> TargetFixtureOutcome {
+    let typed = error.downcast_ref::<CodegenError>().unwrap_or_else(|| {
+        panic!(
+            "target {} capability refusal lost CodegenError: {error:#}",
+            descriptor.id
+        )
+    });
+    let code = typed
+        .code()
+        .map(|code| code.to_string())
+        .expect("target capability refusal must retain its diagnostic code");
+    let CodegenError::UnsupportedTargetFeature {
+        target,
+        feature,
+        span: Some(span),
+        ..
+    } = typed
+    else {
+        panic!(
+            "target {} did not return an exact-span capability refusal: {error:#}",
+            descriptor.id
         );
-        assert!(
-            !file.content.trim().is_empty(),
-            "target {} rendered empty content for {}",
-            target.name,
+    };
+    assert_eq!(target, &descriptor.id);
+    assert_eq!(*feature, "continuous_states");
+    assert_eq!(code, "rumoca::codegen::EC009");
+    assert!(!span.is_dummy(), "EC009 must retain the state source span");
+    TargetFixtureOutcome::RefusedByCapability {
+        fixture: fixture.identity,
+        feature,
+        code,
+        span: *span,
+    }
+}
+
+fn assert_continuous_refusal_and_discrete_render(coverage: &TemplateTargetCoverage, target: &str) {
+    match &coverage.original {
+        TargetFixtureOutcome::RefusedByCapability {
+            fixture,
+            feature,
+            code,
+            span,
+        } => {
+            assert_eq!(*fixture, FixtureIdentity::ContinuousSmoke);
+            assert_eq!(*feature, "continuous_states");
+            assert_eq!(code, "rumoca::codegen::EC009");
+            assert!(
+                !span.is_dummy(),
+                "{target} refusal must retain a source span"
+            );
+        }
+        outcome => panic!("{target} must refuse the continuous fixture, got {outcome:?}"),
+    }
+    assert_eq!(
+        coverage.capability_compatible_render,
+        Some(TargetFixtureOutcome::Rendered {
+            fixture: FixtureIdentity::DiscreteSmoke,
+        }),
+        "{target} discrete render must stay distinct from its continuous refusal"
+    );
+}
+
+fn assert_continuous_render(coverage: &TemplateTargetCoverage, target: &str) {
+    assert_eq!(
+        coverage.original,
+        TargetFixtureOutcome::Rendered {
+            fixture: FixtureIdentity::ContinuousSmoke,
+        },
+        "{target} must render the original continuous fixture"
+    );
+    assert_eq!(
+        coverage.capability_compatible_render, None,
+        "{target} must not substitute a second fixture"
+    );
+}
+
+fn assert_target_descriptor(descriptor: &BuiltinTargetDescriptor) {
+    assert!(
+        !descriptor.file_plans.is_empty(),
+        "built-in target {} must declare at least one checked artifact",
+        descriptor.id
+    );
+    for file in &descriptor.file_plans {
+        assert_eq!(
+            file.semantic_view.semantic_context(),
+            file.semantic_context,
+            "target {} file {} escaped its checked IR owner",
+            descriptor.id,
             file.path
         );
     }
 }
 
-/// Every bundled template is declared exactly once, and the two declarations
-/// are disjoint: a `[[files]]` artifact renders one product file, a
-/// `[[partials]]` support partial renders none.
-///
-/// A support partial must NOT appear in `[[files]]` — that is what makes it a
-/// partial — so this is the check that replaces "every bundled template is a
-/// `[[files]]` entry". It is total: an undeclared template fails, a
-/// double-declared template fails, and a declared-but-unbundled template
-/// fails, for every target and every IR alike.
-fn assert_template_declarations(
-    target: &'static templates::BuiltinTarget,
-    manifest: &TargetManifest,
-    support_partials: &mut Vec<String>,
-) {
-    let artifacts = manifest
-        .files
-        .iter()
-        .map(|file| file.template.as_str())
-        .collect::<BTreeSet<_>>();
-    let partials = manifest
-        .partials
-        .iter()
-        .map(|partial| (partial.template.as_str(), partial.name.as_str()))
-        .collect::<BTreeMap<_, _>>();
-
-    for template in target.templates {
-        match template.role {
-            BuiltinTemplateRole::Artifact => assert!(
-                artifacts.contains(template.path),
-                "target {} bundles {} as an artifact, but no [[files]] entry renders it",
-                target.name,
-                template.path
-            ),
-            BuiltinTemplateRole::SupportPartial => {
-                let shared_name = partials.get(template.path).unwrap_or_else(|| {
-                    panic!(
-                        "target {} bundles support partial {} without a [[partials]] \
-                         declaration",
-                        target.name, template.path
-                    )
-                });
-                assert!(
-                    !artifacts.contains(template.path),
-                    "support partial {}/{} must not also be a [[files]] entry: it renders \
-                     no product file",
-                    target.name,
-                    template.path
-                );
-                assert_eq!(
-                    template.shared_name,
-                    Some(*shared_name),
-                    "support partial {}/{} must be published under its declared name",
-                    target.name,
-                    template.path
-                );
-                support_partials.push(format!("{}:{}", target.name, template.path));
-            }
-        }
-    }
-
-    for template in artifacts.iter().chain(partials.keys()) {
+/// Render every `[[files]]` entry through the real CLI path (capability
+/// validation, checked-product dispatch, and path templates) and assert each
+/// rendered file is non-empty.
+fn render_target_descriptor_files(
+    fixture: &Fixture,
+    descriptor: &BuiltinTargetDescriptor,
+) -> anyhow::Result<()> {
+    let files = render_target_files(&fixture.compiled, &descriptor.id, pinned_artifact_input())?;
+    assert_eq!(
+        files.len(),
+        descriptor.file_plans.len(),
+        "target {} rendered a different file count than its checked descriptor declares",
+        descriptor.id
+    );
+    for file in &files {
         assert!(
-            target
-                .templates
-                .iter()
-                .any(|bundled| &bundled.path == template),
-            "target {} declares {template} but does not bundle it",
-            target.name
+            !file.path().is_empty(),
+            "target {} rendered an empty output path",
+            descriptor.id
+        );
+        assert!(
+            !file.content().trim().is_empty(),
+            "target {} rendered empty content for {}",
+            descriptor.id,
+            file.path()
         );
     }
-    for file in &manifest.files {
-        let Some(shared_as) = file.shared_as.as_deref() else {
-            continue;
-        };
-        let bundled = target
-            .templates
-            .iter()
-            .find(|bundled| bundled.path == file.template)
-            .expect("declared artifact template must be bundled");
-        assert_eq!(
-            bundled.shared_name,
-            Some(shared_as),
-            "target {} must publish {} under its declared shared_as name",
-            target.name,
-            file.template
-        );
-    }
+    Ok(())
 }
 
 /// Copy a built-in target directory into a scratch directory so the external
@@ -504,154 +524,30 @@ fn copy_builtin_target_dir(target: &str, into: &std::path::Path) -> PathBuf {
     dest
 }
 
-/// A verbatim copy of a target directory keeps rendering: the copy's declared
-/// partial resolves to the identical built-in text, so the resolution order
-/// (shared names come from the built-in registry) changes nothing observable.
+/// A verbatim copy of a target directory keeps rendering with the same checked
+/// file plans and bytes.
 #[test]
-fn copied_target_directory_with_an_unmodified_partial_still_renders() {
-    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
+fn copied_target_directory_still_renders_identically() {
+    let fixture = compile_fixture(FixtureIdentity::ContinuousSmoke, SMOKE_MODEL, SMOKE_SOURCE);
     let scratch = tempfile::tempdir().expect("scratch dir");
-    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
+    let dir = copy_builtin_target_dir("dae-modelica", scratch.path());
 
     let files = render_target_files(
         &fixture.compiled,
-        fixture.model_name,
         dir.to_str().expect("utf-8 scratch path"),
-        None,
+        pinned_artifact_input(),
     )
     .expect("verbatim copy of a built-in target must render");
-    let builtin = render_target_files(
-        &fixture.compiled,
-        fixture.model_name,
-        "embedded-c-galec",
-        None,
-    )
-    .expect("built-in target must render");
+    let builtin = render_target_files(&fixture.compiled, "dae-modelica", pinned_artifact_input())
+        .expect("built-in target must render");
     assert_eq!(
         files
             .iter()
-            .map(|file| (file.path.clone(), file.content.clone()))
+            .map(|file| (file.path(), file.content()))
             .collect::<Vec<_>>(),
         builtin
             .iter()
-            .map(|file| (file.path.clone(), file.content.clone()))
+            .map(|file| (file.path(), file.content()))
             .collect::<Vec<_>>(),
-    );
-}
-
-/// The honest half of the shared-name resolution order: an external directory
-/// cannot register or override a shared name, so a copied target whose partial
-/// was edited must be REJECTED rather than silently rendered from the built-in
-/// text. This is the trap the loader closes.
-#[test]
-fn copied_target_directory_with_an_edited_partial_is_rejected() {
-    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
-    let scratch = tempfile::tempdir().expect("scratch dir");
-    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
-
-    let partial = dir.join("symbols.jinja");
-    let edited = fs::read_to_string(&partial)
-        .expect("read copied partial")
-        .replace(
-            "\"self\", \"rumoca_galec_sign\"",
-            "\"self\", \"gain\", \"rumoca_galec_sign\"",
-        );
-    fs::write(&partial, &edited).expect("write edited partial");
-
-    let error = render_target_files(
-        &fixture.compiled,
-        fixture.model_name,
-        dir.to_str().expect("utf-8 scratch path"),
-        None,
-    )
-    .expect_err("an edited external partial must not silently no-op");
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("galec-c-symbols.jinja") && message.contains("silently"),
-        "the rejection must name the shared partial and the silent no-op: {message}"
-    );
-}
-
-/// An external directory that invents a shared name is rejected at load, not
-/// deep inside a render as a missing template.
-#[test]
-fn external_target_directory_cannot_add_a_shared_name() {
-    let fixture = compile_fixture(DISCRETE_SMOKE_MODEL, DISCRETE_SMOKE_SOURCE);
-    let scratch = tempfile::tempdir().expect("scratch dir");
-    let dir = copy_builtin_target_dir("embedded-c-galec", scratch.path());
-
-    let manifest_path = dir.join("target.toml");
-    let manifest = fs::read_to_string(&manifest_path)
-        .expect("read copied manifest")
-        .replace(
-            "name = \"galec-c-symbols.jinja\"",
-            "name = \"my-own-symbols.jinja\"",
-        );
-    fs::write(&manifest_path, &manifest).expect("write copied manifest");
-
-    let error = render_target_files(
-        &fixture.compiled,
-        fixture.model_name,
-        dir.to_str().expect("utf-8 scratch path"),
-        None,
-    )
-    .expect_err("an invented shared name must be rejected at load");
-    let message = format!("{error:#}");
-    assert!(
-        message.contains("my-own-symbols.jinja") && message.contains("built-in"),
-        "the rejection must name the unknown shared name: {message}"
-    );
-}
-
-/// The shared render-environment namespace is global and flat: one name, one
-/// owning target manifest, resolved the same way for every target that
-/// imports it. Pinning the inventory here keeps a new shared name a reviewed
-/// decision rather than a side effect.
-#[test]
-fn shared_template_names_are_globally_unique_and_target_owned() {
-    let mut owners = BTreeMap::<&str, String>::new();
-    for shared in templates::shared_templates() {
-        let owner = format!("{}/{}", shared.target, shared.path);
-        assert!(
-            owners.insert(shared.name, owner.clone()).is_none(),
-            "shared render-environment name {} is declared more than once",
-            shared.name
-        );
-        let manifest = parse_target_manifest(
-            templates::builtin_target(shared.target)
-                .expect("shared template must name a built-in target")
-                .manifest,
-        )
-        .expect("owning target manifest should parse");
-        let declared = manifest
-            .partials
-            .iter()
-            .any(|partial| partial.template == shared.path && partial.name == shared.name)
-            || manifest.files.iter().any(|file| {
-                file.template == shared.path && file.shared_as.as_deref() == Some(shared.name)
-            });
-        assert!(
-            declared,
-            "{} must be declared by {owner}'s target.toml",
-            shared.name
-        );
-    }
-    assert_eq!(
-        owners
-            .iter()
-            .map(|(name, owner)| format!("{name} <- {owner}"))
-            .collect::<Vec<_>>(),
-        vec![
-            "algorithm-code-manifest.jinja <- galec/manifest.xml.jinja".to_string(),
-            "algorithm-code-source.jinja <- galec/model.alg.jinja".to_string(),
-            "galec-c-scratch.jinja <- embedded-c-galec/scratch.jinja".to_string(),
-            "galec-c-symbols.jinja <- embedded-c-galec/symbols.jinja".to_string(),
-            "galec-clang-format.jinja <- embedded-c-galec/clang_format.jinja".to_string(),
-            "galec-kernels.c.jinja <- embedded-c-galec/kernels.c.jinja".to_string(),
-            "galec-kernels.h.jinja <- embedded-c-galec/kernels.h.jinja".to_string(),
-            "galec-model.c.jinja <- embedded-c-galec/model.c.jinja".to_string(),
-            "galec-model.h.jinja <- embedded-c-galec/model.h.jinja".to_string(),
-        ],
-        "the shared render-environment inventory changed"
     );
 }

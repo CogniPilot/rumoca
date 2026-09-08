@@ -99,6 +99,32 @@ fn insert_resolved_test_class(
     tree.definitions.classes.insert(name.to_string(), class);
 }
 
+fn insert_user_real_collision(
+    tree: &mut ast::ClassTree,
+    package_def_id: DefId,
+    user_real_def_id: DefId,
+) {
+    let mut package = ast::ClassDef {
+        name: make_token("P"),
+        def_id: Some(package_def_id),
+        class_type: rumoca_core::ClassType::Package,
+        ..Default::default()
+    };
+    package.classes.insert(
+        "Real".to_string(),
+        ast::ClassDef {
+            name: make_token("Real"),
+            def_id: Some(user_real_def_id),
+            ..Default::default()
+        },
+    );
+    tree.definitions.classes.insert("P".to_string(), package);
+    for (name, def_id) in [("P", package_def_id), ("P.Real", user_real_def_id)] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
+}
+
 fn make_int_expr(value: &str) -> ast::Expression {
     ast::Expression::Terminal {
         terminal_type: ast::TerminalType::UnsignedInteger,
@@ -112,6 +138,18 @@ fn make_resolved_ref_expr(name: &str, def_id: DefId) -> ast::Expression {
     reference.set_root_def_id(Some(def_id));
     reference.set_target_def_id(Some(def_id));
     ast::Expression::ComponentReference(reference)
+}
+
+fn redeclared_type(name: &str, def_id: DefId) -> RedeclaredType {
+    RedeclaredType {
+        source_name: name.to_string(),
+        def_id,
+    }
+}
+
+fn register_test_predefined(tree: &mut ast::ClassTree, name: &str, def_id: DefId) {
+    tree.scope_tree
+        .add_predefined_member(rumoca_core::ComponentPath::from_flat_path(name), def_id);
 }
 
 #[test]
@@ -209,7 +247,7 @@ fn test_apply_extends_modifications_reports_final_override_at_extends_span() {
         modifications: vec![ast::ExtendModification {
             expr: ast::Expression::Modification {
                 target: make_component_ref("x"),
-                value: Arc::new(make_int_expr("2")),
+                value: Some(Arc::new(make_int_expr("2"))),
                 span: rumoca_core::Span::DUMMY,
             },
             each: false,
@@ -256,11 +294,60 @@ fn test_validate_redeclaration_replaceable() {
 }
 
 #[test]
+fn redeclare_replacement_requires_exact_resolved_identity() {
+    let expression = ast::Expression::Modification {
+        target: make_component_ref("x"),
+        value: Some(Arc::new(ast::Expression::ComponentReference(
+            make_component_ref("Replacement"),
+        ))),
+        span: test_span(),
+    };
+
+    assert!(extract_redeclared_type(&expression, test_span()).is_err());
+}
+
+#[test]
+fn exact_extends_identity_does_not_classify_user_real_as_predefined() {
+    let predefined_real = DefId::new(120);
+    let user_real = DefId::new(121);
+    let root_id = DefId::new(122);
+    let package_id = DefId::new(123);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", predefined_real);
+    insert_user_real_collision(&mut tree, package_id, user_real);
+    insert_resolved_test_class(
+        &mut tree,
+        "Root",
+        root_id,
+        ast::ClassDef {
+            name: make_token("Root"),
+            extends: vec![ast::Extend {
+                base_name: make_resolved_name("Real", user_real),
+                base_def_id: Some(user_real),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    let root = tree.get_class_by_def_id(root_id).expect("root identity");
+
+    assert_ne!(user_real, predefined_real);
+    assert_eq!(root.extends[0].base_def_id, Some(user_real));
+
+    assert_eq!(
+        predefined_extend_name(&tree, &root.extends[0]).expect("extends edge is exact"),
+        None
+    );
+    assert!(class_extends(&tree, root, "P.Real").expect("exact user type is reachable"));
+}
+
+#[test]
 fn test_validate_redeclaration_constant_rejected() {
     let tree = ast::ClassTree::default();
     let mut comp = make_component("x", true, false);
     comp.variability = rumoca_core::Variability::Constant(make_token("constant"));
-    let result = validate_redeclaration(&tree, &comp, "x", Some("Real"), Span::DUMMY);
+    let replacement = redeclared_type("Real", DefId::new(1));
+    let result = validate_redeclaration(&tree, &comp, "x", Some(&replacement), Span::DUMMY);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -310,14 +397,16 @@ fn test_classes_are_compatible_for_equivalent_declarations() {
 fn make_constrained_component(
     name: &str,
     type_name: &str,
-    constrainedby: Option<&str>,
+    type_def_id: DefId,
+    constrainedby: Option<(&str, DefId)>,
 ) -> ast::Component {
     ast::Component {
         name: name.to_string(),
-        type_name: make_name(type_name),
+        type_name: make_resolved_name(type_name, type_def_id),
+        type_def_id: Some(type_def_id),
         is_replaceable: true,
         is_final: false,
-        constrainedby: constrainedby.map(make_name),
+        constrainedby: constrainedby.map(|(name, def_id)| make_resolved_name(name, def_id)),
         ..ast::Component::empty_with_span(test_span())
     }
 }
@@ -325,18 +414,26 @@ fn make_constrained_component(
 #[test]
 fn test_constrainedby_exact_match() {
     // Redeclaring with exact same type as constraint should succeed
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", Some("Real"));
-    let result = validate_redeclaration(&tree, &comp, "x", Some("Real"), Span::DUMMY);
+    let real_id = DefId::new(90);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", real_id);
+    let comp = make_constrained_component("x", "Real", real_id, Some(("Real", real_id)));
+    let replacement = redeclared_type("Real", real_id);
+    let result = validate_redeclaration(&tree, &comp, "x", Some(&replacement), Span::DUMMY);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_constrainedby_violation_builtin() {
     // Redeclaring Real constrained component to Integer should fail
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", Some("Real"));
-    let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
+    let real_id = DefId::new(91);
+    let integer_id = DefId::new(92);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", real_id);
+    register_test_predefined(&mut tree, "Integer", integer_id);
+    let comp = make_constrained_component("x", "Real", real_id, Some(("Real", real_id)));
+    let replacement = redeclared_type("Integer", integer_id);
+    let result = validate_redeclaration(&tree, &comp, "x", Some(&replacement), Span::DUMMY);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("violates constrainedby"));
@@ -345,11 +442,250 @@ fn test_constrainedby_violation_builtin() {
 #[test]
 fn test_constrainedby_default_uses_original_type() {
     // When no constrainedby is specified, the original type is the constraint
-    let tree = ast::ClassTree::default();
-    let comp = make_constrained_component("x", "Real", None);
+    let real_id = DefId::new(93);
+    let integer_id = DefId::new(94);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", real_id);
+    register_test_predefined(&mut tree, "Integer", integer_id);
+    let comp = make_constrained_component("x", "Real", real_id, None);
     // Redeclaring to Integer should fail (Real is implicit constraint)
-    let result = validate_redeclaration(&tree, &comp, "x", Some("Integer"), Span::DUMMY);
+    let replacement = redeclared_type("Integer", integer_id);
+    let result = validate_redeclaration(&tree, &comp, "x", Some(&replacement), Span::DUMMY);
     assert!(result.is_err());
+}
+
+#[test]
+fn component_redeclare_distinguishes_user_real_from_predefined_real() {
+    let predefined_real = DefId::new(95);
+    let user_real = DefId::new(96);
+    let package_id = DefId::new(97);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", predefined_real);
+    insert_user_real_collision(&mut tree, package_id, user_real);
+    let component = make_constrained_component(
+        "x",
+        "Real",
+        predefined_real,
+        Some(("Real", predefined_real)),
+    );
+    let replacement = redeclared_type("P.Real", user_real);
+
+    assert_ne!(user_real, predefined_real);
+    assert_eq!(
+        component
+            .constrainedby
+            .as_ref()
+            .and_then(|constraint| constraint.def_id),
+        Some(predefined_real)
+    );
+    assert_eq!(
+        tree.def_map.get(&user_real).map(String::as_str),
+        Some("P.Real")
+    );
+
+    let error = validate_redeclaration(&tree, &component, "x", Some(&replacement), Span::DUMMY)
+        .expect_err("same-leaf user P.Real cannot satisfy the predefined Real constraint");
+
+    assert!(matches!(
+        *error,
+        InstantiateError::RedeclareConstraintViolation { .. }
+    ));
+}
+
+#[test]
+fn component_redeclare_accepts_exact_type_alias_extending_predefined_real() {
+    let predefined_real = DefId::new(110);
+    let voltage = DefId::new(111);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", predefined_real);
+    insert_resolved_test_class(
+        &mut tree,
+        "Voltage",
+        voltage,
+        ast::ClassDef {
+            name: make_token("Voltage"),
+            extends: vec![ast::Extend {
+                base_name: make_resolved_name("Real", predefined_real),
+                base_def_id: Some(predefined_real),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+    let component = make_constrained_component(
+        "v",
+        "Real",
+        predefined_real,
+        Some(("Real", predefined_real)),
+    );
+    let replacement = redeclared_type("Voltage", voltage);
+
+    validate_redeclaration(&tree, &component, "v", Some(&replacement), Span::DUMMY)
+        .expect("an exact type alias extending predefined Real satisfies the constraint");
+}
+
+#[test]
+fn component_redeclare_distinguishes_same_leaf_types_in_different_packages() {
+    let constraint_id = DefId::new(97);
+    let replacement_id = DefId::new(98);
+    let mut tree = ast::ClassTree::default();
+    for (qualified, def_id) in [("P.Medium", constraint_id), ("Q.Medium", replacement_id)] {
+        insert_resolved_test_class(
+            &mut tree,
+            qualified,
+            def_id,
+            ast::ClassDef {
+                name: make_token("Medium"),
+                ..Default::default()
+            },
+        );
+    }
+    let component = make_constrained_component(
+        "medium",
+        "P.Medium",
+        constraint_id,
+        Some(("P.Medium", constraint_id)),
+    );
+    let replacement = redeclared_type("Q.Medium", replacement_id);
+
+    assert!(
+        validate_redeclaration(&tree, &component, "medium", Some(&replacement), Span::DUMMY,)
+            .is_err()
+    );
+}
+
+#[test]
+fn component_redeclare_refuses_unresolved_explicit_constraint() {
+    let replacement_id = DefId::new(105);
+    let fallback_id = DefId::new(106);
+    let mut tree = ast::ClassTree::default();
+    for (name, def_id) in [("Replacement", replacement_id), ("Fallback", fallback_id)] {
+        insert_resolved_test_class(
+            &mut tree,
+            name,
+            def_id,
+            ast::ClassDef {
+                name: make_token(name),
+                ..Default::default()
+            },
+        );
+    }
+    let mut component = make_constrained_component(
+        "x",
+        "Fallback",
+        fallback_id,
+        Some(("MissingConstraint", fallback_id)),
+    );
+    component
+        .constrainedby
+        .as_mut()
+        .expect("explicit constraint")
+        .def_id = None;
+    let replacement = redeclared_type("Replacement", replacement_id);
+
+    assert!(
+        validate_redeclaration(&tree, &component, "x", Some(&replacement), Span::DUMMY,).is_err(),
+        "an unresolved explicit constraint must not fall back to the declaration type"
+    );
+}
+
+#[test]
+fn class_redeclare_distinguishes_user_real_from_predefined_real() {
+    let predefined_real = DefId::new(99);
+    let user_real = DefId::new(100);
+    let alias_id = DefId::new(101);
+    let mut tree = ast::ClassTree::default();
+    register_test_predefined(&mut tree, "Real", predefined_real);
+    insert_resolved_test_class(
+        &mut tree,
+        "P.Real",
+        user_real,
+        ast::ClassDef {
+            name: make_token("Real"),
+            ..Default::default()
+        },
+    );
+    let alias = ast::ClassDef {
+        name: make_token("T"),
+        def_id: Some(alias_id),
+        is_replaceable: true,
+        constrainedby: Some(make_resolved_name("Real", predefined_real)),
+        ..Default::default()
+    };
+    let replacement = redeclared_type("P.Real", user_real);
+
+    assert!(
+        validate_class_redeclaration(&tree, &alias, "T", Some(&replacement), Span::DUMMY,).is_err()
+    );
+}
+
+#[test]
+fn class_redeclare_distinguishes_same_leaf_types_in_different_packages() {
+    let constraint_id = DefId::new(102);
+    let replacement_id = DefId::new(103);
+    let alias_id = DefId::new(104);
+    let mut tree = ast::ClassTree::default();
+    for (qualified, def_id) in [("P.Medium", constraint_id), ("Q.Medium", replacement_id)] {
+        insert_resolved_test_class(
+            &mut tree,
+            qualified,
+            def_id,
+            ast::ClassDef {
+                name: make_token("Medium"),
+                ..Default::default()
+            },
+        );
+    }
+    let alias = ast::ClassDef {
+        name: make_token("Medium"),
+        def_id: Some(alias_id),
+        is_replaceable: true,
+        constrainedby: Some(make_resolved_name("P.Medium", constraint_id)),
+        ..Default::default()
+    };
+    let replacement = redeclared_type("Q.Medium", replacement_id);
+
+    assert!(
+        validate_class_redeclaration(&tree, &alias, "Medium", Some(&replacement), Span::DUMMY,)
+            .is_err()
+    );
+}
+
+#[test]
+fn class_redeclare_refuses_unresolved_explicit_constraint() {
+    let replacement_id = DefId::new(107);
+    let fallback_id = DefId::new(108);
+    let alias_id = DefId::new(109);
+    let mut tree = ast::ClassTree::default();
+    for (name, def_id) in [("Replacement", replacement_id), ("Fallback", fallback_id)] {
+        insert_resolved_test_class(
+            &mut tree,
+            name,
+            def_id,
+            ast::ClassDef {
+                name: make_token(name),
+                ..Default::default()
+            },
+        );
+    }
+    let alias = ast::ClassDef {
+        name: make_token("T"),
+        def_id: Some(alias_id),
+        is_replaceable: true,
+        constrainedby: Some(make_name("MissingConstraint")),
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("Fallback", fallback_id),
+            base_def_id: Some(fallback_id),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let replacement = redeclared_type("Replacement", replacement_id);
+
+    assert!(
+        validate_class_redeclaration(&tree, &alias, "T", Some(&replacement), Span::DUMMY,).is_err(),
+        "an unresolved explicit constraint must not fall back to the resolved extends edge"
+    );
 }
 
 #[test]
@@ -380,10 +716,16 @@ fn test_constrainedby_subtype_allowed() {
     insert_resolved_test_class(&mut tree, "DerivedConnector", derived_def_id, derived);
 
     // ast::Component constrained to BaseConnector
-    let comp = make_constrained_component("c", "BaseConnector", Some("BaseConnector"));
+    let comp = make_constrained_component(
+        "c",
+        "BaseConnector",
+        base_def_id,
+        Some(("BaseConnector", base_def_id)),
+    );
 
     // Redeclaring to DerivedConnector (a subtype) should succeed
-    let result = validate_redeclaration(&tree, &comp, "c", Some("DerivedConnector"), Span::DUMMY);
+    let replacement = redeclared_type("DerivedConnector", derived_def_id);
+    let result = validate_redeclaration(&tree, &comp, "c", Some(&replacement), Span::DUMMY);
     assert!(result.is_ok());
 }
 
@@ -395,11 +737,18 @@ fn test_class_redeclare_constraint_resolves_relative_to_declaration_scope() {
         .get_class_by_def_id(flow_characteristic_id)
         .expect("flowCharacteristic class should exist");
 
+    let quadratic_flow_id = tree
+        .get_def_id_by_name("Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow")
+        .expect("quadraticFlow identity");
+    let replacement = redeclared_type(
+        "Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow",
+        quadratic_flow_id,
+    );
     let result = validate_class_redeclaration(
         &tree,
         class,
         "flowCharacteristic",
-        Some("Modelica.Fluid.Machines.BaseClasses.PumpCharacteristics.quadraticFlow"),
+        Some(&replacement),
         Span::DUMMY,
     );
     assert!(result.is_ok());
@@ -577,27 +926,33 @@ fn test_constrainedby_non_subtype_rejected() {
     // Redeclaring to a non-subtype should fail
     let mut tree = ast::ClassTree::default();
 
-    let class_a = ast::ClassDef {
-        name: make_token("ClassA"),
-        ..Default::default()
-    };
-    let class_b = ast::ClassDef {
-        name: make_token("ClassB"),
-        ..Default::default()
-    };
-
-    tree.definitions
-        .classes
-        .insert("ClassA".to_string(), class_a);
-    tree.definitions
-        .classes
-        .insert("ClassB".to_string(), class_b);
+    let class_a_id = DefId::new(110);
+    let class_b_id = DefId::new(111);
+    insert_resolved_test_class(
+        &mut tree,
+        "ClassA",
+        class_a_id,
+        ast::ClassDef {
+            name: make_token("ClassA"),
+            ..Default::default()
+        },
+    );
+    insert_resolved_test_class(
+        &mut tree,
+        "ClassB",
+        class_b_id,
+        ast::ClassDef {
+            name: make_token("ClassB"),
+            ..Default::default()
+        },
+    );
 
     // ast::Component constrained to ClassA
-    let comp = make_constrained_component("c", "ClassA", Some("ClassA"));
+    let comp = make_constrained_component("c", "ClassA", class_a_id, Some(("ClassA", class_a_id)));
 
     // Redeclaring to ClassB (not a subtype) should fail
-    let result = validate_redeclaration(&tree, &comp, "c", Some("ClassB"), Span::DUMMY);
+    let replacement = redeclared_type("ClassB", class_b_id);
+    let result = validate_redeclaration(&tree, &comp, "c", Some(&replacement), Span::DUMMY);
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.to_string().contains("violates constrainedby"));
@@ -605,86 +960,37 @@ fn test_constrainedby_non_subtype_rejected() {
 
 #[test]
 fn test_class_redeclaration_default_constraint_uses_declared_base() {
-    let mut tree = ast::ClassTree::default();
-
-    let partial = ast::ClassDef {
-        name: make_token("PartialPhaseSystem"),
-        def_id: Some(DefId::new(1)),
-        ..Default::default()
-    };
-    let two_conductor = ast::ClassDef {
-        name: make_token("TwoConductor"),
-        def_id: Some(DefId::new(2)),
-        extends: vec![ast::Extend {
-            base_name: rumoca_ir_ast::Name {
-                name: vec![make_token("PartialPhaseSystem")],
-                def_id: Some(DefId::new(1)),
-            },
-            base_def_id: Some(DefId::new(1)),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let alias_phase_system = ast::ClassDef {
-        name: make_token("PhaseSystem"),
-        def_id: Some(DefId::new(3)),
-        is_replaceable: true,
-        extends: vec![ast::Extend {
-            base_name: rumoca_ir_ast::Name {
-                name: vec![make_token("PartialPhaseSystem")],
-                def_id: Some(DefId::new(1)),
-            },
-            base_def_id: Some(DefId::new(1)),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-
-    tree.definitions
-        .classes
-        .insert("PhaseSystems.PartialPhaseSystem".to_string(), partial);
-    tree.definitions
-        .classes
-        .insert("PhaseSystems.TwoConductor".to_string(), two_conductor);
-    tree.definitions.classes.insert(
-        "Interfaces.TerminalDC.PhaseSystem".to_string(),
-        alias_phase_system.clone(),
+    let tree = crate::test_support::resolved_tree(
+        "default_class_constraint.mo",
+        r"
+package PhaseSystems
+  partial model PartialPhaseSystem end PartialPhaseSystem;
+  model TwoConductor
+    extends PartialPhaseSystem;
+  end TwoConductor;
+end PhaseSystems;
+package Interfaces
+  replaceable model PhaseSystem = PhaseSystems.PartialPhaseSystem;
+end Interfaces;
+",
     );
-
-    tree.name_map
-        .insert("PhaseSystems.PartialPhaseSystem".to_string(), DefId::new(1));
-    tree.name_map
-        .insert("PhaseSystems.TwoConductor".to_string(), DefId::new(2));
-    tree.name_map.insert(
-        "Interfaces.TerminalDC.PhaseSystem".to_string(),
-        DefId::new(3),
-    );
-
-    tree.def_map
-        .insert(DefId::new(1), "PhaseSystems.PartialPhaseSystem".to_string());
-    tree.def_map
-        .insert(DefId::new(2), "PhaseSystems.TwoConductor".to_string());
-    tree.def_map.insert(
-        DefId::new(3),
-        "Interfaces.TerminalDC.PhaseSystem".to_string(),
-    );
-
+    let alias_phase_system = tree
+        .get_class_by_qualified_name("Interfaces.PhaseSystem")
+        .expect("resolved replaceable class alias");
+    let replacement_id = tree
+        .get_class_by_qualified_name("PhaseSystems.TwoConductor")
+        .and_then(|class| class.def_id)
+        .expect("resolved replacement identity");
+    let replacement = redeclared_type("PhaseSystems.TwoConductor", replacement_id);
     let result = validate_class_redeclaration(
         &tree,
-        &alias_phase_system,
+        alias_phase_system,
         "PhaseSystem",
-        Some("PhaseSystems.TwoConductor"),
+        Some(&replacement),
         Span::DUMMY,
     );
-    let err = result.expect_err("test setup should trigger subtype failure in unit fixture");
-    assert!(
-        err.to_string().contains("PhaseSystems.PartialPhaseSystem"),
-        "default constraint should come from declared base type"
-    );
-    assert!(
-        !err.to_string()
-            .contains("Interfaces.TerminalDC.PhaseSystem"),
-        "default constraint must not fall back to alias class name"
+    result.expect(
+        "replacement extending the exact declared base must satisfy the default constraint",
     );
 }
 
@@ -873,15 +1179,15 @@ fn test_nested_class_redeclaration_shadows_inherited_replaceable_merged_later() 
 #[test]
 fn test_is_type_subtype_exact_match() {
     let tree = ast::ClassTree::default();
-    assert!(is_type_subtype(&tree, "Real", "Real"));
-    assert!(is_type_subtype(&tree, "MyClass", "MyClass"));
+    assert!(is_type_subtype(&tree, "Real", "Real").expect("builtin subtype compares"));
+    assert!(is_type_subtype(&tree, "MyClass", "MyClass").is_err());
 }
 
 #[test]
 fn test_is_type_subtype_builtin_mismatch() {
     let tree = ast::ClassTree::default();
-    assert!(!is_type_subtype(&tree, "Real", "Integer"));
-    assert!(!is_type_subtype(&tree, "Boolean", "String"));
+    assert!(!is_type_subtype(&tree, "Real", "Integer").expect("builtin subtype compares"));
+    assert!(!is_type_subtype(&tree, "Boolean", "String").expect("builtin subtype compares"));
 }
 
 #[test]
@@ -925,174 +1231,85 @@ fn test_is_type_subtype_via_extends() {
     insert_resolved_test_class(&mut tree, "C", c_def_id, class_c);
 
     // B is subtype of A
-    assert!(is_type_subtype(&tree, "B", "A"));
+    assert!(is_type_subtype(&tree, "B", "A").expect("resolved subtype compares"));
     // C is subtype of B
-    assert!(is_type_subtype(&tree, "C", "B"));
+    assert!(is_type_subtype(&tree, "C", "B").expect("resolved subtype compares"));
     // C is subtype of A (transitive)
-    assert!(is_type_subtype(&tree, "C", "A"));
+    assert!(is_type_subtype(&tree, "C", "A").expect("resolved subtype compares"));
     // A is NOT subtype of B
-    assert!(!is_type_subtype(&tree, "A", "B"));
+    assert!(!is_type_subtype(&tree, "A", "B").expect("resolved subtype compares"));
 }
 
 #[test]
 fn test_class_extends_cached_matches_base_def_id_for_relative_extends_name() {
-    use rumoca_core::DefId;
-
-    let mut tree = ast::ClassTree::default();
-
-    let c_id = DefId::new(1);
-    let interfaces_id = DefId::new(2);
-    let d_id = DefId::new(3);
-    let pkg_id = DefId::new(4);
-    let root_id = DefId::new(5);
-
-    let class_c = ast::ClassDef {
-        def_id: Some(c_id),
-        name: make_token("C"),
-        ..Default::default()
-    };
-
-    let mut class_interfaces = ast::ClassDef {
-        def_id: Some(interfaces_id),
-        name: make_token("Interfaces"),
-        class_type: rumoca_core::ClassType::Package,
-        ..Default::default()
-    };
-    class_interfaces
-        .classes
-        .insert("C".to_string(), class_c.clone());
-
-    let class_d = ast::ClassDef {
-        def_id: Some(d_id),
-        name: make_token("D"),
-        extends: vec![ast::Extend {
-            // Relative name intentionally omits top-level prefix.
-            base_name: make_name("Pkg.Interfaces.C"),
-            base_def_id: Some(c_id),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-
-    let mut class_pkg = ast::ClassDef {
-        def_id: Some(pkg_id),
-        name: make_token("Pkg"),
-        class_type: rumoca_core::ClassType::Package,
-        ..Default::default()
-    };
-    class_pkg
-        .classes
-        .insert("Interfaces".to_string(), class_interfaces);
-    class_pkg.classes.insert("D".to_string(), class_d);
-
-    let mut class_root = ast::ClassDef {
-        def_id: Some(root_id),
-        name: make_token("Root"),
-        class_type: rumoca_core::ClassType::Package,
-        ..Default::default()
-    };
-    class_root.classes.insert("Pkg".to_string(), class_pkg);
-    tree.definitions
-        .classes
-        .insert("Root".to_string(), class_root);
-
-    tree.def_map
-        .insert(c_id, "Root.Pkg.Interfaces.C".to_string());
-    tree.def_map
-        .insert(interfaces_id, "Root.Pkg.Interfaces".to_string());
-    tree.def_map.insert(d_id, "Root.Pkg.D".to_string());
-    tree.def_map.insert(pkg_id, "Root.Pkg".to_string());
-    tree.def_map.insert(root_id, "Root".to_string());
-
-    tree.name_map
-        .insert("Root.Pkg.Interfaces.C".to_string(), c_id);
-    tree.name_map
-        .insert("Root.Pkg.Interfaces".to_string(), interfaces_id);
-    tree.name_map.insert("Root.Pkg.D".to_string(), d_id);
-    tree.name_map.insert("Root.Pkg".to_string(), pkg_id);
-    tree.name_map.insert("Root".to_string(), root_id);
+    let tree = crate::test_support::resolved_tree(
+        "relative_extends.mo",
+        r"
+package Root
+  package Pkg
+    package Interfaces
+      model C end C;
+    end Interfaces;
+    model D
+      extends Interfaces.C;
+    end D;
+  end Pkg;
+end Root;
+",
+    );
 
     let d_class = tree
         .get_class_by_qualified_name("Root.Pkg.D")
         .expect("Root.Pkg.D class should exist");
     let mut cache = SubtypeCache::default();
     assert!(
-        class_extends_cached(&tree, d_class, "Root.Pkg.Interfaces.C", &mut cache),
+        class_extends_cached(&tree, d_class, "Root.Pkg.Interfaces.C", &mut cache)
+            .expect("resolved extends graph compares"),
         "relative extends with base_def_id should match the resolved queried supertype"
     );
-    let mut cache = SubtypeCache::default();
-    assert!(
-        !class_extends_cached(&tree, d_class, "Interfaces.C", &mut cache),
-        "unresolved short supertype names must not match by suffix"
+    let cache_snapshot = cache.clone();
+    let error = class_extends_cached(&tree, d_class, "Interfaces.C", &mut cache)
+        .expect_err("unresolved short supertype names fail closed");
+    assert!(matches!(*error, InstantiateError::ModelNotFound(_)));
+    assert_eq!(
+        cache, cache_snapshot,
+        "failed lookup must not mutate any existing subtype-cache row"
     );
 }
 
 #[test]
 fn subtype_cache_distinguishes_same_named_classes_by_def_id() {
-    let mut tree = ast::ClassTree::default();
-    let base_id = DefId::new(1);
-    tree.name_map.insert("Base".to_string(), base_id);
-    tree.def_map.insert(base_id, "Base".to_string());
-
-    let extending_foo = ast::ClassDef {
-        def_id: Some(DefId::new(2)),
-        name: make_token("Foo"),
-        extends: vec![ast::Extend {
-            base_name: make_resolved_name("Base", base_id),
-            base_def_id: Some(base_id),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    let unrelated_foo = ast::ClassDef {
-        def_id: Some(DefId::new(3)),
-        name: make_token("Foo"),
-        ..Default::default()
-    };
+    let tree = crate::test_support::resolved_tree(
+        "subtype_cache_identity.mo",
+        r"
+model Base end Base;
+package P
+  model Foo
+    extends Base;
+  end Foo;
+end P;
+package Q
+  model Foo end Foo;
+end Q;
+",
+    );
+    let extending_foo = tree
+        .get_class_by_qualified_name("P.Foo")
+        .expect("resolved extending Foo");
+    let unrelated_foo = tree
+        .get_class_by_qualified_name("Q.Foo")
+        .expect("resolved unrelated Foo");
 
     let mut cache = SubtypeCache::default();
-    assert!(class_extends_cached(
-        &tree,
-        &extending_foo,
-        "Base",
-        &mut cache
-    ));
-    assert!(!class_extends_cached(
-        &tree,
-        &unrelated_foo,
-        "Base",
-        &mut cache
-    ));
+    assert!(
+        class_extends_cached(&tree, extending_foo, "Base", &mut cache)
+            .expect("resolved extends graph compares")
+    );
+    assert!(
+        !class_extends_cached(&tree, unrelated_foo, "Base", &mut cache)
+            .expect("resolved extends graph compares")
+    );
     assert_eq!(cache.len(), 2, "each resolved subtype owns one memo row");
-}
-
-#[test]
-fn test_type_names_match_requires_resolved_identity() {
-    use rumoca_core::DefId;
-
-    let mut tree = ast::ClassTree::default();
-    let def_id = DefId::new(1);
-    tree.name_map
-        .insert("Modelica.Units.SI.Resistance".to_string(), def_id);
-    tree.name_map.insert("SI.Resistance".to_string(), def_id);
-    tree.def_map
-        .insert(def_id, "Modelica.Units.SI.Resistance".to_string());
-
-    assert!(type_names_match(
-        &tree,
-        "Modelica.Units.SI.Resistance",
-        "SI.Resistance"
-    ));
-    assert!(!type_names_match(
-        &tree,
-        "Modelica.Units.SI.Resistance",
-        "Resistance"
-    ));
-    assert!(!type_names_match(
-        &tree,
-        "Modelica.Units.SI.Resistance",
-        "stance"
-    ));
 }
 
 #[test]
@@ -1100,9 +1317,9 @@ fn test_extract_modification_target_modification() {
     // Test extracting target from ast::Expression::Modification
     let expr = ast::Expression::Modification {
         target: make_component_ref("myVar"),
-        value: Arc::new(ast::Expression::Empty {
+        value: Some(Arc::new(ast::Expression::Empty {
             span: rumoca_core::Span::DUMMY,
-        }),
+        })),
         span: rumoca_core::Span::DUMMY,
     };
     assert_eq!(
@@ -1152,6 +1369,9 @@ fn test_is_effectively_primitive_transitive_enumeration_chain() {
     // connector DigitalInput = input DigitalSignal
 
     let mut tree = ast::ClassTree::new();
+    let logic_id = DefId::new(700);
+    let digital_signal_id = DefId::new(701);
+    let digital_input_id = DefId::new(702);
 
     // Logic enumeration
     let mut logic = ast::ClassDef {
@@ -1171,7 +1391,8 @@ fn test_is_effectively_primitive_transitive_enumeration_chain() {
     let digital_signal = ast::ClassDef {
         name: make_token("DigitalSignal"),
         extends: vec![ast::Extend {
-            base_name: make_name("Logic"),
+            base_name: make_resolved_name("Logic", logic_id),
+            base_def_id: Some(logic_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -1181,20 +1402,54 @@ fn test_is_effectively_primitive_transitive_enumeration_chain() {
     let digital_input = ast::ClassDef {
         name: make_token("DigitalInput"),
         extends: vec![ast::Extend {
-            base_name: make_name("DigitalSignal"),
+            base_name: make_resolved_name("DigitalSignal", digital_signal_id),
+            base_def_id: Some(digital_signal_id),
             ..Default::default()
         }],
         ..Default::default()
     };
 
-    tree.definitions.classes.insert("Logic".to_string(), logic);
-    tree.definitions
-        .classes
-        .insert("DigitalSignal".to_string(), digital_signal);
-    tree.definitions
-        .classes
-        .insert("DigitalInput".to_string(), digital_input.clone());
+    insert_resolved_test_class(&mut tree, "Logic", logic_id, logic);
+    insert_resolved_test_class(
+        &mut tree,
+        "DigitalSignal",
+        digital_signal_id,
+        digital_signal,
+    );
+    insert_resolved_test_class(&mut tree, "DigitalInput", digital_input_id, digital_input);
 
     // DigitalInput should be effectively primitive because it chains to Logic (enumeration)
-    assert!(is_effectively_primitive_transitive(&tree, &digital_input));
+    let digital_input = tree
+        .get_class_by_def_id(digital_input_id)
+        .expect("DigitalInput class exists");
+    assert!(
+        is_effectively_primitive_transitive(&tree, digital_input)
+            .expect("resolved primitive ancestry compares")
+    );
+}
+
+#[test]
+fn external_object_descendant_is_not_a_scalar_primitive() {
+    let mut tree = ast::ClassTree::new();
+    register_predefined_external_object(&mut tree);
+    let handle_id = DefId::new(703);
+    let handle = ast::ClassDef {
+        name: make_token("Handle"),
+        extends: vec![ast::Extend {
+            base_name: make_resolved_name("ExternalObject", DefId::new(u32::MAX)),
+            base_def_id: Some(DefId::new(u32::MAX)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    insert_resolved_test_class(&mut tree, "Handle", handle_id, handle);
+
+    let handle = tree
+        .get_class_by_def_id(handle_id)
+        .expect("Handle class exists");
+    assert!(
+        !is_effectively_primitive_transitive(&tree, handle)
+            .expect("resolved ExternalObject ancestry is classified"),
+        "ExternalObject owns lifecycle semantics and is never a scalar predefined type"
+    );
 }

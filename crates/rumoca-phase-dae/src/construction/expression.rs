@@ -18,6 +18,7 @@ pub(super) fn lower_expression<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let symbols = LoweringSymbols {
         coordinates,
+        record_staging: None,
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
@@ -36,6 +37,7 @@ pub(super) fn lower_expression<'dae>(
 #[derive(Clone, Copy)]
 pub(super) struct LoweringSymbols<'symbols, 'dae> {
     pub(super) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
+    pub(super) record_staging: Option<FunctionRecordStagingScope<'symbols, 'dae>>,
     pub(super) functions: &'symbols FunctionRegistry<'symbols, 'dae>,
     pub(super) shapes: &'symbols ShapeEnvironment,
     pub(super) function_body: Option<&'symbols dae::FunctionBody<'dae>>,
@@ -55,6 +57,7 @@ pub(super) fn lower_clocked_expression<'dae>(
         construction,
         LoweringSymbols {
             coordinates,
+            record_staging: None,
             functions,
             shapes: functions.shapes.model_values(),
             function_body: None,
@@ -117,6 +120,7 @@ pub(super) fn lower_scoped_model_algorithm_expression<'dae>(
         construction,
         LoweringSymbols {
             coordinates,
+            record_staging: None,
             functions,
             shapes: functions.shapes.model_values(),
             function_body: None,
@@ -132,6 +136,7 @@ pub(super) fn lower_scoped_model_algorithm_expression<'dae>(
 pub(super) fn lower_function_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    record_staging: Option<FunctionRecordStagingScope<'_, 'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
     shapes: &ShapeEnvironment,
     body: &dae::FunctionBody<'dae>,
@@ -139,7 +144,10 @@ pub(super) fn lower_function_expression<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     lower_function_expression_scoped(
         construction,
-        coordinates,
+        FunctionExpressionValues {
+            coordinates,
+            record_staging,
+        },
         functions,
         shapes,
         body,
@@ -148,9 +156,15 @@ pub(super) fn lower_function_expression<'dae>(
     )
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FunctionExpressionValues<'symbols, 'dae> {
+    pub(super) coordinates: &'symbols HashMap<VarName, Coordinate<'dae>>,
+    pub(super) record_staging: Option<FunctionRecordStagingScope<'symbols, 'dae>>,
+}
+
 pub(super) fn lower_function_expression_scoped<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    values: FunctionExpressionValues<'_, 'dae>,
     functions: &FunctionRegistry<'_, 'dae>,
     shapes: &ShapeEnvironment,
     body: &dae::FunctionBody<'dae>,
@@ -160,7 +174,8 @@ pub(super) fn lower_function_expression_scoped<'dae>(
     lower_expression_scoped(
         construction,
         LoweringSymbols {
-            coordinates,
+            coordinates: values.coordinates,
+            record_staging: values.record_staging,
             functions,
             shapes,
             function_body: Some(body),
@@ -250,7 +265,13 @@ pub(super) fn lower_expression_scoped<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let span = expression
         .span()
-        .expect("analysis proves expression provenance");
+        .ok_or(dae::DaeConstructionError::MissingProvenance {
+            origin: generated_root.map_or(
+                dae::DaeProvenanceOrigin::Source,
+                dae::DaeProvenanceOrigin::Generated,
+            ),
+            attempted_span: None,
+        })?;
     let lowered =
         lower_expression_node(construction, symbols, binders, expression, generated_root)?;
     lower_expression_event(construction, symbols, binders, expression, span, lowered)?;
@@ -406,7 +427,13 @@ fn lower_expression_node<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let span = expression
         .span()
-        .expect("analysis proves expression provenance");
+        .ok_or(dae::DaeConstructionError::MissingProvenance {
+            origin: generated_root.map_or(
+                dae::DaeProvenanceOrigin::Source,
+                dae::DaeProvenanceOrigin::Generated,
+            ),
+            attempted_span: None,
+        })?;
     let provenance = expression_provenance(span, generated_root)?;
     match expression {
         Expression::Binary { op, lhs, rhs, .. } => {
@@ -418,8 +445,8 @@ fn lower_expression_node<'dae>(
         Expression::VarRef {
             name, subscripts, ..
         } => lower_variable_reference(construction, symbols, binders, name, subscripts, provenance),
-        Expression::BuiltinCall { function, args, .. } => {
-            lower_builtin_expression(construction, symbols, binders, *function, args, provenance)
+        Expression::BuiltinCall { .. } => {
+            lower_builtin_expression(construction, symbols, binders, expression, provenance)
         }
         Expression::Literal { value, .. } => construction
             .expressions(|expressions| expressions.at(provenance).literal(lower_literal(value))),
@@ -499,14 +526,24 @@ fn lower_builtin_expression<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    function: BuiltinFunction,
-    arguments: &[Expression],
+    expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let Expression::BuiltinCall {
+        function,
+        args: arguments,
+        ..
+    } = expression
+    else {
+        return Err(dae::DaeConstructionError::InvalidExpressionForm {
+            span: provenance.span(),
+        });
+    };
+    let function = *function;
     let span = provenance.span();
     match function {
         BuiltinFunction::Der => {
-            lower_derivative(construction, symbols, binders, arguments, provenance, span)
+            lower_derivative(construction, symbols, binders, expression, provenance)
         }
         BuiltinFunction::Pre => {
             lower_pre(construction, symbols, binders, arguments, provenance, span)
@@ -555,6 +592,7 @@ fn lower_builtin_expression<'dae>(
             binders,
             function,
             arguments,
+            expression,
             provenance,
         ),
         BuiltinFunction::Delay => {
@@ -680,35 +718,41 @@ fn lower_clock_transfer<'dae>(
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
     function: BuiltinFunction,
     arguments: &[Expression],
+    expression: &Expression,
     provenance: dae::DaeProvenance,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (source, kind) = clock_transfer_input(
-        function,
-        arguments,
-        symbols.functions.constants,
-        provenance.span(),
-    )?;
-    let source_plan = expression_clock_plan(source, symbols.functions).ok_or(
-        dae::DaeConstructionError::MissingClockDomainOwner {
-            span: provenance.span(),
-        },
-    )?;
-    let source_clock = symbols
+    let span = provenance.span();
+    let source = clock_transfer_source(function, arguments, span)?;
+    let plan = symbols
         .functions
-        .clocks
-        .id(&source_plan, provenance.span())?;
-    let target_clock =
-        symbols
-            .owner_clock
-            .ok_or(dae::DaeConstructionError::MissingClockDomainOwner {
-                span: provenance.span(),
-            })?;
+        .clock_transfer_plans
+        .plan(expression)
+        .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span })?;
+    if !clock_transfer_kind_matches(function, plan.kind) {
+        return Err(dae::DaeConstructionError::InvalidClockedOperand {
+            operator: function.name(),
+            span,
+        });
+    }
+    let source_clock = symbols.functions.clocks.id(&plan.source, span)?;
+    let target_clock = symbols.functions.clocks.id(&plan.target, span)?;
+    let expression_owner = symbols
+        .owner_clock
+        .ok_or(dae::DaeConstructionError::MissingClockDomainOwner { span })?;
+    if expression_owner != target_clock {
+        return Err(
+            dae::DaeConstructionError::ConflictingExpressionClockDomains {
+                established: plan.target.constructor_span,
+                attempted: span,
+            },
+        );
+    }
     let mut source_symbols = symbols;
     source_symbols.owner_clock = Some(source_clock);
     let source = lower_expression_scoped(construction, source_symbols, binders, source, None)?;
     construction.expressions(|expressions| {
         expressions.at(provenance).clock_transfer(
-            kind,
+            plan.kind,
             source,
             source_clock.into(),
             target_clock.into(),
@@ -716,128 +760,41 @@ fn lower_clock_transfer<'dae>(
     })
 }
 
-fn clock_transfer_input<'expression>(
+fn clock_transfer_source(
     function: BuiltinFunction,
-    arguments: &'expression [Expression],
-    constants: &EvalContext,
+    arguments: &[Expression],
     span: Span,
-) -> Result<(&'expression Expression, dae::ClockTransferKind), dae::DaeConstructionError> {
-    let invalid = || dae::DaeConstructionError::InvalidClockedOperand {
-        operator: function.name(),
-        span,
-    };
-    let integer = |expression: &Expression| {
-        eval_expr(expression, constants)
-            .ok()
-            .and_then(|value| value.as_integer())
-            .ok_or_else(invalid)
-    };
+) -> Result<&Expression, dae::DaeConstructionError> {
     match (function, arguments) {
-        (BuiltinFunction::SubSample, [source, factor]) => Ok((
-            source,
-            dae::ClockTransferKind::SubSample {
-                factor: integer(factor)?,
-            },
-        )),
-        (BuiltinFunction::SuperSample, [source, factor]) => Ok((
-            source,
-            dae::ClockTransferKind::SuperSample {
-                factor: integer(factor)?,
-            },
-        )),
-        (BuiltinFunction::ShiftSample, [source, counter]) => Ok((
-            source,
-            dae::ClockTransferKind::ShiftSample {
-                counter: integer(counter)?,
-                resolution: 1,
-            },
-        )),
-        (BuiltinFunction::ShiftSample, [source, counter, resolution]) => Ok((
-            source,
-            dae::ClockTransferKind::ShiftSample {
-                counter: integer(counter)?,
-                resolution: integer(resolution)?,
-            },
-        )),
-        (BuiltinFunction::BackSample, [source, counter]) => Ok((
-            source,
-            dae::ClockTransferKind::BackSample {
-                counter: integer(counter)?,
-                resolution: 1,
-            },
-        )),
-        (BuiltinFunction::BackSample, [source, counter, resolution]) => Ok((
-            source,
-            dae::ClockTransferKind::BackSample {
-                counter: integer(counter)?,
-                resolution: integer(resolution)?,
-            },
-        )),
-        _ => Err(invalid()),
-    }
-}
-
-fn expression_clock_plan(
-    expression: &Expression,
-    functions: &FunctionRegistry<'_, '_>,
-) -> Option<ClockPlan> {
-    if let Expression::BuiltinCall {
-        function,
-        args,
-        span,
-        ..
-    } = expression
-        && matches!(
-            function,
-            BuiltinFunction::SubSample
-                | BuiltinFunction::SuperSample
-                | BuiltinFunction::ShiftSample
-                | BuiltinFunction::BackSample
-        )
-    {
-        let (source, kind) =
-            clock_transfer_input(*function, args, functions.constants, *span).ok()?;
-        let source = expression_clock_plan(source, functions)?;
-        let lattice = match kind {
-            dae::ClockTransferKind::SubSample { factor } => source.lattice.sub_sample(factor),
-            dae::ClockTransferKind::SuperSample { factor } => source.lattice.super_sample(factor),
-            dae::ClockTransferKind::ShiftSample {
-                counter,
-                resolution,
-            } => source.lattice.shift_sample(counter, resolution),
-            dae::ClockTransferKind::BackSample {
-                counter,
-                resolution,
-            } => source.lattice.back_sample(counter, resolution),
+        (BuiltinFunction::SubSample | BuiltinFunction::SuperSample, [source, _])
+        | (BuiltinFunction::ShiftSample | BuiltinFunction::BackSample, [source, _])
+        | (BuiltinFunction::ShiftSample | BuiltinFunction::BackSample, [source, _, _]) => {
+            Ok(source)
         }
-        .ok()?;
-        return Some(ClockPlan {
-            lattice,
-            constructor_span: *span,
-        });
+        _ => Err(dae::DaeConstructionError::InvalidClockedOperand {
+            operator: function.name(),
+            span,
+        }),
     }
-    let mut owner = None;
-    collect_expression_clock_plan(expression, functions, &mut owner);
-    owner
 }
 
-fn collect_expression_clock_plan(
-    expression: &Expression,
-    functions: &FunctionRegistry<'_, '_>,
-    owner: &mut Option<ClockPlan>,
-) {
-    if let Expression::VarRef { name, .. } = expression
-        && let Some(variable) = functions.flat.variables.get(name.var_name())
-        && let Some(plan) = functions
-            .clocked_coordinate_owners
-            .get(&variable.instance_id)
-    {
-        debug_assert!(owner.is_none_or(|existing| existing.lattice == plan.lattice));
-        owner.get_or_insert(*plan);
-    }
-    for child in expression_children(expression) {
-        collect_expression_clock_plan(child, functions, owner);
-    }
+fn clock_transfer_kind_matches(function: BuiltinFunction, kind: dae::ClockTransferKind) -> bool {
+    matches!(
+        (function, kind),
+        (
+            BuiltinFunction::SubSample,
+            dae::ClockTransferKind::SubSample { .. }
+        ) | (
+            BuiltinFunction::SuperSample,
+            dae::ClockTransferKind::SuperSample { .. }
+        ) | (
+            BuiltinFunction::ShiftSample,
+            dae::ClockTransferKind::ShiftSample { .. }
+        ) | (
+            BuiltinFunction::BackSample,
+            dae::ClockTransferKind::BackSample { .. }
+        )
+    )
 }
 
 /// Lower MLS §8.6 `terminal()` to the unique typed terminal coordinate.
@@ -1101,6 +1058,25 @@ fn lower_function_record_projection<'dae>(
         return Ok(None);
     }
     let root_name = VarName::new(&root.ident);
+    let staging_identity = FunctionRecordFieldIdentity {
+        target: root.def_id,
+        field: fields[0].def_id,
+    };
+    if let Some(staged) = symbols
+        .record_staging
+        .and_then(|staging| staging.get(staging_identity))
+    {
+        let base = match staged {
+            FunctionRecordStagedValue::Local(value) => {
+                let body = symbols
+                    .function_body
+                    .expect("record staging locals belong to a function body");
+                construction.functions(|functions| functions.read(body, value, provenance))?
+            }
+            FunctionRecordStagedValue::Expression(value) => value,
+        };
+        return project_record_fields(construction, base, name, &fields[1..], provenance).map(Some);
+    }
     // A scoped value environment shadows the enclosing owner for exactly the
     // values it has already defined, so the projection must root in it first.
     if let Some(value) = symbols
@@ -1109,15 +1085,6 @@ fn lower_function_record_projection<'dae>(
         .copied()
     {
         return project_record_fields(construction, value, name, fields, provenance).map(Some);
-    }
-    if let Some(Coordinate::FunctionValue(staged)) =
-        symbols.coordinates.get(name.var_name()).copied()
-    {
-        let body = symbols
-            .function_body
-            .expect("staged record projection lowers inside a function body");
-        let value = construction.functions(|functions| functions.read(body, staged, provenance))?;
-        return Ok(Some(value));
     }
     let Some(coordinate) = symbols.coordinates.get(&root_name).copied() else {
         return Ok(None);
@@ -1293,39 +1260,6 @@ fn lower_builtin_call<'dae>(
     construction.expressions(|expressions| expressions.at(provenance).builtin(builtin, arguments))
 }
 
-fn lower_function_call<'dae>(
-    construction: &mut dae::DaeConstruction<'dae>,
-    symbols: LoweringSymbols<'_, 'dae>,
-    binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    name: &rumoca_core::Reference,
-    arguments: &[Expression],
-    is_constructor: bool,
-    provenance: dae::DaeProvenance,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    if is_constructor && name.as_str().starts_with("__rumoca_named_arg__.") {
-        let [value] = arguments else {
-            return Err(dae::DaeConstructionError::InvalidArity {
-                expected: 1,
-                found: arguments.len(),
-                span: provenance.span(),
-            });
-        };
-        return lower_expression_scoped(construction, symbols, binders, value, None);
-    }
-    if is_constructor {
-        return lower_record_constructor(
-            construction,
-            symbols,
-            binders,
-            name,
-            arguments,
-            provenance,
-        );
-    }
-    let call = lower_call_operands(construction, symbols, binders, name, arguments, provenance)?;
-    call.result(construction, 0, provenance)
-}
-
 /// The callee and lowered *arguments* one call site shares across its results.
 ///
 /// MLS §11.2.1.1 evaluates a multi-result call once and then assigns each
@@ -1439,7 +1373,7 @@ pub(super) fn lower_call_operands<'dae>(
         call_shapes,
         provenance.span(),
     )?;
-    let key = &call.specialization;
+    let key = &call.specialization.key;
     let arguments = arguments
         .iter()
         .enumerate()
@@ -1495,9 +1429,9 @@ fn lower_vectorized_call_operands<'dae>(
 ) -> Result<VectorizedCallOperands<'dae>, dae::DaeConstructionError> {
     let domain_shape = prefix
         .iter()
-        .enumerate()
-        .map(|(ordinal, extent)| StructuredIndexBinder {
-            id: ordinal,
+        .zip(0u32..)
+        .map(|(extent, ordinal)| StructuredIndexBinder {
+            id: rumoca_core::StructuredIndexBinderId::new(ordinal),
             display_name: format!("vectorized_call_{ordinal}"),
             lower: 1,
             upper: i64::from(*extent),
@@ -1593,9 +1527,14 @@ fn lower_empty_function_argument<'dae>(
             .span()
             .expect("analysis proves empty argument provenance"),
     )?;
-    let scalar = symbols.functions.primitive_parameter_scalar(key, ordinal);
-    let value_type = construction
-        .types(|types| types.derived(dae::ValueType::array(scalar, shape.to_vec()), provenance))?;
+    let parameter = &symbols.functions.flat.functions[&key.function].inputs[ordinal];
+    let value_type = function_value_type(
+        construction,
+        symbols.functions.flat,
+        parameter,
+        &shape.to_vec(),
+        &mut HashSet::new(),
+    )?;
     construction.expressions(|expressions| expressions.at(provenance).empty_array(value_type))
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "rumoca-bind-wasm-galec"
-description = "Lazy GALEC / eFMI codegen addon for the rumoca WASM package — compiles Modelica to GALEC (.alg) and the GALEC-derived embedded C, loaded on demand only when a GALEC target is selected"
+description = "Lazy eFMI Algorithm Code addon for the rumoca WASM package — projects Modelica to checked GALEC and renders .alg/AC metadata only"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +11,11 @@ homepage.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+anyhow = { workspace = true }
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-phase-codegen = { workspace = true }
 rumoca-phase-galec = { workspace = true }
-rumoca-phase-parse-galec = { workspace = true }
 rumoca-tool-lsp-galec = { workspace = true }
 lsp-types = { workspace = true }
 wasm-bindgen = { workspace = true }

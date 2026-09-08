@@ -19,11 +19,11 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use super::{
-    CompilationResult, CompileArgs, CompilePhase, EarlyIrArtifact, SimCommandArgs, SimOptions,
-    SimulationRequestSummary, SimulationRunMetrics, TemplateIr,
-    compile_str_dae_with_inferred_model, compile_str_early_ir_with_inferred_model,
-    compile_str_with_inferred_model, direct_sim_t_end, render_early_ir_as_modelica_flat,
-    render_ir_as_modelica, simulate_solver_or_auto, simulation_failure_error, target_manifest,
+    CompilationResult, CompileArgs, EarlyIrArtifact, EmitStage, SimCommandArgs, SimOptions,
+    SimulationRequestSummary, SimulationRunMetrics, compile_str_dae_with_inferred_model,
+    compile_str_early_ir_with_inferred_model, compile_str_with_inferred_model, direct_sim_t_end,
+    refuse_flat_modelica_text_export, render_ir_as_modelica, simulate_solver_or_auto,
+    simulation_failure_error, target_manifest,
 };
 
 /// Compile `source` (inline Modelica text) according to `args` and return the
@@ -33,7 +33,8 @@ use super::{
 /// - default (no `--emit`/`--target`/`--inspect`): the DAE as JSON (the same
 ///   `result.dae` serialization the Python `compile_source` returns).
 /// - `--emit <stage>-json`: the IR JSON for that stage, parsed into a `Value`.
-/// - `--emit <stage>-mo`: `{"format":"modelica","source": "<rendered>"}`.
+/// - `--emit dae-mo`: `{"format":"modelica","source": "<rendered>"}`.
+/// - `--emit flat-mo`: the stable `unsupported-feature:flat-modelica-text-export` error.
 /// - `--target <NAME>`: `{"target":"<NAME>","files":[{"path":..,"content":..}, ...]}`.
 /// - `--inspect ...`: returned as an error (the inspect codepaths only print).
 pub fn compile_to_value(args: &CompileArgs, source: &str) -> Result<Value> {
@@ -45,37 +46,39 @@ pub fn compile_to_value(args: &CompileArgs, source: &str) -> Result<Value> {
         );
     }
 
+    if matches!(args.emit, Some(super::EmitTarget::FlatMo)) {
+        return refuse_flat_modelica_text_export();
+    }
+
     let file_name = source_file_name(&args.input.model_file);
     let options = &args.input.options;
 
     // Early IR (--emit ast-*/flat-*) doesn't lower to the DAE.
     if let Some(emit) = args.emit
-        && matches!(emit.phase(), CompilePhase::Ast | CompilePhase::Flat)
+        && matches!(emit.phase(), EmitStage::Ast | EmitStage::Flat)
     {
-        let (artifact, model) = compile_str_early_ir_with_inferred_model(
+        let (artifact, _model) = compile_str_early_ir_with_inferred_model(
             source,
             file_name,
             options,
             emit.phase(),
             args.diagnostics.verbose,
         )?;
-        return early_ir_value(&artifact, &model, emit.is_json());
+        return early_ir_value(&artifact, emit.is_json());
     }
 
-    let (result, model) =
+    let result =
         compile_str_with_inferred_model(source, file_name, options, args.diagnostics.verbose)?;
 
     match (args.emit, args.target.as_deref()) {
-        (Some(emit), _) => ir_value(&result, &model, emit.phase(), emit.is_json()),
-        (None, Some(target)) => {
-            target_value(&result, &model, target, args.phase.map(TemplateIr::from))
-        }
-        (None, None) => serde_json::to_value(&result.dae)
+        (Some(emit), _) => ir_value(&result, emit.phase(), emit.is_json()),
+        (None, Some(target)) => target_value(&result, target),
+        (None, None) => serde_json::to_value(result.dae())
             .map_err(|e| anyhow::anyhow!("serialize DAE to JSON: {e}")),
     }
 }
 
-fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result<Value> {
+fn early_ir_value(artifact: &EarlyIrArtifact, json: bool) -> Result<Value> {
     if json {
         return match artifact {
             EarlyIrArtifact::Ast(resolved) => serde_json::to_value(resolved.inner())
@@ -84,39 +87,29 @@ fn early_ir_value(artifact: &EarlyIrArtifact, model: &str, json: bool) -> Result
                 .map_err(|e| anyhow::anyhow!("serialize flat model to JSON: {e}")),
         };
     }
-    let rendered = match artifact {
+    match artifact {
         EarlyIrArtifact::Ast(_) => {
             bail!("the AST has no lossless Modelica export; use `--emit ast-json`")
         }
-        EarlyIrArtifact::Flat(flat) => render_early_ir_as_modelica_flat(flat, model)?,
-    };
-    Ok(json!({ "format": "modelica", "source": rendered }))
+        EarlyIrArtifact::Flat(_) => refuse_flat_modelica_text_export(),
+    }
 }
 
-fn ir_value(
-    result: &CompilationResult,
-    model: &str,
-    phase: CompilePhase,
-    json: bool,
-) -> Result<Value> {
+fn ir_value(result: &CompilationResult, phase: EmitStage, json: bool) -> Result<Value> {
     if json {
         let rendered = result.to_ir_json(phase.into())?;
         return serde_json::from_str(&rendered).map_err(|e| anyhow::anyhow!("parse IR JSON: {e}"));
     }
-    let rendered = render_ir_as_modelica(result, model, phase)?;
+    let rendered = render_ir_as_modelica(result, phase)?;
     Ok(json!({ "format": "modelica", "source": rendered }))
 }
 
-fn target_value(
-    result: &CompilationResult,
-    model: &str,
-    target: &str,
-    phase: Option<TemplateIr>,
-) -> Result<Value> {
-    let files = target_manifest::render_target_files(result, model, target, phase)?;
+fn target_value(result: &CompilationResult, target: &str) -> Result<Value> {
+    let artifact_input = super::artifact_session_input::fresh()?;
+    let files = target_manifest::render_target_files(result, target, artifact_input)?;
     let files_json = files
         .into_iter()
-        .map(|file| json!({ "path": file.path, "content": file.content }))
+        .map(|file| json!({ "path": file.path(), "content": file.content() }))
         .collect::<Vec<_>>();
     Ok(json!({ "target": target, "files": files_json }))
 }
@@ -171,12 +164,10 @@ pub fn simulate_to_value(args: &SimCommandArgs, source: &str) -> Result<Value> {
     }
 
     let sim_started = Instant::now();
-    // Dispatch on `opts.solver_mode` (auto / bdf / rk-like) exactly like the
-    // binary's direct-sim path. The plain `simulate_dae` alias resolves to the
-    // diffsol/BDF-only entry, so it would silently ignore `--solver`. The
-    // failure is rendered by the shared `[CODE] message` helper so the typed
-    // error's SPEC_0008 code survives the conversion to `anyhow`.
-    let sim = rumoca_sim::simulate_dae_with_diagnostics(result.dae.as_ref(), &opts)
+    // The canonical DAE entry dispatches on `opts.solver_mode` (auto / bdf /
+    // rk-like). The failure is rendered by the shared `[CODE] message` helper
+    // so the typed error's SPEC_0008 code survives conversion to `anyhow`.
+    let sim = rumoca_sim::simulate_dae(result.dae.as_ref(), &opts)
         .map_err(|error| simulation_failure_error(&error))?;
 
     let request = SimulationRequestSummary {

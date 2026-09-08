@@ -66,9 +66,23 @@ model C
   B b(redeclare package Medium = Medium);
 end C;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree.definitions.classes.get("C").expect("C should exist");
     let component = model.components.get("b").expect("b should exist");
+    let [
+        rumoca_ir_ast::Expression::Modification {
+            target: source_slot,
+            ..
+        },
+    ] = component.source_modifications.as_slice()
+    else {
+        panic!("expected one source-ordered redeclare modifier");
+    };
+    let source_slot_def_id = source_slot
+        .target_def_id()
+        .expect("redeclare LHS should identify the exact receiver slot");
+    assert_eq!(tree.def_map[&source_slot_def_id], "B.Medium");
+
     let modification = component
         .modifications
         .get("Medium")
@@ -86,6 +100,45 @@ end C;
 
     assert_eq!(resolved, "C.Medium");
     assert_eq!(target.to_string(), "Medium");
+    assert_ne!(source_slot_def_id, def_id);
+}
+
+#[test]
+fn component_redeclare_lhs_uses_the_exact_inherited_receiver_slot() {
+    let source = r#"
+package Interfaces
+  partial package PartialMedium
+  end PartialMedium;
+end Interfaces;
+
+package Replacement
+  extends Interfaces.PartialMedium;
+end Replacement;
+
+model Base
+  replaceable package Medium = Interfaces.PartialMedium;
+end Base;
+
+model Receiver
+  extends Base;
+end Receiver;
+
+model Top
+  package Medium = Replacement;
+  Receiver receiver(redeclare package Medium = Medium);
+end Top;
+"#;
+    let tree = resolve_tree_source(source).inner().clone();
+    let component = &tree.definitions.classes["Top"].components["receiver"];
+    let [rumoca_ir_ast::Expression::Modification { target, .. }] =
+        component.source_modifications.as_slice()
+    else {
+        panic!("expected one source-ordered redeclare modifier");
+    };
+    let target_def_id = target
+        .target_def_id()
+        .expect("Resolve must issue the inherited receiver slot identity");
+    assert_eq!(tree.def_map[&target_def_id], "Base.Medium");
 }
 
 #[test]
@@ -101,7 +154,7 @@ partial model Template
 end Template;
 "#;
 
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let template = tree
         .definitions
         .classes
@@ -206,7 +259,7 @@ model Derived
   Real p = Medium.saturationPressure(1.0);
 end Derived;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -314,7 +367,7 @@ fn redeclare_container_identity_comes_from_the_scope_tree_not_rendered_text() {
     );
     assert_eq!(
         resolver.lookup_class_member(unrelated, "State"),
-        Some(unrelated_state),
+        rumoca_ir_ast::LookupOutcome::Found(unrelated_state),
         "fixture check: the textually named container inherits a different `State`"
     );
     assert_eq!(
@@ -325,8 +378,10 @@ fn redeclare_container_identity_comes_from_the_scope_tree_not_rendered_text() {
     assert_eq!(
         resolver
             .enclosing_class_def_id(nested)
-            .and_then(|owner| resolver.lookup_class_member(owner, "State")),
-        Some(base_state),
+            .map_or(rumoca_ir_ast::LookupOutcome::Absent, |owner| {
+                resolver.lookup_class_member(owner, "State")
+            }),
+        rumoca_ir_ast::LookupOutcome::Found(base_state),
         "the redeclared slot must come from the structural container's base chain"
     );
 }

@@ -22,18 +22,16 @@ amendment adding the missing lifecycle edges (PROPOSED in the required-status
 and README tables; PROPOSED → DRAFT → vote → ACCEPTED) is planned for the same
 voted series; until it passes, this file stays DRAFT.
 
-On acceptance this amends SPEC_0035 Summary and §§1/3/4 — precision-neutral
-`Real`, codegen-time width selection, and record scalarization are superseded by
-§3–§4. SPEC_0035 is NOT retired by this series: SEV-017 does not admit Complex,
-so SPEC_0035 remains the DRAFT owner of the Complex rules until its own slice
-lands, and retiring it now would orphan an unspecified family.
+On acceptance this amends SPEC_0035 §§1/3/4: DAE and GALEC remain
+width-neutral; required target selection precedes executable Solve construction.
+§§3–4 supersede profile-neutral executable bodies and renderer width choice.
+SEV-017 does not admit Complex, so SPEC_0035 remains its DRAFT owner.
 This also amends DRAFT SPEC_0036 and SPEC_0043 §9 with its rounding rows
 (profile-bound identity and the §6 split). Target-facing parents are amended by
 [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) §1.
 
-**Series arithmetic.** 17 before this proposal series; +0045, +0046, and +0048
-= 20, the SPEC_0000 §3 cap. SPEC_0035 is not retired here, so a later slice MUST
-free a slot before another ACCEPTED or DRAFT spec is added.
+**Series arithmetic.** The 0045/0046/0048 series reaches the SPEC_0000 cap of
+20; another ACCEPTED/DRAFT spec requires freeing a slot.
 
 Governed: the Solve grammar, type algebra, root-bound profiles, executable
 identity, term sharing, and wire replay. Target refinement, prepared products,
@@ -53,24 +51,16 @@ ownership ([SPEC_0046](SPEC_0046_SCHEDULED_DISCRETE_OWNERSHIP.md)).
 | SEV-006 | `ScalarOp`/`LinearOp` is a frozen superseded adapter awaiting deletion; a scalar projection is a borrowed final view, never stored. | `rumoca-ir-solve` | Views are not owners |
 | SEV-007 | Consumers cover the vocabulary exhaustively or reject a declared capability. An UNCLASSIFIED variant — one absent from SPEC_0049 §1 — fails every matcher and total dispatcher until classified. **Stage test:** a new stage needs a different CONTRACT, not a granularity. | Solve consumers | Granularity duplicates proofs |
 
-**Why:** CasADi is the cited warning, precisely. `SX` builds one scalar node per
-element while `MX` admits matrix-valued primitives, so `3*x+y` on a 2-vector is
-eight `SX` operations and two `MX` operations; the two cannot mix in one
-expression, and the only sanctioned boundary is an `MX` call to an `SX` function,
-with `expand()` trading speed for memory. The split had a REAL profitability
-basis, and Rumoca keeps that benefit through one grammar's compact
-shape-polymorphic ops, `FunctionRelationId`/`InvokeOp` boundaries, borrowed final
-views (SEV-006), and backend-private SSA (TRP-003). Rejected is only the rest:
-two incompatible semantic graph universes, identity-changing graph-kind
-conversion, and duplicated evaluator, AD, and wire proofs. Function boundaries
-are the useful lesson; graph-kind identity is the mistake.
+The CasADi SX/MX comparison and rejected-alternative rationale are catalogued in
+[SPEC_0047 §3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#3-rejected-alternatives).
+SEV-005–SEV-007 bind that rationale; it adds no independent rule.
 
 ### 3. Semantic Type Algebra
 
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-010 | A value type owns semantic KIND, NOMINAL IDENTITY, SHAPE, REPRESENTABLE DOMAIN, and ENCODING — and nothing else. Arithmetic, sensitivity, execution, and target-layout policy are EXCLUDED. Any representation-changing COERCION of a value is FORBIDDEN: a representation change requires an explicit typed `Convert`. Every other operation declares its exact typed result. | Solve types | Policy doubles lattices |
-| SEV-011 | The root profile declares defaults and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per occurrence of an operation whose [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) contract class is applicable — a `NotApplicable` leaf such as a load, store, Boolean control, call, effect, or terminator resolves NONE, and no backend may invent one. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
+| SEV-011 | The root profile declares required source specializations and admissible contracts; construction resolves EXACTLY ONE arithmetic contract per occurrence of an operation whose [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) contract class is applicable — a `NotApplicable` leaf such as a load, store, Boolean control, call, effect, or terminator resolves NONE, and no backend may invent one. Neither the value type nor a backend chooses. The resolved contract is part of the term and op key; profile admissibility is part of `RootDigest`. | construction | One authority per occurrence |
 | SEV-012 | The admitted families are exactly [§4.1](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); records are FINITE ACYCLIC by value, recursing only via an explicit reference or opaque capability. | Solve types | Not all float |
 | SEV-018 | `SolveScalarType::Integer { repr: IntRepr }` owns signedness, width, and encoding ONLY. Interval and range facts are SEPARATE root-bound facts on SSA definitions and slots, derived from source declarations and construction. An explicit narrowing conversion changes `repr`; ordinary range refinement does NOT change value-type equality. | Solve types | Representation is not a range |
 | SEV-013 | Solve keeps nominal record, field, and shape identity; every layout fact in [§4.2](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs) is a prepared mapping, injective on the proven domain and round-tripping across FMI/eFMI. | Solve types | Layout is not identity |
@@ -84,7 +74,7 @@ are the useful lesson; graph-kind identity is the mistake.
 | ID | Rule | Owner/Where | Brief Justification |
 |----|------|-------------|---------------------|
 | SEV-020 | The bound profile is ROOT-IDENTITY-BEARING; folding is profile-bound, and interning ACROSS profiles is forbidden. | construction | Protects constant identity |
-| SEV-021 | A profile admits a SET of types plus ONE declared default specialization for source `Real` and ONE for source `Integer`, neither context-dependent; one format per program is a special case. | checked profile | Stable reasoning |
+| SEV-021 | A profile admits a SET of types plus ONE required `source_real` specialization and ONE required `source_integer` specialization, neither context-dependent nor supplied by `Default`; one format per program is a special case. | checked profile | Stable reasoning |
 | SEV-022 | Registers are exactly typed; mixed-format programs are normal, each cross-format edge a licensed conversion. | construction | Mixing is normal |
 | SEV-023 | The profile binds BEFORE construction of the executable root; changing widths later is FORBIDDEN. | pipeline order | Rounding differs |
 | SEV-024 | For each APPLICABLE contract class, construction resolves exactly one contract over [§4.3](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs): `ExactIntegral` resolves domain and status only, `FloatingPrimitive` the rounding fields, `FloatingTranscendental` those plus its accuracy contract, and `Reduction` those plus accumulator and order. | construction | Width alone does not close arithmetic |
@@ -121,6 +111,7 @@ Three semantics exist, MUST NOT be conflated, and carry distinct profile IDs:
 | SEV-047 | The occurrence sidecar keeps [§4.6](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); structured generated uses own ONE provenance, role, and domain family, never one per coordinate. | construction | Two lines, two spans |
 | SEV-048 | Pure predicate and argument STORAGE may be shared by any operation, calls and assertions included; execution owners stay distinct and never merge. | construction | Sharing is not merging |
 | SEV-049 | Execution reuse discharges every obligation in [§4.7](SPEC_0047_SOLVE_EXECUTABLE_VOCABULARY_CATALOG.md#4-bound-field-catalogs); large tensor results key one compact owner, never coordinates. | preparation | Reuse is scheduling |
+| SEV-050 | Before execution, a runnable session seals one exhaustive per-operation plan over every reachable executable owner. Each owner has exactly one closed `Interpreter` or `Native(compiled obligation)` arm; heterogeneous arms are lawful, but a Native obligation compiles before the session becomes runnable and any Native call failure is a typed terminal failure for that operation. Execution MUST NOT discover, demote, retry, switch an arm after warm-up, or continue from state a failed Native call may have mutated. An owner whose dynamic specialization is learned today only by first executing the interpreter stays `Interpreter` for the entire session; only moving that learning into preparation can later authorize its `Native` arm. | runtime preparation and execution | One operation has one backend semantics |
 
 ### 7. Wire, Replay, And Schema
 

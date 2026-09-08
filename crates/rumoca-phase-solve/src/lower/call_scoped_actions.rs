@@ -95,7 +95,6 @@ pub(super) fn append_collected_actions<'dae>(
     view: rumoca_ir_dae::DaeView<'dae>,
     layout: &LoweredLayout<'dae>,
     clocks: &LoweredClocks<'dae>,
-    discrete: &solve::DiscreteSolveSystem,
     events: &mut solve::SolveEventPartition,
     transactions: Vec<crate::lower::typed_functions::model_events::PendingEventTransaction<'dae>>,
 ) -> Result<Vec<solve::EventTransactionProgram>, LowerError> {
@@ -104,15 +103,7 @@ pub(super) fn append_collected_actions<'dae>(
         HashMap::new()
     } else {
         append_roots(events, &collected)?;
-        let action_indices = append_actions(view, layout, events, clocks, collected)?;
-        events.root_relation_refresh_roles = solve::derive_root_relation_refresh_roles(
-            &events.root_conditions,
-            &discrete.runtime_assignment_rhs,
-            &discrete.runtime_assignment_targets,
-            layout.solve_layout.state_scalar_count,
-            layout.solve_layout.solver_scalar_count(),
-        )?;
-        action_indices
+        append_actions(view, layout, events, clocks, collected)?
     };
     transactions
         .into_iter()

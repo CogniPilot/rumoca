@@ -1,29 +1,619 @@
-use super::host_runtime::{
-    rumoca_host_table_bounds_min, rumoca_host_table_lookup, rumoca_host_table_lookup_slope,
-    rumoca_host_table_next_event,
-};
 use super::*;
 
-/// Build a [`RowInputs`] bundle for the interpreter from the loose `y` / `p` /
-/// `t` / `seed` / `external_tables` inputs the tests pass.
-fn row_inputs<'a>(
-    y: &'a [f64],
-    p: &'a [f64],
-    t: f64,
-    seed: Option<&'a [f64]>,
-    external_tables: &'a [ExternalTableData],
-) -> RowInputs<'a> {
-    RowInputs {
-        y,
-        p,
-        t,
-        seed,
-        external_tables,
+macro_rules! assert_not_implemented {
+    ($ty:ty, $bound:path) => {
+        const _: fn() = || {
+            trait AmbiguousIfImplemented<Marker> {
+                fn probe() {}
+            }
+
+            impl<T: ?Sized> AmbiguousIfImplemented<()> for T {}
+
+            struct Implements;
+            impl<T: ?Sized + $bound> AmbiguousIfImplemented<Implements> for T {}
+
+            let _ = <$ty as AmbiguousIfImplemented<_>>::probe;
+        };
+    };
+}
+
+macro_rules! assert_admitted_carrier_traits {
+    ($ty:ty) => {
+        assert_not_implemented!($ty, ::core::default::Default);
+        assert_not_implemented!($ty, ::core::marker::Copy);
+        assert_not_implemented!($ty, ::core::ops::DerefMut);
+        assert_not_implemented!($ty, ::core::convert::AsMut<[AdmittedLinearOp]>);
+        assert_not_implemented!($ty, ::core::borrow::BorrowMut<[AdmittedLinearOp]>);
+        assert_not_implemented!($ty, ::core::convert::From<Vec<LinearOp>>);
+        assert_not_implemented!($ty, ::core::convert::TryFrom<Vec<LinearOp>>);
+    };
+}
+
+assert_admitted_carrier_traits!(AdmittedLinearOp);
+assert_admitted_carrier_traits!(AdmittedProgram);
+assert_admitted_carrier_traits!(AdmittedFunctionFoldProgram);
+assert_admitted_carrier_traits!(AdmittedFunctionConditionalArmProgram);
+assert_admitted_carrier_traits!(AdmittedFunctionConditionalProgram);
+assert_admitted_carrier_traits!(AdmittedExecutionProgram);
+assert_admitted_carrier_traits!(AdmittedAssignmentProgram<'static>);
+
+#[test]
+fn compiler_rejects_generic_admitted_carrier_construction_and_mutation_traits() {
+    // The compile-time assertions above are the evidence. This named test
+    // keeps the trait gate visible in filtered Cranelift test output.
+}
+
+fn fixture_scalar_program_block(
+    rows: Vec<Vec<LinearOp>>,
+) -> Result<ScalarProgramBlock, CompileError> {
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("exec_cranelift_emit_fixture.mo"),
+        0,
+        1,
+    );
+    ScalarProgramBlock::with_source_span(
+        rows,
+        span.require_provenance("Cranelift emission fixture")
+            .map_err(|error| CompileError::Input(error.to_string()))?,
+    )
+    .map_err(|error| CompileError::Input(error.to_string()))
+}
+
+fn compile_residual_rows(rows: &[Vec<LinearOp>]) -> Result<CompiledResidualRows, CompileError> {
+    let block = fixture_scalar_program_block(rows.to_vec())?;
+    super::compile_residual_rows(&block)
+}
+
+fn compile_jacobian_rows(rows: &[Vec<LinearOp>]) -> Result<CompiledJacobianRows, CompileError> {
+    let block = fixture_scalar_program_block(rows.to_vec())?;
+    super::compile_jacobian_rows(&block)
+}
+
+fn plan_fixture_row(row: &[LinearOp]) -> Result<RowPlan, CompileError> {
+    let block = fixture_scalar_program_block(vec![row.to_vec()])?;
+    let execution = block.sole_execution_program().ok_or_else(|| {
+        CompileError::Backend("checked row fixture did not retain one program".to_string())
+    })?;
+    plan_scalar_program(execution)
+}
+
+fn admitted_fixture_row(row: Vec<LinearOp>) -> Result<AdmittedExecutionProgram, CompileError> {
+    let block = fixture_scalar_program_block(vec![row])?;
+    let execution = block.sole_execution_program().ok_or_else(|| {
+        CompileError::Backend("checked row fixture did not retain one program".to_string())
+    })?;
+    AdmittedExecutionProgram::issue(execution, RowKind::Residual)
+}
+
+fn fixture_pure_call_table() -> rumoca_ir_solve::SolvePureCallTable {
+    use rumoca_ir_solve::{
+        SolveArithmeticProfile, SolveIntegerDomain, SolvePureCallIdentity, SolvePureCallOutput,
+        SolveRealFormat, SolveScalarType, SolveValue, SolveValueType,
+    };
+
+    let span = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("exec_cranelift_admission_pure_call.mo"),
+        0,
+        1,
+    );
+    let profile = SolveArithmeticProfile::construct(
+        SolveRealFormat::Binary64,
+        SolveIntegerDomain::FULL,
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
+    );
+    let real = SolveValueType::scalar(SolveScalarType::real(profile));
+    rumoca_ir_solve::SolvePureCallTable::construct(profile, |table| {
+        table.add_owner(
+            SolvePureCallIdentity::issued(std::num::NonZeroU64::new(1).unwrap()),
+            Vec::new(),
+            vec![SolvePureCallOutput::result(real)],
+            span,
+            |program, _inputs, outputs| {
+                let value = program.constant(SolveValue::real(profile, 1.0), span)?;
+                program.store(outputs[0], value, span)
+            },
+        )?;
+        Ok(())
+    })
+    .expect("construct pure-call admission fixture")
+}
+
+fn fixture_pure_call_site() -> rumoca_ir_solve::SolvePureCallSite {
+    let table = fixture_pure_call_table();
+    table
+        .owners()
+        .first()
+        .expect("pure-call owner was issued")
+        .call_site()
+}
+
+fn fixture_pure_call_operation(dst_start: u32) -> LinearOp {
+    LinearOp::PureCall {
+        dst_start,
+        input_starts: Box::new([]),
+        site: fixture_pure_call_site(),
     }
 }
 
+fn fixture_directional_pure_call_operation(dst_start: u32) -> LinearOp {
+    let site = fixture_pure_call_site();
+    LinearOp::PureCallDirectional {
+        dst_start,
+        input_starts: Box::new([]),
+        site: site
+            .directional()
+            .expect("fixture owner has a derived directional site")
+            .clone(),
+    }
+}
+
+fn fixture_pure_call_fold() -> rumoca_ir_solve::FunctionFoldProgram {
+    rumoca_ir_solve::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(0),
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        vec![
+            fixture_pure_call_operation(0),
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect("construct fold with nested pure call")
+}
+
+fn fixture_plain_fold() -> rumoca_ir_solve::FunctionFoldProgram {
+    rumoca_ir_solve::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(0),
+                display_name: "i".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        vec![
+            LinearOp::LoadFoldCarried { dst: 0, index: 0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect("construct pure-call-free fold")
+}
+
 #[test]
-fn plan_row_uses_simple_runtime_plan_for_plain_residual_rows() {
+fn native_admission_issues_a_closed_program() {
+    let admitted = AdmittedProgram::issue(
+        &[
+            LinearOp::Const { dst: 0, value: 2.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+        RowKind::Residual,
+    )
+    .expect("admit supported native row");
+
+    assert!(matches!(
+        admitted.operations.as_ref(),
+        [AdmittedLinearOp::Const { dst: 0, value }, AdmittedLinearOp::StoreOutput { src: 0 }]
+            if *value == 2.0
+    ));
+}
+
+#[test]
+fn interpreter_support_accepts_plain_admitted_row() {
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 2.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit plain row");
+
+    assert!(admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_accepts_pure_call_free_function_fold() {
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::FunctionFold {
+            dst_start: 1,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(fixture_plain_fold()),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ])
+    .expect("admit pure-call-free fold row");
+
+    assert!(admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_accepts_pure_call_free_guarded_fold() {
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::GuardedFunctionFold {
+            dst_start: 2,
+            initial_start: 0,
+            capture_start: 0,
+            activation: 1,
+            program: std::sync::Arc::new(fixture_plain_fold()),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ])
+    .expect("admit pure-call-free guarded-fold row");
+
+    assert!(admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_accepts_pure_call_free_store_output_fold() {
+    let outer = rumoca_ir_solve::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(1),
+                display_name: "outer".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        vec![LinearOp::StoreOutputFunctionFold {
+            initial: Box::new([rumoca_ir_solve::FoldInitialSource::ParentCarried {
+                base: 0,
+                count: 1,
+            }]),
+            capture_start: 0,
+            program: std::sync::Arc::new(fixture_plain_fold()),
+            result_base: 0,
+            count: 1,
+            condition: None,
+            nested_when_true: false,
+        }],
+    )
+    .expect("construct pure-call-free store-output fold");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::FunctionFold {
+            dst_start: 1,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(outer),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ])
+    .expect("admit pure-call-free store-output fold row");
+
+    assert!(admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_accepts_pure_call_free_conditional_regions() {
+    let region = || {
+        vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]
+    };
+    let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(region(), region())],
+        region(),
+    )
+    .expect("construct pure-call-free conditional");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::FunctionConditional {
+            dst_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(conditional),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit pure-call-free conditional row");
+
+    assert!(admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_survives_compiled_residual_and_jacobian_transfer() {
+    let residual = compile_residual_rows(&[vec![
+        LinearOp::Const { dst: 0, value: 1.0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]])
+    .expect("compile interpreter-supported residual row");
+    let jacobian = compile_jacobian_rows(&[vec![
+        LinearOp::LoadSeed { dst: 0, index: 0 },
+        LinearOp::StoreOutput { src: 0 },
+    ]])
+    .expect("compile interpreter-supported Jacobian row");
+
+    assert!(residual.rows[0].interpreter_supported);
+    assert!(jacobian.rows[0].interpreter_supported);
+}
+
+#[test]
+fn interpreter_refusal_survives_compiled_residual_and_jacobian_transfer() {
+    let table = fixture_pure_call_table();
+    let site = table
+        .owners()
+        .first()
+        .expect("pure-call owner was issued")
+        .call_site();
+    let compiled_calls = std::rc::Rc::new(
+        typed_program::CompiledPureCallTable::compile(&table)
+            .expect("compile pure-call transfer fixture"),
+    );
+    let residual_block = fixture_scalar_program_block(vec![vec![
+        LinearOp::PureCall {
+            dst_start: 0,
+            input_starts: Box::new([]),
+            site: site.clone(),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ]])
+    .expect("construct pure-call residual row");
+    let directional = site
+        .directional()
+        .expect("fixture owner has a derived directional site")
+        .clone();
+    let jacobian_block = fixture_scalar_program_block(vec![vec![
+        LinearOp::PureCallDirectional {
+            dst_start: 0,
+            input_starts: Box::new([]),
+            site: directional,
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ]])
+    .expect("construct directional pure-call Jacobian row");
+    let residual = compile_residual_rows_with_pure_calls(&residual_block, compiled_calls.clone())
+        .expect("compile interpreter-refused residual row");
+    let jacobian = compile_jacobian_rows_with_pure_calls(&jacobian_block, compiled_calls)
+        .expect("compile interpreter-refused Jacobian row");
+
+    assert!(!residual.rows[0].interpreter_supported);
+    assert!(!jacobian.rows[0].interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_top_level_pure_call() {
+    let admitted = admitted_fixture_row(vec![
+        fixture_pure_call_operation(0),
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit native pure-call row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_top_level_directional_pure_call() {
+    let admitted = admitted_fixture_row(vec![
+        fixture_directional_pure_call_operation(0),
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit native directional pure-call row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_fold_update() {
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::FunctionFold {
+            dst_start: 1,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(fixture_pure_call_fold()),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ])
+    .expect("admit native fold row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_guarded_fold_update() {
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::Const { dst: 1, value: 1.0 },
+        LinearOp::GuardedFunctionFold {
+            dst_start: 2,
+            initial_start: 0,
+            capture_start: 0,
+            activation: 1,
+            program: std::sync::Arc::new(fixture_pure_call_fold()),
+        },
+        LinearOp::StoreOutput { src: 2 },
+    ])
+    .expect("admit native guarded-fold row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_store_output_fold() {
+    let outer = rumoca_ir_solve::FunctionFoldProgram::checked(
+        rumoca_core::StructuredIndexDomain {
+            binders: vec![rumoca_core::StructuredIndexBinder {
+                id: rumoca_core::StructuredIndexBinderId::new(1),
+                display_name: "outer".to_string(),
+                lower: 1,
+                upper: 1,
+                step: 1,
+            }],
+        },
+        1,
+        0,
+        vec![LinearOp::StoreOutputFunctionFold {
+            initial: Box::new([rumoca_ir_solve::FoldInitialSource::ParentCarried {
+                base: 0,
+                count: 1,
+            }]),
+            capture_start: 0,
+            program: std::sync::Arc::new(fixture_pure_call_fold()),
+            result_base: 0,
+            count: 1,
+            condition: None,
+            nested_when_true: false,
+        }],
+    )
+    .expect("construct outer fold with store-output nested pure call");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::Const { dst: 0, value: 0.0 },
+        LinearOp::FunctionFold {
+            dst_start: 1,
+            initial_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(outer),
+        },
+        LinearOp::StoreOutput { src: 1 },
+    ])
+    .expect("admit native store-output fold row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_conditional_arm() {
+    let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                fixture_pure_call_operation(0),
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )],
+        vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect("construct conditional with pure-call arm");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::FunctionConditional {
+            dst_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(conditional),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit native conditional row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_conditional_guard() {
+    let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(
+            vec![
+                fixture_pure_call_operation(0),
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )],
+        vec![
+            LinearOp::Const { dst: 0, value: 0.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect("construct conditional with pure-call guard");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::FunctionConditional {
+            dst_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(conditional),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit native conditional row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn interpreter_support_refuses_pure_call_in_conditional_fallback() {
+    let conditional = rumoca_ir_solve::FunctionConditionalProgram::checked(
+        0,
+        [1],
+        [(
+            vec![
+                LinearOp::Const { dst: 0, value: 1.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                LinearOp::Const { dst: 0, value: 0.0 },
+                LinearOp::StoreOutput { src: 0 },
+            ],
+        )],
+        vec![
+            fixture_pure_call_operation(0),
+            LinearOp::StoreOutput { src: 0 },
+        ],
+    )
+    .expect("construct conditional with pure-call fallback");
+    let admitted = admitted_fixture_row(vec![
+        LinearOp::FunctionConditional {
+            dst_start: 0,
+            capture_start: 0,
+            program: std::sync::Arc::new(conditional),
+        },
+        LinearOp::StoreOutput { src: 0 },
+    ])
+    .expect("admit native conditional row");
+
+    assert!(!admitted.interpreter_supported);
+}
+
+#[test]
+fn retired_table_host_nan_sentinel_is_unconstructible() {
+    let linear_op = include_str!("../../../rumoca-ir-solve/src/linear_op.rs");
+    let emitter = include_str!("../emit.rs");
+    let host = include_str!("host_runtime.rs");
+    let retired_variants = [
+        concat!("Table", "Bounds"),
+        concat!("Table", "Lookup"),
+        concat!("Table", "Lookup", "Slope"),
+        concat!("Table", "Next", "Event"),
+    ];
+
+    for retired in retired_variants {
+        assert!(!linear_op.contains(retired));
+        assert!(!emitter.contains(retired));
+    }
+    assert!(!host.contains(concat!("rumoca_host_", "table_")));
+    assert!(!host.contains("unwrap_or(f64::NAN)"));
+}
+
+fn row_inputs<'a>(y: &'a [f64], p: &'a [f64], t: f64, seed: Option<&'a [f64]>) -> RowInputs<'a> {
+    RowInputs { y, p, t, seed }
+}
+
+#[test]
+fn checked_program_uses_simple_runtime_plan_for_plain_residual_rows() {
     let row = vec![
         LinearOp::LoadY { dst: 0, index: 0 },
         LinearOp::LoadP { dst: 1, index: 0 },
@@ -36,18 +626,18 @@ fn plan_row_uses_simple_runtime_plan_for_plain_residual_rows() {
         LinearOp::StoreOutput { src: 2 },
     ];
 
-    let plan = plan_row(&row).expect("simple plan");
+    let plan = plan_fixture_row(&row).expect("simple plan");
     assert!(matches!(plan, RowPlan::Simple(_)));
 }
 
 #[test]
-fn plan_row_keeps_seed_rows_on_general_runtime_plan() {
+fn checked_program_keeps_seed_rows_on_general_runtime_plan() {
     let row = vec![
         LinearOp::LoadSeed { dst: 0, index: 0 },
         LinearOp::StoreOutput { src: 0 },
     ];
 
-    let plan = plan_row(&row).expect("general plan");
+    let plan = plan_fixture_row(&row).expect("general plan");
     assert!(matches!(plan, RowPlan::General(_)));
 }
 
@@ -1275,26 +1865,29 @@ fn compiled_guarded_assignment_preserves_one_compact_owner_until_native_executio
         1,
     );
     let owner = rumoca_ir_solve::GuardedAssignmentProgram::checked(
-        vec![
-            LinearOp::FunctionConditional {
-                dst_start: 0,
-                capture_start: 0,
-                program: std::sync::Arc::new(conditional),
-            },
-            LinearOp::StoreOutputRange {
-                start: 0,
-                count: 2,
-                stride: 1,
-            },
-        ],
-        span.require_provenance("native guarded assignment fixture")
-            .expect("fixture provenance"),
-        [(rumoca_ir_solve::scalar_slot_p(0), 2)],
-        rumoca_ir_solve::DiscreteRowRole::EventAction,
-        rumoca_ir_solve::DiscreteEventPreMode::FollowCurrent,
-        false,
-        rumoca_ir_solve::IntegratorHistoryEffect::Preserve,
-        None,
+        rumoca_ir_solve::GuardedAssignmentProgramInput {
+            program: vec![
+                LinearOp::FunctionConditional {
+                    dst_start: 0,
+                    capture_start: 0,
+                    program: std::sync::Arc::new(conditional),
+                },
+                LinearOp::StoreOutputRange {
+                    start: 0,
+                    count: 2,
+                    stride: 1,
+                },
+            ],
+            provenance: span
+                .require_provenance("native guarded assignment fixture")
+                .expect("fixture provenance"),
+            target_ranges: vec![(rumoca_ir_solve::scalar_slot_p(0), 2)],
+            role: rumoca_ir_solve::DiscreteRowRole::EventAction,
+            pre_mode: rumoca_ir_solve::DiscreteEventPreMode::FollowCurrent,
+            observation_refresh: false,
+            integrator_history_effect: rumoca_ir_solve::IntegratorHistoryEffect::Preserve,
+            clock_owner: None,
+        },
     )
     .expect("checked compact owner");
     let program = owner.program().to_vec();
@@ -1469,564 +2062,4 @@ fn compiled_function_conditional_calls_fold_only_from_selected_region() {
     assert_eq!(out, [7.0]);
 }
 
-#[test]
-fn runtime_register_scratch_allocation_failure_is_error() {
-    let plan = RowPlan::Simple(SimpleRowPlan {
-        ops: Box::new([]),
-        reg_count: usize::MAX,
-        output_srcs: Box::new([0]),
-        input_requirements: InputRequirements::default(),
-    });
-    let mut scratch = Vec::new();
-    let mut out = [0.0];
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &[]),
-        &mut out,
-    )
-    .expect_err("oversized register scratch should report an error");
-
-    assert!(
-        matches!(&err, CompileError::Backend(message) if message.contains("runtime register scratch allocation overflow")),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn general_runtime_linear_solve_component_rejects_zero_size() {
-    let row = vec![
-        LinearOp::LinearSolveComponent {
-            dst: 0,
-            matrix_start: 0,
-            rhs_start: 0,
-            n: 0,
-            component: 0,
-        },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-    let plan = plan_row(&row).expect("zero-size linear solve plan should prevalidate");
-    let mut scratch = Vec::new();
-    let mut out = [0.0];
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &[]),
-        &mut out,
-    )
-    .expect_err("zero-size linear solve should report an error");
-
-    assert!(
-        matches!(&err, CompileError::Backend(message) if message.contains("zero size")),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn compiled_residual_invokes_jit_and_matches_interpreter_for_representative_row() {
-    let row = vec![
-        LinearOp::LoadY { dst: 0, index: 0 },
-        LinearOp::LoadP { dst: 1, index: 0 },
-        LinearOp::LoadTime { dst: 2 },
-        LinearOp::Binary {
-            dst: 3,
-            op: BinaryOp::Mul,
-            lhs: 0,
-            rhs: 1,
-        },
-        LinearOp::Unary {
-            dst: 4,
-            op: UnaryOp::Sin,
-            arg: 2,
-        },
-        LinearOp::Binary {
-            dst: 5,
-            op: BinaryOp::Add,
-            lhs: 3,
-            rhs: 4,
-        },
-        LinearOp::Compare {
-            dst: 6,
-            op: CompareOp::Gt,
-            lhs: 5,
-            rhs: 1,
-        },
-        LinearOp::Select {
-            dst: 7,
-            cond: 6,
-            if_true: 5,
-            if_false: 1,
-        },
-        LinearOp::StoreOutput { src: 7 },
-    ];
-    let plan = plan_row(&row).expect("plan row");
-    let mut scratch = Vec::new();
-    let mut expected = [0.0];
-    execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[3.0], &[2.0], 0.5, None, &[]),
-        &mut expected,
-    )
-    .expect("interp");
-    let compiled = compile_residual_rows(&[row]).expect("compile row");
-    let mut out = [0.0];
-
-    compiled
-        .call(&[3.0], &[2.0], 0.5, &mut out)
-        .expect("jit row eval");
-
-    assert!((out[0] - expected[0]).abs() <= f64::EPSILON * 64.0);
-    assert_eq!(compiled.jit_call_count(), 1);
-}
-
-#[test]
-fn compiled_compare_equality_is_exact_not_epsilon_based() {
-    let row = vec![
-        LinearOp::Const { dst: 0, value: 0.0 },
-        LinearOp::Const {
-            dst: 1,
-            value: f64::MIN_POSITIVE,
-        },
-        LinearOp::Compare {
-            dst: 2,
-            op: CompareOp::Eq,
-            lhs: 0,
-            rhs: 1,
-        },
-        LinearOp::Compare {
-            dst: 3,
-            op: CompareOp::Ne,
-            lhs: 0,
-            rhs: 1,
-        },
-        LinearOp::Binary {
-            dst: 4,
-            op: BinaryOp::Add,
-            lhs: 2,
-            rhs: 3,
-        },
-        LinearOp::StoreOutput { src: 4 },
-    ];
-    let compiled = compile_residual_rows(&[row]).expect("compiled row");
-    let mut out = [0.0];
-
-    compiled.call(&[], &[], 0.0, &mut out).expect("row eval");
-
-    assert_eq!(out[0], 1.0);
-}
-
-#[test]
-fn compiled_logical_not_inverts_boolean_value() {
-    let row = vec![
-        LinearOp::Const { dst: 0, value: 1.0 },
-        LinearOp::Unary {
-            dst: 1,
-            op: UnaryOp::Not,
-            arg: 0,
-        },
-        LinearOp::Const { dst: 2, value: 0.0 },
-        LinearOp::Unary {
-            dst: 3,
-            op: UnaryOp::Not,
-            arg: 2,
-        },
-        LinearOp::Binary {
-            dst: 4,
-            op: BinaryOp::Sub,
-            lhs: 3,
-            rhs: 1,
-        },
-        LinearOp::StoreOutput { src: 4 },
-    ];
-    let compiled = compile_residual_rows(&[row]).expect("compiled row");
-    let mut out = [0.0];
-
-    compiled.call(&[], &[], 0.0, &mut out).expect("row eval");
-
-    assert_eq!(out[0], 1.0);
-}
-
-#[test]
-fn compiled_jacobian_invokes_jit_with_seed_pointer() {
-    let row = vec![
-        LinearOp::LoadSeed { dst: 0, index: 0 },
-        LinearOp::LoadY { dst: 1, index: 0 },
-        LinearOp::Binary {
-            dst: 2,
-            op: BinaryOp::Add,
-            lhs: 0,
-            rhs: 1,
-        },
-        LinearOp::StoreOutput { src: 2 },
-    ];
-    let compiled = compile_jacobian_rows(&[row]).expect("compiled row");
-    let mut out = [0.0];
-
-    compiled
-        .call(&[4.0], &[], 0.0, &[3.0], &mut out)
-        .expect("jacobian row eval");
-
-    assert_eq!(out[0], 7.0);
-    assert_eq!(compiled.jit_call_count(), 1);
-}
-
-#[test]
-fn compiled_tensor_load_preserves_primal_and_seed_lanes() {
-    let row = vec![
-        LinearOp::TensorLoad {
-            dst_start: 0,
-            input: rumoca_ir_solve::TensorInputKind::Y,
-            input_start: 1,
-            count: 2,
-            seed_start: Some(0),
-            lanes: 2,
-        },
-        LinearOp::StoreOutput { src: 0 },
-        LinearOp::StoreOutput { src: 1 },
-        LinearOp::StoreOutput { src: 2 },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-    let compiled = compile_jacobian_rows(&[row]).expect("compiled tensor load");
-    let mut out = [0.0; 4];
-
-    compiled
-        .call(&[10.0, 20.0, 30.0], &[], 0.0, &[2.0, 3.0], &mut out)
-        .expect("tensor load row eval");
-
-    assert_eq!(out, [20.0, 2.0, 30.0, 3.0]);
-    assert_eq!(compiled.jit_call_count(), 1);
-}
-
-#[test]
-fn compiled_table_row_invokes_jit_with_active_external_tables() {
-    let table_id = 7.0;
-    let tables = [ExternalTableData {
-        id: table_id as u64,
-        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
-        columns: vec![2],
-        smoothness: 1,
-        extrapolation: 1,
-    }];
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-    let compiled = compile_residual_rows(&[row]).expect("compiled row");
-    let mut out = [0.0];
-
-    compiled
-        .call_with_external_tables(&[], &[], 0.0, &tables, &mut out)
-        .expect("table row eval");
-
-    assert!((out[0] - 12.0).abs() <= f64::EPSILON);
-    assert_eq!(compiled.jit_call_count(), 1);
-}
-
-#[test]
-fn general_runtime_table_lookup_failure_is_error_not_silent_zero() {
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: 42.0,
-        },
-        LinearOp::Const { dst: 1, value: 1.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-    let plan = plan_row(&row).expect("general plan");
-    let mut scratch = Vec::new();
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &[]),
-        &mut [0.0],
-    )
-    .expect_err("missing table should report an evaluation error");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("table id 42")));
-}
-
-#[test]
-fn general_runtime_table_lookup_invalid_column_is_error_not_clamped() {
-    let table_id = 7.0;
-    let tables = [ExternalTableData {
-        id: table_id as u64,
-        data: vec![vec![0.0, 10.0], vec![2.0, 14.0]],
-        columns: vec![2],
-        smoothness: 1,
-        extrapolation: 1,
-    }];
-    let row = vec![
-        LinearOp::Const {
-            dst: 0,
-            value: table_id,
-        },
-        LinearOp::Const { dst: 1, value: 2.0 },
-        LinearOp::Const { dst: 2, value: 1.0 },
-        LinearOp::TableLookup {
-            dst: 3,
-            table_id: 0,
-            column: 1,
-            input: 2,
-        },
-        LinearOp::StoreOutput { src: 3 },
-    ];
-    let plan = plan_row(&row).expect("general plan");
-    let mut scratch = Vec::new();
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &tables),
-        &mut [0.0],
-    )
-    .expect_err("invalid table column should report an evaluation error");
-
-    assert!(
-        matches!(err, CompileError::Input(message) if message.contains("column 2")),
-        "invalid column error should mention the requested column"
-    );
-}
-
-#[test]
-fn simple_runtime_missing_y_input_is_error_not_zero() {
-    let row = vec![
-        LinearOp::LoadY { dst: 0, index: 1 },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-    let plan = plan_row(&row).expect("simple plan");
-    let mut scratch = Vec::new();
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[5.0], &[], 0.0, None, &[]),
-        &mut [0.0],
-    )
-    .expect_err("undersized y vector should report an error");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("missing y[1]")));
-}
-
-#[test]
-fn simple_runtime_missing_p_input_is_error_not_zero() {
-    let row = vec![
-        LinearOp::LoadP { dst: 0, index: 0 },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-    let plan = plan_row(&row).expect("simple plan");
-    let mut scratch = Vec::new();
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &[]),
-        &mut [0.0],
-    )
-    .expect_err("undersized p vector should report an error");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("missing p[0]")));
-}
-
-#[test]
-fn general_runtime_missing_seed_input_is_error_not_zero() {
-    let row = vec![
-        LinearOp::LoadSeed { dst: 0, index: 0 },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-    let plan = plan_row(&row).expect("general plan");
-    let mut scratch = Vec::new();
-
-    let err = execute_row(
-        &plan,
-        &mut scratch,
-        row_inputs(&[], &[], 0.0, None, &[]),
-        &mut [0.0],
-    )
-    .expect_err("missing seed vector should report an error");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("missing seed[0]")));
-}
-
-#[test]
-fn plan_row_rejects_input_requirement_overflow() {
-    let row = vec![
-        LinearOp::LoadY {
-            dst: 0,
-            index: usize::MAX,
-        },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-
-    let err = match plan_row(&row) {
-        Ok(_) => panic!("input requirement overflow must fail planning"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, CompileError::Backend(ref message) if message.contains("y input requirement overflow")),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn plan_row_rejects_random_state_register_range_overflow() {
-    let row = vec![
-        LinearOp::Const { dst: 0, value: 1.0 },
-        LinearOp::RandomResult {
-            dst: 1,
-            generator: rumoca_ir_solve::RandomGenerator::Xorshift64Star,
-            state_start: u32::MAX,
-            state_len: 2,
-        },
-        LinearOp::StoreOutput { src: 1 },
-    ];
-
-    let err = match plan_row(&row) {
-        Ok(_) => panic!("random state register overflow must fail planning"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, CompileError::Backend(ref message) if message.contains("random state register overflow")),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn plan_row_rejects_linear_solve_register_range_overflow() {
-    let row = vec![
-        LinearOp::LinearSolveComponent {
-            dst: 0,
-            matrix_start: 0,
-            rhs_start: 0,
-            n: usize::MAX,
-            component: 0,
-        },
-        LinearOp::StoreOutput { src: 0 },
-    ];
-
-    let err = match plan_row(&row) {
-        Ok(_) => panic!("linear solve matrix overflow must fail planning"),
-        Err(err) => err,
-    };
-
-    assert!(
-        matches!(err, CompileError::Backend(ref message) if message.contains("linear solve matrix size overflow")),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
-fn compiled_residual_prevalidates_inputs_before_mutating_output() {
-    let rows = vec![
-        vec![
-            LinearOp::Const { dst: 0, value: 1.0 },
-            LinearOp::StoreOutput { src: 0 },
-        ],
-        vec![
-            LinearOp::LoadY { dst: 0, index: 1 },
-            LinearOp::StoreOutput { src: 0 },
-        ],
-    ];
-    let compiled = compile_residual_rows(&rows).expect("compiled rows");
-    let mut out = [9.0, 9.0];
-
-    let err = compiled
-        .call(&[5.0], &[], 0.0, &mut out)
-        .expect_err("compiled call should validate inputs before row execution");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("missing y[1]")));
-    assert_eq!(out, [9.0, 9.0]);
-}
-
-#[test]
-fn compiled_jacobian_prevalidates_seed_before_mutating_output() {
-    let rows = vec![vec![
-        LinearOp::LoadSeed { dst: 0, index: 1 },
-        LinearOp::StoreOutput { src: 0 },
-    ]];
-    let compiled = compile_jacobian_rows(&rows).expect("compiled rows");
-    let mut out = [9.0];
-
-    let err = compiled
-        .call(&[], &[], 0.0, &[1.0], &mut out)
-        .expect_err("compiled Jacobian call should validate seed length before execution");
-
-    assert!(matches!(err, CompileError::Input(message) if message.contains("missing seed[1]")));
-    assert_eq!(out, [9.0]);
-}
-
-#[test]
-fn compiled_residual_program_writes_multiple_outputs() {
-    // One self-contained program with two outputs that share register 0
-    // (the operand-once shape produced by the scalarizer for matmul/linsolve).
-    let row = vec![
-        LinearOp::LoadP { dst: 0, index: 0 }, // shared operand
-        LinearOp::Const { dst: 1, value: 2.0 },
-        LinearOp::Binary {
-            dst: 2,
-            op: BinaryOp::Mul,
-            lhs: 0,
-            rhs: 1,
-        }, // out0 = p0 * 2
-        LinearOp::StoreOutput { src: 2 },
-        LinearOp::Binary {
-            dst: 3,
-            op: BinaryOp::Add,
-            lhs: 0,
-            rhs: 2,
-        }, // out1 = p0 + out0
-        LinearOp::StoreOutput { src: 3 },
-    ];
-    let plan = plan_row(&row).expect("plan");
-    assert_eq!(plan.output_count(), 2);
-
-    let compiled = compile_residual_rows(&[row]).expect("compiled program");
-    assert_eq!(compiled.rows(), 1, "one program, two outputs");
-    let mut out = [0.0, 0.0];
-    compiled.call(&[], &[5.0], 0.0, &mut out).expect("eval");
-    assert_eq!(out[0], 10.0); // 5 * 2
-    assert_eq!(out[1], 15.0); // 5 + 10
-}
-
-#[test]
-fn table_host_trampolines_keep_abi_boundary_nan_sentinel() {
-    assert!(rumoca_host_table_bounds_min(42.0).is_nan());
-    assert!(rumoca_host_table_lookup(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_lookup_slope(42.0, 1.0, 1.0).is_nan());
-    assert!(rumoca_host_table_next_event(42.0, 0.0).is_nan());
-}
-
-#[test]
-fn cranelift_panics_are_typed_backend_errors_at_the_adapter_boundary() {
-    let error = catch_cranelift_unwind("oversized relocation", || -> () {
-        panic!("relative relocation exceeds i32")
-    })
-    .expect_err("Cranelift panic must not cross the adapter boundary");
-    assert_eq!(
-        error.to_string(),
-        "cranelift execution error: Cranelift oversized relocation failed: relative relocation exceeds i32"
-    );
-}
+mod runtime_refusal_tests;

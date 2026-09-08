@@ -204,5 +204,5 @@ fn collect_instance_member_shadowed_import_aliases(
         ctx,
         shadowed,
     };
-    let _ = collector.visit_expression(expr);
+    let _visit_outcome = collector.visit_expression(expr);
 }

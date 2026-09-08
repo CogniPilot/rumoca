@@ -11,7 +11,6 @@ mod component_refs;
 mod dimensions;
 mod equation_shape;
 mod expression_types;
-mod modifier_spans;
 mod operator_checks;
 mod parameter_branches;
 mod type_resolution;
@@ -32,8 +31,10 @@ pub(crate) enum BuiltinModifierExpectedType {
 
 enum ModifierPathAdvance {
     Next(TypeId),
-    Complete,
-    Invalid,
+    Complete(TypeId),
+    Missing,
+    Ambiguous,
+    UnresolvedType,
 }
 
 pub(in crate::typechecker) struct MissingComponentMember {
@@ -47,6 +48,7 @@ pub(in crate::typechecker) enum ComponentReferenceTypeError {
     MissingMember(MissingComponentMember),
     MissingSourceContext(TypeCheckError),
     AmbiguousIdentity { reference: String, span: Span },
+    InvalidAstSubscript(TypeCheckError),
 }
 
 impl TypeCheckTraversalCallbacks for TypeChecker {
@@ -89,16 +91,41 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
     }
 
     fn on_expression(&mut self, expression: &Expression, type_table: &TypeTable) {
+        if let Expression::DerivativeCall { args, span } = expression {
+            self.check_derivative_call(args, *span, type_table);
+        }
+        if let Expression::ArrayIndex {
+            subscripts, span, ..
+        } = expression
+            && let Some(violation) = subscripts_required_value_violation(subscripts)
+        {
+            let span = self.required_subscript_violation_span(expression, *span, violation.span);
+            if let Some(span) = span {
+                self.emit_typecheck_error(TypeCheckError::InvalidAstSubscript {
+                    reference: expression.to_string(),
+                    reason: violation.kind.description().to_string(),
+                    span,
+                });
+            }
+            return;
+        }
+        self.check_expression_shape_validity(expression, type_table);
+        self.check_expression_type_validity(expression, type_table);
         self.check_expression_operator_types(expression, type_table);
     }
 
-    fn push_integer_iterator(&mut self, name: &str) {
-        self.current_integer_iterators.push(name.to_string());
+    fn push_iterator_binder(&mut self, name: &str, range: &Expression, type_table: &TypeTable) {
+        // MLS §11.2.2: the binder's type is the element type of its range
+        // domain. It is derived here and never asserted, so a Real range binds
+        // Real and an enumeration range binds that enumeration.
+        let binder = self.infer_expression_type(range, type_table);
+        self.current_iterator_binders
+            .push((name.to_string(), binder));
     }
 
-    fn pop_integer_iterators(&mut self, count: usize) {
-        let keep = self.current_integer_iterators.len().saturating_sub(count);
-        self.current_integer_iterators.truncate(keep);
+    fn pop_iterator_binders(&mut self, count: usize) {
+        let keep = self.current_iterator_binders.len().saturating_sub(count);
+        self.current_iterator_binders.truncate(keep);
     }
 
     fn on_expression_function_call(
@@ -124,13 +151,16 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
     /// MLS §8.3.5: the condition of a when-equation must be a Boolean
     /// expression (ALG-011/EQN side).
     fn on_when_condition(&mut self, condition: &Expression, type_table: &TypeTable) {
-        let Some(found) = self.infer_expression_type(condition, type_table) else {
+        let Some(found) = self
+            .infer_expression_type(condition, type_table)
+            .value_identity()
+        else {
             return;
         };
         if found.is_unknown() {
             return;
         }
-        let root = self.resolve_type_root(type_table, found);
+        let root = self.resolve_type_root(found);
         if matches!(
             type_table.get(root),
             Some(Type::Builtin(rumoca_ir_ast::BuiltinType::Boolean))
@@ -163,6 +193,23 @@ impl TypeCheckTraversalCallbacks for TypeChecker {
             "when condition here",
             span,
         ));
+    }
+}
+
+impl TypeChecker {
+    fn required_subscript_violation_span(
+        &mut self,
+        expression: &Expression,
+        expression_span: Span,
+        violation_span: Option<Span>,
+    ) -> Option<Span> {
+        violation_span
+            .or_else(|| (!expression_span.is_dummy()).then_some(expression_span))
+            .or_else(|| {
+                expression.get_location().and_then(|location| {
+                    self.diagnostic_location_span(location, "recovered array subscript")
+                })
+            })
     }
 }
 
@@ -258,7 +305,8 @@ impl TypeChecker {
     /// Type check a ClassDef.
     pub(crate) fn check_class(&mut self, class: &mut ClassDef, type_table: &mut TypeTable) {
         // Collect constants from this class for dimension evaluation
-        self.eval_ctx = rumoca_eval_ast::eval::collect_constants(class, "");
+        self.eval_ctx
+            .replace_values_with_collected_constants(class, "");
 
         // Resolve component types and evaluate dimensions
         for (name, comp) in class.components.iter_mut() {
@@ -329,9 +377,6 @@ impl TypeChecker {
         // Evaluate shape_expr → shape (MLS §10.1)
         self.evaluate_component_dimensions(name, comp);
 
-        // Validate modifier names for builtin and class-typed components.
-        self.validate_component_modifier_names(name, comp, type_table, type_id);
-
         // Type check the start expression if not empty
         if !matches!(comp.start, Expression::Empty { .. }) {
             walk_expression(self, &comp.start, type_table);
@@ -344,17 +389,13 @@ impl TypeChecker {
     }
 
     /// Check if type checking produced any errors.
-    pub fn has_errors(&self) -> bool {
+    pub(crate) fn has_errors(&self) -> bool {
         self.diagnostics.has_errors()
     }
 
     /// Get the collected diagnostics.
-    pub fn diagnostics(&self) -> &Diagnostics {
+    #[cfg(test)]
+    pub(crate) fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
-    }
-
-    /// Take the diagnostics (consuming them).
-    pub fn take_diagnostics(self) -> Diagnostics {
-        self.diagnostics
     }
 }

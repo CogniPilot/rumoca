@@ -34,7 +34,7 @@ fn fmi_ls_dae_contract_pins_exact_upstream_schema_bytes_without_registering_a_ta
         .expect("fixture provenance must be readable");
     assert!(upstream.contains("5cd461aba3a00673fb9bffcd2f6565363cced1ce"));
     assert!(
-        rumoca_compile::codegen::templates::builtin_target("fmi-ls-dae").is_none(),
+        rumoca_phase_codegen::templates::builtin_target("fmi-ls-dae").is_none(),
         "the incomplete layered DAE profile must not be advertised"
     );
 }

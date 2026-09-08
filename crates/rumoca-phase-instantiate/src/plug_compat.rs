@@ -4,7 +4,6 @@
 //! sound when the interfaces are actually compatible; this module holds the
 //! member-wise and class-flag comparisons used by `is_type_subtype_cached`.
 
-use crate::inheritance::find_class_in_tree;
 use rumoca_core::{ComponentPath, DefId};
 use rumoca_ir_ast as ast;
 use rustc_hash::FxHashSet;
@@ -22,38 +21,38 @@ pub(crate) fn class_flags_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
     supertype: Option<&ast::ClassDef>,
-) -> bool {
+) -> crate::InstantiateResult<bool> {
     let Some(supertype) = supertype else {
-        return true;
+        return Ok(true);
     };
     if subtype.class_type != supertype.class_type {
-        return false;
+        return Ok(false);
     }
     if subtype.operator_record != supertype.operator_record {
-        return false;
+        return Ok(false);
     }
     // MLS §6.4 / TYPE-007: ExternalObject-derived classes are only
     // compatible with the identical class.
-    if !external_object_flags_compatible(tree, subtype, supertype) {
-        return false;
+    if !external_object_flags_compatible(tree, subtype, supertype)? {
+        return Ok(false);
     }
     if subtype.expandable != supertype.expandable {
-        return false;
+        return Ok(false);
     }
     if subtype.class_type == rumoca_core::ClassType::Function
         && supertype.class_type == rumoca_core::ClassType::Function
         && !subtype.pure
         && supertype.pure
     {
-        return false;
+        return Ok(false);
     }
     if supertype.is_final && !subtype.is_final {
-        return false;
+        return Ok(false);
     }
     if is_transitively_non_replaceable(supertype) && !is_transitively_non_replaceable(subtype) {
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 /// MLS §6.4: a class is transitively non-replaceable when neither it nor any
@@ -83,32 +82,35 @@ pub(crate) fn members_plug_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
     supertype: &ast::ClassDef,
-) -> bool {
-    let sub_members = collect_public_members(tree, subtype);
-    let super_members = collect_public_members(tree, supertype);
+) -> crate::InstantiateResult<bool> {
+    let sub_members = collect_public_members(tree, subtype)?;
+    let super_members = collect_public_members(tree, supertype)?;
     for (name, b_comp) in &super_members {
         let Some(a_comp) = sub_members.get(name) else {
-            return false;
+            return Ok(false);
         };
-        if !component_interfaces_compatible(tree, a_comp, b_comp) {
-            return false;
+        if !component_interfaces_compatible(tree, a_comp, b_comp)? {
+            return Ok(false);
         }
         if std::mem::discriminant(&a_comp.causality) != std::mem::discriminant(&b_comp.causality) {
-            return false;
+            return Ok(false);
         }
         if std::mem::discriminant(&a_comp.connection) != std::mem::discriminant(&b_comp.connection)
         {
-            return false;
+            return Ok(false);
         }
         if a_comp.condition.is_some() != b_comp.condition.is_some() {
-            return false;
+            return Ok(false);
         }
         if a_comp.inner != b_comp.inner || a_comp.outer != b_comp.outer {
-            return false;
+            return Ok(false);
         }
     }
     if supertype.class_type == rumoca_core::ClassType::Function {
-        return function_signatures_plug_compatible(&sub_members, &super_members);
+        return Ok(function_signatures_plug_compatible(
+            &sub_members,
+            &super_members,
+        ));
     }
     // MLS §6.4's transitively-non-replaceable "no other elements" rule
     // (TYPE-023) is deliberately not enforced: idiomatic MSL redeclarations
@@ -128,10 +130,10 @@ pub(crate) fn members_plug_compatible(
         // binding and is auto-populated for builtin types, so it cannot count.
         let is_input = matches!(member.causality, rumoca_core::Causality::Input(_));
         if is_input && member.binding.is_none() {
-            return false;
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 /// Compare only interface properties whose incompatibility is provable from
@@ -141,26 +143,26 @@ fn component_interfaces_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::Component,
     supertype: &ast::Component,
-) -> bool {
+) -> crate::InstantiateResult<bool> {
     if let (Some(sub_base), Some(super_base)) = (
-        primitive_base(tree, subtype),
-        primitive_base(tree, supertype),
+        primitive_base(tree, subtype)?,
+        primitive_base(tree, supertype)?,
     ) && sub_base != super_base
     {
-        return false;
+        return Ok(false);
     }
 
     let sub_rank = component_rank(subtype);
     let super_rank = component_rank(supertype);
     if sub_rank != super_rank {
-        return false;
+        return Ok(false);
     }
     if sub_rank > 0
         && !subtype.shape.is_empty()
         && !supertype.shape.is_empty()
         && subtype.shape != supertype.shape
     {
-        return false;
+        return Ok(false);
     }
 
     if let (Some(sub_variability), Some(super_variability)) = (
@@ -168,10 +170,10 @@ fn component_interfaces_compatible(
         explicit_variability_rank(&supertype.variability),
     ) && sub_variability > super_variability
     {
-        return false;
+        return Ok(false);
     }
 
-    true
+    Ok(true)
 }
 
 fn component_rank(component: &ast::Component) -> usize {
@@ -195,49 +197,94 @@ fn explicit_variability_rank(variability: &rumoca_core::Variability) -> Option<u
     }
 }
 
-fn primitive_base(tree: &ast::ClassTree, component: &ast::Component) -> Option<&'static str> {
-    if let Some(type_id) = component.type_id
-        && let Some(base) = primitive_base_from_type_id(tree, type_id, 0)
-    {
-        return Some(base);
-    }
-    primitive_base_from_type(
+fn primitive_base(
+    tree: &ast::ClassTree,
+    component: &ast::Component,
+) -> crate::InstantiateResult<Option<&'static str>> {
+    let type_id_base = if let Some(type_id) = component.type_id {
+        primitive_base_from_type_id(
+            tree,
+            type_id,
+            component.location.span(),
+            &mut FxHashSet::default(),
+        )?
+    } else {
+        None
+    };
+    let declaration_base = primitive_base_from_type(
         tree,
         &component.type_name.to_string(),
         component.type_def_id,
-        0,
-    )
+        component.location.span(),
+        &mut FxHashSet::default(),
+    )?;
+    if let (Some(type_id_base), Some(declaration_base)) = (type_id_base, declaration_base)
+        && type_id_base != declaration_base
+    {
+        return Err(Box::new(crate::InstantiateError::redeclare_error(
+            &component.name,
+            format!(
+                "type-table primitive `{type_id_base}` contradicts declaration primitive `{declaration_base}`"
+            ),
+            component.location.span(),
+        )));
+    }
+    Ok(type_id_base.or(declaration_base))
 }
 
 fn primitive_base_from_type_id(
     tree: &ast::ClassTree,
     type_id: rumoca_core::TypeId,
-    depth: usize,
-) -> Option<&'static str> {
-    if type_id.is_unknown() || depth >= 10 {
-        return None;
+    span: rumoca_core::Span,
+    active: &mut FxHashSet<rumoca_core::TypeId>,
+) -> crate::InstantiateResult<Option<&'static str>> {
+    if type_id.is_unknown() {
+        return Err(Box::new(
+            crate::InstantiateError::missing_resolved_identity(
+                "plug-compatible component type",
+                span,
+            ),
+        ));
     }
-    match tree.type_table.get(type_id)? {
-        ast::Type::Builtin(ast::BuiltinType::Real) => Some("Real"),
-        ast::Type::Builtin(ast::BuiltinType::Integer) => Some("Integer"),
-        ast::Type::Builtin(ast::BuiltinType::Boolean) => Some("Boolean"),
-        ast::Type::Builtin(ast::BuiltinType::String) => Some("String"),
-        ast::Type::Builtin(ast::BuiltinType::Clock) => Some("Clock"),
-        ast::Type::Alias(alias) => primitive_base_from_type_id(tree, alias.aliased, depth + 1),
-        ast::Type::Array(array) => primitive_base_from_type_id(tree, array.element, depth + 1),
-        ast::Type::Class(_)
-        | ast::Type::Enumeration(_)
-        | ast::Type::Function(_)
-        | ast::Type::Unknown => None,
+    if !active.insert(type_id) {
+        return Err(Box::new(crate::InstantiateError::instantiation_cycle(
+            format!("type-table alias {type_id:?}"),
+            span,
+        )));
     }
+    let ty = tree.type_table.get(type_id).ok_or_else(|| {
+        Box::new(crate::InstantiateError::missing_resolved_identity(
+            format!("type-table entry {type_id:?}"),
+            span,
+        ))
+    })?;
+    let result = match ty {
+        ast::Type::Builtin(ast::BuiltinType::Real) => Ok(Some("Real")),
+        ast::Type::Builtin(ast::BuiltinType::Integer) => Ok(Some("Integer")),
+        ast::Type::Builtin(ast::BuiltinType::Boolean) => Ok(Some("Boolean")),
+        ast::Type::Builtin(ast::BuiltinType::String) => Ok(Some("String")),
+        ast::Type::Builtin(ast::BuiltinType::Clock) => Ok(Some("Clock")),
+        ast::Type::Alias(alias) => primitive_base_from_type_id(tree, alias.aliased, span, active),
+        ast::Type::Array(array) => primitive_base_from_type_id(tree, array.element, span, active),
+        ast::Type::Class(_) | ast::Type::Enumeration(_) | ast::Type::Function(_) => Ok(None),
+        ast::Type::Unknown => Err(Box::new(
+            crate::InstantiateError::missing_resolved_identity(
+                format!("unknown type-table entry {type_id:?}"),
+                span,
+            ),
+        )),
+    };
+    active.remove(&type_id);
+    result
 }
 
 fn primitive_base_from_type(
     tree: &ast::ClassTree,
     type_name: &str,
     type_def_id: Option<rumoca_core::DefId>,
-    depth: usize,
-) -> Option<&'static str> {
+    span: rumoca_core::Span,
+    active: &mut FxHashSet<DefId>,
+) -> crate::InstantiateResult<Option<&'static str>> {
     let builtin = match type_name {
         "Real" => Some("Real"),
         "Integer" => Some("Integer"),
@@ -246,23 +293,65 @@ fn primitive_base_from_type(
         "Clock" => Some("Clock"),
         _ => None,
     };
-    if builtin.is_some() || depth >= 10 {
-        return builtin;
+    if let Some(builtin_name) = builtin {
+        let resolved_def_id = type_def_id.ok_or_else(|| {
+            Box::new(crate::InstantiateError::missing_resolved_identity(
+                format!("component type `{type_name}`"),
+                span,
+            ))
+        })?;
+        let predefined_def_id = tree
+            .scope_tree
+            .predefined_member(&ComponentPath::from_flat_path(builtin_name))
+            .ok_or_else(|| {
+                Box::new(crate::InstantiateError::missing_resolved_identity(
+                    format!("predefined type `{builtin_name}`"),
+                    span,
+                ))
+            })?;
+        if resolved_def_id == predefined_def_id {
+            return Ok(Some(builtin_name));
+        }
     }
 
-    let class = type_def_id
-        .and_then(|def_id| tree.get_class_by_def_id(def_id))
-        .or_else(|| find_class_in_tree(tree, type_name))?;
+    let class_def_id = type_def_id.ok_or_else(|| {
+        Box::new(crate::InstantiateError::missing_resolved_identity(
+            format!("component type `{type_name}`"),
+            span,
+        ))
+    })?;
+    let class = tree.get_class_by_def_id(class_def_id).ok_or_else(|| {
+        Box::new(crate::InstantiateError::missing_resolved_identity(
+            format!("component type `{type_name}` ({class_def_id:?})"),
+            span,
+        ))
+    })?;
+    let class_def_id = class.def_id.ok_or_else(|| {
+        Box::new(crate::InstantiateError::missing_resolved_identity(
+            format!("component type `{type_name}`"),
+            span,
+        ))
+    })?;
+    if !active.insert(class_def_id) {
+        return Err(Box::new(crate::InstantiateError::instantiation_cycle(
+            format!("component type `{type_name}` ({class_def_id:?})"),
+            span,
+        )));
+    }
     if class.extends.len() != 1 {
-        return None;
+        active.remove(&class_def_id);
+        return Ok(None);
     }
     let base = &class.extends[0];
-    primitive_base_from_type(
+    let result = primitive_base_from_type(
         tree,
         &base.base_name.to_string(),
         base.base_def_id.or(base.base_name.def_id),
-        depth + 1,
-    )
+        span,
+        active,
+    );
+    active.remove(&class_def_id);
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,28 +365,33 @@ fn external_object_flags_compatible(
     tree: &ast::ClassTree,
     subtype: &ast::ClassDef,
     supertype: &ast::ClassDef,
-) -> bool {
-    let subtype = external_object_ancestry(tree, subtype);
-    let supertype = external_object_ancestry(tree, supertype);
-    match (subtype, supertype) {
+) -> crate::InstantiateResult<bool> {
+    let subtype = external_object_ancestry(tree, subtype)?;
+    let supertype = external_object_ancestry(tree, supertype)?;
+    Ok(match (subtype, supertype) {
         (ExternalObjectAncestry::Ordinary, ExternalObjectAncestry::Ordinary) => true,
         (
             ExternalObjectAncestry::Direct(subtype_def_id),
             ExternalObjectAncestry::Direct(supertype_def_id),
         ) => subtype_def_id == supertype_def_id,
         _ => false,
-    }
+    })
 }
 
 fn external_object_ancestry(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
-) -> ExternalObjectAncestry {
+) -> crate::InstantiateResult<ExternalObjectAncestry> {
     let external_object = tree
         .scope_tree
         .predefined_member(&ComponentPath::from_flat_path("ExternalObject"));
     let Some(external_object) = external_object else {
-        return ExternalObjectAncestry::Invalid;
+        return Err(Box::new(
+            crate::InstantiateError::missing_resolved_identity(
+                "predefined ExternalObject",
+                class.location.span(),
+            ),
+        ));
     };
     external_object_ancestry_inner(tree, class, external_object, &mut FxHashSet::default())
 }
@@ -307,12 +401,18 @@ fn external_object_ancestry_inner(
     class: &ast::ClassDef,
     external_object: DefId,
     visiting: &mut FxHashSet<DefId>,
-) -> ExternalObjectAncestry {
-    let Some(class_def_id) = class.def_id else {
-        return ExternalObjectAncestry::Invalid;
-    };
+) -> crate::InstantiateResult<ExternalObjectAncestry> {
+    let class_def_id = class.def_id.ok_or_else(|| {
+        Box::new(crate::InstantiateError::missing_resolved_identity(
+            format!("ExternalObject ancestry class `{}`", class.name.text),
+            class.location.span(),
+        ))
+    })?;
     if !visiting.insert(class_def_id) {
-        return ExternalObjectAncestry::Invalid;
+        return Err(Box::new(crate::InstantiateError::instantiation_cycle(
+            format!("ExternalObject ancestry `{}`", class.name.text),
+            class.location.span(),
+        )));
     }
 
     let mut direct = false;
@@ -320,21 +420,42 @@ fn external_object_ancestry_inner(
     for extend in &class.extends {
         let Some(base_def_id) = extend.base_def_id.or(extend.base_name.def_id) else {
             visiting.remove(&class_def_id);
-            return ExternalObjectAncestry::Invalid;
+            return Err(Box::new(
+                crate::InstantiateError::missing_resolved_identity(
+                    format!("ExternalObject extends edge `{}`", extend.base_name),
+                    extend.location.span(),
+                ),
+            ));
         };
         if base_def_id == external_object {
             direct = true;
             continue;
         }
-        let Some(base_class) = tree.get_class_by_def_id(base_def_id) else {
+        if rumoca_core::BUILTIN_TYPES.iter().any(|name| {
+            tree.scope_tree
+                .predefined_member(&ComponentPath::from_flat_path(name))
+                == Some(base_def_id)
+        }) {
             continue;
+        }
+        let Some(base_class) = tree.get_class_by_def_id(base_def_id) else {
+            visiting.remove(&class_def_id);
+            return Err(Box::new(
+                crate::InstantiateError::missing_resolved_identity(
+                    format!(
+                        "ExternalObject extends edge `{}` ({base_def_id:?})",
+                        extend.base_name
+                    ),
+                    extend.location.span(),
+                ),
+            ));
         };
-        match external_object_ancestry_inner(tree, base_class, external_object, visiting) {
+        match external_object_ancestry_inner(tree, base_class, external_object, visiting)? {
             ExternalObjectAncestry::Ordinary => {}
             ExternalObjectAncestry::Direct(_) => inherited = true,
             ExternalObjectAncestry::Invalid => {
                 visiting.remove(&class_def_id);
-                return ExternalObjectAncestry::Invalid;
+                return Ok(ExternalObjectAncestry::Invalid);
             }
         }
     }
@@ -342,14 +463,14 @@ fn external_object_ancestry_inner(
 
     if direct {
         if class.extends.len() == 1 && !inherited {
-            ExternalObjectAncestry::Direct(class_def_id)
+            Ok(ExternalObjectAncestry::Direct(class_def_id))
         } else {
-            ExternalObjectAncestry::Invalid
+            Ok(ExternalObjectAncestry::Invalid)
         }
     } else if inherited {
-        ExternalObjectAncestry::Invalid
+        Ok(ExternalObjectAncestry::Invalid)
     } else {
-        ExternalObjectAncestry::Ordinary
+        Ok(ExternalObjectAncestry::Ordinary)
     }
 }
 
@@ -403,45 +524,91 @@ fn function_signatures_plug_compatible(
     a_outputs.starts_with(&b_outputs)
 }
 
-/// Public components of a class including inherited ones (depth-limited walk
-/// over the extends chain; later declarations win on name clashes).
+/// Public components of a class including inherited ones.
 fn collect_public_members(
     tree: &ast::ClassTree,
     class: &ast::ClassDef,
-) -> indexmap::IndexMap<String, ast::Component> {
-    fn collect_into(
-        tree: &ast::ClassTree,
-        class: &ast::ClassDef,
-        depth: usize,
-        out: &mut indexmap::IndexMap<String, ast::Component>,
-    ) {
-        if depth == 0 {
-            return;
+) -> crate::InstantiateResult<indexmap::IndexMap<String, ast::Component>> {
+    let mut hierarchy = Vec::new();
+    let mut pending = vec![(class, false)];
+    let mut visited = FxHashSet::default();
+    while let Some((owner, exiting)) = pending.pop() {
+        let owner_def_id = owner.def_id.ok_or_else(|| {
+            Box::new(crate::InstantiateError::missing_resolved_identity(
+                format!("plug-compatibility class `{}`", owner.name.text),
+                owner.location.span(),
+            ))
+        })?;
+        if exiting {
+            hierarchy.push(owner);
+            continue;
         }
-        for ext in &class.extends {
-            let base = ext
-                .base_def_id
-                .and_then(|id| tree.get_class_by_def_id(id))
-                .or_else(|| find_class_in_tree(tree, &ext.base_name.to_string()));
-            if let Some(base) = base {
-                collect_into(tree, base, depth - 1, out);
+        if !visited.insert(owner_def_id) {
+            continue;
+        }
+        pending.push((owner, true));
+        for extend in owner.extends.iter().rev() {
+            if crate::inheritance::predefined_extend_name(tree, extend)?.is_some() {
+                continue;
             }
+            let base_def_id = extend
+                .base_def_id
+                .or(extend.base_name.def_id)
+                .ok_or_else(|| {
+                    Box::new(crate::InstantiateError::missing_resolved_identity(
+                        format!("plug-compatibility extends edge `{}`", extend.base_name),
+                        extend.location.span(),
+                    ))
+                })?;
+            let base = tree.get_class_by_def_id(base_def_id).ok_or_else(|| {
+                Box::new(crate::InstantiateError::missing_resolved_identity(
+                    format!(
+                        "plug-compatibility extends edge `{}` ({base_def_id:?})",
+                        extend.base_name
+                    ),
+                    extend.location.span(),
+                ))
+            })?;
+            pending.push((base, false));
         }
-        for (name, comp) in &class.components {
+    }
+    let mut out = indexmap::IndexMap::new();
+    for owner in hierarchy {
+        for (name, comp) in &owner.components {
             if !comp.is_protected {
                 out.insert(name.clone(), comp.clone());
             }
         }
     }
-    let mut out = indexmap::IndexMap::new();
-    collect_into(tree, class, 8, &mut out);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const REAL: DefId = DefId(10);
+    const INTEGER: DefId = DefId(11);
+    const BOOLEAN: DefId = DefId(12);
+    const STRING: DefId = DefId(13);
+    const EXTERNAL_OBJECT: DefId = DefId(14);
+
+    fn tree_with_predefined_types() -> ast::ClassTree {
+        let mut tree = ast::ClassTree::new();
+        for (name, def_id) in [
+            ("Real", REAL),
+            ("Integer", INTEGER),
+            ("Boolean", BOOLEAN),
+            ("String", STRING),
+            ("ExternalObject", EXTERNAL_OBJECT),
+        ] {
+            tree.scope_tree
+                .add_predefined_member(ComponentPath::from_flat_path(name), def_id);
+        }
+        tree
+    }
 
     fn token(text: &str) -> rumoca_core::Token {
         rumoca_core::Token {
@@ -458,10 +625,18 @@ mod tests {
         variability: rumoca_core::Variability,
         causality: rumoca_core::Causality,
     ) -> ast::Component {
+        let type_def_id = match type_name {
+            "Real" => Some(REAL),
+            "Integer" => Some(INTEGER),
+            "Boolean" => Some(BOOLEAN),
+            "String" => Some(STRING),
+            _ => None,
+        };
         ast::Component {
             name: name.to_string(),
             name_token: token(name),
             type_name: ast::Name::from_string(type_name),
+            type_def_id,
             variability,
             causality,
             ..ast::Component::empty_with_span(rumoca_core::Span::DUMMY)
@@ -493,7 +668,9 @@ mod tests {
     }
 
     fn class(class_type: rumoca_core::ClassType, members: Vec<ast::Component>) -> ast::ClassDef {
+        static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(1_000);
         ast::ClassDef {
+            def_id: Some(DefId(NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed))),
             class_type,
             components: members
                 .into_iter()
@@ -535,7 +712,7 @@ mod tests {
 
     #[test]
     fn rejects_provably_incompatible_builtin_member_types() {
-        let tree = ast::ClassTree::new();
+        let tree = tree_with_predefined_types();
         let constraint = class(
             rumoca_core::ClassType::Package,
             vec![component(
@@ -555,12 +732,15 @@ mod tests {
             )],
         );
 
-        assert!(!members_plug_compatible(&tree, &replacement, &constraint));
+        assert!(
+            !members_plug_compatible(&tree, &replacement, &constraint)
+                .expect("resolved interfaces compare")
+        );
     }
 
     #[test]
     fn rejects_array_rank_and_known_size_mismatches() {
-        let tree = ast::ClassTree::new();
+        let tree = tree_with_predefined_types();
         let constraint = class(
             rumoca_core::ClassType::Package,
             vec![with_shape(
@@ -583,13 +763,19 @@ mod tests {
             )],
         );
 
-        assert!(!members_plug_compatible(&tree, &rank_mismatch, &constraint));
-        assert!(!members_plug_compatible(&tree, &size_mismatch, &constraint));
+        assert!(
+            !members_plug_compatible(&tree, &rank_mismatch, &constraint)
+                .expect("resolved interfaces compare")
+        );
+        assert!(
+            !members_plug_compatible(&tree, &size_mismatch, &constraint)
+                .expect("resolved interfaces compare")
+        );
     }
 
     #[test]
     fn enforces_variability_ordering_and_direction() {
-        let tree = ast::ClassTree::new();
+        let tree = tree_with_predefined_types();
         let constraint = class(
             rumoca_core::ClassType::Package,
             vec![component("x", "Real", parameter(), input())],
@@ -612,26 +798,23 @@ mod tests {
             )],
         );
 
-        assert!(!members_plug_compatible(
-            &tree,
-            &higher_variability,
-            &constraint
-        ));
-        assert!(!members_plug_compatible(
-            &tree,
-            &wrong_direction,
-            &constraint
-        ));
-        assert!(members_plug_compatible(
-            &tree,
-            &lower_variability,
-            &constraint
-        ));
+        assert!(
+            !members_plug_compatible(&tree, &higher_variability, &constraint)
+                .expect("resolved interfaces compare")
+        );
+        assert!(
+            !members_plug_compatible(&tree, &wrong_direction, &constraint)
+                .expect("resolved interfaces compare")
+        );
+        assert!(
+            members_plug_compatible(&tree, &lower_variability, &constraint)
+                .expect("resolved interfaces compare")
+        );
     }
 
     #[test]
     fn function_signatures_compare_input_types_and_output_shapes() {
-        let tree = ast::ClassTree::new();
+        let tree = tree_with_predefined_types();
         let constraint = class(
             rumoca_core::ClassType::Function,
             vec![
@@ -654,16 +837,14 @@ mod tests {
             ],
         );
 
-        assert!(!members_plug_compatible(
-            &tree,
-            &wrong_input_type,
-            &constraint
-        ));
-        assert!(!members_plug_compatible(
-            &tree,
-            &wrong_output_shape,
-            &constraint
-        ));
+        assert!(
+            !members_plug_compatible(&tree, &wrong_input_type, &constraint)
+                .expect("resolved interfaces compare")
+        );
+        assert!(
+            !members_plug_compatible(&tree, &wrong_output_shape, &constraint)
+                .expect("resolved interfaces compare")
+        );
     }
 
     #[test]
@@ -763,41 +944,48 @@ mod tests {
 
     #[test]
     fn sibling_type_spellings_with_the_same_primitive_base_remain_compatible() {
-        let mut tree = ast::ClassTree::new();
-        for name in ["StateA", "StateB"] {
+        let mut tree = tree_with_predefined_types();
+        let state_a = DefId::new(2_000);
+        let state_b = DefId::new(2_001);
+        for (name, def_id) in [("StateA", state_a), ("StateB", state_b)] {
             tree.definitions.classes.insert(
                 name.to_string(),
                 ast::ClassDef {
                     name: token(name),
+                    def_id: Some(def_id),
                     class_type: rumoca_core::ClassType::Type,
                     extends: vec![ast::Extend {
                         base_name: ast::Name::from_string("Real"),
+                        base_def_id: Some(REAL),
                         ..Default::default()
                     }],
                     ..Default::default()
                 },
             );
+            tree.name_map.insert(name.to_string(), def_id);
+            tree.def_map.insert(def_id, name.to_string());
         }
-        let constraint = class(
-            rumoca_core::ClassType::Package,
-            vec![component(
-                "state",
-                "StateA",
-                continuous(),
-                rumoca_core::Causality::Empty,
-            )],
+        let mut constraint_member = component(
+            "state",
+            "StateA",
+            continuous(),
+            rumoca_core::Causality::Empty,
         );
-        let replacement = class(
-            rumoca_core::ClassType::Package,
-            vec![component(
-                "state",
-                "StateB",
-                continuous(),
-                rumoca_core::Causality::Empty,
-            )],
+        constraint_member.type_def_id = Some(state_a);
+        let constraint = class(rumoca_core::ClassType::Package, vec![constraint_member]);
+        let mut replacement_member = component(
+            "state",
+            "StateB",
+            continuous(),
+            rumoca_core::Causality::Empty,
         );
+        replacement_member.type_def_id = Some(state_b);
+        let replacement = class(rumoca_core::ClassType::Package, vec![replacement_member]);
 
-        assert!(members_plug_compatible(&tree, &replacement, &constraint));
+        assert!(
+            members_plug_compatible(&tree, &replacement, &constraint)
+                .expect("resolved interfaces compare")
+        );
     }
 
     #[test]
@@ -822,22 +1010,23 @@ end P;
         tree.source_map.add("shadowed_external_object.mo", source);
         let tree = rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree))
             .expect("source resolves")
-            .into_inner();
+            .inner()
+            .clone();
 
         assert!(
-            crate::inheritance::is_type_subtype(&tree, "P.B", "P.A"),
+            crate::inheritance::is_type_subtype(&tree, "P.B", "P.A")
+                .expect("resolved subtype graph compares"),
             "classes extending a user declaration named ExternalObject remain ordinary siblings"
         );
     }
 
     #[test]
     fn indirect_external_object_ancestry_is_never_plug_compatible() {
-        const EXTERNAL_OBJECT: DefId = DefId(100);
         const DIRECT_OWNER: DefId = DefId(101);
         const INDIRECT_A: DefId = DefId(102);
         const INDIRECT_B: DefId = DefId(103);
 
-        let mut tree = ast::ClassTree::new();
+        let mut tree = tree_with_predefined_types();
         tree.scope_tree.add_predefined_member(
             ComponentPath::from_flat_path("ExternalObject"),
             EXTERNAL_OBJECT,
@@ -869,17 +1058,21 @@ end P;
             .get_class_by_def_id(INDIRECT_B)
             .expect("second indirect class exists");
         assert!(
-            !class_flags_compatible(&tree, indirect_a, Some(indirect_b)),
+            !class_flags_compatible(&tree, indirect_a, Some(indirect_b))
+                .expect("resolved ExternalObject ancestry compares"),
             "two invalid indirect owners must not be accepted as ordinary siblings"
         );
     }
 
     #[test]
     fn specialized_class_kinds_must_match() {
-        let tree = ast::ClassTree::new();
+        let tree = tree_with_predefined_types();
         let package = class(rumoca_core::ClassType::Package, Vec::new());
         let function = class(rumoca_core::ClassType::Function, Vec::new());
 
-        assert!(!class_flags_compatible(&tree, &function, Some(&package)));
+        assert!(
+            !class_flags_compatible(&tree, &function, Some(&package))
+                .expect("resolved class flags compare")
+        );
     }
 }

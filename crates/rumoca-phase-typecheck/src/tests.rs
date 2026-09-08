@@ -10,6 +10,7 @@ mod causality_and_function_tests;
 mod dimension_tests;
 mod effective_type_identity_tests;
 mod equation_and_algorithm_tests;
+mod expression_type_result_tests;
 mod instanced_check_tests;
 mod instanced_dimension_tests;
 mod instanced_expression_tests;
@@ -20,6 +21,7 @@ mod parameter_if_branch_tests;
 mod record_constructor_alias_tests;
 mod semantic_identity_tests;
 mod type_root_catalog_tests;
+mod typed_instanced_tests;
 mod user_defined_type_tests;
 mod variability_tests;
 
@@ -44,10 +46,8 @@ fn parse(source: &str) -> ParsedTree {
 fn typecheck_diagnostics(source: &str) -> rumoca_core::Diagnostics {
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let mut tree = resolved.into_inner();
-    let mut checker = TypeChecker::new();
-    checker.check(&mut tree);
-    checker.take_diagnostics()
+    let mut tree = resolved.inner().clone();
+    TypeChecker::new().check(&mut tree)
 }
 
 fn test_semantic_catalog_projection(tree: &ClassTree) -> rumoca_ir_ast::SemanticCatalogProjection {
@@ -64,12 +64,16 @@ fn add_test_instance(
     let instance_id = overlay.alloc_id();
     let qualified_name = QualifiedName::from_dotted(qualified_name);
     let component_ref = test_instance_component_reference(&qualified_name, component);
+    let type_id = match component.type_id {
+        Some(type_id) => type_id,
+        None => TypeId::UNKNOWN,
+    };
     overlay
         .add_component(InstanceData {
             instance_id,
             component_ref,
             qualified_name,
-            type_id: component.type_id.unwrap_or(TypeId::UNKNOWN),
+            type_id,
             type_name: component.type_name.to_string(),
             type_def_id: component.type_def_id,
             source_location: component.location.clone(),

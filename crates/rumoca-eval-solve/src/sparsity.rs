@@ -122,7 +122,7 @@ pub fn derive_column_coloring(pattern: &StructuralPattern) -> rumoca_ir_solve::C
 /// does not carry the derived patterns themselves.
 pub fn derive_solve_structural_artifacts(
     problem: &rumoca_ir_solve::SolveProblem,
-    artifacts: &rumoca_ir_solve::SolveArtifacts,
+    artifacts: &rumoca_ir_solve::SolveArtifactInputs,
 ) -> Result<
     (
         rumoca_ir_solve::ContinuousStructuralArtifacts,
@@ -130,11 +130,11 @@ pub fn derive_solve_structural_artifacts(
     ),
     EvalSolveError,
 > {
-    let solver_columns = problem.solve_layout.solver_scalar_count();
+    let solver_columns = problem.solve_layout().solver_scalar_count();
     let full_columns = problem
-        .layout
+        .layout()
         .y_scalars()
-        .checked_add(problem.layout.p_scalars())
+        .checked_add(problem.layout().p_scalars())
         .ok_or_else(|| {
             sparsity_error(
                 "continuous full Jacobian column count overflows host index range",
@@ -143,25 +143,25 @@ pub fn derive_solve_structural_artifacts(
         })?;
     let implicit = derive_optional_compute_pattern(
         &artifacts.continuous.implicit_jacobian_v,
-        problem.continuous.implicit_rhs.len()?,
+        problem.continuous().implicit_rhs().len()?,
         solver_columns,
     )?;
     let manifold = derive_optional_compute_pattern(
         &artifacts.continuous.manifold_jacobian_v,
-        problem.continuous.manifold_residual.len()?,
+        problem.continuous().manifold_residual().len()?,
         solver_columns,
     )?;
     let algebraic_projection = derive_y_projection_patterns(
         implicit.as_ref(),
-        &problem.continuous.algebraic_projection_plan,
+        problem.continuous().algebraic_projection_plan(),
     )?;
     let algebraic_invalidates_earlier = derive_algebraic_reverse_invalidations(
         implicit.as_ref(),
-        &problem.continuous.algebraic_projection_plan,
+        problem.continuous().algebraic_projection_plan(),
     )?;
     let manifold_projection = derive_y_projection_patterns(
         manifold.as_ref(),
-        &problem.continuous.manifold_projection_plan,
+        problem.continuous().manifold_projection_plan(),
     )?;
     let continuous = rumoca_ir_solve::ContinuousStructuralArtifacts::derived(
         implicit,
@@ -171,12 +171,12 @@ pub fn derive_solve_structural_artifacts(
         manifold_projection,
         derive_optional_scalar_pattern(
             &artifacts.continuous.full_jacobian_v,
-            problem.continuous.derivative_rhs.len()?,
+            problem.continuous().derivative_rhs().len()?,
             full_columns,
         )?,
     );
     let initialization_columns = solver_columns
-        .checked_add(problem.layout.p_scalars())
+        .checked_add(problem.layout().p_scalars())
         .ok_or_else(|| {
             sparsity_error(
                 "initialization Jacobian column count overflows host index range",
@@ -185,12 +185,12 @@ pub fn derive_solve_structural_artifacts(
         })?;
     let initialization_residual = derive_optional_compute_pattern(
         &artifacts.initialization.residual_jacobian_v,
-        problem.initialization.residual.len()?,
+        problem.initialization().residual().len()?,
         initialization_columns,
     )?;
     let initialization_projection = derive_initial_projection_patterns(
         initialization_residual.as_ref(),
-        &problem.initialization.projection_plan,
+        problem.initialization().projection_plan(),
         solver_columns,
     )?;
     let initialization = rumoca_ir_solve::InitializationStructuralArtifacts::derived(
@@ -515,7 +515,7 @@ mod tests {
     fn affine_jvp_sparsity_stays_compact_and_exact() {
         let domain = StructuredIndexDomain {
             binders: vec![StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".into(),
                 lower: 1,
                 upper: 100_000,

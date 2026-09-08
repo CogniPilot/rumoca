@@ -91,15 +91,6 @@ impl<'dae> InitializationParameterOwnership<'dae> {
         self.projection_unknowns.get(&parameter).map(Vec::as_slice)
     }
 
-    /// Every parameter scalar the initialization projection owns. The order is
-    /// irrelevant to incidence construction; the caller collects into a
-    /// deterministic set before issuing a plan.
-    pub(super) fn all_projection_unknown_slots(&self) -> impl Iterator<Item = usize> + '_ {
-        self.projection_unknowns
-            .values()
-            .flat_map(|indices| indices.iter().copied())
-    }
-
     /// The binding an initialization residual must recompute for a parameter,
     /// when a binding is its owner and it reads a projection unknown.
     pub(super) fn substitution(&self, parameter: u32) -> Option<dae::ExprId<'dae>> {
@@ -182,7 +173,7 @@ pub(super) fn initialization_parameter_ownership<'dae>(
     let dependents = if guessed.is_empty() {
         Vec::new()
     } else {
-        ordered_dependents(&reads, &dependent_parameters(&reads, &guessed, &bound))
+        ordered_dependents(&reads, &dependent_parameters(&reads, &guessed, &bound))?
     };
     let substitutions = ParameterBindingSubstitutions::new(
         dependents
@@ -211,7 +202,9 @@ fn projection_unknown_slots<'dae>(
 ) -> Result<HashMap<u32, Vec<usize>>, LowerError> {
     let mut slots = HashMap::new();
     for (id, variable) in view.variables() {
-        if variable.role() != dae::VariableRole::Parameter || variable.fixed() != Some(false) {
+        if variable.role() != dae::VariableRole::Parameter
+            || variable.fixed() != rumoca_core::Fixity::Free
+        {
             continue;
         }
         if bound.contains_key(&id.index()) {
@@ -356,36 +349,42 @@ fn dependent_parameters(
 /// Order the dependents so a binding is re-applied after everything it reads.
 ///
 /// `apply_initialization_updates` iterates to a fixed point either way, so this
-/// only decides how many passes that takes — but a total order also keeps the
-/// emitted row sequence reproducible across runs.
+/// only decides how many passes that takes, and a total order also keeps the
+/// emitted row sequence reproducible across runs. A round with no ready
+/// binding means the dependents form a read cycle; earlier phases reject
+/// binding cycles, so meeting one here is a broken upstream contract and the
+/// ordering refuses instead of silently emitting a declaration-order pass
+/// that hides the cycle.
 fn ordered_dependents(
     reads: &BTreeMap<u32, BTreeSet<u32>>,
     dependents: &BTreeSet<u32>,
-) -> Vec<u32> {
+) -> Result<Vec<u32>, LowerError> {
     let mut pending: BTreeMap<u32, BTreeSet<u32>> = dependents
         .iter()
         .map(|variable| {
-            let blockers = reads
-                .get(variable)
-                .map(|read| read.intersection(dependents).copied().collect())
-                .unwrap_or_default();
+            let blockers = match reads.get(variable) {
+                Some(read) => read.intersection(dependents).copied().collect(),
+                // A dependent with no recorded reads has nothing to wait for.
+                None => BTreeSet::new(),
+            };
             (*variable, blockers)
         })
         .collect();
     let mut order = Vec::with_capacity(dependents.len());
     while !pending.is_empty() {
-        // A binding cycle among parameters is rejected before Solve lowering.
-        // Falling back to declaration order keeps this ordering total instead
-        // of dropping a row if one ever reached here.
-        let ready: Vec<u32> = match pending
+        let ready: Vec<u32> = pending
             .iter()
             .filter(|(_, blockers)| blockers.is_empty())
             .map(|(variable, _)| *variable)
-            .collect::<Vec<_>>()
-        {
-            ready if ready.is_empty() => pending.keys().copied().collect(),
-            ready => ready,
-        };
+            .collect();
+        if ready.is_empty() {
+            return Err(LowerError::unspanned_non_computable(format!(
+                "dependent parameter bindings form a read cycle over variables {:?}; binding \
+                 cycles are rejected before Solve lowering, so this ordering has no valid \
+                 emission and refuses rather than hiding the cycle in declaration order",
+                pending.keys().collect::<Vec<_>>(),
+            )));
+        }
         for variable in ready {
             pending.remove(&variable);
             for blockers in pending.values_mut() {
@@ -394,5 +393,5 @@ fn ordered_dependents(
             order.push(variable);
         }
     }
-    order
+    Ok(order)
 }

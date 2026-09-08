@@ -389,6 +389,15 @@ fn convert_external_annotation(
             "expected a named annotation modification",
         ));
     };
+    // An external annotation is a name-value pair; a bare name
+    // (`annotation(Library)`) carries nothing to lower, so it is refused
+    // rather than given a placeholder value.
+    let Some(value) = value else {
+        return Err(unsupported_external_annotation(
+            annotation,
+            "external annotation has no value",
+        ));
+    };
     if target.parts.is_empty()
         || target
             .parts
@@ -486,9 +495,11 @@ pub(super) fn extract_inline_annotation(
 fn inline_clause(annotation: &ast::Expression) -> Option<(&str, bool)> {
     let (name, value) = match annotation {
         ast::Expression::NamedArgument { name, value, .. } => (name.text.as_ref(), value.as_ref()),
-        ast::Expression::Modification { target, value, .. } => {
-            (target.parts.first()?.ident.text.as_ref(), value.as_ref())
-        }
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => (target.parts.first()?.ident.text.as_ref(), value.as_ref()),
         _ => return None,
     };
     let ast::Expression::Terminal {
@@ -547,7 +558,11 @@ pub(super) fn extract_single_derivative(
 
     // Pattern 2: Modification { target: derivative(...), value: funcName }
     // This handles: derivative(order=2) = funcName, derivative(zeroDerivative=x) = funcName
-    if let ast::Expression::Modification { target, value, .. } = expr
+    if let ast::Expression::Modification {
+        target,
+        value: Some(value),
+        ..
+    } = expr
         && let Some(annotation) = try_extract_modification_derivative(target, value)
     {
         return Some(annotation);
@@ -646,7 +661,11 @@ pub(super) fn extract_derivative_modifier(
     }
 
     // Handle Modification { target: "order"|..., value: ... }
-    if let ast::Expression::Modification { target, value, .. } = expr
+    if let ast::Expression::Modification {
+        target,
+        value: Some(value),
+        ..
+    } = expr
         && target.parts.len() == 1
     {
         apply_modifier(target.parts[0].ident.text.as_ref(), value, annotation);

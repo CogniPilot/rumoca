@@ -764,6 +764,7 @@ impl Default for InstanceData {
 
 /// Instance data for a class/model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClassInstanceData {
     /// Unique identifier for this class instance.
     pub instance_id: InstanceId,
@@ -797,13 +798,6 @@ pub struct ClassInstanceData {
     pub initial_algorithms: Vec<Vec<InstanceStatement>>,
     /// Connection statements from this instance.
     pub connections: Vec<InstanceConnection>,
-    /// Resolved import map: short name → fully-qualified name (MLS §13.2).
-    ///
-    /// Collected from the class definition and its entire inheritance chain.
-    /// Used during flattening to resolve imported short names (e.g., `pi` →
-    /// `Modelica.Constants.pi`) instead of incorrectly qualifying them with
-    /// the component instance prefix.
-    pub resolved_imports: Vec<(String, String)>,
 }
 
 /// An equation in the instance tree.

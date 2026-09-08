@@ -6,7 +6,9 @@ DRAFT
 ## Summary
 Rumoca's sole internal solver boundary is FMI 3 Model Exchange. FMI 2/3 Model
 Exchange and Co-Simulation are projections or hosts of that interface; eFMI
-GALEC/Production Code is the primary safety-oriented code-generation path.
+eFMI Production Code over a prepared Solve-owned block is the planned
+safety-oriented code-generation path; GALEC Algorithm Code is its retained,
+reviewable semantic reference and never authorizes C/H.
 
 ## Specification
 
@@ -33,15 +35,27 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Private `MeRuntimeHost` implements `MeSimulationSession`'s sole FMI 3 ME master algorithm | solver facade | The session remains the semantic owner; initialization, Event Mode, discrete-state iteration, output scheduling, and trace roles cannot fork by numerical method |
 | Numerical plugins implement only `MeIntegratorBackend` | solver implementations | A new solver supplies numerical advance/reset; it cannot invoke FMI lifecycle transitions, schedule observations, or construct traces |
 | `MeSimulationSession` is the incremental master algorithm | solver facade | Batch simulation, live stepping, inputs, reset, events, timeouts, and observation ordering share one state machine |
+| One retained ME instance grants either one exclusive borrowed lease or one consuming lease | solver facade | Rust borrowing makes concurrent hosts and mutation behind a live session unrepresentable without a runtime ownership flag |
+| Session policy carries no start-time coordinate; a leased host derives its admitted start from the retained pristine FMU state, reset replays it, and separately named retiming replaces that session coordinate atomically | solver facade | Component initialization and host scheduling cannot acquire independent start-time authorities |
+| Batch admission is one affine product of the retained pristine start, checked options, and complete output grid; consuming it creates one indivisible host/grid owner whose private cursor remains paired through execution | solver facade | Invalid or unrepresentable schedules cannot partially initialize a component, execution cannot recompute a different grid, and callers cannot forge, clone, or recombine cursors |
+| A failed borrowed host initialization or plugin construction restores the captured pristine snapshot before releasing the retained borrow; failed restoration outranks and retains the attempted typed failure | solver facade | Construction failure is atomic and never becomes retry or fallback policy |
+| Active FMI initialization constructs one exact-width state/nominal outcome; termination is a distinct outcome carrying the component-issued exact Event-Mode state snapshot captured before `fmi3Terminate`, never an absent or fabricated numerical point | solver facade | Short or surplus state results are rejected once at construction and are never padded by host creation or restart |
+| A Terminated ME component retains FMI 3.0.2 §2.3.8 final-value getter permissions while rejecting every mutator and active-algorithm operation | FMI component | Final Float64/outputs, continuous states, nominals, derivatives, directional derivatives, and indicators remain inspectable without weakening Terminated's absorbing lifecycle |
+| Parameterless reset replays the component-issued pristine start; explicit start-coordinate replacement is a separately named retime operation | solver facade / Wasm adapter | Reset cannot invent a deployment-specific zero start |
+| Every scheduled-session implementation explicitly supplies total batched-value access and an optional maximum advance; the trait supplies no policy defaults | simulation runtime | Batch admission rejects absent or incomplete requested-name coverage; direct and facade backends cannot acquire path-dependent fallback behavior or a magic schedule step; current RK and Diffsol policies both return no maximum advance |
+| Automatic integrator selection probes and returns the same retained ME instance; the selected host restores that instance's pristine snapshot before initialization | simulation runtime / solver facade | Capability selection neither re-instantiates the component nor leaks the probe lifecycle into execution |
 | `FmiComponent` is the only linked or packaged component source | checked FMI projection | Runtime and emitted metadata share one inventory |
 | Component operations are exact FMI 3.0.2 semantic projections | FMI component | Private extensions cannot become solver dependencies |
+| One closed total operation/state relation admits every dynamic component call and issues a non-duplicable operation-specific guard tied to that lifecycle instance | FMI component | Private kernels cannot be called with a broad, foreign, stale, or recombined lifecycle proof |
+| Batched Float64 writes consume construction-issued causality, variability, initial, and write-policy evidence; batched reads validate the complete instance-branded reference inventory before evaluation or output mutation | FMI component | Names cannot reconstruct write authority, and a foreign trailing reference cannot partially mutate component or caller storage |
+| Continuous-state derivative, directional-derivative, nominal, state, and event-indicator getters require exact checked buffer widths and leave every caller slot unchanged on refusal or evaluation failure | FMI component | The linked component never pads, truncates, resizes, or partially repairs an FMI array operation |
+| Root-step acceptance, interval scanning, and retained-indicator refresh join the root policy, fixed workspace, derivative controller, and kernel only inside the private component owner that issued them together. The session supplies only its numerical backend, time budget, and checked proposal; no policy/workspace/scan-target projection exists, and a syntax-aware exact call graph rejects any second join site | ME host component | Two legitimate equal-width sessions cannot cross-pair component capabilities and silently seed one event search from another component's relation history |
 | Integrator boundary values use checked constructors and private fields | solver facade | Invalid outcomes never enter the master algorithm |
 | Native in-process calls may be zero-copy | FMI host | Preserve current performance |
 | Repeated directional seeds may reuse a bitwise-identical settled coordinate | FMI component | Avoid redundant algebraic projection |
 | Root evaluation may warm-start its complete checked refresh plan from a bitwise-identical derivative-settled coordinate | FMI component | Keep roots on the same algebraic branch without omitting root dependencies |
 | At a bitwise-identical derivative-settled coordinate, root evaluation may omit covered value stages and execute only a construction-issued checked-BLT remainder; it may omit the complete refresh only when that remainder is empty | FMI component | Remove duplicate work without turning a warm start into an unchecked semantic shortcut |
 | Settled-coordinate caches invalidate on lifecycle or parameter mutation | FMI component | Never reuse stale algebraics |
-| An empty checked manifold-projection artifact certifies that continuous-state projection returns unchanged without settling observation algebraics | FMI component | Do not execute algebraic work for a structurally absent constraint system |
 | Wasm uses the FMI layered-standard WIT profile | Wasm adapter | Avoid a private ABI |
 | Native and Wasm hosts expose batched state/variable access | FMI host | Avoid per-scalar boundary overhead |
 | `rumoca-input` writes model inputs only through typed FMI setters | input/runtime boundary | One input lifecycle |
@@ -56,7 +70,7 @@ Modelica -> checked IR pipeline -> checked Solve/GALEC kernel
 | Transport timeout, disconnect, and failure remain distinct | scheduler boundary | Prevent false successful steps |
 | Transport errors never become no-input or successful-step outcomes | scheduler boundary | Failures remain visible |
 | FMI 2 and FMI 3 adapters share semantic state | FMI runtime | Reduce certification surface |
-| eFMI GALEC/Production Code remains a main target | eFMI projection | Safety-oriented deployment |
+| eFMI Algorithm Code plus Solve-owned Production Code remains a main product | Correlated `SolveAlgorithmProduct` views | Safety-oriented deployment without an Algorithm-Code-to-C route |
 | Symbolic targets project from computable checked Solve | analysis codegen | Avoid duplicate structural analysis |
 | Every deployment form retains checked provenance | all adapters | Traceable evidence |
 | Unsupported lifecycle capability fails before execution | capability analysis | No plausible bad results |

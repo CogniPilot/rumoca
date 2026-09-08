@@ -84,6 +84,18 @@ pub fn eval_real<C: AstScalarContext>(
     scope: &str,
     depth: usize,
 ) -> Option<f64> {
+    if rumoca_ir_ast::expression_required_value_violation(expr).is_some() {
+        return None;
+    }
+    eval_real_inner(expr, ctx, scope, depth)
+}
+
+fn eval_real_inner<C: AstScalarContext>(
+    expr: &Expression,
+    ctx: &C,
+    scope: &str,
+    depth: usize,
+) -> Option<f64> {
     if ctx
         .expression_depth_limit()
         .is_some_and(|limit| depth > limit)
@@ -91,7 +103,7 @@ pub fn eval_real<C: AstScalarContext>(
         return None;
     }
     let child_depth = depth.checked_add(1)?;
-    let recurse = |expr| eval_real(expr, ctx, scope, child_depth);
+    let recurse = |expr| eval_real_inner(expr, ctx, scope, child_depth);
     match expr {
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedReal,
@@ -112,14 +124,11 @@ pub fn eval_real<C: AstScalarContext>(
         Expression::ComponentReference(_)
         | Expression::FieldAccess { .. }
         | Expression::ArrayIndex { .. } => ctx.lookup_real(expr, scope, child_depth),
-        Expression::Unary { op, rhs, .. } => {
-            let value = recurse(rhs)?;
-            match op {
-                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
-                OpUnary::Minus | OpUnary::DotMinus => Some(-value),
-                OpUnary::Not => None,
-            }
-        }
+        Expression::Unary { op, rhs, .. } => match op {
+            OpUnary::Plus | OpUnary::DotPlus => recurse(rhs),
+            OpUnary::Minus | OpUnary::DotMinus => recurse(rhs).map(|value| -value),
+            OpUnary::Not | OpUnary::Empty => None,
+        },
         Expression::Binary { op, lhs, rhs, .. } => {
             let lhs = recurse(lhs)?;
             let rhs = recurse(rhs)?;
@@ -165,11 +174,11 @@ fn eval_real_if<C: AstScalarContext>(
     depth: usize,
 ) -> Option<f64> {
     for (index, (condition, value)) in branches.iter().enumerate() {
-        match eval_boolean(condition, ctx, scope, depth) {
-            Some(true) => return eval_real(value, ctx, scope, depth),
+        match eval_boolean_inner(condition, ctx, scope, depth) {
+            Some(true) => return eval_real_inner(value, ctx, scope, depth),
             Some(false) => {}
             None => {
-                let common = eval_real(value, ctx, scope, depth)?;
+                let common = eval_real_inner(value, ctx, scope, depth)?;
                 if !remaining_real_outcomes_match(
                     &branches[index + 1..],
                     common,
@@ -179,12 +188,12 @@ fn eval_real_if<C: AstScalarContext>(
                 )? {
                     return None;
                 }
-                return same_real(eval_real(else_branch, ctx, scope, depth)?, common)
+                return same_real(eval_real_inner(else_branch, ctx, scope, depth)?, common)
                     .then_some(common);
             }
         }
     }
-    eval_real(else_branch, ctx, scope, depth)
+    eval_real_inner(else_branch, ctx, scope, depth)
 }
 
 fn remaining_real_outcomes_match<C: AstScalarContext>(
@@ -195,7 +204,7 @@ fn remaining_real_outcomes_match<C: AstScalarContext>(
     depth: usize,
 ) -> Option<bool> {
     for (_, value) in branches {
-        if !same_real(eval_real(value, ctx, scope, depth)?, common) {
+        if !same_real(eval_real_inner(value, ctx, scope, depth)?, common) {
             return Some(false);
         }
     }
@@ -212,6 +221,18 @@ pub fn eval_integer<C: AstScalarContext>(
     scope: &str,
     depth: usize,
 ) -> Option<i64> {
+    if rumoca_ir_ast::expression_required_value_violation(expr).is_some() {
+        return None;
+    }
+    eval_integer_inner(expr, ctx, scope, depth)
+}
+
+fn eval_integer_inner<C: AstScalarContext>(
+    expr: &Expression,
+    ctx: &C,
+    scope: &str,
+    depth: usize,
+) -> Option<i64> {
     if ctx
         .expression_depth_limit()
         .is_some_and(|limit| depth > limit)
@@ -219,7 +240,7 @@ pub fn eval_integer<C: AstScalarContext>(
         return None;
     }
     let child_depth = depth.checked_add(1)?;
-    let recurse = |expr| eval_integer(expr, ctx, scope, child_depth);
+    let recurse = |expr| eval_integer_inner(expr, ctx, scope, child_depth);
     match expr {
         Expression::Terminal {
             terminal_type: TerminalType::UnsignedInteger,
@@ -239,14 +260,11 @@ pub fn eval_integer<C: AstScalarContext>(
         Expression::ComponentReference(_)
         | Expression::FieldAccess { .. }
         | Expression::ArrayIndex { .. } => ctx.lookup_integer(expr, scope, child_depth),
-        Expression::Unary { op, rhs, span } => {
-            let value = recurse(rhs)?;
-            match op {
-                OpUnary::Plus | OpUnary::DotPlus | OpUnary::Empty => Some(value),
-                OpUnary::Minus | OpUnary::DotMinus => ctx.negate_integer(value, *span),
-                OpUnary::Not => None,
-            }
-        }
+        Expression::Unary { op, rhs, span } => match op {
+            OpUnary::Plus | OpUnary::DotPlus => recurse(rhs),
+            OpUnary::Minus | OpUnary::DotMinus => ctx.negate_integer(recurse(rhs)?, *span),
+            OpUnary::Not | OpUnary::Empty => None,
+        },
         Expression::Binary { op, lhs, rhs, span } => {
             ctx.integer_binary(op, recurse(lhs)?, recurse(rhs)?, *span)
         }
@@ -278,11 +296,11 @@ fn eval_integer_if<C: AstScalarContext>(
     depth: usize,
 ) -> Option<i64> {
     for (index, (condition, value)) in branches.iter().enumerate() {
-        match eval_boolean(condition, ctx, scope, depth) {
-            Some(true) => return eval_integer(value, ctx, scope, depth),
+        match eval_boolean_inner(condition, ctx, scope, depth) {
+            Some(true) => return eval_integer_inner(value, ctx, scope, depth),
             Some(false) => {}
             None => {
-                let common = eval_integer(value, ctx, scope, depth)?;
+                let common = eval_integer_inner(value, ctx, scope, depth)?;
                 if !remaining_integer_outcomes_match(
                     &branches[index + 1..],
                     common,
@@ -292,12 +310,12 @@ fn eval_integer_if<C: AstScalarContext>(
                 ) {
                     return None;
                 }
-                return (eval_integer(else_branch, ctx, scope, depth) == Some(common))
+                return (eval_integer_inner(else_branch, ctx, scope, depth) == Some(common))
                     .then_some(common);
             }
         }
     }
-    eval_integer(else_branch, ctx, scope, depth)
+    eval_integer_inner(else_branch, ctx, scope, depth)
 }
 
 fn remaining_integer_outcomes_match<C: AstScalarContext>(
@@ -309,10 +327,22 @@ fn remaining_integer_outcomes_match<C: AstScalarContext>(
 ) -> bool {
     branches
         .iter()
-        .all(|(_, value)| eval_integer(value, ctx, scope, depth) == Some(common))
+        .all(|(_, value)| eval_integer_inner(value, ctx, scope, depth) == Some(common))
 }
 
 pub fn eval_boolean<C: AstScalarContext>(
+    expr: &Expression,
+    ctx: &C,
+    scope: &str,
+    depth: usize,
+) -> Option<bool> {
+    if rumoca_ir_ast::expression_required_value_violation(expr).is_some() {
+        return None;
+    }
+    eval_boolean_inner(expr, ctx, scope, depth)
+}
+
+fn eval_boolean_inner<C: AstScalarContext>(
     expr: &Expression,
     ctx: &C,
     scope: &str,
@@ -326,7 +356,7 @@ pub fn eval_boolean<C: AstScalarContext>(
         return None;
     }
     let child_depth = depth.checked_add(1)?;
-    let recurse = |expr| eval_boolean(expr, ctx, scope, child_depth);
+    let recurse = |expr| eval_boolean_inner(expr, ctx, scope, child_depth);
     match expr {
         Expression::Terminal {
             terminal_type: TerminalType::Bool,
@@ -378,15 +408,15 @@ fn eval_boolean_binary<C: AstScalarContext>(
     depth: usize,
 ) -> Option<bool> {
     match op {
-        OpBinary::And => match eval_boolean(lhs, ctx, scope, depth) {
+        OpBinary::And => match eval_boolean_inner(lhs, ctx, scope, depth) {
             Some(false) => Some(false),
-            Some(true) => eval_boolean(rhs, ctx, scope, depth),
-            None => (eval_boolean(rhs, ctx, scope, depth) == Some(false)).then_some(false),
+            Some(true) => eval_boolean_inner(rhs, ctx, scope, depth),
+            None => (eval_boolean_inner(rhs, ctx, scope, depth) == Some(false)).then_some(false),
         },
-        OpBinary::Or => match eval_boolean(lhs, ctx, scope, depth) {
+        OpBinary::Or => match eval_boolean_inner(lhs, ctx, scope, depth) {
             Some(true) => Some(true),
-            Some(false) => eval_boolean(rhs, ctx, scope, depth),
-            None => (eval_boolean(rhs, ctx, scope, depth) == Some(true)).then_some(true),
+            Some(false) => eval_boolean_inner(rhs, ctx, scope, depth),
+            None => (eval_boolean_inner(rhs, ctx, scope, depth) == Some(true)).then_some(true),
         },
         OpBinary::Eq | OpBinary::Neq => {
             let equal = scalar_equal(lhs, rhs, ctx, scope, depth)?;
@@ -411,21 +441,21 @@ fn scalar_equal<C: AstScalarContext>(
     depth: usize,
 ) -> Option<bool> {
     if let (Some(lhs), Some(rhs)) = (
-        eval_integer(lhs, ctx, scope, depth),
-        eval_integer(rhs, ctx, scope, depth),
+        eval_integer_inner(lhs, ctx, scope, depth),
+        eval_integer_inner(rhs, ctx, scope, depth),
     ) {
         return Some(lhs == rhs);
     }
     if let (Some(lhs), Some(rhs)) = (
-        eval_real(lhs, ctx, scope, depth),
-        eval_real(rhs, ctx, scope, depth),
+        eval_real_inner(lhs, ctx, scope, depth),
+        eval_real_inner(rhs, ctx, scope, depth),
     ) {
         return Some(lhs == rhs);
     }
     if let Some(equal) = ctx.enum_equal(lhs, rhs, scope, depth) {
         return Some(equal);
     }
-    Some(eval_boolean(lhs, ctx, scope, depth)? == eval_boolean(rhs, ctx, scope, depth)?)
+    Some(eval_boolean_inner(lhs, ctx, scope, depth)? == eval_boolean_inner(rhs, ctx, scope, depth)?)
 }
 
 fn compare_numeric<C: AstScalarContext>(
@@ -437,13 +467,13 @@ fn compare_numeric<C: AstScalarContext>(
     depth: usize,
 ) -> Option<bool> {
     if let (Some(lhs), Some(rhs)) = (
-        eval_integer(lhs, ctx, scope, depth),
-        eval_integer(rhs, ctx, scope, depth),
+        eval_integer_inner(lhs, ctx, scope, depth),
+        eval_integer_inner(rhs, ctx, scope, depth),
     ) {
         return Some(compare_ordered(op, lhs, rhs));
     }
-    let lhs = eval_real(lhs, ctx, scope, depth)?;
-    let rhs = eval_real(rhs, ctx, scope, depth)?;
+    let lhs = eval_real_inner(lhs, ctx, scope, depth)?;
+    let rhs = eval_real_inner(rhs, ctx, scope, depth)?;
     Some(compare_ordered(op, lhs, rhs))
 }
 
@@ -465,11 +495,11 @@ fn eval_boolean_if<C: AstScalarContext>(
     depth: usize,
 ) -> Option<bool> {
     for (index, (condition, value)) in branches.iter().enumerate() {
-        match eval_boolean(condition, ctx, scope, depth) {
-            Some(true) => return eval_boolean(value, ctx, scope, depth),
+        match eval_boolean_inner(condition, ctx, scope, depth) {
+            Some(true) => return eval_boolean_inner(value, ctx, scope, depth),
             Some(false) => {}
             None => {
-                let common = eval_boolean(value, ctx, scope, depth)?;
+                let common = eval_boolean_inner(value, ctx, scope, depth)?;
                 if !remaining_boolean_outcomes_match(
                     &branches[index + 1..],
                     common,
@@ -479,12 +509,12 @@ fn eval_boolean_if<C: AstScalarContext>(
                 ) {
                     return None;
                 }
-                return (eval_boolean(else_branch, ctx, scope, depth) == Some(common))
+                return (eval_boolean_inner(else_branch, ctx, scope, depth) == Some(common))
                     .then_some(common);
             }
         }
     }
-    eval_boolean(else_branch, ctx, scope, depth)
+    eval_boolean_inner(else_branch, ctx, scope, depth)
 }
 
 fn remaining_boolean_outcomes_match<C: AstScalarContext>(
@@ -496,7 +526,7 @@ fn remaining_boolean_outcomes_match<C: AstScalarContext>(
 ) -> bool {
     branches
         .iter()
-        .all(|(_, value)| eval_boolean(value, ctx, scope, depth) == Some(common))
+        .all(|(_, value)| eval_boolean_inner(value, ctx, scope, depth) == Some(common))
 }
 
 #[cfg(test)]
@@ -564,6 +594,18 @@ mod tests {
             token: token(&value.to_string()),
             span: Span::DUMMY,
         }
+    }
+
+    fn bool_literal(value: bool) -> Expression {
+        Expression::Terminal {
+            terminal_type: TerminalType::Bool,
+            token: token(if value { "true" } else { "false" }),
+            span: Span::DUMMY,
+        }
+    }
+
+    fn recovery_expression() -> Expression {
+        Expression::Empty { span: Span::DUMMY }
     }
 
     fn comp_ref(name: &str) -> Expression {
@@ -638,6 +680,83 @@ mod tests {
                 0,
             );
             assert_eq!(folded, expected, "{lhs} {op:?} {rhs}");
+        }
+    }
+
+    #[test]
+    fn recovery_unary_operator_never_folds_as_unary_plus() {
+        let ctx = IntegerOnly;
+        let integer = Expression::Unary {
+            op: OpUnary::Empty,
+            rhs: Arc::new(int_literal(7)),
+            span: Span::DUMMY,
+        };
+        let real = Expression::Unary {
+            op: OpUnary::Empty,
+            rhs: Arc::new(real_literal("7.5")),
+            span: Span::DUMMY,
+        };
+
+        assert_eq!(eval_integer(&integer, &ctx, "scope", 0), None);
+        assert_eq!(eval_real(&real, &ctx, "scope", 0), None);
+    }
+
+    #[test]
+    fn recovery_control_flow_never_launders_an_equal_or_short_circuit_result() {
+        let ctx = IntegerOnly;
+        let integer_if = Expression::If {
+            branches: vec![(recovery_expression(), int_literal(1))],
+            else_branch: Arc::new(int_literal(1)),
+            span: Span::DUMMY,
+        };
+        let real_if = Expression::If {
+            branches: vec![(recovery_expression(), real_literal("1.0"))],
+            else_branch: Arc::new(real_literal("1.0")),
+            span: Span::DUMMY,
+        };
+        let boolean_if = Expression::If {
+            branches: vec![(recovery_expression(), bool_literal(true))],
+            else_branch: Arc::new(bool_literal(true)),
+            span: Span::DUMMY,
+        };
+        let and = compare(OpBinary::And, recovery_expression(), bool_literal(false));
+        let or = compare(OpBinary::Or, recovery_expression(), bool_literal(true));
+
+        assert_eq!(eval_integer(&integer_if, &ctx, "scope", 0), None);
+        assert_eq!(eval_real(&real_if, &ctx, "scope", 0), None);
+        assert_eq!(eval_boolean(&boolean_if, &ctx, "scope", 0), None);
+        assert_eq!(eval_boolean(&and, &ctx, "scope", 0), None);
+        assert_eq!(eval_boolean(&or, &ctx, "scope", 0), None);
+    }
+
+    #[test]
+    fn context_only_syntax_never_launders_an_equal_or_short_circuit_result() {
+        let ctx = IntegerOnly;
+        for invalid in [
+            compare(OpBinary::Assign, int_literal(1), int_literal(2)),
+            Expression::Terminal {
+                terminal_type: TerminalType::End,
+                token: token("end"),
+                span: Span::DUMMY,
+            },
+        ] {
+            let integer_if = Expression::If {
+                branches: vec![(invalid.clone(), int_literal(3))],
+                else_branch: Arc::new(int_literal(3)),
+                span: Span::DUMMY,
+            };
+            let real_if = Expression::If {
+                branches: vec![(invalid.clone(), real_literal("3.0"))],
+                else_branch: Arc::new(real_literal("3.0")),
+                span: Span::DUMMY,
+            };
+            let and = compare(OpBinary::And, invalid.clone(), bool_literal(false));
+            let or = compare(OpBinary::Or, invalid, bool_literal(true));
+
+            assert_eq!(eval_integer(&integer_if, &ctx, "scope", 0), None);
+            assert_eq!(eval_real(&real_if, &ctx, "scope", 0), None);
+            assert_eq!(eval_boolean(&and, &ctx, "scope", 0), None);
+            assert_eq!(eval_boolean(&or, &ctx, "scope", 0), None);
         }
     }
 }

@@ -8,6 +8,20 @@ mod function_calls;
 
 use super::*;
 
+fn test_program_output_count(program: &[LinearOp]) -> usize {
+    program
+        .iter()
+        .try_fold(0usize, |total, operation| {
+            let count = match operation {
+                LinearOp::StoreOutput { .. } => 1,
+                LinearOp::StoreOutputRange { count, .. } => *count,
+                _ => 0,
+            };
+            total.checked_add(count)
+        })
+        .expect("test program output count fits usize")
+}
+
 fn eval_residual_rows(
     rows: &rumoca_ir_solve::ScalarProgramBlock,
     y: &[f64],
@@ -185,19 +199,16 @@ fn function_conditional_ad_keeps_primal_predicate_and_dual_result_tuple() {
     assert_eq!(program.target_widths(), &[2]);
     assert_eq!(program.result_count(), 2);
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.arms()[0].condition(),),
+        test_program_output_count(program.arms()[0].condition()),
         1,
         "branch selection is primal-only"
     );
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.arms()[0].result()),
+        test_program_output_count(program.arms()[0].result()),
         2,
         "selected result retains interleaved primal/derivative lanes"
     );
-    assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(program.fallback()),
-        2
-    );
+    assert_eq!(test_program_output_count(program.fallback()), 2);
 }
 
 #[test]
@@ -429,6 +440,7 @@ fn cubic_power_lowers_to_multiplication_chain() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 owner,
                 dae::VariableAttributes::default(),
@@ -454,7 +466,7 @@ fn cubic_power_lowers_to_multiplication_chain() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     let operations = &rows.programs()[0];
@@ -495,6 +507,7 @@ fn integer_builtin_lowers_to_floor_without_conflating_division_semantics() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 owner,
                 dae::VariableAttributes::default(),
@@ -524,7 +537,7 @@ fn integer_builtin_lowers_to_floor_without_conflating_division_semantics() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert!(rows.programs()[0].iter().any(|operation| matches!(
@@ -558,6 +571,7 @@ fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(3),
                 matrix,
                 owner,
                 dae::VariableAttributes::default(),
@@ -587,7 +601,7 @@ fn promoted_concatenation_selects_each_operand_scalar_in_result_order() {
     let solve = lower_solve_problem(&model).unwrap();
     reseal_solve_problem(&solve)
         .expect("constructor-certified concatenation produces valid Solve rows");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -612,6 +626,7 @@ fn identity_derives_diagonal_constants_without_materializing_dae_scalars() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(4),
                 matrix,
                 owner,
                 dae::VariableAttributes::default(),
@@ -639,7 +654,7 @@ fn identity_derives_diagonal_constants_without_materializing_dae_scalars() {
         "identity remains one compact expression"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     assert_eq!(rows.row_count(), 1);
@@ -672,12 +687,14 @@ fn vector_lowers_each_result_scalar_directly_from_its_compact_operand() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(5),
                     tensor,
                     owner,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(6),
                     vector,
                     owner,
                     dae::VariableAttributes::default(),
@@ -708,7 +725,7 @@ fn vector_lowers_each_result_scalar_directly_from_its_compact_operand() {
         "vector remains one compact DAE node"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     assert_eq!(rows.row_count(), 1);
@@ -739,12 +756,14 @@ fn transpose_lowers_rank_three_rows_through_the_exact_operand_permutation() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(7),
                     input_type,
                     owner,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(8),
                     result_type,
                     owner,
                     dae::VariableAttributes::default(),
@@ -771,7 +790,7 @@ fn transpose_lowers_rank_three_rows_through_the_exact_operand_permutation() {
 
     assert_eq!(model.inspect(|view| view.expression_count()), 4);
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     let expected = [0, 1, 6, 7, 2, 3, 8, 9, 4, 5, 10, 11];
@@ -796,12 +815,14 @@ fn skew_lowers_each_matrix_scalar_from_one_compact_parameter_vector() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(9),
                     vector,
                     owner,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(10),
                     matrix,
                     owner,
                     dae::VariableAttributes::default(),
@@ -830,7 +851,7 @@ fn skew_lowers_each_matrix_scalar_from_one_compact_parameter_vector() {
         "skew remains one compact DAE node"
     );
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected")
     };
     let expected = [
@@ -872,18 +893,21 @@ fn cross_lowers_to_one_checked_tensor_owner() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(11),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.parameter(
                     VarName::new("q"),
+                    rumoca_core::InstanceId::new(12),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(13),
                     vector,
                     at,
                     dae::VariableAttributes::default(),
@@ -912,7 +936,7 @@ fn cross_lowers_to_one_checked_tensor_owner() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one tensor residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -957,6 +981,7 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(14),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -1013,7 +1038,7 @@ fn static_quotient_family_lowers_to_computable_solve_operations() {
     let solve = lower_solve_problem(&model).unwrap();
     reseal_solve_problem(&solve)
         .expect("constructor-certified quotients produce computable Solve IR");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_static_quotient_program(&rows.programs()[0]);

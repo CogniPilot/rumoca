@@ -424,6 +424,13 @@ mod tests {
         }
     }
 
+    fn derivative(args: Vec<ast::Expression>) -> ast::Expression {
+        ast::Expression::DerivativeCall {
+            args,
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
     fn simple(lhs: ast::Expression, rhs: ast::Expression) -> ast::Equation {
         ast::Equation::Simple { lhs, rhs }
     }
@@ -449,7 +456,7 @@ mod tests {
     fn nested_stencil_loop_classifies_regular_with_strides() {
         // for i loop for j loop der(u[i,j]) = u[i+1,j] - u[i-1,j]; end for; end for;
         let body = simple(
-            call("der", vec![arr("u", vec![name_ref("i"), name_ref("j")])]),
+            derivative(vec![arr("u", vec![name_ref("i"), name_ref("j")])]),
             binary(
                 OpBinary::Sub,
                 arr(

@@ -1,5 +1,8 @@
 //! Direct C-ABI lifecycle checks against the exact official FMI headers.
 
+mod fmi3_description;
+mod unit_derivative;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -7,18 +10,53 @@ use std::process::Command;
 use tempfile::tempdir;
 
 pub(super) fn validate(version: &str, fmu_root: &Path, standard: &Path, xml: &str) {
-    let identifier = attribute(xml, "modelIdentifier");
     let driver = match version {
-        "fmi2" => fmi2_driver(identifier, attribute(xml, "guid")),
-        "fmi3" => fmi3_driver(identifier, attribute(xml, "instantiationToken")),
+        "fmi2" => fmi2_driver(
+            fmi2_attribute(xml, "modelIdentifier"),
+            fmi2_attribute(xml, "guid"),
+        ),
+        "fmi3" => {
+            let description = fmi3_description::Description::parse(xml);
+            fmi3_driver(
+                &description.model_identifier,
+                &description.instantiation_token,
+            )
+        }
         other => panic!("unexpected FMI version {other}"),
     };
+    compile_and_run(fmu_root, standard, &driver, "FMI lifecycle driver");
+}
+
+pub(super) fn validate_unit_derivative(
+    fmu_root: &Path,
+    standard: &Path,
+    model_description: &str,
+    build_description: &str,
+) {
+    unit_derivative::validate(fmu_root, standard, model_description, build_description);
+}
+
+fn compile_and_run(fmu_root: &Path, standard: &Path, driver: &str, label: &str) {
+    compile_and_run_with_definitions(fmu_root, standard, driver, label, &[]);
+}
+
+fn compile_and_run_with_definitions(
+    fmu_root: &Path,
+    standard: &Path,
+    driver: &str,
+    label: &str,
+    definitions: &[(&str, &str)],
+) {
     let work = tempdir().expect("create FMI lifecycle driver directory");
     let source = work.path().join("lifecycle.c");
     let executable = work.path().join("lifecycle");
     fs::write(&source, driver).expect("write FMI lifecycle driver");
-    let output = Command::new("cc")
-        .args(["-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-Werror"])
+    let mut compiler = Command::new("cc");
+    compiler.args(["-std=c99", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]);
+    for (name, value) in definitions {
+        compiler.arg(format!("-D{name}={value}"));
+    }
+    let output = compiler
         .arg(format!("-I{}", standard.join("headers").display()))
         .arg(fmu_root.join("sources/model.c"))
         .arg(&source)
@@ -26,14 +64,14 @@ pub(super) fn validate(version: &str, fmu_root: &Path, standard: &Path, xml: &st
         .arg(&executable)
         .output()
         .expect("compile FMI lifecycle driver");
-    assert_command_succeeded(&output, "compile FMI lifecycle driver");
+    assert_command_succeeded(&output, &format!("compile {label}"));
     let output = Command::new(executable)
         .output()
         .expect("execute FMI lifecycle driver");
-    assert_command_succeeded(&output, "execute FMI lifecycle driver");
+    assert_command_succeeded(&output, &format!("execute {label}"));
 }
 
-fn attribute<'a>(xml: &'a str, name: &str) -> &'a str {
+fn fmi2_attribute<'a>(xml: &'a str, name: &str) -> &'a str {
     let prefix = format!("{name}=\"");
     let start = xml
         .find(&prefix)
@@ -133,7 +171,7 @@ int main(void) {{
 fn fmi3_driver(identifier: &str, token: &str) -> String {
     FMI3_DRIVER
         .replace("{identifier}", identifier)
-        .replace("{token}", token)
+        .replace("{token}", &fmi3_description::c_string_contents(token))
         .replace("{{", "{")
         .replace("}}", "}")
 }

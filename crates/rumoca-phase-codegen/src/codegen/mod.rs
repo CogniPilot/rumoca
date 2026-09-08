@@ -1,13 +1,13 @@
 //! Template-driven code generation and shared render helpers.
 
 use crate::errors::{CodegenError, render_err};
-use indexmap::IndexMap;
 use minijinja::{Environment, UndefinedBehavior, Value};
 use rumoca_ir_ast as ast;
 use rumoca_ir_dae as dae;
 use rumoca_ir_flat as flat;
 use rumoca_ir_solve as solve;
-use serde::Serialize;
+
+use crate::{TemplateBindings, UntrustedRenderedText};
 
 mod algorithm_code_renderer;
 #[cfg(test)]
@@ -16,53 +16,67 @@ mod checked_dae_diagnostic_tests;
 mod checked_dae_tests;
 #[cfg(test)]
 mod codegen_test_support;
+#[cfg(test)]
+mod command_registry_tests;
 mod dae_backend;
 mod dae_diagnostics;
 mod discrete_render_view;
-mod expr_config;
 #[cfg(test)]
 mod fmi_projection_tests;
 #[cfg(test)]
 mod galec_golden_tests;
 #[cfg(test)]
 mod galec_manifest_template_tests;
-mod render_expr;
 mod render_solve;
 mod render_solve_ops;
-mod render_stmt;
 #[cfg(test)]
 mod scalar_plan_template_tests;
 mod scalar_program_plan;
+mod solve_algorithm_production_renderer;
 mod solve_lazy;
 mod solve_renderer;
-#[cfg(test)]
-mod solve_sparse_output_tests;
 #[cfg(test)]
 mod solve_template_context_tests;
 #[cfg(test)]
 mod stencil_codegen_tests;
-mod symbol_alloc;
 #[cfg(test)]
 mod wgsl_ode_tests;
 
-use crate::templates;
-pub(crate) use expr_config::{ExprConfig, IfStyle, get_str_attr};
-use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
     render_linsolve_mlir_function, render_matmul_mlir_function,
-    render_solve_row_output_wgsl_function, render_solve_row_wgsl_function,
-    render_wgsl_kernel_schedule_json_function, render_wgsl_kernel_workgroup_total_function,
-    render_wgsl_native_family_inventory_json_function,
-};
-use render_stmt::{render_equation, render_flat_equation, render_statement, render_statements};
-use symbol_alloc::{
-    allocate_symbols_function, emitted_symbol, lookup_symbol_value, symbol_function,
+    render_solve_row_output_wgsl_function, render_wgsl_kernel_schedule_json_function,
+    render_wgsl_kernel_workgroup_total_function, render_wgsl_native_family_inventory_json_function,
 };
 
+pub use solve_algorithm_production_renderer::render_solve_algorithm_production_file;
 pub use solve_lazy::explicit_algebraic_assignment_complete;
 
 /// Result type for internal render functions.
 pub(crate) type RenderResult = Result<String, minijinja::Error>;
+
+/// Read one required field from a dynamic template value.
+///
+/// This is transport validation only: it does not interpret an IR variant or
+/// choose target syntax. Serialized maps return `undefined` for a missing key,
+/// so callers need one fail-closed check shared across template commands.
+pub(crate) fn get_field(value: &Value, name: &str) -> Result<Value, minijinja::Error> {
+    if let Ok(result) = value.get_attr(name)
+        && !result.is_undefined()
+        && !result.is_none()
+    {
+        return Ok(result);
+    }
+    if let Ok(result) = value.get_item(&Value::from(name))
+        && !result.is_undefined()
+        && !result.is_none()
+    {
+        return Ok(result);
+    }
+    Err(minijinja::Error::new(
+        minijinja::ErrorKind::UndefinedError,
+        format!("field '{name}' not found"),
+    ))
+}
 
 pub(crate) fn render_vec_with_capacity<T>(
     capacity: usize,
@@ -83,52 +97,51 @@ pub(crate) fn reserve_render_capacity<T>(
         .map_err(|_| render_err(format!("{context} exceeds host memory limits")))
 }
 
-fn render_string_with_capacity(
-    capacity: usize,
-    context: &'static str,
-) -> Result<String, minijinja::Error> {
-    let mut value = String::new();
-    reserve_render_string_capacity(&mut value, capacity, context)?;
-    Ok(value)
+/// Strictly parsed target-completion presentation. The template engine and
+/// source remain phase-owned; publication can supply only the final output
+/// path and receives inert rendered text.
+#[derive(Debug)]
+pub struct PreparedCompletionMessage {
+    source: Option<Box<str>>,
+    model_name: Box<str>,
+    target_name: Box<str>,
 }
 
-fn reserve_render_string_capacity(
-    value: &mut String,
-    additional: usize,
-    context: &'static str,
-) -> Result<(), minijinja::Error> {
-    value
-        .try_reserve_exact(additional)
-        .map_err(|_| render_err(format!("{context} exceeds host memory limits")))
-}
-
-pub(crate) fn join_usize_values(
-    values: &[usize],
-    separator: &str,
-    context: &'static str,
-) -> Result<String, minijinja::Error> {
-    let mut rendered = render_vec_with_capacity(values.len(), context)?;
-    for value in values {
-        rendered.push(value.to_string());
+impl PreparedCompletionMessage {
+    pub fn construct(
+        source: Option<&str>,
+        model_name: &str,
+        target_name: &str,
+    ) -> Result<Self, CodegenError> {
+        if let Some(source) = source {
+            let mut environment = target_template_environment();
+            environment.add_template("completion_message", source)?;
+            let _ = environment.get_template("completion_message")?;
+        }
+        Ok(Self {
+            source: source.map(Into::into),
+            model_name: model_name.into(),
+            target_name: target_name.into(),
+        })
     }
-    Ok(rendered.join(separator))
-}
 
-/// Supported IR roots for template rendering.
-#[derive(Debug, Clone, Copy)]
-pub enum CodegenInput<'a> {
-    Dae(&'a dae::Dae),
-    Solve {
-        problem: &'a solve::SolveProblem,
-        artifacts: &'a solve::SolveArtifacts,
-    },
-    Flat(&'a flat::Model),
-    Ast(&'a ast::ClassTree),
-    AlgorithmCode(&'a rumoca_ir_galec::package::AlgorithmCodePackage),
-}
-
-fn dae_template_json_for_solve_context(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
-    dae_template_json(dae)
+    pub fn render(&self, output_path: &str) -> Result<Option<String>, CodegenError> {
+        self.source
+            .as_deref()
+            .map(|source| {
+                let mut environment = target_template_environment();
+                environment.add_template("completion_message", source)?;
+                environment
+                    .get_template("completion_message")?
+                    .render(minijinja::context! {
+                        out_dir => output_path,
+                        model_name => self.model_name.as_ref(),
+                        target_name => self.target_name.as_ref(),
+                    })
+                    .map_err(Into::into)
+            })
+            .transpose()
+    }
 }
 
 pub fn dae_template_json(dae: &dae::Dae) -> Result<serde_json::Value, CodegenError> {
@@ -141,41 +154,34 @@ fn dae_template_value(dae: &dae::Dae) -> Result<Value, CodegenError> {
     Ok(Value::from_serialize(dae_template_json(dae)?))
 }
 
-fn render_with_input_context(
-    tmpl: &minijinja::Template<'_, '_>,
-    input: CodegenInput<'_>,
-    model_name: Option<&str>,
-) -> Result<String, CodegenError> {
-    let rendered = match (input, model_name) {
-        (CodegenInput::Dae(dae_model), name) => render_dae_context(tmpl, dae_model, name)?,
-        (CodegenInput::Solve { problem, artifacts }, name) => {
-            render_solve_context(tmpl, problem, artifacts, name)?
-        }
-        (CodegenInput::Flat(flat_model), name) => {
-            require_materialized_flat_equation_view(flat_model)?;
-            render_flat_context(tmpl, flat_model, name)?
-        }
-        (CodegenInput::Ast(ast_tree), name) => render_ast_context(tmpl, ast_tree, name)?,
-        (CodegenInput::AlgorithmCode(package), name) => {
-            // This generic entry point carries no session, so it has no source
-            // map to anchor traces against; the empty map keeps every trace
-            // honest (hash + byte range) rather than fabricating a path.
-            let sources = rumoca_core::SourceMap::new();
-            let view = crate::views::algorithm_code::AlgorithmCodeView::new(package, &sources);
-            match name {
-                Some(model_name) => tmpl.render(minijinja::context! {
-                    algorithm_code => minijinja::Value::from_serialize(view),
-                    ir_kind => "algorithm_code",
-                    model_name,
-                })?,
-                None => tmpl.render(minijinja::context! {
-                    algorithm_code => minijinja::Value::from_serialize(view),
-                    ir_kind => "algorithm_code",
-                })?,
-            }
-        }
-    };
-    Ok(rendered)
+/// Prepared Flat presentation capability.
+///
+/// Preparation proves the materialized-equation-view requirement and
+/// serializes the checked Flat context exactly once, before any rendering
+/// begins; it is a different type from the DAE capability, so a Flat
+/// template cannot be paired with a projected DAE context.
+#[derive(Debug)]
+pub struct PreparedFlatRendering {
+    value: Value,
+}
+
+/// Prepared AST presentation capability.
+///
+/// AST serialization is infallible, but retaining the serialized value keeps
+/// every post-admission renderer free of raw semantic roots.
+#[derive(Debug)]
+pub struct PreparedAstRendering {
+    value: Value,
+}
+
+/// Prepared DAE presentation capability.
+///
+/// Preparation runs the checked DAE projection, including attribute
+/// evaluation and shape checks, exactly once before any rendering begins.
+/// The retained source map serves only render-time diagnostics.
+pub struct PreparedDaeRendering {
+    source_map: rumoca_core::SourceMap,
+    value: Value,
 }
 
 fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(), CodegenError> {
@@ -205,37 +211,31 @@ fn require_materialized_flat_equation_view(flat_model: &flat::Model) -> Result<(
 
 fn render_dae_context(
     tmpl: &minijinja::Template<'_, '_>,
-    dae_model: &dae::Dae,
+    prepared: &PreparedDaeRendering,
     model_name: Option<&str>,
+    artifact: Option<&TemplateBindings<'_>>,
 ) -> Result<String, CodegenError> {
-    let dae_value = dae_template_value(dae_model)?;
-    let rendered = match model_name {
-        Some(name) => tmpl.render(minijinja::context! {
+    let dae_value = prepared.value.clone();
+    let semantic = match model_name {
+        Some(name) => minijinja::context! {
             dae => dae_value.clone(),
             ir => dae_value,
             ir_kind => "dae",
             model_name => name,
-        }),
-        None => tmpl.render(minijinja::context! {
+        },
+        None => minijinja::context! {
             dae => dae_value.clone(),
             ir => dae_value,
             ir_kind => "dae",
-        }),
+        },
     };
-    rendered.map_err(|error| dae_diagnostics::render_error(dae_model, error))
-}
-
-fn render_solve_context(
-    tmpl: &minijinja::Template<'_, '_>,
-    solve_problem: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    model_name: Option<&str>,
-) -> Result<String, CodegenError> {
-    Ok(tmpl.render(solve_render_context_value(
-        solve_problem,
-        artifacts,
-        model_name,
-    )?)?)
+    let rendered = match artifact {
+        Some(artifact) => artifact
+            .render_context(semantic)
+            .and_then(|context| tmpl.render(context)),
+        None => tmpl.render(semantic),
+    };
+    rendered.map_err(|error| dae_diagnostics::render_error(&prepared.source_map, error))
 }
 
 fn solve_template_blocks_value(
@@ -244,13 +244,13 @@ fn solve_template_blocks_value(
 ) -> Result<Value, CodegenError> {
     Ok(minijinja::context! {
         continuous => minijinja::context! {
-            implicit_rhs => solve_template_compute_block_json(&solve_problem.continuous.implicit_rhs)?,
-            residual => solve_template_compute_block_json(&solve_problem.continuous.residual)?,
-            derivative_rhs => solve_template_compute_block_json(&solve_problem.continuous.derivative_rhs)?,
+            implicit_rhs => solve_template_compute_block_json(solve_problem.continuous().implicit_rhs())?,
+            residual => solve_template_compute_block_json(solve_problem.continuous().residual())?,
+            derivative_rhs => solve_template_compute_block_json(solve_problem.continuous().derivative_rhs())?,
         },
         artifacts => minijinja::context! {
             continuous => minijinja::context! {
-                implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous.implicit_jacobian_v)?,
+                implicit_jacobian_v => solve_template_compute_block_json(&artifacts.continuous().implicit_jacobian_v)?,
             },
         },
     })
@@ -446,135 +446,153 @@ fn compute_block_uses_linear_solve_component(block: &solve::ComputeBlock) -> boo
 
 fn render_flat_context(
     tmpl: &minijinja::Template<'_, '_>,
-    flat_model: &flat::Model,
+    prepared: &PreparedFlatRendering,
     model_name: Option<&str>,
+    artifact: Option<&TemplateBindings<'_>>,
 ) -> RenderResult {
-    let flat_value = Value::from_serialize(flat_model);
-    match model_name {
-        Some(name) => tmpl.render(minijinja::context! {
+    let flat_value = prepared.value.clone();
+    let semantic = match model_name {
+        Some(name) => minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
             model_name => name,
-        }),
-        None => tmpl.render(minijinja::context! {
+        },
+        None => minijinja::context! {
             flat => flat_value.clone(),
             ir => flat_value,
             ir_kind => "flat",
-        }),
+        },
+    };
+    match artifact {
+        Some(artifact) => tmpl.render(artifact.render_context(semantic)?),
+        None => tmpl.render(semantic),
     }
 }
 
 fn render_ast_context(
     tmpl: &minijinja::Template<'_, '_>,
-    ast_tree: &ast::ClassTree,
+    prepared: &PreparedAstRendering,
     model_name: Option<&str>,
+    artifact: Option<&TemplateBindings<'_>>,
 ) -> RenderResult {
-    let ast_value = Value::from_serialize(ast_tree);
-    match model_name {
-        Some(name) => tmpl.render(minijinja::context! {
+    let ast_value = prepared.value.clone();
+    let semantic = match model_name {
+        Some(name) => minijinja::context! {
             ast => ast_value.clone(),
             ir => ast_value,
             ir_kind => "ast",
             model_name => name,
-        }),
-        None => tmpl.render(minijinja::context! {
+        },
+        None => minijinja::context! {
             ast => ast_value.clone(),
             ir => ast_value,
             ir_kind => "ast",
-        }),
+        },
+    };
+    match artifact {
+        Some(artifact) => tmpl.render(artifact.render_context(semantic)?),
+        None => tmpl.render(semantic),
     }
 }
 
-/// Render any supported IR using a template string.
-pub fn render_template_for_input(
-    input: CodegenInput<'_>,
-    template: &str,
-) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-    let tmpl = env.get_template("inline")?;
-    render_with_input_context(&tmpl, input, None)
-}
-
-/// Render any supported IR using a template string, with model name.
-pub fn render_template_with_name_for_input(
-    input: CodegenInput<'_>,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    let mut env = create_environment();
-    env.add_template("inline", template)?;
-    let tmpl = env.get_template("inline")?;
-    render_with_input_context(&tmpl, input, Some(model_name))
-}
-
-/// Render a checked Algorithm Code package with immutable, caller-owned
-/// artifact facts.
+/// Render one target output-path template against a model name.
 ///
-/// `artifact` is deliberately generic: the artifact layer may expose
-/// identities, timestamps, and checksum edges, while this phase remains
-/// stateless and unaware of any concrete package format.
-pub fn render_algorithm_code_template_with_artifact<T: Serialize>(
-    package: &rumoca_ir_galec::package::AlgorithmCodePackage,
-    artifact: &T,
-    template: &str,
+/// This produces only pathless [`UntrustedRenderedText`]; interpreting the
+/// bytes as a checked output path is the caller's responsibility.
+pub fn render_output_path(
+    output_path_template: &str,
     model_name: &str,
-) -> Result<String, CodegenError> {
-    // No session reaches this entry point, so there is no source map to anchor
-    // traces against; the empty map keeps every trace honest (hash + byte
-    // range) rather than fabricating a path. Callers that do hold a session —
-    // the CLI target path — go through `AlgorithmCodeTemplateRenderer::new`
-    // with the real map.
-    let sources = rumoca_core::SourceMap::new();
-    AlgorithmCodeTemplateRenderer::new(package, &sources)?
-        .render_with_name_and_artifact(template, model_name, artifact)
+) -> Result<UntrustedRenderedText, CodegenError> {
+    let mut env = target_template_environment();
+    env.add_template("checked_output_path", output_path_template)?;
+    let template = env.get_template("checked_output_path")?;
+    let content = template.render(minijinja::context! { model_name => model_name })?;
+    Ok(UntrustedRenderedText::new(content))
 }
 
-/// Render a validated standalone Algorithm Code block.
+/// Render one AST body template into pathless, identity-free text.
+pub fn render_ast_template_content(
+    body_template: &str,
+    prepared: &PreparedAstRendering,
+    artifact: &TemplateBindings<'_>,
+) -> Result<UntrustedRenderedText, CodegenError> {
+    let mut env = target_template_environment();
+    env.add_template("checked_ast_body", body_template)?;
+    let template = env.get_template("checked_ast_body")?;
+    let content = render_ast_context(&template, prepared, None, Some(artifact))?;
+    Ok(UntrustedRenderedText::new(content))
+}
+
+/// Render one Flat body template into pathless, identity-free text.
+pub fn render_flat_template_content(
+    prepared: &PreparedFlatRendering,
+    body_template: &str,
+    artifact: &TemplateBindings<'_>,
+) -> Result<UntrustedRenderedText, CodegenError> {
+    let mut env = target_template_environment();
+    env.add_template("checked_flat_body", body_template)?;
+    let template = env.get_template("checked_flat_body")?;
+    let content = render_flat_context(&template, prepared, None, Some(artifact))?;
+    Ok(UntrustedRenderedText::new(content))
+}
+
+/// Render one DAE body template into pathless, identity-free text.
+pub fn render_dae_template_content(
+    prepared: &PreparedDaeRendering,
+    body_template: &str,
+    artifact: &TemplateBindings<'_>,
+) -> Result<UntrustedRenderedText, CodegenError> {
+    let mut env = target_template_environment();
+    env.add_template("checked_dae_body", body_template)?;
+    let template = env.get_template("checked_dae_body")?;
+    let content = render_dae_context(&template, prepared, None, Some(artifact))?;
+    Ok(UntrustedRenderedText::new(content))
+}
+
+/// Prepare the exact checked AST presentation capability.
+#[must_use]
+pub fn prepare_ast_rendering(ast_tree: &ast::ClassTree) -> PreparedAstRendering {
+    PreparedAstRendering {
+        value: Value::from_serialize(ast_tree),
+    }
+}
+
+/// Prepare the exact checked Flat presentation capability.
+pub fn prepare_flat_rendering(
+    flat_model: &flat::Model,
+) -> Result<PreparedFlatRendering, CodegenError> {
+    require_materialized_flat_equation_view(flat_model)?;
+    Ok(PreparedFlatRendering {
+        value: Value::from_serialize(flat_model),
+    })
+}
+
+/// Prepare the exact checked DAE presentation capability.
+pub fn prepare_dae_rendering(dae_model: &dae::Dae) -> Result<PreparedDaeRendering, CodegenError> {
+    Ok(PreparedDaeRendering {
+        source_map: dae_model.source_map().clone(),
+        value: dae_template_value(dae_model)?,
+    })
+}
+
+/// Render a validated standalone Algorithm Code block as GALEC `.alg` source.
 ///
-/// This is the `.alg` editor boundary: it deliberately exposes no manifest
-/// or artifact metadata that cannot be derived from the parsed block.
-pub fn render_checked_algorithm_block_template_with_artifact<T: Serialize>(
+/// The template is the compiler's built-in Algorithm Code source template;
+/// callers cannot supply arbitrary target text at this boundary.
+pub fn render_checked_algorithm_block_source(
     block: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
-    artifact: &T,
-    template: &str,
-    model_name: &str,
 ) -> Result<String, CodegenError> {
-    // The `.alg` editor boundary parses one standalone block with no session
-    // behind it, so there is no source map and traces stay hash-anchored.
-    render_checked_algorithm_block_template_with_sources(
-        block,
-        &rumoca_core::SourceMap::new(),
-        artifact,
-        template,
-        model_name,
-    )
-}
-
-/// As [`render_checked_algorithm_block_template_with_artifact`], with the
-/// source map the block's spans were created against.
-///
-/// Supplying it is what turns a statement trace from a source-id hash into the
-/// `path:line:column` anchor a certification reviewer can act on (SPEC_0034
-/// GAL-032).
-pub fn render_checked_algorithm_block_template_with_sources<T: Serialize>(
-    block: &rumoca_ir_galec::package::CheckedAlgorithmBlock,
-    sources: &rumoca_core::SourceMap,
-    artifact: &T,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    let mut env = create_environment();
+    let template = crate::templates::builtin_template_source("galec", "model.alg.jinja")
+        .ok_or_else(|| CodegenError::template("built-in GALEC source template is missing"))?;
+    let mut env = target_template_environment();
     env.add_template("inline", template)?;
     let tmpl = env.get_template("inline")?;
-    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block, sources)
+    let view = crate::views::algorithm_code::CheckedAlgorithmBlockView::new(block)
         .map_err(CodegenError::template)?;
     Ok(tmpl.render(minijinja::context! {
         algorithm_code => Value::from_serialize(view),
-        artifact => Value::from_serialize(artifact),
         ir_kind => "algorithm_code",
-        model_name,
     })?)
 }
 
@@ -590,79 +608,54 @@ pub fn render_checked_algorithm_block_template_with_sources<T: Serialize>(
 /// {% endfor %}
 /// ```
 ///
-/// # Built-in Functions
-///
-/// - `render_expr(expr, config)` - Render expression with operator config
-///
 /// # Available Filters
 ///
 /// - `sanitize` - Replace dots with underscores
 /// - Standard minijinja filters (length, upper, lower, etc.)
-pub fn render_template(dae: &dae::Dae, template: &str) -> Result<String, CodegenError> {
-    render_template_for_input(CodegenInput::Dae(dae), template)
+#[cfg(test)]
+fn render_template(dae: &dae::Dae, template: &str) -> Result<String, CodegenError> {
+    render_inline_dae_template(dae, template, None)
 }
 
 /// Render a DAE using a template string, with an additional model name in context.
 ///
 /// The template receives both `dae` and `model_name` as context variables.
-/// This is useful for templates that need the model name (e.g., flat Modelica output).
-pub fn render_template_with_name(
+/// This is useful for templates that name their checked DAE artifact.
+#[cfg(test)]
+fn render_template_with_name(
     dae: &dae::Dae,
     template: &str,
     model_name: &str,
 ) -> Result<String, CodegenError> {
-    render_template_with_name_for_input(CodegenInput::Dae(dae), template, model_name)
+    render_inline_dae_template(dae, template, Some(model_name))
 }
 
-/// Render a Model using a template string, with an additional model name in context.
-///
-/// The template receives `flat` (the Model) and `model_name` as context variables.
-/// This is used for rendering flat Modelica output for OMC comparison.
-pub fn render_flat_template_with_name(
-    flat: &flat::Model,
+#[cfg(test)]
+#[cfg(test)]
+fn render_inline_dae_template(
+    dae: &dae::Dae,
     template: &str,
-    model_name: &str,
+    model_name: Option<&str>,
 ) -> Result<String, CodegenError> {
-    render_template_with_name_for_input(CodegenInput::Flat(flat), template, model_name)
+    let mut env = target_template_environment();
+    env.add_template("inline", template)?;
+    let tmpl = env.get_template("inline")?;
+    let prepared = PreparedDaeRendering {
+        source_map: dae.source_map().clone(),
+        value: dae_template_value(dae)?,
+    };
+    render_dae_context(&tmpl, &prepared, model_name, None)
 }
 
-/// Reusable solve-template renderer.
-///
-/// Building the template context serializes the full `SolveProblem`; doing
-/// that once and rendering many templates against it is dramatically
-/// cheaper than calling `render_solve_template_with_name` per template on
-/// large models.
-/// Render a solver IR problem using a template string and model name.
-pub fn render_solve_template_with_name(
-    solve: &solve::SolveProblem,
-    artifacts: &solve::SolveArtifacts,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    render_template_with_name_for_input(
-        CodegenInput::Solve {
-            problem: solve,
-            artifacts,
-        },
-        template,
-        model_name,
-    )
-}
-
-/// Render an AST class tree using a template string and model name.
-///
-/// The template receives both `ast` and `model_name`.
-pub fn render_ast_template_with_name(
-    ast: &ast::ClassTree,
-    template: &str,
-    model_name: &str,
-) -> Result<String, CodegenError> {
-    render_template_with_name_for_input(CodegenInput::Ast(ast), template, model_name)
-}
-
-/// Create a minijinja environment with all custom filters and functions.
-fn create_environment() -> Environment<'static> {
+/// Create the single production MiniJinja environment used to validate and
+/// render target templates.
+#[doc(hidden)]
+pub fn target_template_environment() -> Environment<'static> {
     let mut env = Environment::new();
+    // `debug()` receives MiniJinja's State and prints the complete context.
+    // Target contexts contain least-authority per-file identity scalars, so no
+    // state-introspecting default global is admitted to the production grammar.
+    env.remove_global("debug");
     // Artifact bytes are target-owned. Preserve an explicit final newline so
     // strict text and compiler formats can state their EOF policy in templates.
     env.set_keep_trailing_newline(true);
@@ -671,65 +664,14 @@ fn create_environment() -> Environment<'static> {
     env.set_debug(true);
     // Fail fast on missing fields/variables in templates.
     env.set_undefined_behavior(UndefinedBehavior::Strict);
-    // Content identity of the emitted GALEC array-kernel library, as the C
-    // sources spell it. It is a global rather than a per-invocation context
-    // entry because it is a property of the compiler build alone: the same
-    // value for every target, every model and every artifact, which is exactly
-    // the claim the generated `#error` guards make.
-    //
-    // The value published here is the NUMBER. How it is spelled as a C token
-    // is the templates' business, not this crate's: SPEC_0029 and SPEC_0034
-    // GAL-008 put every C token in the jinja, and a `format!` here that emitted
-    // `UINT32_C(...)` would be this crate authoring C.
-    env.add_global(
-        "galec_kernels_version",
-        minijinja::Value::from(templates::galec_kernel_library_version()),
-    );
-    // The shared render environment: every template a target manifest
-    // publishes under a shared name, and nothing else. Support partials
-    // (`[[partials]]`, e.g. the GALEC-derived C symbol policy, which every C
-    // artifact imports so they all read one allocation instead of copied
-    // reserved lists) and shared artifact bases (`[[files]].shared_as`, e.g.
-    // the target-agnostic GALEC-derived C body that galec-production extends)
-    // both arrive through this one registry.
-    //
-    // Registering from the generated registry rather than from `include_str!`
-    // paths keeps the declaration in the owning target bundle: a target
-    // publishes a template by declaring it in `target.toml`, and `build.rs`
-    // rejects an undeclared bundled template or a duplicated shared name
-    // before this code ever runs. No target-specific name appears here.
-    for shared in templates::shared_templates() {
-        env.add_template(shared.name, shared.source)
-            .expect("build-time checked shared template must parse");
-    }
-
     // Custom filters
     env.add_filter("sanitize", sanitize_filter);
-    env.add_filter("product", product_filter);
-    env.add_filter("last_segment", last_segment_filter);
+    env.add_filter("modelica_string_escape", modelica_string_escape_filter);
     // eFMI manifest render env (contract §3b): autoescape is OFF, so every
     // text value is escaped explicitly and every raw f64 is rendered as a
     // valid xs:double lexical.
-    env.add_filter("modelica_string", modelica_string_filter);
     env.add_filter("xml_escape", xml_escape_filter);
     env.add_filter("xs_double", xs_double_filter);
-    // Declared-range decisions in a target's own numeric domain: a template
-    // picks the domain its type denotes, Rust owns whether that bound is
-    // unbounded (`none`), representable (literal text), or unrepresentable
-    // (fail closed). See `binary32_bound_str` / `int32_bound_str`.
-    env.add_filter("binary32_bound", binary32_bound_filter);
-    env.add_filter("int32_bound", int32_bound_filter);
-
-    // Helpers for target-local emitted symbols. Flattening supplies globally
-    // unique Modelica names; templates provide target keyword/generated-alias policy.
-    env.add_function("allocate_symbols", allocate_symbols_function);
-    env.add_function("symbol", symbol_function);
-    env.add_function("source_ref", source_ref_function);
-
-    // Custom functions for expression rendering
-    env.add_function("render_expr", render_expr_function);
-    env.add_function("render_event_indicator", render_event_indicator_function);
-    env.add_function("render_solve_row_wgsl", render_solve_row_wgsl_function);
     env.add_function(
         "render_solve_row_output_wgsl",
         render_solve_row_output_wgsl_function,
@@ -764,47 +706,10 @@ fn create_environment() -> Environment<'static> {
     );
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
-    env.add_function("render_equation", render_equation_function);
-
-    // Custom functions for statement rendering (MLS §12: function bodies)
-    env.add_function("render_statement", render_statement_function);
-    env.add_function("render_statements", render_statements_function);
-
-    // Custom function for flat equation rendering (Model residual equations)
-    env.add_function("render_flat_equation", render_flat_equation_function);
-
-    // Custom function for detecting self-referential (builtin alias) functions
-    env.add_function("is_self_call", is_self_call_function);
     env.add_function("fail", fail_function);
     dae_diagnostics::register(&mut env);
 
     env
-}
-
-/// Sanitize a name for use as a simple emitted identifier.
-///
-/// Replaces all non-alphanumeric/underscore characters with `_`. Target
-/// reserved words are handled by `allocate_symbols` with a template-supplied
-/// policy, not by this lossy fallback.
-pub(crate) fn sanitize_name(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    for ch in name.chars() {
-        if ch.is_alphanumeric() || ch == '_' {
-            result.push(ch);
-        } else if ch == ']' {
-            // Drop closing brackets to avoid trailing underscores.
-            // After for-loop unrolling, VarRef names like "Kp[1]" get sanitized
-            // here; replacing ']' with '_' would produce "Kp_1_" instead of "Kp_1".
-        } else {
-            result.push('_');
-        }
-    }
-    result
-}
-
-/// Plain-name passthrough for renderers that opt out of symbol allocation.
-pub(crate) fn escape_reserved_keyword(name: &str) -> String {
-    name.to_string()
 }
 
 /// Filter to sanitize variable names for simple emitted identifiers.
@@ -817,7 +722,7 @@ fn sanitize_filter(value: Value) -> String {
         if ch.is_alphanumeric() || ch == '_' {
             result.push(ch);
         } else if ch == ']' {
-            // Drop closing brackets (see sanitize_name for rationale)
+            // Drop closing brackets to avoid a trailing underscore.
         } else {
             result.push('_');
         }
@@ -825,12 +730,13 @@ fn sanitize_filter(value: Value) -> String {
     result
 }
 
-/// Filter to extract the last dot-separated segment of a name.
+/// Delegate Modelica string-body escaping to the grammar-owned canonical codec.
 ///
-/// Used in templates: `{{ "Modelica.Math.sin" | last_segment }}` -> `"sin"`
-fn last_segment_filter(value: Value) -> String {
-    let s = value.to_string().replace('"', "");
-    rumoca_core::top_level_last_segment(&s).to_string()
+/// This filter deliberately does not add quote tokens, inspect semantic IR, or
+/// choose a dialect. The DAE target's lexical template owns the surrounding
+/// Modelica syntax.
+fn modelica_string_escape_filter(value: &str) -> String {
+    ::rumoca_core::escape_modelica_string(value)
 }
 
 /// XML-escape a text value: the five predefined entities `& < > " '`.
@@ -856,16 +762,6 @@ pub(crate) fn xml_escape_str(text: &str) -> String {
 
 fn xml_escape_filter(value: String) -> String {
     xml_escape_str(&value)
-}
-
-/// Quote and escape a string as a Modelica string literal.
-///
-/// `tojson` is NOT a substitute: JSON renders BEL and VT as `\u0007` and
-/// `\u000b`, which are not Modelica escapes, so an emitted `dae-mo` carrying
-/// either does not re-parse. Modelica spells them `\a` and `\v`, which is
-/// what `escape_modelica_string` already produces for `Literal::String`.
-fn modelica_string_filter(value: String) -> String {
-    format!("\"{}\"", rumoca_core::escape_modelica_string(&value))
 }
 
 /// Render a finite `f64` as a portable real literal with explicit decimal
@@ -904,260 +800,11 @@ fn xs_double_filter(value: f64) -> Result<String, minijinja::Error> {
     xs_double_str(value)
 }
 
-/// Which side of a declared range a bound is, so the domain decision below can
-/// tell "no bound in that direction" from "a bound nothing can represent".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundSide {
-    Min,
-    Max,
-}
-
-impl BoundSide {
-    fn parse(side: &str) -> Result<Self, minijinja::Error> {
-        match side {
-            "min" => Ok(Self::Min),
-            "max" => Ok(Self::Max),
-            other => Err(render_err(format!(
-                "declared range side must be `min` or `max`, not `{other}`"
-            ))),
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Min => "min",
-            Self::Max => "max",
-        }
-    }
-}
-
-/// Decide one declared Real saturation bound **in a binary32 execution
-/// domain** and return the literal text for it, or `none` when the target must
-/// emit no clamp on that side at all.
-///
-/// A template owns the syntax of a target's Real type; the domain that type
-/// denotes is a semantic fact, and deciding it here is what keeps a template
-/// from open-coding a range test against a magic constant (SPEC_0034 D2).
-/// There are exactly three answers:
-///
-/// * **Unbounded** — the bound rounds to the infinity that lies *away* from
-///   the admissible values (`-inf` for a `min`, `+inf` for a `max`). No
-///   binary32 value can violate it, so the saturation is provably dead and the
-///   clamp is elided. This is the case a Modelica `min = -Modelica.Constants.
-///   inf` / `max = Modelica.Constants.inf` declaration reaches: MSL spells
-///   "unbounded" as `1e60`, which is not a number a binary32 target can hold,
-///   and emitting it as a literal is what a strict compile preflight rejects
-///   (`floating constant exceeds range of 'float'`).
-/// * **Unrepresentable** — the bound rounds to the infinity on the *admissible*
-///   side (a `min` at `+inf`, a `max` at `-inf`). Every finite value would
-///   saturate to an infinity the target cannot spell as a literal, so this
-///   fails closed rather than emitting an out-of-range constant.
-/// * **Representable** — rendered from the binary32 value the target will
-///   actually compare against, so the emitted literal is exact in the target's
-///   domain and no further rounding happens at compile time.
-pub(crate) fn binary32_bound_str(
-    value: f64,
-    side: BoundSide,
-) -> Result<Option<String>, minijinja::Error> {
-    let narrowed = value as f32;
-    if narrowed.is_nan() {
-        return Err(render_err(format!(
-            "unsupported-feature:target-real-range:{}:NaN is not a saturation bound",
-            side.label()
-        )));
-    }
-    if narrowed.is_infinite() {
-        return if narrowed.is_sign_negative() == (side == BoundSide::Min) {
-            Ok(omitted_binary32_bound())
-        } else {
-            Err(render_err(format!(
-                "unsupported-feature:target-real-range:{}:{value:e} is outside the binary32 \
-                 saturation domain",
-                side.label()
-            )))
-        };
-    }
-    xs_double_str(f64::from(narrowed)).map(Some)
-}
-
-/// Return the explicit absence used when a binary32 saturation clamp is
-/// mathematically dead. This is a semantic result, not a missing render value.
-fn omitted_binary32_bound() -> Option<String> {
-    None
-}
-
-/// Decide one declared Integer saturation bound in an int32 execution domain
-/// (SPEC_0034 GAL-028) and return its literal digits, or `none` when the clamp
-/// is provably dead.
-///
-/// Unlike a Real domain, an integer domain has no value that stands for
-/// "beyond the finite range", so a bound outside it is not a weaker bound —
-/// it declares a variable domain the target cannot execute, and fails closed.
-/// A bound *at* the edge of the domain is instead unviolable and elided: the
-/// comparison a clamp would emit is always false, which is both dead code and
-/// a diagnostic under a strict compile preflight (`-Wtype-limits`).
-pub(crate) fn int32_bound_str(
-    value: i64,
-    side: BoundSide,
-) -> Result<Option<String>, minijinja::Error> {
-    let Ok(narrowed) = i32::try_from(value) else {
-        return Err(render_err(format!(
-            "unsupported-feature:target-integer-range:{}:{value} is outside the target Integer \
-             domain",
-            side.label()
-        )));
-    };
-    let unviolable = match side {
-        BoundSide::Min => narrowed == i32::MIN,
-        BoundSide::Max => narrowed == i32::MAX,
-    };
-    Ok((!unviolable).then(|| narrowed.to_string()))
-}
-
-/// `none` in, `none` out: an undeclared bound is simply no bound. A declared
-/// one is decided in the target domain, and an undecidable one propagates its
-/// typed failure to the render rather than degrading into "unbounded".
-fn binary32_bound_filter(value: Option<f64>, side: &str) -> Result<Value, minijinja::Error> {
-    let Some(value) = value else {
-        return Ok(Value::from(()));
-    };
-    Ok(bound_value(binary32_bound_str(
-        value,
-        BoundSide::parse(side)?,
-    )?))
-}
-
-fn int32_bound_filter(value: Option<i64>, side: &str) -> Result<Value, minijinja::Error> {
-    let Some(value) = value else {
-        return Ok(Value::from(()));
-    };
-    Ok(bound_value(int32_bound_str(
-        value,
-        BoundSide::parse(side)?,
-    )?))
-}
-
-fn bound_value(literal: Option<String>) -> Value {
-    literal.map_or_else(|| Value::from(()), Value::from)
-}
-
-/// Filter to compute the product of all elements in a sequence.
-///
-/// Used by MX template: `{{ var.dims | product }}` -> total scalar size.
-fn product_filter(value: Value) -> Result<Value, minijinja::Error> {
-    let Some(len) = value.len() else {
-        return Ok(Value::from(1));
-    };
-    let mut result: i64 = 1;
-    for i in 0..len {
-        if let Ok(item) = value.get_item(&Value::from(i)) {
-            let item = item.as_i64().unwrap_or(1);
-            result = result
-                .checked_mul(item)
-                .ok_or_else(|| render_err("product filter overflows Modelica integer range"))?;
-        }
-    }
-    Ok(Value::from(result))
-}
-
 fn value_to_string(value: &Value) -> String {
     value
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
-}
-
-fn dims_from_value(value: &Value) -> Result<Vec<usize>, minijinja::Error> {
-    let Some(len) = value.len() else {
-        return Ok(Vec::new());
-    };
-    let mut dims = render_vec_with_capacity(len, "render dimension count")?;
-    for i in 0..len {
-        if let Ok(item) = value.get_item(&Value::from(i))
-            && let Some(dim) = item.as_i64()
-            && dim > 0
-        {
-            dims.push(
-                usize::try_from(dim)
-                    .map_err(|_| render_err(format!("dimension {dim} exceeds host index range")))?,
-            );
-        }
-    }
-    Ok(dims)
-}
-
-fn value_list_strings(value: &Value) -> Result<Vec<String>, minijinja::Error> {
-    let Some(len) = value.len() else {
-        return Ok(Vec::new());
-    };
-    let mut out = render_vec_with_capacity(len, "template value string count")?;
-    for i in 0..len {
-        if let Ok(item) = value.get_item(&Value::from(i)) {
-            out.push(value_to_string(&item));
-        }
-    }
-    Ok(out)
-}
-
-fn checked_subscripts_for_flat_index(
-    dims: &[usize],
-    flat_index: usize,
-) -> Result<Vec<usize>, minijinja::Error> {
-    if dims.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut remaining = flat_index
-        .checked_sub(1)
-        .ok_or_else(|| render_err("source_ref flat index must be one-based"))?;
-    let mut subscripts =
-        render_vec_with_capacity(dims.len(), "checked source_ref subscript count")?;
-    subscripts.extend(std::iter::repeat_n(1, dims.len()));
-    for dim_idx in (0..dims.len()).rev() {
-        let dim = dims[dim_idx].max(1);
-        subscripts[dim_idx] = (remaining % dim) + 1;
-        remaining /= dim;
-    }
-    if remaining != 0 {
-        return Err(render_err(format!(
-            "source_ref flat index {flat_index} exceeds dimensions {dims:?}"
-        )));
-    }
-    Ok(subscripts)
-}
-
-fn checked_source_subscript_suffix(
-    dims: &[usize],
-    flat_index: usize,
-) -> Result<String, minijinja::Error> {
-    let subscripts = checked_subscripts_for_flat_index(dims, flat_index)?;
-    if subscripts.is_empty() {
-        Ok(flat_index.to_string())
-    } else {
-        join_usize_values(&subscripts, ",", "source_ref rendered subscript count")
-    }
-}
-
-/// Return the source-reference key for a scalarized array element.
-///
-/// Examples:
-/// - `source_ref("x", [4], 3)` -> `x[3]`
-/// - `source_ref("leg.f", [4,3], 4)` -> `leg.f[2,1]`
-fn source_ref_function(name: Value, dims: Value, flat_index: Value) -> RenderResult {
-    let name = value_to_string(&name);
-    let dims = dims_from_value(&dims)?;
-    if dims.is_empty() {
-        return Ok(name);
-    }
-    let index = flat_index.as_usize().ok_or_else(|| {
-        render_err(format!(
-            "source_ref flat index `{flat_index}` is not numeric"
-        ))
-    })?;
-    Ok(format!(
-        "{}[{}]",
-        name,
-        checked_source_subscript_suffix(&dims, index)?
-    ))
 }
 
 /// Fail template rendering with an explicit message.
@@ -1168,174 +815,11 @@ fn fail_function(message: Value) -> RenderResult {
     Err(render_err(dae_diagnostics::template_message(message)))
 }
 
-/// Detect whether a function is a trivial self-call (builtin alias).
-///
-/// Returns true if the function body is a single assignment whose RHS is a
-/// direct `FunctionCall` back to the function itself (e.g. `y := sin(x)`).
-///
-/// Usage in templates:
-/// ```jinja
-/// {% if is_self_call(func_name, func) %}...{% endif %}
-/// ```
-fn is_self_call_function(func_name: Value, func: Value) -> Result<bool, minijinja::Error> {
-    use render_expr::get_field;
-    let name_str = func_name.to_string().replace('"', "");
-    let Ok(body) = get_field(&func, "body") else {
-        return Ok(false);
-    };
-    let Some(len) = body.len() else {
-        return Ok(false);
-    };
-    // Only match trivial bodies: exactly one assignment whose RHS is a direct
-    // FunctionCall to self (e.g. `result := sin(u)`). This avoids matching
-    // complex functions that happen to contain a nested self-reference.
-    if len != 1 {
-        return Ok(false);
-    }
-    let Ok(stmt) = body.get_item(&Value::from(0)) else {
-        return Ok(false);
-    };
-    let Ok(assign) = get_field(&stmt, "Assignment") else {
-        return Ok(false);
-    };
-    let Ok(value) = get_field(&assign, "value") else {
-        return Ok(false);
-    };
-    // Check if value is a direct FunctionCall to self
-    if let Ok(func_call) = get_field(&value, "FunctionCall")
-        && let Ok(name) = get_field(&func_call, "name")
-    {
-        // A serialized reference is one record whose `name` is its spelling;
-        // reading it any other way recovers the record's debug text instead.
-        return Ok(render_expr::render_serialized_name(&name) == name_str);
-    }
-    Ok(false)
-}
-
-/// Built-in expression renderer function.
-///
-/// Usage in templates:
-/// ```jinja
-/// {{ render_expr(expr, config) }}
-/// ```
-///
-/// The config object can contain:
-/// - `prefix` - Prefix for function calls (e.g., "ca." for CasADi, "np." for numpy)
-/// - `power` - Power operator syntax (e.g., "**" for Python, "^" for Julia)
-/// - `and_op` - Logical AND (e.g., "and", "&&")
-/// - `or_op` - Logical OR (e.g., "or", "||")
-/// - `not_op` - Logical NOT (e.g., "not ", "!")
-/// - `true_val` - True literal (e.g., "True", "true")
-/// - `false_val` - False literal (e.g., "False", "false")
-/// - `array_start` - Array literal start (e.g., "[", "{")
-/// - `array_end` - Array literal end (e.g., "]", "}")
-/// - `if_else` - If-else style: "python" (if_else(c,t,e)), "ternary" (c ? t : e), "julia" (c ? t : e)
-/// - `mul_elem_fn` - Optional function for element-wise multiply (e.g., "ca.times")
-fn render_expr_function(expr: Value, config: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
-    render_expression(&expr, &cfg)
-}
-
-/// Render a relation as a numeric root function for FMI event indicators.
-///
-/// DAE `relation` entries are boolean expressions such as `a < b`, but FMI
-/// event indicators are real-valued zero-crossing functions. For relational
-/// binary operators, emit the residual `a - b`; for non-relational expressions
-/// fall back to the generic renderer.
-fn render_event_indicator_function(expr: Value, config: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
-    render_event_indicator(&expr, &cfg)
-}
-
-fn render_event_indicator(expr: &Value, cfg: &ExprConfig) -> RenderResult {
-    let binary = get_field(expr, "Binary").unwrap_or_else(|_| expr.clone());
-    let Ok(op) = get_field(&binary, "op") else {
-        return render_expression(expr, cfg);
-    };
-    if !is_relation_operator(&op) {
-        return render_expression(expr, cfg);
-    }
-
-    let lhs = get_field(&binary, "lhs")
-        .map_err(|_| render_err("Relation expression missing 'lhs' field"))
-        .and_then(|v| render_expression(&v, cfg))?;
-    let rhs = get_field(&binary, "rhs")
-        .map_err(|_| render_err("Relation expression missing 'rhs' field"))
-        .and_then(|v| render_expression(&v, cfg))?;
-    Ok(format!("(({lhs}) - ({rhs}))"))
-}
-
-fn is_relation_operator(op: &Value) -> bool {
-    is_variant(op, "Lt")
-        || is_variant(op, "Le")
-        || is_variant(op, "Gt")
-        || is_variant(op, "Ge")
-        || is_variant(op, "Eq")
-        || is_variant(op, "Neq")
-}
-
-/// Render an equation in `lhs = rhs` form.
-///
-/// For explicit equations (lhs is set), renders `lhs = rhs`.
-/// For residual equations (lhs is None), decomposes top-level subtraction
-/// into `lhs_expr = rhs_expr`. Falls back to `0 = expr` if no subtraction.
-///
-/// Usage in templates:
-/// ```jinja
-/// {{ render_equation(eq, config) }}
-/// ```
-fn render_equation_function(eq: Value, config: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
-    render_equation(&eq, &cfg)
-}
-
-/// Render a Equation (residual form) to `lhs = rhs`.
-///
-/// Equation has a `residual` field (not `rhs`/`lhs`).
-/// Decomposes top-level `Binary::Sub` into `lhs = rhs` form.
-/// Falls back to `0 = expr` if no subtraction.
-///
-/// Usage in templates:
-/// ```jinja
-/// {{ render_flat_equation(eq, config) }}
-/// ```
-fn render_flat_equation_function(eq: Value, config: Value) -> RenderResult {
-    let cfg = ExprConfig::from_value(&config);
-    render_flat_equation(&eq, &cfg)
-}
-
-/// Render a single statement (MLS §12: function body statements).
-///
-/// Usage in templates:
-/// ```jinja
-/// {% for stmt in func.body %}
-/// {{ render_statement(stmt, cfg, indent) }}
-/// {% endfor %}
-/// ```
-fn render_statement_function(stmt: Value, config: Value, indent: Value) -> RenderResult {
-    let mut cfg = ExprConfig::from_value(&config);
-    // Function bodies use local arrays / lists, so array subscripts must
-    // always use bracket notation — see render_statements_function.
-    cfg.subscript_underscore = false;
-    let indent_str = indent.as_str().unwrap_or("    ");
-    render_statement(&stmt, &cfg, indent_str)
-}
-
-/// Render a list of statements (MLS §12: function body).
-///
-/// Usage in templates:
-/// ```jinja
-/// {{ render_statements(func.body, cfg, "    ") }}
-/// ```
-fn render_statements_function(stmts: Value, config: Value, indent: Value) -> RenderResult {
-    let mut cfg = ExprConfig::from_value(&config);
-    // Function bodies use local arrays/lists, so array subscripts must always
-    // use bracket notation (y[i]) rather than top-level scalar aliases (y_i).
-    cfg.subscript_underscore = false;
-    let indent_str = indent.as_str().unwrap_or("    ");
-    render_statements(&stmts, &cfg, indent_str)
-}
-
-pub use algorithm_code_renderer::AlgorithmCodeTemplateRenderer;
-pub use solve_renderer::SolveTemplateRenderer;
-use solve_renderer::solve_render_context_value;
+pub use algorithm_code_renderer::{
+    AlgorithmCodeTemplateRenderer, render_correlated_algorithm_code_file,
+    render_packaged_algorithm_code_file,
+};
+pub use solve_renderer::{
+    AdmittedFmiRenderingInput, PreparedFmiComponentRendering, PreparedSolveModelRendering,
+    render_casadi_execution_model, render_mlir_execution_model,
+};

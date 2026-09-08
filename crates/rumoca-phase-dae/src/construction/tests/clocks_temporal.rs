@@ -3,13 +3,13 @@ use rumoca_core::TypeId;
 use super::super::*;
 use super::support::*;
 
-struct TestClock<'a> {
-    name: &'a str,
-    declaration: &'a str,
-    constructor_span: Span,
-    interval_span: Span,
-    interval: f64,
-    type_id: u32,
+pub(super) struct TestClock<'a> {
+    pub(super) name: &'a str,
+    pub(super) declaration: &'a str,
+    pub(super) constructor_span: Span,
+    pub(super) interval_span: Span,
+    pub(super) interval: f64,
+    pub(super) type_id: u32,
 }
 
 #[test]
@@ -19,6 +19,10 @@ fn clock_declaration_is_not_conflated_with_a_missing_discrete_hold_coordinate() 
     let mut clock = flat::Variable::empty_with_span(source.span("Clock c = Clock(0.1)", 0));
     clock.name = VarName::new("c");
     clock.instance_id = test_instance_id("c");
+    clock.component_ref = Some(test_component_reference(
+        "c",
+        source.span("Clock c = Clock(0.1)", 0),
+    ));
     clock.type_id = TypeId::new(7);
     clock.binding = Some(Expression::BuiltinCall {
         function: BuiltinFunction::Clock,
@@ -44,7 +48,7 @@ fn clock_declaration_is_not_conflated_with_a_missing_discrete_hold_coordinate() 
     );
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 1);
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
@@ -69,7 +73,7 @@ fn ordinary_clocked_equation_retains_exact_previous_owner_and_provenance() {
     let model = ordinary_clocked_model(&source, previous_span, clock_span);
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 1);
         assert_eq!(view.previous_value_count(), 1);
         let previous = view
@@ -239,7 +243,7 @@ fn interval_lowers_to_the_exact_clock_owner_with_use_site_provenance() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let clock = view.clock_id(0).expect("one exact clock owner");
         let interval = (0..view.expression_count())
             .filter_map(|index| view.expression_id(index))
@@ -313,7 +317,7 @@ fn disconnected_clock_domains_retain_distinct_exact_owners() {
     );
     let model = distinct_clock_assignment_model(&source);
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 2);
         assert_eq!(view.clock_ownership_count(), 2);
         let mut owners = (0..view.clock_ownership_count())
@@ -397,7 +401,7 @@ fn super_sample_value_constructs_an_exact_cross_clock_transfer() {
 
     let dae = construct(&model, source.map)
         .expect("superSample owns an exact source-to-derived-clock value transfer");
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.clock_count(), 2);
         assert_eq!(view.clock_ownership_count(), 2);
         let transfer = (0..view.expression_count())
@@ -410,6 +414,221 @@ fn super_sample_value_constructs_an_exact_cross_clock_transfer() {
 }
 
 #[test]
+fn nested_sub_then_super_sample_uses_analysis_issued_clock_relationships() {
+    let source = TestSource::new(
+        "model M Clock baseClock=Clock(0.1); discrete Integer v; discrete Integer y; \
+         equation when baseClock then v=1; end when; \
+         y=superSample(subSample(v,2),2); end M;",
+    );
+    let mut model = nested_transfer_model(&source);
+    let inner_span = source.span("subSample(v,2)", 0);
+    let outer_span = source.span("superSample(subSample(v,2),2)", 0);
+    let equation_span = source.span("y=superSample(subSample(v,2),2)", 0);
+    let inner = integer_clock_transfer(
+        BuiltinFunction::SubSample,
+        test_var_at("v", span_within(inner_span, 10, 1)),
+        2,
+        span_within(inner_span, 12, 1),
+        inner_span,
+    );
+    let outer = integer_clock_transfer(
+        BuiltinFunction::SuperSample,
+        inner,
+        2,
+        span_within(outer_span, span_len(outer_span) - 2, 1),
+        outer_span,
+    );
+    add_test_residual(
+        &mut model,
+        test_var_at("y", span_within(equation_span, 0, 1)),
+        outer,
+        equation_span,
+    );
+
+    let dae = construct(&model, source.map)
+        .expect("recursive clock-domain analysis issues both transfer relationships");
+    dae.dae().inspect(|view| {
+        assert_eq!(view.clock_count(), 3);
+        for span in [inner_span, outer_span] {
+            assert!(
+                (0..view.expression_count())
+                    .filter_map(|index| view.expression_id(index))
+                    .filter_map(|id| view.expression(id))
+                    .any(|expression| expression.provenance().span() == span),
+                "the nested transfer at {span:?} is retained"
+            );
+        }
+    });
+}
+
+#[test]
+fn transfer_inside_composite_source_keeps_its_derived_clock_owner() {
+    let source = TestSource::new(
+        "model M Clock baseClock=Clock(0.1); discrete Integer v; discrete Integer y; \
+         equation when baseClock then v=1; end when; \
+         y=superSample(subSample(v,2)+1,2); end M;",
+    );
+    let mut model = nested_transfer_model(&source);
+    let inner_span = source.span("subSample(v,2)", 0);
+    let source_span = source.span("subSample(v,2)+1", 0);
+    let outer_span = source.span("superSample(subSample(v,2)+1,2)", 0);
+    let equation_span = source.span("y=superSample(subSample(v,2)+1,2)", 0);
+    let inner = integer_clock_transfer(
+        BuiltinFunction::SubSample,
+        test_var_at("v", span_within(inner_span, 10, 1)),
+        2,
+        span_within(inner_span, 12, 1),
+        inner_span,
+    );
+    let composite = Expression::Binary {
+        op: OpBinary::Add,
+        lhs: Box::new(inner),
+        rhs: Box::new(Expression::Literal {
+            value: Literal::Integer(1),
+            span: span_within(source_span, span_len(source_span) - 1, 1),
+        }),
+        span: source_span,
+    };
+    let outer = integer_clock_transfer(
+        BuiltinFunction::SuperSample,
+        composite,
+        2,
+        span_within(outer_span, span_len(outer_span) - 2, 1),
+        outer_span,
+    );
+    add_test_residual(
+        &mut model,
+        test_var_at("y", span_within(equation_span, 0, 1)),
+        outer,
+        equation_span,
+    );
+
+    let _product = construct(&model, source.map)
+        .expect("a composite source consumes the nested transfer's issued target clock");
+}
+
+#[test]
+fn nonpositive_transfer_factor_reports_the_exact_argument_span() {
+    let source = TestSource::new(
+        "model M Clock baseClock=Clock(0.1); discrete Integer v; discrete Integer y; \
+         equation when baseClock then v=1; end when; y=subSample(v,0); end M;",
+    );
+    let mut model = nested_transfer_model(&source);
+    let transfer_span = source.span("subSample(v,0)", 0);
+    let factor_span = span_within(transfer_span, 12, 1);
+    let equation_span = source.span("y=subSample(v,0)", 0);
+    let transfer = integer_clock_transfer(
+        BuiltinFunction::SubSample,
+        test_var_at("v", span_within(transfer_span, 10, 1)),
+        0,
+        factor_span,
+        transfer_span,
+    );
+    add_test_residual(
+        &mut model,
+        test_var_at("y", span_within(equation_span, 0, 1)),
+        transfer,
+        equation_span,
+    );
+
+    let error = construct(&model, source.map).expect_err("zero is not a clock factor");
+    assert!(matches!(
+        error,
+        ToDaeError::Construction {
+            source: dae::DaeConstructionError::InvalidClockLattice {
+                source: rumoca_core::ClockLatticeErrorKind::NonPositiveFactor,
+                span,
+            },
+            ..
+        } if span == factor_span
+    ));
+}
+
+pub(super) fn nested_transfer_model(source: &TestSource) -> flat::Model {
+    let mut model = test_model();
+    add_test_clock(
+        &mut model,
+        source,
+        TestClock {
+            name: "baseClock",
+            declaration: "Clock baseClock=Clock(0.1)",
+            constructor_span: source.span("Clock(0.1)", 0),
+            interval_span: source.span("0.1", 0),
+            interval: 0.1,
+            type_id: 47,
+        },
+    );
+    add_test_integer(&mut model, source, "v", "discrete Integer v", 48);
+    add_test_integer(&mut model, source, "y", "discrete Integer y", 49);
+    add_test_clock_assignment(&mut model, source, "baseClock", "v", 1);
+    model
+}
+
+pub(super) fn integer_clock_transfer(
+    function: BuiltinFunction,
+    source: Expression,
+    factor: i64,
+    factor_span: Span,
+    span: Span,
+) -> Expression {
+    Expression::BuiltinCall {
+        function,
+        args: vec![
+            source,
+            Expression::Literal {
+                value: Literal::Integer(factor),
+                span: factor_span,
+            },
+        ],
+        span,
+    }
+}
+
+pub(super) fn test_var_at(name: &str, span: Span) -> Expression {
+    Expression::VarRef {
+        name: rumoca_core::Reference::with_component_reference(
+            name,
+            test_component_reference(name, span),
+        )
+        .with_instance_id(test_instance_id(name)),
+        subscripts: Vec::new(),
+        span,
+    }
+}
+
+pub(super) fn add_test_residual(
+    model: &mut flat::Model,
+    lhs: Expression,
+    rhs: Expression,
+    span: Span,
+) {
+    model.add_equation(flat::Equation::new(
+        Expression::Binary {
+            op: OpBinary::Sub,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        },
+        span,
+        flat::EquationOrigin::ComponentEquation {
+            component: String::new(),
+        },
+    ));
+}
+
+pub(super) fn span_within(owner: Span, offset: usize, len: usize) -> Span {
+    Span::from_offsets(
+        owner.source,
+        owner.start.0 + offset,
+        owner.start.0 + offset + len,
+    )
+}
+
+pub(super) fn span_len(span: Span) -> usize {
+    span.end.0 - span.start.0
+}
+
+#[test]
 fn connected_equation_rejects_distinct_clock_owners_at_exact_second_clock_use() {
     let source = TestSource::new(
         "model M Clock leftClock=Clock(0.1); Clock rightClock=Clock(0.2); \
@@ -418,7 +637,7 @@ fn connected_equation_rejects_distinct_clock_owners_at_exact_second_clock_use() 
          when rightClock then y=2; end when; x=y; end M;",
     );
     let mut model = distinct_clock_assignment_model(&source);
-    let right_use = source.span("rightClock", 1);
+    let right_operand = source.span("y", 2);
     let equation_span = source.span("x=y", 0);
     model.add_equation(flat::Equation::new(
         Expression::Binary {
@@ -450,7 +669,54 @@ fn connected_equation_rejects_distinct_clock_owners_at_exact_second_clock_use() 
             span,
         } if feature == "clocked equation ownership proof"
             && detail.contains("distinct clock owners")
-            && span == right_use
+            && span == right_operand
+    ));
+}
+
+#[test]
+fn equal_lattices_do_not_erase_distinct_exact_clock_owners() {
+    let source = TestSource::new(
+        "model M Clock leftClock=Clock(0.1); Clock rightClock=Clock(0.1); \
+         discrete Integer x; discrete Integer y; equation \
+         when leftClock then x=1; end when; \
+         when rightClock then y=1; end when; x=y; end M;",
+    );
+    let mut model = test_model();
+    for (name, declaration, occurrence, type_id) in [
+        ("leftClock", "Clock leftClock=Clock(0.1)", 0, 50),
+        ("rightClock", "Clock rightClock=Clock(0.1)", 1, 51),
+    ] {
+        add_test_clock(
+            &mut model,
+            &source,
+            TestClock {
+                name,
+                declaration,
+                constructor_span: source.span("Clock(0.1)", occurrence),
+                interval_span: source.span("0.1", occurrence),
+                interval: 0.1,
+                type_id,
+            },
+        );
+    }
+    add_test_integer(&mut model, &source, "x", "discrete Integer x", 52);
+    add_test_integer(&mut model, &source, "y", "discrete Integer y", 53);
+    add_test_clock_assignment(&mut model, &source, "leftClock", "x", 1);
+    add_test_clock_assignment(&mut model, &source, "rightClock", "y", 1);
+    let equation_span = source.span("x=y", 0);
+    add_test_residual(
+        &mut model,
+        test_var_at("x", span_within(equation_span, 0, 1)),
+        test_var_at("y", span_within(equation_span, 2, 1)),
+        equation_span,
+    );
+
+    let error = construct(&model, source.map).expect_err("exact clock identity includes its owner");
+    assert!(matches!(
+        error,
+        ToDaeError::UnsupportedFlatSemantics { feature, span, .. }
+            if feature == "clocked equation ownership proof"
+                && span == span_within(equation_span, 2, 1)
     ));
 }
 
@@ -487,7 +753,7 @@ fn distinct_clock_assignment_model(source: &TestSource) -> flat::Model {
     model
 }
 
-fn add_test_clock_assignment(
+pub(super) fn add_test_clock_assignment(
     model: &mut flat::Model,
     source: &TestSource,
     clock: &str,
@@ -519,10 +785,14 @@ fn add_test_clock_assignment(
         .push(flat::WhenChain::new(branch, source.span(&chain, 0)));
 }
 
-fn add_test_clock(model: &mut flat::Model, source: &TestSource, clock: TestClock<'_>) {
+pub(super) fn add_test_clock(model: &mut flat::Model, source: &TestSource, clock: TestClock<'_>) {
     let mut variable = flat::Variable::empty_with_span(source.span(clock.declaration, 0));
     variable.name = VarName::new(clock.name);
     variable.instance_id = test_instance_id(clock.name);
+    variable.component_ref = Some(test_component_reference(
+        clock.name,
+        source.span(clock.declaration, 0),
+    ));
     variable.type_id = TypeId::new(clock.type_id);
     variable.binding = Some(Expression::BuiltinCall {
         function: BuiltinFunction::Clock,
@@ -533,13 +803,19 @@ fn add_test_clock(model: &mut flat::Model, source: &TestSource, clock: TestClock
         span: clock.constructor_span,
     });
     register_test_clock_type(model, variable.type_id, &variable.dims);
+    let declaration = variable
+        .component_ref
+        .as_ref()
+        .expect("test clock has exact source identity")
+        .target_def_id();
+    register_test_materialized_occurrence(model, variable.instance_id, declaration);
     model.add_variable(variable.name.clone(), variable);
     model
         .variable_type_names
         .insert(VarName::new(clock.name), "Clock".to_string());
 }
 
-fn add_test_integer(
+pub(super) fn add_test_integer(
     model: &mut flat::Model,
     source: &TestSource,
     name: &str,
@@ -549,11 +825,18 @@ fn add_test_integer(
     let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
     variable.name = VarName::new(name);
     variable.instance_id = test_instance_id(name);
+    variable.component_ref = Some(test_component_reference(name, source.span(declaration, 0)));
     variable.type_id = TypeId::new(type_id);
     variable.variability = Variability::Discrete(Default::default());
     variable.is_discrete_type = true;
     variable.is_primitive = true;
     register_test_integer_type(model, variable.type_id, &variable.dims);
+    let declaration = variable
+        .component_ref
+        .as_ref()
+        .expect("test integer has exact source identity")
+        .target_def_id();
+    register_test_materialized_occurrence(model, variable.instance_id, declaration);
     model.add_variable(variable.name.clone(), variable);
     model
         .variable_type_names
@@ -605,8 +888,8 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
     model.is_partial = true;
 
     let analysis = analyze(&model).unwrap();
-    assert_eq!(analysis.delay_plans.len(), 1);
-    let Some(DelayPlan::Fixed(timing)) = analysis.delay_plans.get(&delay_span) else {
+    assert_eq!(analysis.analysis.delay_plans.len(), 1);
+    let Some(DelayPlan::Fixed(timing)) = analysis.analysis.delay_plans.get(&delay_span) else {
         panic!("accepted delay occurrence owns exactly one fixed timing plan");
     };
     assert_eq!(timing.value(), 0.5);
@@ -629,7 +912,7 @@ fn production_lowering_constructs_delay_with_exact_timing_evidence() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.delay_count(), 1);
         let delay = view
             .delay(view.delay_id(0).expect("dense delay identity"))

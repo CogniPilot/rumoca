@@ -1,4 +1,4 @@
-use rumoca_core::{SourceId, SourceMap, Span, VarName};
+use rumoca_core::{Fixity, SourceId, SourceMap, Span, VarName};
 use rumoca_ir_dae::{
     AlgebraicId, Dae, DaeConstructionError, DaeLiteral, DaeProvenance, DiscreteRealId,
     DiscreteValueId, ExprId, ExpressionVariability, InputId, InputVariability, ParameterId,
@@ -7,9 +7,10 @@ use rumoca_ir_dae::{
 
 macro_rules! complete_fixed_roles {
     ($variables:ident, $value_type:ident, $held_start:ident, $at:ident;
-     $($method:ident => $id:ident, $name:literal, $attributes:expr);+ $(;)?) => {
+     $($method:ident => $id:ident, $name:literal, $occurrence:literal, $attributes:expr);+ $(;)?) => {
         $(let _: $id<'_> = $variables.$method(
             VarName::new($name),
+            rumoca_core::InstanceId::new($occurrence),
             $value_type,
             $at,
             $attributes,
@@ -19,9 +20,10 @@ macro_rules! complete_fixed_roles {
 
 macro_rules! reserve_fixed_roles {
     ($variables:ident, $value_type:ident, $held_start:ident, $at:ident;
-     $($method:ident => $id:ident, $name:literal, $attributes:expr);+ $(;)?) => {
+     $($method:ident => $id:ident, $name:literal, $occurrence:literal, $attributes:expr);+ $(;)?) => {
         $(let (_, reservation): ($id<'_>, _) = $variables.$method(
             VarName::new($name),
+            rumoca_core::InstanceId::new($occurrence),
             $value_type,
             $at,
         )?;
@@ -44,17 +46,29 @@ fn add_complete_roles<'dae>(
     held_start: ExprId<'dae>,
     at: DaeProvenance,
 ) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
+    // `complete_parameter` and `complete_state` carry explicit `fixed`
+    // spellings inverted against their MLS 4.8.1 role defaults, so the
+    // fixity expectations below can only pass when the explicit spelling
+    // survives and an omitted spelling takes the role default; a decision
+    // that ignored either input fails one of the two directions.
     complete_fixed_roles! {
         variables, real, held_start, at;
-        parameter => ParameterId, "complete_parameter", VariableAttributes::default();
-        constant => ParameterId, "complete_constant", VariableAttributes::default();
-        state => StateId, "complete_state", VariableAttributes::default();
-        algebraic => AlgebraicId, "complete_algebraic", VariableAttributes::default();
-        output => AlgebraicId, "complete_output", VariableAttributes::default();
-        discrete_real => DiscreteRealId, "complete_discrete_real", VariableAttributes::default();
+        parameter => ParameterId, "complete_parameter", 1, VariableAttributes {
+            fixed: Some(Fixity::Free),
+            ..VariableAttributes::default()
+        };
+        constant => ParameterId, "complete_constant", 2, VariableAttributes::default();
+        state => StateId, "complete_state", 3, VariableAttributes {
+            fixed: Some(Fixity::Fixed),
+            ..VariableAttributes::default()
+        };
+        algebraic => AlgebraicId, "complete_algebraic", 4, VariableAttributes::default();
+        output => AlgebraicId, "complete_output", 5, VariableAttributes::default();
+        discrete_real => DiscreteRealId, "complete_discrete_real", 6, VariableAttributes::default();
     }
     let _: InputId<'_> = variables.input(
         VarName::new("complete_input"),
+        rumoca_core::InstanceId::new(7),
         real,
         InputVariability::Discrete,
         at,
@@ -62,6 +76,7 @@ fn add_complete_roles<'dae>(
     )?;
     let discrete_value = variables.discrete_value(
         VarName::new("complete_discrete_value"),
+        rumoca_core::InstanceId::new(8),
         boolean,
         at,
         held(held_start),
@@ -78,28 +93,34 @@ fn add_reserved_roles<'dae>(
 ) -> Result<DiscreteValueId<'dae>, DaeConstructionError> {
     reserve_fixed_roles! {
         variables, real, held_start, at;
-        reserve_parameter => ParameterId, "reserved_parameter", VariableAttributes::default();
-        reserve_constant => ParameterId, "reserved_constant", VariableAttributes::default();
-        reserve_state => StateId, "reserved_state", VariableAttributes::default();
-        reserve_algebraic => AlgebraicId, "reserved_algebraic", VariableAttributes::default();
-        reserve_output => AlgebraicId, "reserved_output", VariableAttributes::default();
-        reserve_discrete_real => DiscreteRealId, "reserved_discrete_real", VariableAttributes::default();
+        reserve_parameter => ParameterId, "reserved_parameter", 9, VariableAttributes::default();
+        reserve_constant => ParameterId, "reserved_constant", 10, VariableAttributes::default();
+        reserve_state => StateId, "reserved_state", 11, VariableAttributes::default();
+        reserve_algebraic => AlgebraicId, "reserved_algebraic", 12, VariableAttributes::default();
+        reserve_output => AlgebraicId, "reserved_output", 13, VariableAttributes::default();
+        reserve_discrete_real => DiscreteRealId, "reserved_discrete_real", 14, VariableAttributes::default();
     }
     let (_, input): (InputId<'_>, _) = variables.reserve_input(
         VarName::new("reserved_input"),
+        rumoca_core::InstanceId::new(15),
         real,
         InputVariability::Continuous,
         at,
     )?;
     variables.define(input, VariableAttributes::default(), at)?;
-    let (id, discrete_value): (DiscreteValueId<'_>, _) =
-        variables.reserve_discrete_value(VarName::new("reserved_discrete_value"), boolean, at)?;
+    let (id, discrete_value): (DiscreteValueId<'_>, _) = variables.reserve_discrete_value(
+        VarName::new("reserved_discrete_value"),
+        rumoca_core::InstanceId::new(16),
+        boolean,
+        at,
+    )?;
     variables.define(discrete_value, held(held_start), at)?;
     Ok(id)
 }
 
-#[test]
-fn complete_and_reserved_role_tables_preserve_typed_semantics() {
+/// Construct the DAE carrying one declaration per complete and reserved
+/// variable role. Split out for length; every declaration is unchanged.
+fn construct_complete_and_reserved_role_dae() -> (Dae, DaeProvenance) {
     let mut source_map = SourceMap::new();
     let source = source_map.add("variable_roles.mo", "variable role declarations");
     let at = DaeProvenance::source(Span::from_offsets(source, 0, 8)).expect("real source span");
@@ -139,29 +160,105 @@ fn complete_and_reserved_role_tables_preserve_typed_semantics() {
         })
     })
     .expect("all complete and reserved variable roles construct");
+    (dae, at)
+}
 
+#[test]
+fn complete_and_reserved_role_tables_preserve_typed_semantics() {
+    let (dae, at) = construct_complete_and_reserved_role_dae();
+
+    // Fixity column: the two explicit spellings above surface inverted
+    // against their role defaults; every other declaration omitted `fixed`
+    // and must surface the MLS 4.8.1 default of its role (`Fixed` for
+    // parameters and constants, `Free` otherwise). Because `Fixity` has no
+    // `Default` impl, a wrong value here is a wrong decision, never a
+    // coincidental storage default.
     let expected = [
-        (VariableRole::Parameter, ExpressionVariability::Parameter),
-        (VariableRole::Constant, ExpressionVariability::Constant),
-        (VariableRole::State, ExpressionVariability::Continuous),
-        (VariableRole::Algebraic, ExpressionVariability::Continuous),
-        (VariableRole::Output, ExpressionVariability::Continuous),
-        (VariableRole::DiscreteReal, ExpressionVariability::Discrete),
-        (VariableRole::Input, ExpressionVariability::Discrete),
-        (VariableRole::DiscreteValue, ExpressionVariability::Discrete),
-        (VariableRole::Parameter, ExpressionVariability::Parameter),
-        (VariableRole::Constant, ExpressionVariability::Constant),
-        (VariableRole::State, ExpressionVariability::Continuous),
-        (VariableRole::Algebraic, ExpressionVariability::Continuous),
-        (VariableRole::Output, ExpressionVariability::Continuous),
-        (VariableRole::DiscreteReal, ExpressionVariability::Discrete),
-        (VariableRole::Input, ExpressionVariability::Continuous),
-        (VariableRole::DiscreteValue, ExpressionVariability::Discrete),
+        (
+            VariableRole::Parameter,
+            ExpressionVariability::Parameter,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Constant,
+            ExpressionVariability::Constant,
+            Fixity::Fixed,
+        ),
+        (
+            VariableRole::State,
+            ExpressionVariability::Continuous,
+            Fixity::Fixed,
+        ),
+        (
+            VariableRole::Algebraic,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Output,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::DiscreteReal,
+            ExpressionVariability::Discrete,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Input,
+            ExpressionVariability::Discrete,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::DiscreteValue,
+            ExpressionVariability::Discrete,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Parameter,
+            ExpressionVariability::Parameter,
+            Fixity::Fixed,
+        ),
+        (
+            VariableRole::Constant,
+            ExpressionVariability::Constant,
+            Fixity::Fixed,
+        ),
+        (
+            VariableRole::State,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Algebraic,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Output,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::DiscreteReal,
+            ExpressionVariability::Discrete,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::Input,
+            ExpressionVariability::Continuous,
+            Fixity::Free,
+        ),
+        (
+            VariableRole::DiscreteValue,
+            ExpressionVariability::Discrete,
+            Fixity::Free,
+        ),
     ];
     dae.inspect(|view| {
         let found = view
             .variables()
-            .map(|(_, variable)| (variable.role(), variable.variability()))
+            .map(|(_, variable)| (variable.role(), variable.variability(), variable.fixed()))
             .collect::<Vec<_>>();
         assert_eq!(found, expected);
         assert!(
@@ -207,6 +304,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::State => {
                     variables.state(
                         VarName::new("x"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         declaration,
                         VariableAttributes::default(),
@@ -215,6 +313,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::Algebraic => {
                     variables.algebraic(
                         VarName::new("y"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         declaration,
                         VariableAttributes::default(),
@@ -223,6 +322,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::Output => {
                     variables.output(
                         VarName::new("output"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         declaration,
                         VariableAttributes::default(),
@@ -231,6 +331,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::DiscreteReal => {
                     variables.discrete_real(
                         VarName::new("z"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         declaration,
                         VariableAttributes::default(),
@@ -239,6 +340,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::DiscreteValue => {
                     variables.discrete_value(
                         VarName::new("m"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         declaration,
                         VariableAttributes::default(),
@@ -247,6 +349,7 @@ fn invalid_role_type(role: InvalidRole, scalar: ScalarType) -> DaeConstructionEr
                 InvalidRole::ContinuousInput => {
                     variables.input(
                         VarName::new("u"),
+                        rumoca_core::InstanceId::new(1),
                         value_type,
                         InputVariability::Continuous,
                         declaration,
@@ -302,7 +405,13 @@ fn enumeration_coordinate_constructs_as_discrete_value_with_b1c_owner() {
         let start =
             dae.expressions(|expressions| expressions.at(declaration).enumeration_literal(1))?;
         let mode = dae.variables(|variables| {
-            variables.discrete_value(VarName::new("mode"), enumeration, declaration, held(start))
+            variables.discrete_value(
+                VarName::new("mode"),
+                rumoca_core::InstanceId::new(1),
+                enumeration,
+                declaration,
+                held(start),
+            )
         })?;
         let previous = dae.expressions(|expressions| {
             expressions
@@ -365,6 +474,7 @@ fn enumeration_coordinate_is_an_exact_ordinal_array_index() {
             Ok((
                 variables.input(
                     VarName::new("mode"),
+                    rumoca_core::InstanceId::new(1),
                     enumeration,
                     InputVariability::Discrete,
                     selector_declaration,
@@ -372,6 +482,7 @@ fn enumeration_coordinate_is_an_exact_ordinal_array_index() {
                 )?,
                 variables.discrete_value(
                     VarName::new("selected"),
+                    rumoca_core::InstanceId::new(2),
                     enumeration,
                     selected_declaration,
                     held(off),
@@ -465,12 +576,14 @@ fn primitive_parameter_input_and_discrete_arrays_preserve_rectangular_capacity()
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("labels"),
+                rumoca_core::InstanceId::new(1),
                 strings,
                 parameter_at,
                 VariableAttributes::default(),
             )?;
             variables.input(
                 VarName::new("enabled"),
+                rumoca_core::InstanceId::new(2),
                 booleans,
                 InputVariability::Discrete,
                 input_at,
@@ -478,6 +591,7 @@ fn primitive_parameter_input_and_discrete_arrays_preserve_rectangular_capacity()
             )?;
             variables.discrete_value(
                 VarName::new("modes"),
+                rumoca_core::InstanceId::new(3),
                 strings,
                 discrete_at,
                 VariableAttributes {
@@ -487,6 +601,7 @@ fn primitive_parameter_input_and_discrete_arrays_preserve_rectangular_capacity()
             )?;
             variables.discrete_value(
                 VarName::new("enum_code"),
+                rumoca_core::InstanceId::new(4),
                 integers,
                 integer_at,
                 VariableAttributes {
@@ -532,6 +647,7 @@ fn record_aggregate_cannot_be_inserted_as_a_model_coordinate() {
         dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(1),
                 pair,
                 parameter_at,
                 VariableAttributes::default(),

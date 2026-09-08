@@ -391,7 +391,8 @@ fn msl_completion_loads_libraries_on_demand() {
                 },
                 &active_path.to_string_lossy(),
             )
-            .await;
+            .await
+            .expect("load completion source roots");
 
         assert!(
             server

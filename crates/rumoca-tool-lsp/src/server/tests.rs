@@ -71,6 +71,25 @@ fn new_test_service() -> LspService<ModelicaLanguageServer> {
     service
 }
 
+fn require_loaded_source_root(disposition: SourceRootLoadDisposition) -> SourceRootLoadOutcome {
+    match disposition {
+        SourceRootLoadDisposition::Loaded(outcome) => *outcome,
+        SourceRootLoadDisposition::AlreadyLoaded => {
+            panic!("expected this request to apply a source root")
+        }
+    }
+}
+
+trait RequireLoadedSourceRoot {
+    fn require_loaded(self) -> SourceRootLoadOutcome;
+}
+
+impl RequireLoadedSourceRoot for SourceRootLoadDisposition {
+    fn require_loaded(self) -> SourceRootLoadOutcome {
+        require_loaded_source_root(self)
+    }
+}
+
 fn checked_variable_count(
     dae: &rumoca_compile::compile::Dae,
     role: rumoca_compile::compile::VariableRole,
@@ -150,7 +169,9 @@ struct LoggedDiagnosticsTimingSummary {
     #[serde(default)]
     semantic_layer: String,
     requested_source_root_load: bool,
+    source_root_load_ms: u64,
     ran_compile: bool,
+    total_ms: u64,
     session_cache_delta: rumoca_compile::compile::SessionCacheStatsSnapshot,
 }
 
@@ -644,6 +665,18 @@ fn source_root_completion_prefix_detection_ignores_lowercase_component_members()
     assert_eq!(extract_namespace_completion_prefix(source, pos), None);
 }
 
+fn empty_external_source_root(path_key: &str, expected_epoch: u64) -> ParsedSourceRootLoad<'_> {
+    ParsedSourceRootLoad {
+        source_root_kind: SourceRootKind::External,
+        source_root_path: Path::new("/tmp/Modelica"),
+        cache_status: SourceRootCacheStatus::Disabled,
+        path_key,
+        current_document_path: Some("active.mo"),
+        documents: Vec::new(),
+        expected_epoch,
+    }
+}
+
 #[test]
 fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
     run_async_test(async {
@@ -653,14 +686,20 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
 
         {
             let mut session = server.session.write().await;
-            assert!(session.reserve_source_root_load(path_key, 0));
+            assert_eq!(
+                session.reserve_source_root_load(path_key, 0),
+                SourceRootLoadReservation::Reserved
+            );
         }
         server.reset_session_and_loaded_source_roots().await;
         assert_eq!(server.session.read().await.source_root_state_epoch(), 1);
 
         {
             let mut session = server.session.write().await;
-            assert!(session.reserve_source_root_load(path_key, 1));
+            assert_eq!(
+                session.reserve_source_root_load(path_key, 1),
+                SourceRootLoadReservation::Reserved
+            );
         }
 
         server
@@ -668,12 +707,15 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
             .write()
             .await
             .cancel_source_root_load(path_key, 0);
-        assert!(
-            !server
+        assert_eq!(
+            server
                 .session
                 .write()
                 .await
                 .reserve_source_root_load(path_key, 1),
+            SourceRootLoadReservation::InFlight {
+                reservation_epoch: 1
+            },
             "stale cancellation must leave the current reservation active"
         );
 
@@ -683,23 +725,25 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
             .await
             .apply_parsed_source_root_if_current(
                 "source-root::modelica",
-                ParsedSourceRootLoad {
-                    source_root_kind: SourceRootKind::External,
-                    source_root_path: Path::new("/tmp/Modelica"),
-                    cache_status: SourceRootCacheStatus::Disabled,
-                    path_key,
-                    current_document_path: Some("active.mo"),
-                    documents: Vec::new(),
-                    expected_epoch: 0,
-                },
+                empty_external_source_root(path_key, 0),
             );
-        assert!(stale_apply.is_none(), "stale epoch apply should be ignored");
-        assert!(
-            !server
+        assert_eq!(
+            stale_apply,
+            SourceRootApplyDisposition::StaleEpoch {
+                expected_epoch: 0,
+                current_epoch: 1,
+            },
+            "stale epoch apply should be rejected"
+        );
+        assert_eq!(
+            server
                 .session
                 .write()
                 .await
                 .reserve_source_root_load(path_key, 1),
+            SourceRootLoadReservation::InFlight {
+                reservation_epoch: 1
+            },
             "stale apply must leave the current reservation active"
         );
 
@@ -709,20 +753,15 @@ fn stale_epoch_load_cannot_clear_new_epoch_reservation() {
             .await
             .apply_parsed_source_root_if_current(
                 "source-root::modelica",
-                ParsedSourceRootLoad {
-                    source_root_kind: SourceRootKind::External,
-                    source_root_path: Path::new("/tmp/Modelica"),
-                    cache_status: SourceRootCacheStatus::Disabled,
-                    path_key,
-                    current_document_path: Some("active.mo"),
-                    documents: Vec::new(),
-                    expected_epoch: 1,
-                },
+                empty_external_source_root(path_key, 1),
             );
-        assert_eq!(
-            current_apply.map(|(inserted_file_count, _)| inserted_file_count),
-            Some(0)
-        );
+        assert!(matches!(
+            current_apply,
+            SourceRootApplyDisposition::Applied {
+                inserted_file_count: 0,
+                ..
+            }
+        ));
         assert!(
             server
                 .session
@@ -743,15 +782,33 @@ fn reserve_source_root_load_blocks_duplicate_inflight_work() {
 
         {
             let mut session = server.session.write().await;
-            assert!(session.reserve_source_root_load(path_key, 0));
+            assert_eq!(
+                session.reserve_source_root_load(path_key, 0),
+                SourceRootLoadReservation::Reserved
+            );
         }
+        let error = server
+            .load_source_root_if_current(
+                "/tmp/Modelica",
+                path_key,
+                "source-root::modelica",
+                None,
+                0,
+                SourceRootIndexingReason::CompletionImports,
+            )
+            .await
+            .expect_err("an in-flight root must not be treated as loaded");
         assert!(
-            !server
-                .session
-                .write()
-                .await
-                .reserve_source_root_load(path_key, 0),
-            "same path should not be reservable twice while in-flight"
+            matches!(
+                &error,
+                SourceRootPreparationError::Reservation {
+                    disposition: SourceRootLoadReservation::InFlight {
+                        reservation_epoch: 0
+                    },
+                    ..
+                }
+            ),
+            "same-path work must fail closed while another load is in flight: {error}"
         );
 
         server
@@ -759,12 +816,13 @@ fn reserve_source_root_load_blocks_duplicate_inflight_work() {
             .write()
             .await
             .cancel_source_root_load(path_key, 0);
-        assert!(
+        assert_eq!(
             server
                 .session
                 .write()
                 .await
                 .reserve_source_root_load(path_key, 0),
+            SourceRootLoadReservation::Reserved,
             "path should become reservable after matching-owner cancel"
         );
     });
@@ -982,9 +1040,7 @@ fn source_root_load_primitive_loads_source_roots() {
                 SourceRootIndexingReason::CompletionImports,
             )
             .await;
-        let outcome = outcome
-            .expect("source-root load should succeed")
-            .expect("source root should be applied");
+        let outcome = require_loaded_source_root(outcome.expect("source-root load should succeed"));
 
         assert!(
             server
@@ -1179,7 +1235,8 @@ fn completion_preparation_marks_stale_requests_after_edit_epoch_bump() {
                 &uri_path,
                 request_edit_epoch,
             )
-            .await;
+            .await
+            .expect("stale preparation should remain a successful request");
 
         let expected_prefix = extract_namespace_completion_prefix(
             source,
@@ -1195,6 +1252,49 @@ fn completion_preparation_marks_stale_requests_after_edit_epoch_bump() {
         assert!(!preparation.built_resolved_tree);
         assert!(!preparation.had_resolved_cache_before);
         assert_eq!(preparation.completion_prefix, expected_prefix);
+    });
+}
+
+#[test]
+fn completion_preparation_surfaces_inflight_source_root_failure() {
+    run_async_test(async {
+        let temp = new_temp_dir("completion-preparation-inflight-root");
+        let source_root_path = write_test_source_root(&temp, "Lib")
+            .to_string_lossy()
+            .to_string();
+        let path_key = canonical_path_key(&source_root_path);
+        let service = new_test_service();
+        let server = service.inner();
+        *server.source_root_paths.write().await = vec![source_root_path];
+        let source_root_epoch = server.session.read().await.source_root_state_epoch();
+        assert_eq!(
+            server
+                .session
+                .write()
+                .await
+                .reserve_source_root_load(&path_key, source_root_epoch),
+            SourceRootLoadReservation::Reserved
+        );
+
+        let error = server
+            .prepare_completion(
+                "model Active\n  Lib.\nend Active;\n",
+                Position {
+                    line: 1,
+                    character: "  Lib.".len() as u32,
+                },
+                &temp.join("active.mo").to_string_lossy(),
+                server.completion_mutation_epoch(),
+            )
+            .await
+            .expect_err("in-flight source-root work must abort completion preparation");
+        assert!(matches!(
+            error,
+            SourceRootPreparationError::Reservation {
+                disposition: SourceRootLoadReservation::InFlight { .. },
+                ..
+            }
+        ));
     });
 }
 

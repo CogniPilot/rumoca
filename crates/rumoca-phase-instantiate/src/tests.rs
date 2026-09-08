@@ -1,4 +1,5 @@
 use super::*;
+use rumoca_core::PhaseError as _;
 use rumoca_ir_ast as ast;
 
 /// Helper to create a token with text for testing.
@@ -143,25 +144,6 @@ fn make_comp_ref_expr_at(names: &[&str], file_name: &str, start: u32, end: u32) 
     })
 }
 
-fn make_resolved_comp_ref_expr_at(
-    name: &str,
-    def_id: DefId,
-    file_name: &str,
-    start: u32,
-    end: u32,
-) -> ast::Expression {
-    ast::Expression::ComponentReference(ast::ComponentReference {
-        local: false,
-        parts: vec![ast::ComponentRefPart {
-            ident: make_token_at(name, file_name, start, end),
-            subs: None,
-            def_id: Some(def_id),
-        }],
-        span: rumoca_core::Span::DUMMY,
-        qualified_display_name: None,
-    })
-}
-
 fn make_binary_expr(
     op: rumoca_core::OpBinary,
     lhs: ast::Expression,
@@ -222,14 +204,22 @@ fn test_extract_attributes_preserves_local_fixed_with_local_start() {
         .insert("fixed".to_string(), make_bool_expr(true));
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
+    assert_eq!(attrs.state_select, rumoca_core::StateSelect::Default);
 }
 
 #[test]
@@ -245,10 +235,17 @@ fn test_extract_attributes_preserves_local_fixed_with_outer_start() {
     );
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert!(attrs.start.is_some());
     assert_eq!(attrs.fixed, Some(true));
@@ -269,10 +266,17 @@ fn test_extract_attributes_outer_state_select_overrides_local() {
     );
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Never);
 }
@@ -307,9 +311,16 @@ fn test_extract_attributes_evaluates_outer_state_select_in_modifier_source_scope
     effective_components.insert("Medium.pT_explicit".to_string(), p_t_explicit);
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("source-scoped stateSelect should evaluate");
+    let attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("source-scoped stateSelect should evaluate");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
@@ -328,10 +339,17 @@ fn test_extract_attributes_evaluates_state_select_parameter() {
     effective_components.insert("stateSelect".to_string(), state_select);
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mod_env = ast::ModificationEnvironment::new();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert_eq!(attrs.state_select, rumoca_core::StateSelect::Prefer);
 }
@@ -368,33 +386,15 @@ fn test_lookup_type_info_classifies_string_as_discrete() {
 /// through its extends chain (MLS §3.8.3).
 #[test]
 fn test_lookup_type_info_classifies_string_alias_as_discrete() {
-    let string_def = DefId::new(1);
-    let label_def = DefId::new(2);
-
-    let string_class = ast::ClassDef {
-        name: make_token("String"),
-        def_id: Some(string_def),
-        ..Default::default()
-    };
-    let label = ast::ClassDef {
-        name: make_token("Label"),
-        def_id: Some(label_def),
-        extends: vec![ast::Extend {
-            base_name: make_name("String"),
-            base_def_id: Some(string_def),
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-
-    let mut tree = ast::ClassTree::new();
-    tree.definitions
-        .classes
-        .insert("String".to_string(), string_class);
-    tree.definitions.classes.insert("Label".to_string(), label);
-
-    let comp = make_component("s", "Label", Some(label_def));
-    let info = lookup_type_info(&tree, &comp, "Label")
+    let tree = crate::test_support::resolved_tree(
+        "string_alias.mo",
+        "type Label = String; model M Label s; end M;",
+    );
+    let comp = tree
+        .get_class_by_qualified_name("M")
+        .and_then(|class| class.components.get("s"))
+        .expect("resolved Label component");
+    let info = lookup_type_info(&tree, comp, "Label")
         .expect("String alias should resolve through the class tree");
 
     assert!(info.is_discrete);
@@ -409,11 +409,18 @@ fn test_extract_attributes_rejects_invalid_state_select() {
     );
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let err = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect_err("invalid stateSelect literal should fail");
+    let err = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect_err("invalid stateSelect literal should fail");
 
     assert!(err.to_string().contains("stateSelect"));
 }
@@ -440,7 +447,7 @@ fn test_validate_final_type_attribute_rejects_outer_override() {
                         ast::Expression::ComponentReference(cref) => cref,
                         _ => unreachable!(),
                     },
-                    value: std::sync::Arc::new(make_string_expr("V")),
+                    value: Some(std::sync::Arc::new(make_string_expr("V"))),
                     span: rumoca_core::Span::DUMMY,
                 },
                 final_: true,
@@ -491,7 +498,7 @@ fn test_validate_final_type_attribute_requires_override_span() {
                         ast::Expression::ComponentReference(cref) => cref,
                         _ => unreachable!(),
                     },
-                    value: std::sync::Arc::new(make_string_expr("V")),
+                    value: Some(std::sync::Arc::new(make_string_expr("V"))),
                     span: rumoca_core::Span::DUMMY,
                 },
                 final_: true,
@@ -533,11 +540,17 @@ fn test_parameter_declaration_binding_promotes_builtin_default_start() {
     comp.binding = Some(make_int_expr(5));
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let result = extract_component_attrs_and_binding(
+        &comp,
+        &mod_env,
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert_eq!(
         result.attrs.start.as_ref().map(terminal_text),
@@ -556,11 +569,17 @@ fn test_parameter_declaration_binding_does_not_override_explicit_start() {
     comp.binding = Some(make_int_expr(5));
 
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mod_env = ast::ModificationEnvironment::new();
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let result = extract_component_attrs_and_binding(&comp, &mod_env, &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let result = extract_component_attrs_and_binding(
+        &comp,
+        &mod_env,
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
 
     assert_eq!(
         result.attrs.start.as_ref().map(terminal_text),
@@ -590,16 +609,21 @@ fn test_continuous_declaration_binding_preserves_runtime_expression() {
     effective_components.insert("phi_rel".to_string(), phi_rel);
     effective_components.insert("phi_rel0".to_string(), phi_rel0);
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut ctx = InstantiateContext::new();
+    let selected_component_types = SelectedComponentTypes::empty_for_test();
 
     let info = prepare_component_binding_info(
         &tree,
         &phi_diff,
         &mut ctx,
-        &effective_components,
-        &TypeOverrideMap::new(),
+        ComponentSourceSemantics {
+            effective_components: &effective_components,
+            type_overrides: &TypeOverrideMap::new(),
+            selected_component_types: &selected_component_types,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
         false,
-        &[],
     )
     .expect("continuous binding should prepare");
 
@@ -623,16 +647,21 @@ fn test_parameter_declaration_binding_still_resolves_structural_expression() {
     let mut effective_components = IndexMap::default();
     effective_components.insert("n".to_string(), n);
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let mut ctx = InstantiateContext::new();
+    let selected_component_types = SelectedComponentTypes::empty_for_test();
 
     let info = prepare_component_binding_info(
         &tree,
         &p,
         &mut ctx,
-        &effective_components,
-        &TypeOverrideMap::new(),
+        ComponentSourceSemantics {
+            effective_components: &effective_components,
+            type_overrides: &TypeOverrideMap::new(),
+            selected_component_types: &selected_component_types,
+            imports: crate::dims::ImportRewrite::without_imports(&class_index),
+        },
         true,
-        &[],
     )
     .expect("parameter binding should prepare");
 
@@ -698,8 +727,17 @@ end P;
         );
     }
 
-    let instanced = instantiate(resolved, "P.Winding")
-        .expect("the parameter expression should decide the conditional component");
+    let tree = resolved.inner().clone();
+    let overlay = match instantiate_model_with_outcome(&tree, "P.Winding") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => panic!(
+            "conditional component fixture unexpectedly needs inner declarations: {missing_inners:?}"
+        ),
+        InstantiationOutcome::Error(error) => {
+            panic!("conditional component fixture failed: {error}")
+        }
+    };
+    let instanced = ast::InstancedTree::new(tree, overlay);
 
     assert!(
         instanced
@@ -741,8 +779,15 @@ end P;
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
 
-    let instanced = instantiate(resolved, "P.Brake")
-        .expect("the record parameter expression should decide the component");
+    let tree = resolved.inner().clone();
+    let overlay = match instantiate_model_with_outcome(&tree, "P.Brake") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => panic!(
+            "record parameter fixture unexpectedly needs inner declarations: {missing_inners:?}"
+        ),
+        InstantiationOutcome::Error(error) => panic!("record parameter fixture failed: {error}"),
+    };
+    let instanced = ast::InstancedTree::new(tree, overlay);
 
     assert!(
         instanced
@@ -787,8 +832,15 @@ end P;
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source should resolve");
 
-    let instanced = instantiate(resolved, "P.Root")
-        .expect("forwarded enum modifiers should decide the component");
+    let tree = resolved.inner().clone();
+    let overlay = match instantiate_model_with_outcome(&tree, "P.Root") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => panic!(
+            "forwarded enum fixture unexpectedly needs inner declarations: {missing_inners:?}"
+        ),
+        InstantiationOutcome::Error(error) => panic!("forwarded enum fixture failed: {error}"),
+    };
+    let instanced = ast::InstancedTree::new(tree, overlay);
 
     assert!(
         !instanced.overlay.components.iter().any(|(_, instance)| {
@@ -995,7 +1047,7 @@ fn test_register_known_integer_instance_uses_modifier_source_scope() {
         ..Default::default()
     };
 
-    ctx.register_known_integer_instance(&data);
+    ctx.register_known_integer_instance(&data, true);
 
     assert_eq!(ctx.known_int_params.get("holder.n"), Some(&2));
 }
@@ -1131,69 +1183,23 @@ fn test_pending_outer_resolution_allows_root_inner_for_nested_outer() {
 
 #[test]
 fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
-    let state_id = DefId::new(100);
-    let uses_outer_id = DefId::new(101);
-    let root_id = DefId::new(102);
-    let state_x_id = DefId::new(103);
-    let outer_shared_id = DefId::new(104);
-    let child_id = DefId::new(105);
-    let inner_shared_id = DefId::new(106);
-
-    let mut state_x = make_component("x", "Real", None);
-    state_x.def_id = Some(state_x_id);
-    state_x.location = make_location("late_inner.mo", 20, 21);
-    let state = ast::ClassDef {
-        def_id: Some(state_id),
-        name: make_token("State"),
-        components: [("x".to_string(), state_x)].into_iter().collect(),
-        equations: vec![ast::Equation::Simple {
-            lhs: make_resolved_comp_ref_expr_at("x", state_x_id, "late_inner.mo", 0, 1),
-            rhs: make_int_expr(1),
-        }],
-        ..Default::default()
-    };
-
-    let mut outer_shared = make_component("shared", "State", Some(state_id));
-    outer_shared.def_id = Some(outer_shared_id);
-    outer_shared.outer = true;
-    outer_shared.location = make_location("late_inner.mo", 6, 12);
-    let uses_outer = ast::ClassDef {
-        def_id: Some(uses_outer_id),
-        name: make_token("UsesOuter"),
-        components: [("shared".to_string(), outer_shared)].into_iter().collect(),
-        ..Default::default()
-    };
-
-    let mut child = make_component("child", "UsesOuter", Some(uses_outer_id));
-    child.def_id = Some(child_id);
-    child.location = make_location("late_inner.mo", 0, 5);
-    let mut inner_shared = make_component("shared", "State", Some(state_id));
-    inner_shared.def_id = Some(inner_shared_id);
-    inner_shared.location = make_location("late_inner.mo", 13, 19);
-    inner_shared.inner = true;
-    let root = ast::ClassDef {
-        def_id: Some(root_id),
-        name: make_token("Root"),
-        components: [
-            ("child".to_string(), child),
-            ("shared".to_string(), inner_shared),
-        ]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    };
-
-    let mut tree = ast::ClassTree::new();
-    tree.source_map
-        .add("late_inner.mo", "child shared shared x");
-    tree.definitions.classes.insert("State".to_string(), state);
-    tree.definitions
-        .classes
-        .insert("UsesOuter".to_string(), uses_outer);
-    tree.definitions.classes.insert("Root".to_string(), root);
-    tree.def_map.insert(state_id, "State".to_string());
-    tree.def_map.insert(uses_outer_id, "UsesOuter".to_string());
-    tree.def_map.insert(root_id, "Root".to_string());
+    let tree = crate::test_support::resolved_tree(
+        "late_inner.mo",
+        r"
+model State
+  Real x;
+equation
+  x = 1;
+end State;
+model UsesOuter
+  outer State shared;
+end UsesOuter;
+model Root
+  UsesOuter child;
+  inner State shared;
+end Root;
+",
+    );
 
     let outcome = instantiate_model_with_outcome(&tree, "Root");
     let overlay = match outcome {
@@ -1231,17 +1237,17 @@ fn test_late_inner_declaration_resolves_pending_outer_without_synthesis() {
 fn test_type_compatible_exact_match() {
     // Exact type name match is always compatible
     let tree = ast::ClassTree::default();
-    assert!(is_type_compatible(&tree, "Real", "Real"));
-    assert!(is_type_compatible(&tree, "MyConnector", "MyConnector"));
+    assert!(is_type_compatible(&tree, "Real", "Real").expect("builtin types compare"));
+    assert!(is_type_compatible(&tree, "MyConnector", "MyConnector").is_err());
 }
 
 #[test]
 fn test_type_compatible_builtin_mismatch() {
     // Built-in types must match exactly
     let tree = ast::ClassTree::default();
-    assert!(!is_type_compatible(&tree, "Real", "Integer"));
-    assert!(!is_type_compatible(&tree, "Boolean", "String"));
-    assert!(!is_type_compatible(&tree, "Real", "Boolean"));
+    assert!(!is_type_compatible(&tree, "Real", "Integer").expect("builtin types compare"));
+    assert!(!is_type_compatible(&tree, "Boolean", "String").expect("builtin types compare"));
+    assert!(!is_type_compatible(&tree, "Real", "Boolean").expect("builtin types compare"));
 }
 
 #[test]
@@ -1293,50 +1299,79 @@ fn test_type_compatible_class_inheritance() {
     }
 
     // DerivedConnector should be compatible with BaseConnector (subtype)
-    assert!(is_type_compatible(
-        &tree,
-        "BaseConnector",
-        "DerivedConnector"
-    ));
+    assert!(
+        is_type_compatible(&tree, "BaseConnector", "DerivedConnector")
+            .expect("resolved types compare")
+    );
 
     // BaseConnector is NOT compatible with DerivedConnector (not a subtype)
-    assert!(!is_type_compatible(
-        &tree,
-        "DerivedConnector",
-        "BaseConnector"
-    ));
+    assert!(
+        !is_type_compatible(&tree, "DerivedConnector", "BaseConnector")
+            .expect("resolved types compare")
+    );
 }
 
 #[test]
 fn test_class_extends_direct() {
-    let tree = ast::ClassTree::default();
+    let mut tree = ast::ClassTree::default();
+    let base_def_id = rumoca_core::DefId::new(800);
+    let derived_def_id = rumoca_core::DefId::new(801);
+
+    let base = ast::ClassDef {
+        name: make_token("BaseConnector"),
+        def_id: Some(base_def_id),
+        ..Default::default()
+    };
 
     let derived = ast::ClassDef {
         name: make_token("Derived"),
+        def_id: Some(derived_def_id),
         extends: vec![ast::Extend {
-            base_name: make_name("BaseConnector"),
+            base_name: ast::Name {
+                name: vec![make_token("BaseConnector")],
+                def_id: Some(base_def_id),
+            },
+            base_def_id: Some(base_def_id),
             ..Default::default()
         }],
         ..Default::default()
     };
+    tree.definitions
+        .classes
+        .insert("BaseConnector".to_string(), base);
+    tree.name_map
+        .insert("BaseConnector".to_string(), base_def_id);
+    tree.def_map
+        .insert(base_def_id, "BaseConnector".to_string());
 
-    assert!(class_extends(&tree, &derived, "BaseConnector"));
-    assert!(!class_extends(&tree, &derived, "OtherClass"));
+    assert!(
+        class_extends(&tree, &derived, "BaseConnector").expect("resolved extends graph compares")
+    );
+    assert!(class_extends(&tree, &derived, "OtherClass").is_err());
 }
 
 #[test]
 fn test_class_extends_transitive() {
     let mut tree = ast::ClassTree::default();
+    let a_id = rumoca_core::DefId::new(810);
+    let b_id = rumoca_core::DefId::new(811);
+    let c_id = rumoca_core::DefId::new(812);
 
     let class_a = ast::ClassDef {
         name: make_token("A"),
+        def_id: Some(a_id),
         ..Default::default()
     };
 
     let class_b = ast::ClassDef {
         name: make_token("B"),
+        def_id: Some(b_id),
         extends: vec![ast::Extend {
-            base_name: make_name("A"),
+            base_name: ast::Name {
+                name: vec![make_token("A")],
+                def_id: Some(a_id),
+            },
+            base_def_id: Some(a_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -1344,8 +1379,13 @@ fn test_class_extends_transitive() {
 
     let class_c = ast::ClassDef {
         name: make_token("C"),
+        def_id: Some(c_id),
         extends: vec![ast::Extend {
-            base_name: make_name("B"),
+            base_name: ast::Name {
+                name: vec![make_token("B")],
+                def_id: Some(b_id),
+            },
+            base_def_id: Some(b_id),
             ..Default::default()
         }],
         ..Default::default()
@@ -1356,13 +1396,17 @@ fn test_class_extends_transitive() {
     tree.definitions
         .classes
         .insert("C".to_string(), class_c.clone());
+    for (name, def_id) in [("A", a_id), ("B", b_id), ("C", c_id)] {
+        tree.name_map.insert(name.to_string(), def_id);
+        tree.def_map.insert(def_id, name.to_string());
+    }
 
     // C extends B directly
-    assert!(class_extends(&tree, &class_c, "B"));
+    assert!(class_extends(&tree, &class_c, "B").expect("resolved extends graph compares"));
     // C extends A transitively (through B)
-    assert!(class_extends(&tree, &class_c, "A"));
+    assert!(class_extends(&tree, &class_c, "A").expect("resolved extends graph compares"));
     // C does not extend D
-    assert!(!class_extends(&tree, &class_c, "D"));
+    assert!(class_extends(&tree, &class_c, "D").is_err());
 }
 
 #[test]
@@ -1408,15 +1452,26 @@ fn inherited_attribute_modification_keeps_written_source_scope() {
 
     let mod_env = ast::ModificationEnvironment::new();
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "x", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let mut attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "x",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert_eq!(
         attrs.source_scopes.get("start"),
         Some(&ast::QualifiedName::from_ident("Derived"))
+    );
+    assert!(
+        !attrs.attribute_instance_scopes.contains_key("start"),
+        "a lexical class scope must never enter the instance-occurrence map that keys the selected-component-type catalog"
     );
     assert_eq!(attrs.start, Some(start_expr));
 }
@@ -1438,10 +1493,17 @@ fn local_attribute_modification_keeps_instance_qualification() {
 
     let mod_env = ast::ModificationEnvironment::new();
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let effective_components = IndexMap::default();
     let eval_ctx = make_eval_ctx(&tree, &mod_env, &effective_components);
-    let mut attrs = extract_attributes(&comp, &mod_env, "nextstate", &eval_ctx, &[])
-        .expect("valid attributes should extract");
+    let mut attrs = extract_attributes(
+        &comp,
+        &mod_env,
+        "nextstate",
+        &eval_ctx,
+        crate::dims::ImportRewrite::without_imports(&class_index),
+    )
+    .expect("valid attributes should extract");
     infer_local_attribute_source_scopes(&ctx, &comp, &mut attrs);
 
     assert!(
@@ -1449,4 +1511,198 @@ fn local_attribute_modification_keeps_instance_qualification() {
         "local attributes use the instance parent prefix so sibling references like n resolve to the current instance"
     );
     assert_eq!(attrs.start, Some(start_expr));
+}
+
+#[test]
+fn fixed_attribute_constant_expressions_are_total_at_instantiation() {
+    let tree = crate::test_support::resolved_tree(
+        "fixed_attribute_constant_expressions.mo",
+        r#"
+model FixedAttributeConstantExpressions
+  model Leaf
+    Real x(fixed = false);
+  end Leaf;
+  constant Boolean k = true;
+  Real literal(start = 1, fixed = true);
+  Real referenced(start = 2, fixed = k);
+  Real expression(start = 3, fixed = (not false));
+  Real absent;
+  Leaf leaf(x(fixed = k));
+initial equation
+  referenced = 3;
+equation
+  der(literal) = 1;
+  der(referenced) = 1;
+  der(expression) = 1;
+end FixedAttributeConstantExpressions;
+"#,
+    );
+
+    let overlay = match instantiate_model_with_outcome(&tree, "FixedAttributeConstantExpressions") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!(
+                "fixed-attribute fixture unexpectedly needs inner declarations: {missing_inners:?}"
+            )
+        }
+        InstantiationOutcome::Error(error) => {
+            panic!("fixed-attribute fixture failed instantiation: {error}")
+        }
+    };
+
+    for name in ["literal", "referenced", "expression"] {
+        let component = overlay
+            .components
+            .values()
+            .find(|component| component.qualified_name.to_flat_string() == name)
+            .unwrap_or_else(|| panic!("instantiated component `{name}`"));
+        assert_eq!(
+            component.fixed,
+            Some(true),
+            "source-present fixed expression for `{name}` must be retained"
+        );
+    }
+    let absent = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "absent")
+        .expect("instantiated component `absent`");
+    assert_eq!(
+        absent.fixed, None,
+        "source absence remains distinct from an unevaluable expression"
+    );
+    let outer_modified = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "leaf.x")
+        .expect("instantiated component `leaf.x`");
+    assert_eq!(
+        outer_modified.fixed,
+        Some(true),
+        "an applied modifier must override the declaration without fail-open fallback"
+    );
+}
+
+#[test]
+fn fixed_attribute_unevaluable_reference_refuses_instead_of_becoming_absent() {
+    let mut tree = crate::test_support::resolved_tree(
+        "fixed_attribute_unevaluable_reference.mo",
+        r#"
+model FixedAttributeUnevaluableReference
+  constant Boolean k = true;
+  Real x(start = 2, fixed = k);
+initial equation
+  x = 3;
+equation
+  der(x) = 1;
+end FixedAttributeUnevaluableReference;
+"#,
+    );
+    tree.definitions
+        .classes
+        .get_mut("FixedAttributeUnevaluableReference")
+        .and_then(|class| class.components.get_mut("k"))
+        .expect("resolved constant declaration")
+        .binding = None;
+
+    let error = match instantiate_model_with_outcome(&tree, "FixedAttributeUnevaluableReference") {
+        InstantiationOutcome::Error(error) => error,
+        InstantiationOutcome::Success(_) => {
+            panic!("present-but-unevaluable fixed expression must not construct fixed=None")
+        }
+        InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!(
+                "fixed-attribute mutation unexpectedly needs inner declarations: {missing_inners:?}"
+            )
+        }
+    };
+
+    assert!(matches!(
+        error.as_ref(),
+        InstantiateError::InvalidTypeAttribute { attribute, .. } if attribute == "fixed"
+    ));
+    assert_eq!(error.to_diagnostic().code.as_deref(), Some("EI032"));
+}
+
+#[test]
+fn inherited_start_modifier_resolves_at_declaration_instance() {
+    // MLS §7.2: `extends Base(y(start=y_start))` writes the start modifier in
+    // the derived class, but inheritance flattens `y` and `y_start` into one
+    // instance. The start expression must resolve at that instance, not at a
+    // lexical class scope. A regression that keys the selected-component-type
+    // catalog with the writing class path fails this fixture with EI098.
+    let tree = crate::test_support::resolved_tree(
+        "inherited_start_modifier.mo",
+        r"
+model SISO
+  Real y(start = 0.0);
+end SISO;
+model FirstOrder
+  extends SISO(y(start = y_start));
+  parameter Real y_start = 1.0;
+end FirstOrder;
+",
+    );
+
+    let overlay = match instantiate_model_with_outcome(&tree, "FirstOrder") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        other => panic!("inherited start modifier must instantiate: {other:?}"),
+    };
+
+    let y = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "y")
+        .expect("instantiated component `y`");
+    let start = y.start.as_ref().expect("inherited start expression");
+    let ast::Expression::ComponentReference(reference) = start else {
+        panic!("start must remain a reference to the derived-class parameter: {start:?}");
+    };
+    let last = reference.parts.last().expect("reference part");
+    assert_eq!(last.ident.text.as_ref(), "y_start");
+    assert!(
+        last.def_id.is_some(),
+        "the start reference must be resolved at the declaration instance, not left deferred"
+    );
+}
+
+#[test]
+fn cross_instance_start_modifier_resolves_at_writing_instance() {
+    // A modifier written on a component declaration applies to a member of a
+    // *different* instance, and its expression must resolve in the writing
+    // instance, not inside the modified component. The modification environment
+    // carries an instance-namespace source scope for exactly this case.
+    let tree = crate::test_support::resolved_tree(
+        "cross_instance_start_modifier.mo",
+        r"
+model Sub
+  Real x(start = 0.0);
+end Sub;
+model Sys
+  parameter Real p = 2.0;
+  Sub sub(x(start = p));
+end Sys;
+",
+    );
+
+    let overlay = match instantiate_model_with_outcome(&tree, "Sys") {
+        InstantiationOutcome::Success(overlay) => overlay,
+        other => panic!("cross-instance start modifier must instantiate: {other:?}"),
+    };
+
+    let x = overlay
+        .components
+        .values()
+        .find(|component| component.qualified_name.to_flat_string() == "sub.x")
+        .expect("instantiated component `sub.x`");
+    let start = x.start.as_ref().expect("cross-instance start expression");
+    let ast::Expression::ComponentReference(reference) = start else {
+        panic!("start must remain a reference to the outer parameter: {start:?}");
+    };
+    let last = reference.parts.last().expect("reference part");
+    assert_eq!(last.ident.text.as_ref(), "p");
+    assert!(
+        last.def_id.is_some(),
+        "the outer parameter reference must be resolved at the writing instance"
+    );
 }

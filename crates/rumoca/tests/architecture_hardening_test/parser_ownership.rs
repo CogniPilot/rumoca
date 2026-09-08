@@ -277,11 +277,12 @@ impl<'ast> Visit<'ast> for DimensionInferenceCalls {
                 .segments
                 .iter()
                 .any(|segment| segment.ident == "TypeCheckEvalContext")
-                && function
-                    .path
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.ident == "new");
+                && function.path.segments.last().is_some_and(|segment| {
+                    segment.ident == "new"
+                        || segment.ident == "for_resolved_identities"
+                        || segment.ident == "for_pre_identity_structural"
+                        || segment.ident == "with_policy"
+                });
         }
         syn::visit::visit_expr_call(self, call);
     }
@@ -300,7 +301,10 @@ impl<'ast> Visit<'ast> for DimensionInferenceCalls {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if call.method == "new"
+        if (call.method == "new"
+            || call.method == "for_resolved_identities"
+            || call.method == "for_pre_identity_structural"
+            || call.method == "with_policy")
             && let syn::Expr::Path(receiver) = call.receiver.as_ref()
         {
             self.constructs_typecheck_context |= receiver

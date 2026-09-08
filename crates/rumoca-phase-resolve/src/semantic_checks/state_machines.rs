@@ -336,7 +336,7 @@ fn check_active_state_targets(
 ) {
     let mut collector = ActiveStateCollector { uses: Vec::new() };
     for eq in class.equations.iter().chain(class.initial_equations.iter()) {
-        let _ = collector.visit_equation(eq);
+        let _visit_outcome = collector.visit_equation(eq);
     }
 
     let states = machine.states();

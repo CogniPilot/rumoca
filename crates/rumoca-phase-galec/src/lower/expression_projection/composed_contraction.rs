@@ -60,30 +60,42 @@ pub(super) struct IntermediateElement {
 /// evaluates it once per contracted value rather than once per element; and
 /// the right operand is a reference whose last subscript is the row index, so
 /// dropping it names one run per contracted value.
-pub(super) fn attest_row_contraction(
+pub(super) fn issue_real_matrix_multiply_occurrence(
+    format: rumoca_ir_galec::package::AlgorithmCodeRealFormat,
     element: &IntermediateElement,
     iterator: &gast::Name,
     extent: u32,
     scale: &gast::Expression,
     source: &gast::Expression,
-) -> Option<gast::RowContraction> {
+    seed: gast::RealMatrixMultiplySeed,
+) -> Option<gast::RealMatrixMultiplyOccurrenceContract> {
     if !is_hoistable_coefficient(scale) || mentions(scale, &element.row) {
         return None;
     }
-    let gast::Expression::Ref(gast::Reference::Local(part)) = source else {
+    let gast::Expression::Ref(gast::Reference::Local(source_part)) = source else {
         return None;
     };
-    let (last, rest) = part.subscripts.split_last()?;
+    let (last, rest) = source_part.subscripts.split_last()?;
     if !is_reference_to(last, &element.row)
         || rest.iter().any(|index| mentions(index, &element.row))
     {
         return None;
     }
-    Some(gast::RowContraction::new(
-        element.name.clone(),
-        element.count,
-        iterator.clone(),
-        extent,
+    let gast::Reference::Local(mut target_part) = element.reference.clone() else {
+        return None;
+    };
+    let target_row = target_part.subscripts.pop()?;
+    if !is_reference_to(&target_row, &element.row) || target_part.name != element.name {
+        return None;
+    }
+    let mut source_part = source_part.clone();
+    source_part.subscripts.pop();
+    Some(gast::RealMatrixMultiplyOccurrenceContract::new(
+        format,
+        (gast::Reference::Local(target_part), element.count),
+        (iterator.clone(), extent),
+        (scale.clone(), gast::Reference::Local(source_part)),
+        seed,
     ))
 }
 
@@ -210,6 +222,92 @@ mod mentions_tests {
 
     fn local(text: &str) -> gast::Expression {
         gast::Expression::Ref(gast::Reference::local(name(text)))
+    }
+
+    #[test]
+    fn matrix_occurrence_issuer_retains_the_complete_arithmetic_relation() {
+        let iterator = name("contracted");
+        let row = name("column");
+        let target_name = name("intermediate");
+        let target = intermediate_element(&target_name, &local("column"));
+        let element = IntermediateElement {
+            name: target_name.clone(),
+            count: 4,
+            row: row.clone(),
+            reference: target,
+        };
+        let mut source = gast::RefPart::plain(name("source"));
+        source.subscripts = vec![local("contracted"), local("column")];
+        let scale = local("coefficient");
+        let occurrence = issue_real_matrix_multiply_occurrence(
+            rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary32,
+            &element,
+            &iterator,
+            3,
+            &scale,
+            &gast::Expression::Ref(gast::Reference::Local(source)),
+            gast::RealMatrixMultiplySeed::PositiveZero,
+        )
+        .expect("checked contraction issues one occurrence");
+
+        assert_eq!(
+            occurrence.format(),
+            rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary32
+        );
+        assert_eq!(
+            occurrence.target_run(),
+            &gast::Reference::local(target_name)
+        );
+        assert_eq!(occurrence.count(), 4);
+        assert_eq!(occurrence.iterator(), &iterator);
+        assert_eq!(occurrence.extent(), 3);
+        assert_eq!(occurrence.scale(), &scale);
+        let mut expected_source = gast::RefPart::plain(name("source"));
+        expected_source.subscripts.push(local("contracted"));
+        assert_eq!(
+            occurrence.source_run(),
+            &gast::Reference::Local(expected_source)
+        );
+        assert_eq!(
+            occurrence.seed(),
+            &gast::RealMatrixMultiplySeed::PositiveZero
+        );
+        assert_eq!(
+            occurrence.primitive_rounding(),
+            gast::RealMatrixMultiplyRounding::RoundToNearestTiesToEven
+        );
+        assert_eq!(
+            occurrence.contraction(),
+            gast::RealMatrixMultiplyContraction::SeparateMultiplyAdd
+        );
+        assert_eq!(
+            occurrence.intermediate_precision(),
+            gast::RealMatrixMultiplyIntermediatePrecision::AccumulatorFormatOnly
+        );
+        assert_eq!(
+            occurrence.final_rounding(),
+            gast::RealMatrixMultiplyFinalRounding::None
+        );
+        assert_eq!(
+            occurrence.signed_zero(),
+            gast::RealMatrixMultiplySignedZero::IeeePrimitiveResult
+        );
+        assert_eq!(
+            occurrence.nan(),
+            gast::RealMatrixMultiplyNan::QuietPayloadAndSignQuotient
+        );
+        assert_eq!(
+            occurrence.infinity(),
+            gast::RealMatrixMultiplyInfinity::IeeePrimitiveResult
+        );
+        assert_eq!(
+            occurrence.subnormal(),
+            gast::RealMatrixMultiplySubnormal::GradualUnderflow
+        );
+        assert_eq!(
+            occurrence.status(),
+            gast::RealMatrixMultiplyStatus::NoObservableFloatingStatus
+        );
     }
 
     /// A call's arguments are ordinary expressions and are searched in full:

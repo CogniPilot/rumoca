@@ -123,6 +123,7 @@ impl TypeChecker {
         match current {
             Expression::Terminal { .. }
             | Expression::Empty { .. }
+            | Expression::Modification { value: None, .. }
             | Expression::ClassModification { .. } => VariabilityLevel::Constant,
             Expression::ComponentReference(reference) => {
                 self.component_reference_variability(reference, class)
@@ -130,10 +131,16 @@ impl TypeChecker {
             Expression::FunctionCall { comp, args, .. } => {
                 Self::function_call_variability(comp, args, pending)
             }
+            Expression::DerivativeCall { args, .. } => {
+                pending.extend(args);
+                VariabilityLevel::Constant
+            }
             Expression::Unary { rhs, .. }
             | Expression::Parenthesized { inner: rhs, .. }
             | Expression::NamedArgument { value: rhs, .. }
-            | Expression::Modification { value: rhs, .. }
+            | Expression::Modification {
+                value: Some(rhs), ..
+            }
             | Expression::ArrayIndex { base: rhs, .. }
             | Expression::FieldAccess { base: rhs, .. } => {
                 pending.push(rhs);
@@ -219,7 +226,9 @@ impl TypeChecker {
             SemanticLookup::Found(variability) => variability,
             // Ambiguity must never make a binding look less variable. The
             // component-reference validation emits ET001 for the same node.
-            SemanticLookup::Ambiguous => VariabilityLevel::Continuous,
+            SemanticLookup::Ambiguous | SemanticLookup::InvalidAstSubscript => {
+                VariabilityLevel::Continuous
+            }
             SemanticLookup::Missing => Self::declared_reference_variability(reference, class)
                 .unwrap_or(VariabilityLevel::Constant),
         }

@@ -1,5 +1,24 @@
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MlirAbiArgument {
+    Y,
+    P,
+    Output,
+    Seed,
+}
+
+impl std::fmt::Display for MlirAbiArgument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Y => f.write_str("Y"),
+            Self::P => f.write_str("P"),
+            Self::Output => f.write_str("output"),
+            Self::Seed => f.write_str("seed"),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum MlirError {
     #[error("MLIR tool not found ({tool}): {source}")]
@@ -35,9 +54,10 @@ pub enum MlirError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
-    #[error("{function} output length mismatch: expected {expected}, got {actual}")]
-    OutputLength {
+    #[error("{function} {argument} length mismatch: expected {expected}, got {actual}")]
+    AbiLengthMismatch {
         function: &'static str,
+        argument: MlirAbiArgument,
         expected: usize,
         actual: usize,
     },

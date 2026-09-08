@@ -1,20 +1,29 @@
 //! Target-neutral serialized views over checked Algorithm Code.
 //!
-//! These adapters expose semantic facts only. Templates own every emitted
-//! identifier, keyword, filename, schema spelling, and target type.
+//! These adapters expose semantic facts and construction-issued presentation
+//! facts. Templates own lexical spelling only; identifiers and package-member
+//! relations come from sealed presentation/layout values.
 
+use std::collections::BTreeSet;
+
+use rumoca_ir_galec::TracedAlgorithmCodeProduct;
 use rumoca_ir_galec::ast;
-use rumoca_ir_galec::package::{AlgorithmCodePackage, CheckedAlgorithmBlock};
+use rumoca_ir_galec::package::CheckedAlgorithmBlock;
 use serde::Serialize;
 
-use super::{algorithm_code_symbols, algorithm_code_typed};
+use super::algorithm_code_artifact_layout::{
+    AlgorithmCodeArtifactLayout, AlgorithmCodeRepresentationFile,
+};
+use super::solve_algorithm_production::{
+    PreparedSolveAlgorithmProduction, ProductionArtifactRepresentationFile,
+    ProductionDeclarationPresentation, ProductionMethodPresentation, ProductionPresentationPlan,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AlgorithmCodeView<'a> {
     package: PackageRoot<'a>,
-    block_name: &'a str,
-    symbol_names: Vec<&'a str>,
-    variable_names: Vec<&'a str>,
+    presentation: AlgorithmCodeManifestPresentation<'a>,
+    artifact_layout: AlgorithmCodeArtifactLayoutView<'a>,
     variables: Vec<VariableView<'a>>,
     methods: MethodsView,
     /// The file-level trace legend: every Modelica file this block's statement
@@ -24,135 +33,132 @@ pub(crate) struct AlgorithmCodeView<'a> {
     /// anchors refer to, and so no build-machine path reaches the artifact
     /// (SPEC_0034 GAL-032).
     traces: super::source_trace::TraceLegend,
-    /// How the block was built: the emission policy in force, and whether that
-    /// policy leaves the artifact eligible for the certification path.
-    ///
-    /// A target emits this so a reviewer reads how the artifact was generated
-    /// from the artifact itself rather than from the command line that
-    /// produced it, which nothing downstream retains.
-    emission: EmissionView,
+}
+
+/// Source-only Algorithm Code projection. This view contains no manifest
+/// presentation or package-member relation and is the sole context available
+/// to the generic renderer.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AlgorithmCodeSourceView<'a> {
+    package: PackageRoot<'a>,
+    methods: MethodsView,
+    traces: super::source_trace::TraceLegend,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct AlgorithmCodeArtifactLayoutView<'a> {
+    algorithm_code_source: &'a AlgorithmCodeRepresentationFile,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PackageRoot<'a> {
-    block: algorithm_code_typed::TypedBlockView<'a>,
-    clock_variable_ordinal: usize,
+    /// The immutable syntax retained by the checked package.  Algorithm Code
+    /// source rendering is a spelling of this exact tree; it never builds a
+    /// target-side typed program, storage plan, or execution strategy.
+    block: &'a ast::Block,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct EmissionView {
-    /// Whether this render path knows the policies the block was projected
-    /// under.
-    ///
-    /// False on the standalone `.alg` path: that path receives a block some
-    /// earlier run projected, so the settings that chose its shape are not
-    /// visible here and the emitted C must not invent them.
-    recorded: bool,
-    /// How much of the source call structure survived (`none` .. `all`).
-    inline: &'static str,
-    /// Whether tensor operations were expanded (`never` .. `all`).
-    scalarize: &'static str,
-    /// Whether the artifact stays eligible for the certification path. Only
-    /// the scalarization axis can take that away.
-    certifiable: bool,
-    /// Whether every call boundary and every tensor operation the model wrote
-    /// is still present, which is the one case with nothing to disclose.
-    fully_structured: bool,
-    /// The block's operation budget: statements the block emits, across its
-    /// three methods and every function it still declares.
-    ///
-    /// This is what the settings above cost or saved, in the unit the settings
-    /// act on. SymForce prints `// Total ops:` for the same reason; a compiler
-    /// that made a structural decision and then declined to say what it bought
-    /// is asking a reviewer to take the decision on faith.
-    emitted_statements: usize,
-    /// Functions the block still declares. Under a policy that substituted
-    /// bodies this is smaller than the count of functions the model wrote, and
-    /// the difference is what a reviewer no longer finds as a named object.
-    emitted_functions: usize,
+struct AlgorithmCodeManifestPresentation<'a> {
+    manifest_name: &'a str,
+    algorithm_code_file: AlgorithmCodeManifestIdentifier,
+    clock: AlgorithmCodeManifestIdentifier,
+    clock_variable: AlgorithmCodeManifestIdentifier,
+    startup_method: AlgorithmCodeManifestIdentifier,
+    recalibrate_method: AlgorithmCodeManifestIdentifier,
+    do_step_method: AlgorithmCodeManifestIdentifier,
+    error_signal_status: AlgorithmCodeManifestIdentifier,
 }
 
-impl EmissionView {
-    fn new(policy: rumoca_ir_galec::package::EmissionPolicy, block: &ast::Block) -> Self {
-        Self {
-            recorded: true,
-            inline: policy.inline.as_str(),
-            scalarize: policy.scalarize.as_str(),
-            certifiable: policy.is_certifiable(),
-            fully_structured: policy.keeps_every_structure(),
-            emitted_statements: block_statement_count(block),
-            emitted_functions: block.protected_functions.len() + block.public_functions.len(),
-        }
-    }
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+struct AlgorithmCodeManifestIdentifier(String);
 
-    /// An unrecorded provenance discloses nothing and claims nothing: it
-    /// reports neither that the artifact is certifiable nor that it is not.
-    const fn unrecorded() -> Self {
-        Self {
-            recorded: false,
-            inline: "unrecorded",
-            scalarize: "unrecorded",
-            certifiable: false,
-            fully_structured: false,
-            emitted_statements: 0,
-            emitted_functions: 0,
+impl AlgorithmCodeManifestIdentifier {
+    fn issue(value: String, definitions: &mut BTreeSet<String>) -> Result<Self, String> {
+        if value.is_empty() {
+            return Err("Algorithm Code manifest identifier is empty".to_owned());
         }
+        let first = value.as_bytes()[0];
+        if !(first.is_ascii_alphabetic() || first == b'_')
+            || !value.as_bytes()[1..].iter().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, b'_' | b'.' | b'-')
+            })
+        {
+            return Err(format!(
+                "Algorithm Code manifest identifier `{value}` is not an XML identifier"
+            ));
+        }
+        if !definitions.insert(value.clone()) {
+            return Err(format!(
+                "Algorithm Code manifest identifier `{value}` is not unique"
+            ));
+        }
+        Ok(Self(value))
     }
 }
 
-/// Statements the block emits, counting the bodies of loops and conditionals.
-///
-/// A budget that stopped at the top level of each method would report a nested
-/// loop as one operation, which is the opposite of what a budget is for.
-fn block_statement_count(block: &ast::Block) -> usize {
-    let methods = [&block.startup, &block.recalibrate, &block.do_step]
-        .into_iter()
-        .map(|method| statements_count(&method.statements))
-        .sum::<usize>();
-    let functions = block
-        .protected_functions
-        .iter()
-        .chain(&block.public_functions)
-        .map(|function| statements_count(&function.statements))
-        .sum::<usize>();
-    methods + functions
-}
-
-fn statements_count(statements: &[ast::Spanned<ast::Statement>]) -> usize {
-    statements
-        .iter()
-        .map(|statement| 1 + nested_statements_count(&statement.node))
-        .sum()
-}
-
-fn nested_statements_count(statement: &ast::Statement) -> usize {
-    match statement {
-        ast::Statement::If(branches) => {
-            branches
-                .branches
-                .iter()
-                .map(|branch| statements_count(&branch.body))
-                .sum::<usize>()
-                + branches.else_body.as_deref().map_or(0, statements_count)
-        }
-        ast::Statement::For(loop_statement) => statements_count(&loop_statement.body),
-        _ => 0,
+impl<'a> AlgorithmCodeManifestPresentation<'a> {
+    fn construct(
+        manifest_name: &'a str,
+        variable_count: usize,
+        clock_variable_ordinal: usize,
+    ) -> Result<(Self, Vec<AlgorithmCodeManifestIdentifier>), String> {
+        let mut definitions = BTreeSet::new();
+        let algorithm_code_file = AlgorithmCodeManifestIdentifier::issue(
+            "F_ALGORITHM_CODE".to_owned(),
+            &mut definitions,
+        )?;
+        let clock = AlgorithmCodeManifestIdentifier::issue("CLK".to_owned(), &mut definitions)?;
+        let startup_method =
+            AlgorithmCodeManifestIdentifier::issue("BM_STARTUP".to_owned(), &mut definitions)?;
+        let recalibrate_method =
+            AlgorithmCodeManifestIdentifier::issue("BM_RECALIBRATE".to_owned(), &mut definitions)?;
+        let do_step_method =
+            AlgorithmCodeManifestIdentifier::issue("BM_DOSTEP".to_owned(), &mut definitions)?;
+        let error_signal_status =
+            AlgorithmCodeManifestIdentifier::issue("ESS".to_owned(), &mut definitions)?;
+        let variable_identifiers = (1..=variable_count)
+            .map(|ordinal| {
+                AlgorithmCodeManifestIdentifier::issue(format!("V{ordinal}"), &mut definitions)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // AlgorithmCodePackage construction proves that the retained
+        // one-based clock ordinal names exactly one declaration. This direct
+        // projection deliberately relies on that proof instead of rechecking
+        // the same invariant in presentation code.
+        let clock_variable = variable_identifiers[clock_variable_ordinal - 1].clone();
+        Ok((
+            Self {
+                manifest_name,
+                algorithm_code_file,
+                clock,
+                clock_variable,
+                startup_method,
+                recalibrate_method,
+                do_step_method,
+                error_signal_status,
+            },
+            variable_identifiers,
+        ))
     }
 }
 
 impl<'a> AlgorithmCodeView<'a> {
     /// Project a packaged Algorithm Code block for rendering.
     ///
-    /// `sources` is the session source map the block's spans were created
-    /// against. It is what turns a statement span into the `path:line:column`
-    /// anchor a certification reviewer can act on; passing an empty map is
-    /// legal and degrades every trace to its hash-and-byte-range form.
     pub(crate) fn new(
-        package: &'a AlgorithmCodePackage,
-        sources: &'a rumoca_core::SourceMap,
+        product: &'a TracedAlgorithmCodeProduct<'_>,
+        artifact_layout: &'a AlgorithmCodeArtifactLayout,
     ) -> Result<Self, String> {
+        let package = product.package();
         let block = package.block();
         let block_name = name_of(&block.name);
+        let (presentation, variable_identifiers) = AlgorithmCodeManifestPresentation::construct(
+            block_name,
+            package.variable_nominals().len(),
+            package.clock_variable_ordinal(),
+        )?;
         let declarations = block
             .interface
             .iter()
@@ -178,38 +184,183 @@ impl<'a> AlgorithmCodeView<'a> {
                     },
                 )
             }));
+        let variable_nominals = package.variable_nominals();
         let variables = declarations
-            .zip(package.variable_nominals())
             .enumerate()
-            .map(|(index, ((declaration, start, causality), nominal))| {
-                VariableView::new(index + 1, declaration, start, causality, *nominal)
+            .map(|(index, (declaration, start, causality))| {
+                VariableView::new(
+                    variable_identifiers[index].clone(),
+                    declaration,
+                    start,
+                    causality,
+                    variable_nominals[index],
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let variable_names = variables.iter().map(|variable| variable.name).collect();
-        let (typed_block, traces) = algorithm_code_typed::block(block, sources)?;
         Ok(Self {
-            package: PackageRoot {
-                block: typed_block,
-                clock_variable_ordinal: package.clock_variable_ordinal(),
+            package: PackageRoot { block },
+            presentation,
+            artifact_layout: AlgorithmCodeArtifactLayoutView {
+                algorithm_code_source: artifact_layout.algorithm_code_source_file(),
             },
-            block_name,
-            symbol_names: algorithm_code_symbols::collect(block),
-            variable_names,
             variables,
             methods: MethodsView::new(block),
-            traces,
-            emission: EmissionView::new(package.emission_policy(), block),
+            traces: trace_legend(product),
+        })
+    }
+}
+
+impl<'a> AlgorithmCodeSourceView<'a> {
+    pub(crate) fn new(product: &'a TracedAlgorithmCodeProduct<'_>) -> Self {
+        let package = product.package();
+        let block = package.block();
+        Self {
+            package: PackageRoot { block },
+            methods: MethodsView::new(block),
+            traces: trace_legend(product),
+        }
+    }
+}
+
+/// Correlated Algorithm Code manifest projection for one prepared eFMI
+/// product. Variable and method presentation identities are joined here once;
+/// XML templates never align lists, calculate ordinals, or spell cross-file
+/// identifiers.
+#[derive(Debug, Serialize)]
+pub(crate) struct CorrelatedAlgorithmCodeView<'a> {
+    package: PackageRoot<'a>,
+    variables: Vec<CorrelatedVariableView<'a>>,
+    methods: MethodsView,
+    manifest_methods: CorrelatedMethodsView<'a>,
+    traces: super::source_trace::TraceLegend,
+    presentation: &'a ProductionPresentationPlan,
+    artifact_layout: CorrelatedArtifactLayoutView<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrelatedArtifactLayoutView<'a> {
+    algorithm_code_manifest: &'a ProductionArtifactRepresentationFile,
+    algorithm_code_source: &'a ProductionArtifactRepresentationFile,
+    production_manifest: &'a ProductionArtifactRepresentationFile,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrelatedVariableView<'a> {
+    #[serde(flatten)]
+    semantic: VariableSemanticView<'a>,
+    presentation: &'a ProductionDeclarationPresentation,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrelatedMethodsView<'a> {
+    startup: CorrelatedMethodView<'a>,
+    recalibrate: CorrelatedMethodView<'a>,
+    do_step: CorrelatedMethodView<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrelatedMethodView<'a> {
+    presentation: &'a ProductionMethodPresentation,
+}
+
+impl<'a> CorrelatedAlgorithmCodeView<'a> {
+    pub(crate) fn new(
+        production: &'a PreparedSolveAlgorithmProduction<'_>,
+    ) -> Result<Self, String> {
+        let package = production.algorithm_code();
+        let block = package.block();
+        let declarations = block
+            .interface
+            .iter()
+            .map(|variable| {
+                (
+                    &variable.decl,
+                    variable.start.as_ref(),
+                    match variable.kind {
+                        ast::InterfaceKind::Input => "input",
+                        ast::InterfaceKind::Output => "output",
+                        ast::InterfaceKind::TunableParameter => "tunable_parameter",
+                    },
+                )
+            })
+            .chain(block.protected.iter().map(|variable| {
+                (
+                    &variable.decl,
+                    variable.start.as_ref(),
+                    match variable.kind {
+                        ast::ProtectedKind::DependentParameter => "dependent_parameter",
+                        ast::ProtectedKind::Constant => "constant",
+                        ast::ProtectedKind::State => "state",
+                    },
+                )
+            }));
+        let variable_nominals = package.variable_nominals();
+        let variables = declarations
+            .enumerate()
+            .map(|(index, (declaration, start, causality))| {
+                VariableSemanticView::new(declaration, start, causality, variable_nominals[index])
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let source = AlgorithmCodeSourceView::new(production.traced_algorithm_code());
+        let presentation = production.presentation();
+        let artifact_layout = CorrelatedArtifactLayoutView {
+            algorithm_code_manifest: presentation
+                .artifact_layout()
+                .algorithm_code_manifest_file(),
+            algorithm_code_source: presentation.artifact_layout().algorithm_code_source_file(),
+            production_manifest: presentation.artifact_layout().production_manifest_file(),
+        };
+        // SolveAlgorithmProduct construction proves the package declarations
+        // and Solve declarations are one ordered correlated family. Indexing
+        // uses that retained proof; no second cardinality check or truncating
+        // zip is introduced at presentation time.
+        let variables = variables
+            .into_iter()
+            .enumerate()
+            .map(|(index, semantic)| CorrelatedVariableView {
+                semantic,
+                presentation: &presentation.declarations()[index],
+            })
+            .collect();
+        let manifest_methods = CorrelatedMethodsView {
+            startup: CorrelatedMethodView {
+                presentation: presentation
+                    .method(rumoca_ir_solve::SolveAlgorithmMethodKind::Startup),
+            },
+            recalibrate: CorrelatedMethodView {
+                presentation: presentation
+                    .method(rumoca_ir_solve::SolveAlgorithmMethodKind::Recalibrate),
+            },
+            do_step: CorrelatedMethodView {
+                presentation: presentation
+                    .method(rumoca_ir_solve::SolveAlgorithmMethodKind::DoStep),
+            },
+        };
+        Ok(Self {
+            package: source.package,
+            variables,
+            methods: source.methods,
+            manifest_methods,
+            traces: source.traces,
+            presentation,
+            artifact_layout,
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct VariableView<'a> {
+    #[serde(flatten)]
+    semantic: VariableSemanticView<'a>,
+    manifest: AlgorithmCodeVariablePresentation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VariableSemanticView<'a> {
     kind: &'static str,
-    ordinal: usize,
     name: &'a str,
     causality: &'static str,
-    dimensions: Vec<u64>,
+    dimensions: Vec<DimensionView>,
     start: StartView,
     real_min: Option<f64>,
     real_max: Option<f64>,
@@ -218,9 +369,36 @@ struct VariableView<'a> {
     integer_max: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AlgorithmCodeVariablePresentation {
+    algorithm_code_identity: AlgorithmCodeManifestIdentifier,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct DimensionView {
+    number: usize,
+    size: u64,
+}
+
 impl<'a> VariableView<'a> {
     fn new(
-        ordinal: usize,
+        algorithm_code_identity: AlgorithmCodeManifestIdentifier,
+        declaration: &'a ast::VariableDeclaration,
+        start: Option<&ast::Expression>,
+        causality: &'static str,
+        nominal: Option<f64>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            semantic: VariableSemanticView::new(declaration, start, causality, nominal)?,
+            manifest: AlgorithmCodeVariablePresentation {
+                algorithm_code_identity,
+            },
+        })
+    }
+}
+
+impl<'a> VariableSemanticView<'a> {
+    fn new(
         declaration: &'a ast::VariableDeclaration,
         start: Option<&ast::Expression>,
         causality: &'static str,
@@ -232,7 +410,19 @@ impl<'a> VariableView<'a> {
                 declaration.name.lexeme()
             ));
         };
-        let dimensions = literal_dimensions(declaration)?;
+        let dimensions = literal_dimensions(declaration)?
+            .into_iter()
+            .enumerate()
+            .map(|(index, size)| {
+                let number = index.checked_add(1).ok_or_else(|| {
+                    format!(
+                        "Algorithm Code dimension number overflow for `{}`",
+                        declaration.name.lexeme()
+                    )
+                })?;
+                Ok(DimensionView { number, size })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let start = start.ok_or_else(|| {
             format!(
                 "checked projection omitted start semantics for `{}`",
@@ -243,7 +433,6 @@ impl<'a> VariableView<'a> {
             range_values(scalar, &declaration.range)?;
         Ok(Self {
             kind: scalar_kind(scalar),
-            ordinal,
             name: declaration.name.lexeme(),
             causality,
             dimensions,
@@ -262,9 +451,16 @@ impl<'a> VariableView<'a> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StartView {
-    Real { scalar: bool, values: Vec<f64> },
-    Integer { scalar: bool, values: Vec<i64> },
-    Boolean { scalar: bool, values: Vec<bool> },
+    Real { start: StartPayload<f64> },
+    Integer { start: StartPayload<i64> },
+    Boolean { start: StartPayload<bool> },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "form", rename_all = "snake_case")]
+enum StartPayload<T> {
+    Scalar { value: T },
+    Tensor { values: Vec<T> },
 }
 
 impl StartView {
@@ -274,20 +470,44 @@ impl StartView {
         scalar: bool,
     ) -> Result<Self, String> {
         match scalar_type {
+            ast::ScalarType::Real if scalar => match expression {
+                ast::Expression::Real(value) => Ok(Self::Real {
+                    start: StartPayload::Scalar { value: *value },
+                }),
+                _ => Err("checked Real scalar start is not one Real literal".to_owned()),
+            },
             ast::ScalarType::Real => {
                 let mut values = Vec::new();
                 flatten_real(expression, &mut values)?;
-                Ok(Self::Real { scalar, values })
+                Ok(Self::Real {
+                    start: StartPayload::Tensor { values },
+                })
             }
+            ast::ScalarType::Integer if scalar => match expression {
+                ast::Expression::Integer(value) => Ok(Self::Integer {
+                    start: StartPayload::Scalar { value: *value },
+                }),
+                _ => Err("checked Integer scalar start is not one Integer literal".to_owned()),
+            },
             ast::ScalarType::Integer => {
                 let mut values = Vec::new();
                 flatten_integer(expression, &mut values)?;
-                Ok(Self::Integer { scalar, values })
+                Ok(Self::Integer {
+                    start: StartPayload::Tensor { values },
+                })
             }
+            ast::ScalarType::Boolean if scalar => match expression {
+                ast::Expression::Bool(value) => Ok(Self::Boolean {
+                    start: StartPayload::Scalar { value: *value },
+                }),
+                _ => Err("checked Boolean scalar start is not one Boolean literal".to_owned()),
+            },
             ast::ScalarType::Boolean => {
                 let mut values = Vec::new();
                 flatten_boolean(expression, &mut values)?;
-                Ok(Self::Boolean { scalar, values })
+                Ok(Self::Boolean {
+                    start: StartPayload::Tensor { values },
+                })
             }
         }
     }
@@ -319,21 +539,16 @@ fn signal_names(signals: &[ast::PredefinedSignal]) -> Vec<&'static str> {
 pub(crate) struct CheckedAlgorithmBlockView<'a> {
     package: CheckedBlockRoot<'a>,
     block_name: &'a str,
-    symbol_names: Vec<&'a str>,
-    variable_names: Vec<&'a str>,
     variables: Vec<CheckedBlockVariable<'a>>,
     methods: MethodsView,
     /// See [`AlgorithmCodeView::traces`]; the two render paths carry the
     /// same trace legend so a target template reads one name.
     traces: super::source_trace::TraceLegend,
-    /// See [`AlgorithmCodeView::emission`]. Always unrecorded here: this path
-    /// renders a block it did not project.
-    emission: EmissionView,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct CheckedBlockRoot<'a> {
-    block: algorithm_code_typed::TypedBlockView<'a>,
+    block: &'a ast::Block,
 }
 
 /// A checked-block variable as the standalone (package-free) render path sees
@@ -359,12 +574,10 @@ struct CheckedBlockVariable<'a> {
 }
 
 impl<'a> CheckedAlgorithmBlockView<'a> {
-    /// Project a standalone checked block; `sources` carries the same meaning
-    /// as in [`AlgorithmCodeView::new`].
-    pub(crate) fn new(
-        checked: &'a CheckedAlgorithmBlock,
-        sources: &'a rumoca_core::SourceMap,
-    ) -> Result<Self, String> {
+    /// Project a standalone checked block. This editor-only path has no DAE
+    /// origin authority, so it emits no file legend instead of accepting a
+    /// caller-selected source map.
+    pub(crate) fn new(checked: &'a CheckedAlgorithmBlock) -> Result<Self, String> {
         let block = checked.block();
         let block_name = name_of(&block.name);
         let variables = block
@@ -413,18 +626,62 @@ impl<'a> CheckedAlgorithmBlockView<'a> {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let variable_names = variables.iter().map(|variable| variable.name).collect();
-        let (typed_block, traces) = algorithm_code_typed::block(block, sources)?;
         Ok(Self {
-            package: CheckedBlockRoot { block: typed_block },
+            package: CheckedBlockRoot { block },
             block_name,
-            symbol_names: algorithm_code_symbols::collect(block),
-            variable_names,
             variables,
             methods: MethodsView::new(block),
-            traces,
-            emission: EmissionView::unrecorded(),
+            traces: super::source_trace::TraceLegend::unavailable(),
         })
+    }
+}
+
+/// Build only the file legend that accompanies the checked syntax.
+///
+/// This walk follows existing provenance spans and performs no name lookup,
+/// type/shape inference, call analysis, or statement rewriting.  The raw
+/// checked block remains the sole semantic input to the `.alg` template.
+fn trace_legend(product: &TracedAlgorithmCodeProduct<'_>) -> super::source_trace::TraceLegend {
+    let block = product.package().block();
+    let resolver = super::source_trace::SourceTraceResolver::new(product.sources());
+    for function in block
+        .protected_functions
+        .iter()
+        .chain(&block.public_functions)
+    {
+        let _ = resolver.trace(&function.span);
+        record_statement_spans(&resolver, &function.statements);
+    }
+    for method in [&block.startup, &block.recalibrate, &block.do_step] {
+        record_statement_spans(&resolver, &method.statements);
+    }
+    resolver.legend()
+}
+
+fn record_statement_spans(
+    resolver: &super::source_trace::SourceTraceResolver<'_>,
+    statements: &[ast::Spanned<ast::Statement>],
+) {
+    for statement in statements {
+        let _ = resolver.trace(&statement.span);
+        match &statement.node {
+            ast::Statement::If(conditional) => {
+                for branch in &conditional.branches {
+                    record_statement_spans(resolver, &branch.body);
+                }
+                if let Some(body) = &conditional.else_body {
+                    record_statement_spans(resolver, body);
+                }
+            }
+            ast::Statement::For(loop_statement) => {
+                record_statement_spans(resolver, &loop_statement.body);
+            }
+            ast::Statement::Assignment { .. }
+            | ast::Statement::MultiAssignment { .. }
+            | ast::Statement::Call(_)
+            | ast::Statement::Limit(_)
+            | ast::Statement::Signal(_) => {}
+        }
     }
 }
 
@@ -542,4 +799,95 @@ fn flatten_boolean(expression: &ast::Expression, out: &mut Vec<bool>) -> Result<
         _ => return Err("Boolean start is not a literal constructor".to_owned()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn algorithm_code_dimensions_are_prepared_one_based_for_the_xsd() {
+        let mut declaration =
+            ast::VariableDeclaration::scalar(ast::ScalarType::Real, ast::Name::ident("matrix"));
+        declaration.dimensions = [2, 3]
+            .into_iter()
+            .map(|size| ast::Dimension::Expr(ast::Expression::Integer(size)))
+            .collect();
+        let view = VariableView::new(
+            AlgorithmCodeManifestIdentifier::issue("V1".to_owned(), &mut BTreeSet::new())
+                .expect("the fixture identifier is valid and unique"),
+            &declaration,
+            Some(&ast::Expression::Real(0.0)),
+            "input",
+            None,
+        )
+        .expect("literal tensor dimensions are a checked manifest projection");
+        assert_eq!(
+            view.semantic
+                .dimensions
+                .iter()
+                .map(|dimension| (dimension.number, dimension.size))
+                .collect::<Vec<_>>(),
+            [(1, 2), (2, 3)]
+        );
+    }
+
+    #[test]
+    fn scalar_start_payload_projects_the_checked_literal_form_directly() {
+        assert!(matches!(
+            StartView::new(
+                ast::ScalarType::Integer,
+                &ast::Expression::Integer(-3),
+                true
+            ),
+            Ok(StartView::Integer {
+                start: StartPayload::Scalar { value: -3 }
+            })
+        ));
+        assert!(
+            StartView::new(
+                ast::ScalarType::Integer,
+                &ast::Expression::Array(vec![ast::Expression::Integer(1)]),
+                true,
+            )
+            .is_err(),
+            "a scalar projection never flattens and rechecks a collection"
+        );
+        assert!(matches!(
+            StartView::new(
+                ast::ScalarType::Integer,
+                &ast::Expression::Array(vec![
+                    ast::Expression::Integer(1),
+                    ast::Expression::Integer(2),
+                ]),
+                false,
+            ),
+            Ok(StartView::Integer {
+                start: StartPayload::Tensor { values }
+            }) if values == [1, 2]
+        ));
+    }
+
+    #[test]
+    fn standalone_manifest_presentation_issues_one_unique_identifier_family() {
+        let (presentation, variables) =
+            AlgorithmCodeManifestPresentation::construct("CheckedBlock", 3, 2)
+                .expect("the standalone presentation family is valid");
+        let identifiers = [
+            presentation.algorithm_code_file.0.clone(),
+            presentation.clock.0.clone(),
+            presentation.startup_method.0.clone(),
+            presentation.recalibrate_method.0.clone(),
+            presentation.do_step_method.0.clone(),
+            presentation.error_signal_status.0.clone(),
+            variables[0].0.clone(),
+            variables[1].0.clone(),
+            variables[2].0.clone(),
+        ];
+        assert_eq!(
+            identifiers.iter().collect::<BTreeSet<_>>().len(),
+            identifiers.len()
+        );
+        assert_eq!(presentation.clock_variable.0, variables[1].0);
+    }
 }

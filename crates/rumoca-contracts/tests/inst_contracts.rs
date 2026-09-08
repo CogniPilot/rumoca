@@ -1,6 +1,6 @@
 //! INST (Instantiation) contract tests - MLS §5, §7
 //!
-//! Tests for the 53 instantiation contracts defined in SPEC_0022.
+//! Tests for the 54 instantiation contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
@@ -24,6 +24,26 @@ fn flat_var_exists(result: &rumoca_compile::compile::CompilationResult, name: &s
         .variables
         .keys()
         .any(|var_name| var_name.as_str() == name)
+}
+
+fn assert_flat_component_members(
+    result: &rumoca_compile::compile::CompilationResult,
+    component: &str,
+    expected_member: &str,
+    rejected_members: &[&str],
+) {
+    let expected = format!("{component}.{expected_member}");
+    assert!(
+        flat_var_exists(result, &expected),
+        "expected selected component member {expected} in Flat"
+    );
+    for rejected_member in rejected_members {
+        let rejected = format!("{component}.{rejected_member}");
+        assert!(
+            !flat_var_exists(result, &rejected),
+            "unexpected lower-precedence component member {rejected} in Flat"
+        );
+    }
 }
 
 /// Extent of a scalarized component array, counted from the flat variables.
@@ -1035,6 +1055,28 @@ fn inst_034_encapsulated_basic() {
 }
 
 #[test]
+fn inst_034_encapsulated_upward_lookup_rejected() {
+    // The same upward lookup must stop when the nested class is encapsulated.
+    // ER002 is issued by Resolve for the now-unreachable component reference.
+    expect_resolve_failure_with_code(
+        r#"
+        model Container
+            constant Real outer_g = 9.81;
+            encapsulated model Inner
+                Real x;
+            equation
+                x = outer_g;
+            end Inner;
+
+            Inner i;
+        end Container;
+    "#,
+        "Container",
+        "ER002",
+    );
+}
+
+#[test]
 fn inst_034_encapsulated_self_lookup_ok() {
     // Encapsulated nested classes can still resolve their own local declarations.
     expect_success(
@@ -1059,36 +1101,172 @@ fn inst_034_encapsulated_self_lookup_ok() {
 // "Conditional components with false condition are removed"
 // =============================================================================
 
+const INST_053_CONDITIONAL_SOURCE: &str = r#"
+    model ConditionalFixture
+        parameter Boolean use_x = false;
+        Real x = 1 if use_x;
+        Real unused_control = 2;
+    end ConditionalFixture;
+
+    model ConditionalFalse
+        extends ConditionalFixture(use_x = false);
+    end ConditionalFalse;
+
+    model ConditionalTrue
+        extends ConditionalFixture(use_x = true);
+    end ConditionalTrue;
+"#;
+
 #[test]
 fn inst_053_conditional_false_removed() {
-    expect_success(
-        r#"
-        model Test
-            parameter Boolean use_x = false;
-            Real y;
-            Real x if use_x;
-        equation
-            y = 1;
-        end Test;
-    "#,
-        "Test",
+    let result = expect_success(INST_053_CONDITIONAL_SOURCE, "ConditionalFalse");
+    assert!(
+        !flat_var_exists(&result, "x"),
+        "a false conditional component must be absent from Flat"
+    );
+    assert!(
+        flat_var_exists(&result, "unused_control"),
+        "an unconditional unused component must remain present in false-case Flat"
     );
 }
 
 #[test]
 fn inst_053_conditional_true_kept() {
-    expect_success(
+    let result = expect_success(INST_053_CONDITIONAL_SOURCE, "ConditionalTrue");
+    assert!(
+        flat_var_exists(&result, "x"),
+        "the same true conditional component must be present in Flat"
+    );
+    assert!(
+        flat_var_exists(&result, "unused_control"),
+        "the same unconditional unused component must remain present in true-case Flat"
+    );
+}
+
+// =============================================================================
+// INST-054: Declared/inherited, named import, wildcard import, parent
+// =============================================================================
+
+#[test]
+fn inst_054_scope_lookup_order() {
+    let source = r#"
+        package Named
+            model X
+                parameter Integer named_marker = 22;
+            end X;
+        end Named;
+        package Wild
+            model X
+                parameter Integer wildcard_marker = 33;
+            end X;
+        end Wild;
+        package Outer
+            model X
+                parameter Integer enclosing_marker = 44;
+            end X;
+
+            model Base
+                model X
+                    parameter Integer inherited_marker = 11;
+                end X;
+            end Base;
+
+            model DirectWins
+                model X
+                    parameter Integer direct_marker = 10;
+                end X;
+                import Named.X;
+                import Wild.*;
+                X x;
+            end DirectWins;
+
+            model InheritedWins
+                extends Base;
+                import Named.X;
+                import Wild.*;
+                X x;
+            end InheritedWins;
+
+            model QualifiedWins
+                import Named.X;
+                import Wild.*;
+                X x;
+            end QualifiedWins;
+
+            model SelectiveWins
+                import Wild.*;
+                import Named.{X};
+                X x;
+            end SelectiveWins;
+
+            model WildcardWins
+                import Wild.*;
+                X x;
+            end WildcardWins;
+
+            model EnclosingWins
+                X x;
+            end EnclosingWins;
+        end Outer;
+    "#;
+
+    let direct = expect_success(source, "Outer.DirectWins");
+    assert_flat_component_members(
+        &direct,
+        "x",
+        "direct_marker",
+        &["named_marker", "wildcard_marker", "enclosing_marker"],
+    );
+
+    let inherited = expect_success(source, "Outer.InheritedWins");
+    assert_flat_component_members(
+        &inherited,
+        "x",
+        "inherited_marker",
+        &["named_marker", "wildcard_marker", "enclosing_marker"],
+    );
+
+    let qualified = expect_success(source, "Outer.QualifiedWins");
+    assert_flat_component_members(
+        &qualified,
+        "x",
+        "named_marker",
+        &["wildcard_marker", "enclosing_marker"],
+    );
+
+    let selective = expect_success(source, "Outer.SelectiveWins");
+    assert_flat_component_members(
+        &selective,
+        "x",
+        "named_marker",
+        &["wildcard_marker", "enclosing_marker"],
+    );
+
+    let wildcard = expect_success(source, "Outer.WildcardWins");
+    assert_flat_component_members(&wildcard, "x", "wildcard_marker", &["enclosing_marker"]);
+
+    let enclosing = expect_success(source, "Outer.EnclosingWins");
+    assert_flat_component_members(&enclosing, "x", "enclosing_marker", &[]);
+}
+
+#[test]
+fn inst_054_wildcard_import_ambiguity_rejected() {
+    expect_resolve_failure_with_code(
         r#"
-        model Test
-            parameter Boolean use_x = true;
-            Real x if use_x;
-        equation
-            if use_x then
-                x = 1;
-            end if;
-        end Test;
+        package Left
+            model X end X;
+        end Left;
+        package Right
+            model X end X;
+        end Right;
+        model Ambiguous
+            import Left.*;
+            import Right.*;
+            X x;
+        end Ambiguous;
     "#,
-        "Test",
+        "Ambiguous",
+        "ER112",
     );
 }
 

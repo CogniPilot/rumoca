@@ -408,6 +408,24 @@ const DIAGNOSTIC_REGISTRIES: &[DiagnosticRegistry] = &[
 /// semantic identity: one source-free and one span-bearing.
 const SHARED_PRESENTATION_MNEMONICS: &[&str] = &["EI001"];
 
+/// A separately compiled child of `#[cfg(test)] mod tests;` carries no local
+/// attribute for a text scanner to see. Conventional `src/tests.rs` and
+/// `src/tests/**` are therefore excluded by path before registry scanning.
+fn is_conventional_src_test_source(path: &Path) -> bool {
+    let components = path.components().map(|component| component.as_os_str());
+    let mut previous_was_src = false;
+    for component in components {
+        if previous_was_src
+            && (component == std::ffi::OsStr::new("tests")
+                || component == std::ffi::OsStr::new("tests.rs"))
+        {
+            return true;
+        }
+        previous_was_src = component == std::ffi::OsStr::new("src");
+    }
+    false
+}
+
 /// Every source file a registry mints from.
 fn registry_files(root: &Path, registry: &DiagnosticRegistry) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -419,8 +437,60 @@ fn registry_files(root: &Path, registry: &DiagnosticRegistry) -> Vec<PathBuf> {
             files.push(path);
         }
     }
+    files.retain(|file| !is_conventional_src_test_source(file));
     files.sort();
     files
+}
+
+#[test]
+fn planted_registry_mutation_scans_shipped_source_but_not_conventional_test_children() {
+    let temporary = tempfile::tempdir().expect("temporary diagnostic registry");
+    let src = temporary.path().join("crate/src");
+    fs::create_dir_all(src.join("tests")).expect("create conventional test directory");
+    fs::write(
+        src.join("diagnostic.rs"),
+        "const ET997_OWNER: &str = \"ET997\";",
+    )
+    .expect("plant shipped diagnostic mutation");
+    fs::write(
+        src.join("tests.rs"),
+        "const ER003_ASSERTION: &str = \"ER003\";",
+    )
+    .expect("plant test umbrella assertion");
+    fs::write(
+        src.join("tests/fixture.rs"),
+        "const ER004_ASSERTION: &str = \"ER004\";",
+    )
+    .expect("plant test child assertion");
+
+    let mut files = Vec::new();
+    collect_rs_files(&src, &mut files);
+    files.retain(|file| !is_conventional_src_test_source(file));
+    files.sort();
+    let codes: BTreeSet<String> = files
+        .iter()
+        .flat_map(|file| {
+            let source = fs::read_to_string(file).expect("read planted registry source");
+            minted_codes(&production_code(&source))
+        })
+        .collect();
+
+    assert_eq!(files, vec![src.join("diagnostic.rs")]);
+    assert_eq!(codes, BTreeSet::from(["ET997".to_owned()]));
+}
+
+#[test]
+fn typecheck_registry_keeps_the_live_owner_and_excludes_resolve_assertions() {
+    let registry = DIAGNOSTIC_REGISTRIES
+        .iter()
+        .find(|registry| registry.owner == "typecheck")
+        .expect("typecheck registry exists");
+    let codes = registry_codes(&workspace_root(), registry);
+    assert!(
+        codes.contains("ET013"),
+        "late publication owner must be scanned"
+    );
+    assert!(!codes.contains("ER003") && !codes.contains("ER004"));
 }
 
 fn registry_codes(root: &Path, registry: &DiagnosticRegistry) -> BTreeSet<String> {
@@ -439,7 +509,7 @@ fn registry_codes(root: &Path, registry: &DiagnosticRegistry) -> BTreeSet<String
 }
 
 #[test]
-fn test_phase_error_codes_are_registered_in_spec_0008() {
+fn test_phase_error_codes_are_registered_by_the_spec_0008_catalog() {
     let root = workspace_root();
     let mut ranges = BTreeSet::new();
     for registry in DIAGNOSTIC_REGISTRIES {
@@ -456,18 +526,35 @@ fn test_phase_error_codes_are_registered_in_spec_0008() {
         );
     }
 
-    let spec =
-        fs::read_to_string(root.join("spec/SPEC_0008_PHASE_ERRORS.md")).expect("read SPEC_0008");
+    let catalog = spec_0008_diagnostic_catalog(&root);
     let missing: Vec<&String> = ranges
         .iter()
-        .filter(|range| !spec.contains(&format!("| {range} |")))
+        .filter(|range| !catalog.contains(&format!("| `{range}` |")))
         .collect();
 
     assert!(
         missing.is_empty(),
-        "SPEC_0008 `Error Code Ranges` is missing a row for live diagnostic ranges {missing:#?}; \
-add `| <RANGE> | <phase> | <mnemonic> | <description> |` instead of shipping unregistered codes"
+        "SPEC_0008's diagnostic catalog is missing live ranges {missing:#?}; add an exact \
+backticked range row instead of shipping unregistered codes"
     );
+}
+
+fn spec_0008_diagnostic_catalog(root: &Path) -> String {
+    let parent =
+        fs::read_to_string(root.join("spec/SPEC_0008_PHASE_ERRORS.md")).expect("read SPEC_0008");
+    assert!(
+        parent.contains("[SPEC_0053](SPEC_0053_DIAGNOSTIC_CODE_CATALOG.md)")
+            && parent.contains("Every catalog row is\nnormative by reference from this rule"),
+        "SPEC_0008 must explicitly govern the diagnostic catalog by reference"
+    );
+    let catalog = fs::read_to_string(root.join("spec/SPEC_0053_DIAGNOSTIC_CODE_CATALOG.md"))
+        .expect("read SPEC_0053");
+    assert!(
+        catalog.contains("## Status\nREFERENCE")
+            && catalog.contains("Every row is normative by reference from SPEC_0008"),
+        "SPEC_0053 must remain the rule-free REFERENCE catalog governed by SPEC_0008"
+    );
+    catalog
 }
 
 #[test]
@@ -618,32 +705,36 @@ fn workspace_warning_codes(root: &Path) -> BTreeMap<String, BTreeSet<String>> {
     minted
 }
 
-/// SPEC_0008 "Severity prefix": `E<phase>` is error severity, `W<phase>` is
-/// warning severity, and any live violation must be written down under "Known
-/// drift" so a consumer bucketing by prefix is not silently misled. The
-/// structural phase emits `ES001`/`ES002` as warnings, so the spec must record
-/// exactly those and nothing else may join them unrecorded.
+/// SPEC_0008 "Severity prefix": `E<phase>` is error severity and `W<phase>` is
+/// warning severity. Structural warnings additionally require their exact
+/// `WS0xx` registry row; compatibility through an `E` prefix is forbidden.
 #[test]
 fn test_warning_severity_codes_are_spec_registered() {
     let root = workspace_root();
     let minted = workspace_warning_codes(&root);
-
-    let spec =
-        fs::read_to_string(root.join("spec/SPEC_0008_PHASE_ERRORS.md")).expect("read SPEC_0008");
-    let drift: String = spec.split("**Known drift**").skip(1).collect();
-    let unrecorded: Vec<String> = minted
+    let catalog = spec_0008_diagnostic_catalog(&root);
+    let wrong_severity: Vec<String> = minted
         .iter()
         .filter(|(code, _)| code.starts_with('E'))
-        .filter(|(code, _)| !drift.contains(code.as_str()))
         .map(|(code, files)| format!("{code} minted by {files:?}"))
         .collect();
 
     assert!(
-        unrecorded.is_empty(),
-        "warning-severity codes live in an `E` (error) range: {unrecorded:#?}; either rename them \
-to the `W` convention or record them under SPEC_0008 `Known drift` so prefix-bucketing consumers \
-are warned"
+        wrong_severity.is_empty(),
+        "warning-severity codes live in an `E` (error) range: {wrong_severity:#?}; retire them and \
+mint phase-owned `W` codes instead of adding compatibility"
     );
+    assert!(
+        catalog.contains("| `WS0xx` | structural |"),
+        "live structural warnings require an exact SPEC_0008-governed `WS0xx` catalog row"
+    );
+}
+
+#[test]
+fn planted_error_prefix_warning_mutation_is_detected() {
+    let codes = warning_codes("diagnostics::singular_warning(ES001_STRUCTURAL_SINGULARITY, span)");
+    assert_eq!(codes, BTreeSet::from(["ES001".to_owned()]));
+    assert!(codes.iter().any(|code| code.starts_with('E')));
 }
 
 /// A constant whose name starts with a mnemonic must hold that mnemonic.
@@ -671,7 +762,7 @@ code and the compiler ships another: {mismatched:#?}"
 }
 
 /// `(mnemonic in the name, mnemonic in the value)` for every
-/// `const ES001_…: &str = "ES001";` in this shipped source.
+/// `const WS001_…: &str = "WS001";` in this shipped source.
 fn mnemonic_named_string_constants(production: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for tail in production.split("const ").skip(1) {
@@ -717,7 +808,8 @@ const WORKSPACE_WARNING_CANARIES: &[(&str, &str)] = &[
         "WT007",
         "AST constant evaluation, minted through `ctx.emit_warning`",
     ),
-    ("ES001", "structural, minted through `singular_warning`"),
+    ("WS001", "structural singularity warning"),
+    ("WS002", "structural algebraic-loop warning"),
 ];
 
 #[test]
@@ -749,8 +841,8 @@ const WARNING_MINT_SPELLING_CANARIES: &[(&str, &str)] = &[
         "WR001",
     ),
     (
-        "diagnostics::singular_warning(\n    ES001_STRUCTURAL_SINGULARITY,\n    span,\n)",
-        "ES001",
+        "diagnostics::singular_warning(\n    WS001_STRUCTURAL_SINGULARITY,\n    span,\n)",
+        "WS001",
     ),
     (
         "ctx.emit_warning(\n    WT006_INVALID_INT_COERCION,\n    message,\n    span,\n)",

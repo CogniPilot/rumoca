@@ -110,7 +110,7 @@ pub(super) fn join_integrator_history_effect(
 }
 
 pub(super) fn integrator_history_sensitive_slots(
-    continuous: &solve::ContinuousSolveSystem,
+    continuous_blocks: [&solve::ComputeBlock; 4],
     runtime_rhs: &solve::ScalarProgramBlock,
     runtime_targets: &[solve::ScalarSlot],
     state_scalar_count: usize,
@@ -118,12 +118,7 @@ pub(super) fn integrator_history_sensitive_slots(
     let mut sensitive = (0..state_scalar_count)
         .map(HistoryDependencySlot::Y)
         .collect::<BTreeSet<_>>();
-    for block in [
-        &continuous.implicit_rhs,
-        &continuous.residual,
-        &continuous.manifold_residual,
-        &continuous.derivative_rhs,
-    ] {
+    for block in continuous_blocks {
         collect_compute_block_dependencies(block, &mut sensitive)?;
     }
     if runtime_rhs.len() != runtime_targets.len() {
@@ -273,10 +268,6 @@ pub(super) fn collect_linear_op_dependencies(
             solve::LinearOp::LoadP { index, .. } => {
                 dependencies.insert(HistoryDependencySlot::P(*index));
             }
-            solve::LinearOp::LoadIndexedP { base, count, .. } => {
-                let end = base.checked_add(*count)?;
-                dependencies.extend((*base..end).map(HistoryDependencySlot::P));
-            }
             solve::LinearOp::TensorLoad {
                 input,
                 input_start,
@@ -296,14 +287,14 @@ pub(super) fn collect_linear_op_dependencies(
             solve::LinearOp::FunctionFold { program, .. }
             | solve::LinearOp::GuardedFunctionFold { program, .. }
             | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
-                collect_linear_op_dependencies(&program.update, dependencies)?;
+                collect_linear_op_dependencies(program.update(), dependencies)?;
             }
             solve::LinearOp::FunctionConditional { program, .. } => {
-                for arm in &program.arms {
-                    collect_linear_op_dependencies(&arm.condition, dependencies)?;
-                    collect_linear_op_dependencies(&arm.result, dependencies)?;
+                for arm in program.arms() {
+                    collect_linear_op_dependencies(arm.condition(), dependencies)?;
+                    collect_linear_op_dependencies(arm.result(), dependencies)?;
                 }
-                collect_linear_op_dependencies(&program.fallback, dependencies)?;
+                collect_linear_op_dependencies(program.fallback(), dependencies)?;
             }
             // Register-to-register work reads nothing outside the program, so it
             // introduces no new dependency. `LoadTime` reads the independent

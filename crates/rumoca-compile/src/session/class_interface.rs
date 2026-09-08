@@ -76,7 +76,7 @@ impl Default for ComponentInterface {
             type_name: String::new(),
             variability: rumoca_core::Variability::Empty,
             causality: rumoca_core::Causality::Empty,
-            connection: ast::Connection::default(),
+            connection: ast::Connection::Empty,
             is_final: false,
             is_replaceable: false,
             constrainedby: None,

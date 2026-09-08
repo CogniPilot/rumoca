@@ -5,7 +5,10 @@
 
 use super::definitions::{ElementList, ElementListPayload, validate_annotation_modifiers};
 use super::helpers::{loc_info, location_span, span_location};
-use crate::errors::{semantic_error_from_component_reference, semantic_error_from_token};
+use crate::errors::{
+    semantic_error_from_component_reference, semantic_error_from_expression,
+    semantic_error_from_token,
+};
 use crate::generated::modelica_grammar_trait;
 use rumoca_ir_ast::AstIndexMap as IndexMap;
 
@@ -421,6 +424,36 @@ fn extract_extends_mods(
 }
 
 /// Process a nested class definition element.
+fn insert_nested_class(
+    def: &mut ElementListPayload,
+    nested_class: rumoca_ir_ast::ClassDef,
+) -> anyhow::Result<()> {
+    let name = nested_class.name.text.to_string();
+    if let Some(existing_comp) = def.components.get(&name) {
+        return Err(semantic_error_from_token(
+            format!(
+                "Class '{}' at line {} conflicts with component of the same name (declared at line {})",
+                name,
+                nested_class.location.start_line,
+                existing_comp.name_token.location.start_line
+            ),
+            &nested_class.name,
+        ));
+    }
+    if let Some(existing_class) = def.classes.get(&name) {
+        return Err(semantic_error_from_token(
+            format!(
+                "Duplicate declaration of class '{}' at line {} (first declared at line {})",
+                name, nested_class.location.start_line, existing_class.location.start_line
+            ),
+            &nested_class.name,
+        ));
+    }
+    def.classes.insert(name, nested_class);
+    Ok(())
+}
+
+/// Process a nested class definition element.
 fn process_class_definition(
     def: &mut ElementListPayload,
     class: &modelica_grammar_trait::ElementDefinitionGroupClassDefinition,
@@ -436,20 +469,7 @@ fn process_class_definition(
     nested_class.is_redeclare = is_redeclare;
     nested_class.is_replaceable = false;
 
-    let name = nested_class.name.text.to_string();
-    if let Some(existing_comp) = def.components.get(&name) {
-        return Err(semantic_error_from_token(
-            format!(
-                "Class '{}' at line {} conflicts with component of the same name (declared at line {})",
-                name,
-                nested_class.location.start_line,
-                existing_comp.name_token.location.start_line
-            ),
-            &nested_class.name,
-        ));
-    }
-    def.classes.insert(name, nested_class);
-    Ok(())
+    insert_nested_class(def, nested_class)
 }
 
 /// Context for component processing.
@@ -627,8 +647,11 @@ fn process_replaceable_element(
             nested_class.is_replaceable = true;
             nested_class.is_redeclare = is_redeclare;
             nested_class.constrainedby = constrainedby;
-            let name = nested_class.name.text.to_string();
-            def.classes.insert(name, nested_class);
+            // MLS §7.3.2: constraining-clause modifications apply to the
+            // declaration itself, so they merge into the class body here
+            // rather than being carried in a side channel.
+            merge_class_constraining_clause_modifications(&mut nested_class, constrainedby_mods)?;
+            insert_nested_class(def, nested_class)?;
         }
         modelica_grammar_trait::ElementDefinitionGroupGroup::ComponentClause(clause) => {
             let (type_level_shape, type_level_shape_expr) =
@@ -667,10 +690,12 @@ fn process_replaceable_element(
 
 /// Merge constraining-clause class modifications into a replaceable component.
 ///
-/// For declarations like:
-/// `replaceable C c constrainedby C(n=n)`
-/// keep `n=n` on the component so it survives redeclare and can configure the
-/// replacement type. Existing declaration-level modifications take precedence.
+/// MLS §7.3.2: the modifications of a constraining clause apply to the
+/// declaration itself, whether or not it is later redeclared. For
+/// `replaceable C c constrainedby C(n=n)` the entry `n=n` therefore merges
+/// directly into the component's ordinary modification map, where every
+/// redeclare route already overrides by normal modification precedence.
+/// Existing declaration-level modifications take precedence.
 fn merge_constraining_clause_modifications(
     value: &mut rumoca_ir_ast::Component,
     constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
@@ -695,28 +720,153 @@ fn merge_constraining_clause_modifications(
             .get(idx)
             .copied()
             .unwrap_or(false);
+        let has_redeclare = class_mod_opt
+            .argument_list
+            .redeclare_flags
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+        if has_redeclare {
+            return Err(semantic_error_from_expression(
+                format!(
+                    "redeclare inside the constraining clause of replaceable component '{}' is not supported",
+                    value.name
+                ),
+                arg,
+            ));
+        }
 
         let Some(target_name) = constraining_arg_target_name(arg) else {
-            continue;
+            return Err(semantic_error_from_expression(
+                format!(
+                    "unsupported modification in the constraining clause of replaceable component '{}'",
+                    value.name
+                ),
+                arg,
+            ));
         };
         if is_builtin_attribute_name(&target_name) {
             continue;
         }
         let Some(stored_value) = normalized_constraining_arg_value(arg) else {
-            continue;
+            return Err(semantic_error_from_expression(
+                format!(
+                    "unsupported modification value in the constraining clause of replaceable component '{}'",
+                    value.name
+                ),
+                arg,
+            ));
         };
 
-        let key = format!("{}{target_name}", rumoca_core::CONSTRAINEDBY_MOD_PREFIX);
-        if value.modifications.contains_key(&key) {
+        if value.modifications.contains_key(&target_name) {
             continue;
         }
-        value.modifications.insert(key.clone(), stored_value);
+        value
+            .modifications
+            .insert(target_name.clone(), stored_value);
         if has_each {
-            value.each_modifications.insert(key.clone());
+            value.each_modifications.insert(target_name.clone());
         }
         if has_final {
-            value.final_attributes.insert(key);
+            value.final_attributes.insert(target_name);
         }
+    }
+
+    Ok(())
+}
+
+/// Merge constraining-clause class modifications into a replaceable class.
+///
+/// MLS §7.3.2: for `replaceable package Medium = X constrainedby P(nS=2)` the
+/// entry `nS=2` applies to the declaration itself. A short class definition is
+/// represented as a class with a single alias `extends`, so the constraining
+/// modifications merge into that extends clause's modification list, where the
+/// ordinary extends machinery applies them. Declaration-level modifications on
+/// the alias take precedence over constraining defaults with the same target.
+///
+/// Class bodies that are not alias-shaped have no modification slot for the
+/// constraining defaults, so carrying them would silently change class-body
+/// semantics; that shape is refused.
+fn merge_class_constraining_clause_modifications(
+    nested_class: &mut rumoca_ir_ast::ClassDef,
+    constrainedby_mods: Option<&modelica_grammar_trait::ConstrainingClauseOpt>,
+) -> anyhow::Result<()> {
+    let Some(constrainedby_mods) = constrainedby_mods else {
+        return Ok(());
+    };
+    let Some(class_mod_opt) = &constrainedby_mods.class_modification.class_modification_opt else {
+        return Ok(());
+    };
+    if class_mod_opt.argument_list.args.is_empty() {
+        return Ok(());
+    }
+
+    let alias_shaped = nested_class.extends.len() == 1
+        && nested_class.components.is_empty()
+        && nested_class.classes.is_empty()
+        && nested_class.equations.is_empty()
+        && nested_class.initial_equations.is_empty()
+        && nested_class.algorithms.is_empty()
+        && nested_class.initial_algorithms.is_empty();
+    if !alias_shaped {
+        return Err(semantic_error_from_token(
+            format!(
+                "constraining-clause modifications on replaceable class '{}' are only supported on short class definitions",
+                nested_class.name.text
+            ),
+            &nested_class.name,
+        ));
+    }
+
+    let existing_targets: std::collections::HashSet<String> = nested_class.extends[0]
+        .modifications
+        .iter()
+        .filter_map(|em| constraining_arg_target_name(&em.expr))
+        .collect();
+
+    for (idx, arg) in class_mod_opt.argument_list.args.iter().enumerate() {
+        let has_each = class_mod_opt
+            .argument_list
+            .each_flags
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+        let has_final = class_mod_opt
+            .argument_list
+            .final_flags
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+        let has_redeclare = class_mod_opt
+            .argument_list
+            .redeclare_flags
+            .get(idx)
+            .copied()
+            .unwrap_or(false);
+
+        if !has_redeclare {
+            let Some(target_name) = constraining_arg_target_name(arg) else {
+                return Err(semantic_error_from_expression(
+                    format!(
+                        "unsupported modification in the constraining clause of replaceable class '{}'",
+                        nested_class.name.text
+                    ),
+                    arg,
+                ));
+            };
+            if existing_targets.contains(&target_name) {
+                continue;
+            }
+        }
+
+        nested_class.extends[0]
+            .modifications
+            .push(rumoca_ir_ast::ExtendModification {
+                expr: arg.clone(),
+                each: has_each,
+                final_: has_final,
+                redeclare: has_redeclare,
+            });
     }
 
     Ok(())
@@ -756,7 +906,9 @@ fn normalized_constraining_arg_value(
     match arg {
         // Same storage shape as regular component modifications map:
         //   param = expr  -> store expr under key "param"
-        rumoca_ir_ast::Expression::Modification { value, .. } => Some(value.as_ref().clone()),
+        rumoca_ir_ast::Expression::Modification { value, .. } => {
+            value.as_ref().map(|value| value.as_ref().clone())
+        }
         // Nested component mods/bindings are stored as full expression.
         rumoca_ir_ast::Expression::ClassModification { .. } => Some(arg.clone()),
         rumoca_ir_ast::Expression::Binary { op, lhs, .. }
@@ -1053,9 +1205,11 @@ fn process_mod_arg(
         process_named_arg(value, &param_name, rhs, has_each, has_final, comp)?;
     }
 
+    // A value-less element modification (`x(start)`) binds nothing: the
+    // name alone carries no attribute value to store (MLS §7.2).
     if let rumoca_ir_ast::Expression::Modification {
         target,
-        value: mod_value,
+        value: Some(mod_value),
         ..
     } = arg
     {

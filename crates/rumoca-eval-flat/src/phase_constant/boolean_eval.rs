@@ -6,15 +6,18 @@ pub fn try_eval_flat_expr_boolean(
     known_ints: &FxHashMap<String, i64>,
     known_bools: &FxHashMap<String, bool>,
     known_enums: &FxHashMap<String, String>,
-) -> Option<bool> {
-    let param_ctx = ParamEvalContext {
+) -> Result<Option<bool>, crate::constant::EvalError> {
+    let known_reals = FxHashMap::default();
+    let array_dims = FxHashMap::default();
+    let functions = FxHashMap::default();
+    let param_ctx = ParamEvalContext::new_structural(
         known_ints,
-        known_reals: &FxHashMap::default(),
+        &known_reals,
         known_bools,
         known_enums,
-        array_dims: &FxHashMap::default(),
-        functions: &FxHashMap::default(),
-        var_context: None,
-    };
-    ParamEvaluator::new(&param_ctx).eval_boolean(expr, None)
+        &array_dims,
+        &functions,
+        None,
+    );
+    ParamEvaluator::new(&param_ctx)?.eval_boolean(expr, None)
 }

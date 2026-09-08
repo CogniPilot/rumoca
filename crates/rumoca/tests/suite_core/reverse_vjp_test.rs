@@ -5,6 +5,7 @@
 use rumoca::Compiler;
 use rumoca_sim::SimOptions;
 use rumoca_solver::{AlgebraicLinearization, AlgebraicSettle, SolveRuntime};
+use std::sync::Arc;
 
 // Smooth, pure-ODE model (no algebraics → solver_y == states, no projection):
 //   der(x) = sin(a*x) + b*y^2
@@ -28,20 +29,22 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
         .model("RevModel")
         .compile_str(SOURCE, "RevModel.mo")
         .expect("RevModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
-        .expect("lowering should succeed");
-    let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
+            .expect("lowering should succeed"),
+    );
+    let runtime = SolveRuntime::new(Arc::clone(&solve_model)).expect("runtime should build");
 
     // Pure-ODE model: solver_y is exactly the two states.
-    assert_eq!(runtime.state_count, 2, "expected 2 states");
-    assert_eq!(runtime.solver_count, 2, "pure ODE: solver_y == states");
+    assert_eq!(runtime.state_count(), 2, "expected 2 states");
+    assert_eq!(runtime.solver_count(), 2, "pure ODE: solver_y == states");
     // The seed/cotangent space is [solver_y | parameter scalars]; the parameter
     // count includes any compiler-internal scalars beyond `a`/`b`.
-    let p_scalars = solve_model.problem.layout().p_scalars();
-    let seed_len = runtime.solver_count + p_scalars;
+    let p_scalars = solve_model.problem().layout().p_scalars();
+    let seed_len = runtime.solver_count() + p_scalars;
 
     let state = vec![0.5_f64, -0.2];
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters().to_vec();
     let settle = AlgebraicSettle {
         tol: 1.0e-12,
         max_iters: 64,
@@ -58,10 +61,10 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
         .map(|i| 0.35 + 0.2 * (i as f64) * if i % 2 == 0 { 1.0 } else { -1.0 })
         .collect();
     let lambda = [0.60_f64, -0.90];
-    assert_eq!(lambda.len(), runtime.state_count);
+    assert_eq!(lambda.len(), runtime.state_count());
 
     // Forward: Jv via the parameter-seed JVP (seed laid out as [solver_y | p]).
-    let mut jv = vec![0.0_f64; runtime.state_count];
+    let mut jv = vec![0.0_f64; runtime.state_count()];
     runtime
         .eval_full_jacobian_v_ad_into(lin, &state, &v, &mut jv)
         .expect("forward JVP should evaluate");
@@ -88,11 +91,11 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
     // Stronger gate: the full reverse Jacobian is the exact transpose of the
     // full forward Jacobian, entry by entry. Column j of J via forward unit seed
     // e_j; row i of J via reverse unit cotangent e_i.
-    let mut forward = vec![vec![0.0_f64; seed_len]; runtime.state_count]; // J[i][j]
+    let mut forward = vec![vec![0.0_f64; seed_len]; runtime.state_count()]; // J[i][j]
     for j in 0..seed_len {
         let mut seed = vec![0.0_f64; seed_len];
         seed[j] = 1.0;
-        let mut col = vec![0.0_f64; runtime.state_count];
+        let mut col = vec![0.0_f64; runtime.state_count()];
         runtime
             .eval_full_jacobian_v_ad_into(lin, &state, &seed, &mut col)
             .expect("forward column");
@@ -100,8 +103,8 @@ fn reverse_vjp_matches_forward_jvp_dot_product() {
             forward[i][j] = *value;
         }
     }
-    for i in 0..runtime.state_count {
-        let mut cot = vec![0.0_f64; runtime.state_count];
+    for i in 0..runtime.state_count() {
+        let mut cot = vec![0.0_f64; runtime.state_count()];
         cot[i] = 1.0;
         let mut row = vec![0.0_f64; seed_len];
         runtime
@@ -138,19 +141,21 @@ fn reverse_vjp_rejects_models_with_algebraics() {
         .model("AlgModel")
         .compile_str(ALGEBRAIC_SOURCE, "AlgModel.mo")
         .expect("AlgModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
-        .expect("lowering should succeed");
-    let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
+            .expect("lowering should succeed"),
+    );
+    let runtime = SolveRuntime::new(Arc::clone(&solve_model)).expect("runtime should build");
 
     // Premise: z is a solver algebraic, so solver_y is wider than the state set.
     assert!(
-        runtime.solver_count > runtime.state_count,
+        runtime.solver_count() > runtime.state_count(),
         "model should carry a solver algebraic (solver_count {} > state_count {})",
-        runtime.solver_count,
-        runtime.state_count
+        runtime.solver_count(),
+        runtime.state_count()
     );
 
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters().to_vec();
     let lin = AlgebraicLinearization {
         t: 0.0,
         params: &params,
@@ -159,9 +164,10 @@ fn reverse_vjp_rejects_models_with_algebraics() {
             max_iters: 64,
         },
     };
-    let mut out = vec![0.0_f64; runtime.solver_count + solve_model.problem.layout().p_scalars()];
+    let mut out =
+        vec![0.0_f64; runtime.solver_count() + solve_model.problem().layout().p_scalars()];
     let err = runtime
-        .reverse_state_derivative_vjp(lin, &[1.0], &vec![1.0; runtime.state_count], &mut out)
+        .reverse_state_derivative_vjp(lin, &[1.0], &vec![1.0; runtime.state_count()], &mut out)
         .expect_err("reverse VJP must reject a model with solver algebraics");
     let message = err.to_string();
     assert!(
@@ -189,15 +195,17 @@ fn reverse_vjp_max_subgradient_matches_forward() {
         .model("MaxModel")
         .compile_str(MAX_SOURCE, "MaxModel.mo")
         .expect("MaxModel should compile");
-    let solve_model = rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
-        .expect("lowering should succeed");
-    let runtime = SolveRuntime::new(&solve_model).expect("runtime should build");
-    assert_eq!(runtime.solver_count, runtime.state_count, "pure ODE");
+    let solve_model = Arc::new(
+        rumoca_sim::lower_dae_for_simulation(result.dae(), &SimOptions::default())
+            .expect("lowering should succeed"),
+    );
+    let runtime = SolveRuntime::new(Arc::clone(&solve_model)).expect("runtime should build");
+    assert_eq!(runtime.solver_count(), runtime.state_count(), "pure ODE");
 
-    let p_scalars = solve_model.problem.layout().p_scalars();
-    let seed_len = runtime.solver_count + p_scalars;
+    let p_scalars = solve_model.problem().layout().p_scalars();
+    let seed_len = runtime.solver_count() + p_scalars;
     let state = vec![2.0_f64];
-    let params = solve_model.parameters.clone();
+    let params = solve_model.parameters().to_vec();
     let lin = AlgebraicLinearization {
         t: 0.0,
         params: &params,
@@ -209,7 +217,7 @@ fn reverse_vjp_max_subgradient_matches_forward() {
 
     let v: Vec<f64> = (0..seed_len).map(|i| 0.5 - 0.3 * i as f64).collect();
     let lambda = [1.4_f64];
-    let mut jv = vec![0.0_f64; runtime.state_count];
+    let mut jv = vec![0.0_f64; runtime.state_count()];
     runtime
         .eval_full_jacobian_v_ad_into(lin, &state, &v, &mut jv)
         .expect("forward JVP");

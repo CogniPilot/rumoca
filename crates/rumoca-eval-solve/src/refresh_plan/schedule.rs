@@ -14,7 +14,7 @@ pub fn build_refresh_stages(
     let exact_rows = rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| causal_solution_certified && row.exact_assignment_certified())
+        .filter(|(_, row)| row.exact_assignment_certified())
         .map(|(index, row)| ((row.equation_index(), row.target_index()), index))
         .collect::<BTreeMap<_, _>>();
     let mut stages = Vec::new();
@@ -36,7 +36,6 @@ pub fn build_refresh_stages(
         }
         flush_assignments(&mut stages, &mut assignments, rows, &static_targets)?;
         stages.push(RefreshStage::ProjectionBlock {
-            seed_sequence: Default::default(),
             block_index: block_indices
                 .get(local_block_index)
                 .copied()
@@ -64,8 +63,6 @@ fn push_causal_seed_sweep(
         .enumerate()
         .partition::<Vec<_>, _>(|(_, row)| static_targets.contains(&row.target_index()));
     stages.push(RefreshStage::CausalSeedSweep {
-        static_sequence: Default::default(),
-        dynamic_sequence: Default::default(),
         static_rows: RefreshRowSelection::checked(
             rows.len(),
             static_rows.into_iter().map(|(index, _)| index),
@@ -128,8 +125,6 @@ fn flush_assignments(
         .into_iter()
         .partition::<Vec<_>, _>(|index| static_targets.contains(&rows[*index].target_index()));
     stages.push(RefreshStage::ExactAssignments {
-        static_sequence: Default::default(),
-        dynamic_sequence: Default::default(),
         static_rows: RefreshRowSelection::checked(rows.len(), static_rows)?,
         dynamic_rows: RefreshRowSelection::checked(rows.len(), dynamic_rows)?,
     });
@@ -209,7 +204,7 @@ mod tests {
                 numerical_seed_row(2),
                 exact_row(3),
             ],
-            &RefreshRowSelection::default(),
+            &RefreshRowSelection::empty(),
             true,
         )
         .unwrap();
@@ -248,7 +243,7 @@ mod tests {
 
         let rows = [exact_row(1), exact_row(0)];
         let stages =
-            build_refresh_stages(&plan, &[0, 1], &rows, &RefreshRowSelection::default(), true)
+            build_refresh_stages(&plan, &[0, 1], &rows, &RefreshRowSelection::empty(), true)
                 .unwrap();
 
         assert!(matches!(
@@ -287,7 +282,7 @@ mod tests {
             &plan,
             &[0, 1, 2, 3],
             &rows,
-            &RefreshRowSelection::default(),
+            &RefreshRowSelection::empty(),
             true,
         )
         .unwrap();
@@ -303,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn uncertified_seed_order_retains_singleton_projection_blocks() {
+    fn uncertified_seed_order_keeps_construction_certified_exact_assignments() {
         let rows = [exact_row(0), exact_row(1)];
         let plan = solve::AlgebraicProjectionPlan {
             blocks: vec![
@@ -320,24 +315,15 @@ mod tests {
             ],
         };
 
-        let stages = build_refresh_stages(
-            &plan,
-            &[7, 11],
-            &rows,
-            &RefreshRowSelection::default(),
-            false,
-        )
-        .unwrap();
+        let stages =
+            build_refresh_stages(&plan, &[7, 11], &rows, &RefreshRowSelection::empty(), false)
+                .unwrap();
 
         assert!(matches!(
             stages.as_slice(),
             [
-                RefreshStage::ProjectionBlock { block_index: 7, .. },
-                RefreshStage::ProjectionBlock {
-                    block_index: 11,
-                    ..
-                },
-            ]
+                RefreshStage::ExactAssignments { dynamic_rows, .. },
+            ] if dynamic_rows.indices() == [0, 1]
         ));
     }
 }

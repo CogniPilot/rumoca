@@ -46,6 +46,10 @@ pub(crate) fn propagate_record_binding_to_fields(
     if nested_class.class_type != rumoca_core::ClassType::Record {
         return Ok(IndexMap::default());
     }
+    validate_projection_reference_identities(binding.value)?;
+    if let Some(source) = binding.source {
+        validate_projection_reference_identities(source)?;
+    }
 
     // Get effective components including inherited ones (MLS §7.2).
     // For type aliases like `ComplexVoltage = Complex(...)`, direct components may
@@ -57,9 +61,10 @@ pub(crate) fn propagate_record_binding_to_fields(
         &effective
     };
     let preserve_declared_defaults =
-        is_default_record_constructor_call(binding.value, nested_class);
+        is_default_record_constructor_call(binding.value, nested_class)?;
     let mut projected_keys = IndexMap::default();
     let mut base_cache = ProjectionBaseCache::new();
+    let mut planned_bindings = Vec::new();
 
     for (field_name, field_comp) in components {
         let field_def_id = field_comp.def_id.ok_or_else(|| {
@@ -86,7 +91,7 @@ pub(crate) fn propagate_record_binding_to_fields(
             components,
             ctx.mod_env(),
             field_name,
-        );
+        )?;
         if field_binding.is_none()
             && should_preserve_same_type_alias_field_default(
                 binding.value,
@@ -95,7 +100,7 @@ pub(crate) fn propagate_record_binding_to_fields(
                 ctx.mod_env(),
                 field_name,
                 field_comp,
-            )
+            )?
         {
             continue;
         }
@@ -126,7 +131,7 @@ pub(crate) fn propagate_record_binding_to_fields(
             _ => field_access.clone(),
         };
 
-        ctx.mod_env_mut().active.insert(
+        planned_bindings.push((
             field_qn.clone(),
             ast::ModificationValue::with_source_scope_and_prefixes(
                 field_access,
@@ -135,10 +140,30 @@ pub(crate) fn propagate_record_binding_to_fields(
                 binding.each,
                 false,
             ),
-        );
+        ));
         projected_keys.insert(field_qn, ());
     }
+    for (field_qn, value) in planned_bindings {
+        ctx.mod_env_mut().active.insert(field_qn, value);
+    }
     Ok(projected_keys)
+}
+
+fn validate_projection_reference_identities(expr: &ast::Expression) -> InstantiateResult<()> {
+    for reference in ast::visitor::collect_component_refs(expr) {
+        for (index, part) in reference.parts.iter().enumerate() {
+            if part.def_id.is_none() {
+                return Err(Box::new(InstantiateError::missing_resolved_identity(
+                    format!(
+                        "record projection reference segment {} in `{reference}`",
+                        index + 1
+                    ),
+                    reference.span,
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn should_preserve_same_type_alias_field_default(
@@ -148,63 +173,75 @@ fn should_preserve_same_type_alias_field_default(
     mod_env: &ast::ModificationEnvironment,
     field_name: &str,
     field_comp: &ast::Component,
-) -> bool {
+) -> InstantiateResult<bool> {
     if !has_declared_field_default(field_comp) {
-        return false;
+        return Ok(false);
     }
 
-    let Some(source_name) = simple_record_alias_source_name(binding_expr) else {
-        return false;
-    };
-
     let Some(source_component) =
-        same_type_record_alias_source(binding_expr, target_record, effective_components)
+        same_type_record_alias_source(binding_expr, target_record, effective_components)?
     else {
         // A reference from an outer scope, or one whose effective record type
         // differs from the declared target, can carry different inherited
         // defaults. Project the field instead of freezing the target record's
         // default (for example a transient CellData subtype with nRC = 2).
-        return false;
+        return Ok(false);
     };
-    !record_alias_source_explicitly_binds_field(
-        source_name,
-        Some(source_component),
+    Ok(!record_alias_source_explicitly_binds_field(
+        &source_component.name,
+        source_component,
         mod_env,
         field_name,
-    )
+    ))
 }
 
 fn same_type_record_alias_source<'a>(
     binding_expr: &ast::Expression,
     target_record: &ast::ClassDef,
     effective_components: &'a IndexMap<String, ast::Component>,
-) -> Option<&'a ast::Component> {
+) -> InstantiateResult<Option<&'a ast::Component>> {
     let ast::Expression::ComponentReference(comp_ref) = binding_expr else {
-        return None;
+        return Ok(None);
     };
     if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
-        return None;
+        return Ok(None);
     }
 
     let source_name = comp_ref.parts[0].ident.text.as_ref();
-    let source_component = effective_components.get(source_name)?;
-    if comp_ref.root_def_id().is_some() && source_component.def_id != comp_ref.root_def_id() {
-        return None;
-    }
-    if source_component.type_def_id != target_record.def_id {
-        return None;
-    }
-    Some(source_component)
-}
-
-fn simple_record_alias_source_name(binding_expr: &ast::Expression) -> Option<&str> {
-    let ast::Expression::ComponentReference(comp_ref) = binding_expr else {
-        return None;
+    let reference_def_id = comp_ref.root_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record alias source `{source_name}`"),
+            comp_ref.span,
+        ))
+    })?;
+    let Some(source_component) = effective_components.get(source_name) else {
+        return Ok(None);
     };
-    if comp_ref.parts.len() != 1 || comp_ref.parts[0].subs.is_some() {
-        return None;
+    let source_component_def_id = source_component.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record alias component `{source_name}`"),
+            source_component.location.span(),
+        ))
+    })?;
+    if source_component_def_id != reference_def_id {
+        return Ok(None);
     }
-    Some(comp_ref.parts[0].ident.text.as_ref())
+    let source_type_def_id = source_component.type_def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record alias component type `{source_name}`"),
+            source_component.location.span(),
+        ))
+    })?;
+    let target_type_def_id = target_record.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record projection target `{}`", target_record.name.text),
+            target_record.location.span(),
+        ))
+    })?;
+    if source_type_def_id != target_type_def_id {
+        return Ok(None);
+    }
+    Ok(Some(source_component))
 }
 
 fn same_type_alias_explicit_field_binding(
@@ -213,44 +250,42 @@ fn same_type_alias_explicit_field_binding(
     effective_components: &IndexMap<String, ast::Component>,
     mod_env: &ast::ModificationEnvironment,
     field_name: &str,
-) -> Option<ast::Expression> {
-    let source_name = simple_record_alias_source_name(binding_expr)?;
-    if let Some(field_binding) =
-        same_type_record_alias_source(binding_expr, target_record, effective_components).and_then(
-            |source_component| {
-                source_component
-                    .modifications
-                    .iter()
-                    .find(|(name, _)| name.as_str() == field_name)
-                    .and_then(|(_, value)| value.component_modifier_binding_value())
-            },
-        )
+) -> InstantiateResult<Option<ast::Expression>> {
+    let Some(source_component) =
+        same_type_record_alias_source(binding_expr, target_record, effective_components)?
+    else {
+        return Ok(None);
+    };
+    if let Some(field_binding) = source_component
+        .modifications
+        .iter()
+        .find(|(name, _)| name.as_str() == field_name)
+        .and_then(|(_, value)| value.component_modifier_binding_value())
     {
-        return Some(field_binding.clone());
+        return Ok(Some(field_binding.clone()));
     }
 
-    let source_field = ast::QualifiedName::from_ident(source_name).child(field_name);
-    mod_env
+    let source_field = ast::QualifiedName::from_ident(&source_component.name).child(field_name);
+    Ok(mod_env
         .active
         .iter()
         .find(|(key, _)| **key == source_field)
-        .map(|(_, value)| value.source.clone().unwrap_or_else(|| value.value.clone()))
+        .map(|(_, value)| value.source.clone().unwrap_or_else(|| value.value.clone())))
 }
 
 fn record_alias_source_explicitly_binds_field(
     source_name: &str,
-    source_component: Option<&ast::Component>,
+    source_component: &ast::Component,
     mod_env: &ast::ModificationEnvironment,
     field_name: &str,
 ) -> bool {
-    if source_component.is_some_and(|source_component| {
-        source_component
-            .modifications
-            .iter()
-            .any(|(name, modifier)| {
-                name.as_str() == field_name && modifier.component_modifier_binding_value().is_some()
-            })
-    }) {
+    if source_component
+        .modifications
+        .iter()
+        .any(|(name, modifier)| {
+            name.as_str() == field_name && modifier.component_modifier_binding_value().is_some()
+        })
+    {
         return true;
     }
 
@@ -375,9 +410,7 @@ fn constructor_record_projection_base(
     let ast::Expression::FunctionCall { comp, .. } = binding_expr else {
         return Ok(None);
     };
-    let Some(source_record) = constructor_class_for_call(tree, comp, binding_source_scope) else {
-        return Ok(None);
-    };
+    let source_record = constructor_class_for_call(tree, comp, binding_source_scope)?;
     if source_record.def_id == target_record.def_id {
         return Ok(None);
     }
@@ -403,9 +436,7 @@ fn constructor_projected_field_binding(
     let ast::Expression::FunctionCall { comp, args, .. } = binding_expr else {
         return Ok(None);
     };
-    let Some(source_record) = constructor_class_for_call(tree, comp, binding_source_scope) else {
-        return Ok(None);
-    };
+    let source_record = constructor_class_for_call(tree, comp, binding_source_scope)?;
 
     let effective = get_effective_components(tree, source_record)?;
     let components = if effective.is_empty() {
@@ -447,41 +478,24 @@ fn constructor_argument_field_binding(
 fn constructor_class_for_call<'a>(
     tree: &'a ast::ClassTree,
     comp: &ast::ComponentReference,
-    binding_source_scope: Option<&ast::QualifiedName>,
-) -> Option<&'a ast::ClassDef> {
+    _binding_source_scope: Option<&ast::QualifiedName>,
+) -> InstantiateResult<&'a ast::ClassDef> {
     // A record constructor call names a class, so the class is the reference's
     // exact *target* segment. `root_def_id` is the first segment, which for a
     // dotted constructor such as `P.Concrete.Element(...)` identifies the
     // enclosing package rather than the record (MLS §5.3, §12.6).
-    comp.target_def_id()
-        .and_then(|def_id| tree.get_class_by_def_id(def_id))
-        .or_else(|| find_class_in_tree(tree, &comp.to_string()))
-        .or_else(|| resolve_scoped_constructor_class(tree, comp, binding_source_scope))
-}
-
-fn resolve_scoped_constructor_class<'a>(
-    tree: &'a ast::ClassTree,
-    comp: &ast::ComponentReference,
-    binding_source_scope: Option<&ast::QualifiedName>,
-) -> Option<&'a ast::ClassDef> {
-    let scope = binding_source_scope?;
-    let name = comp.to_string();
-    for prefix_len in (0..=scope.parts.len()).rev() {
-        let prefix = scope.parts[..prefix_len]
-            .iter()
-            .map(|part| part.0.as_str())
-            .collect::<Vec<_>>()
-            .join(".");
-        let candidate = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}.{name}")
-        };
-        if let Some(class_def) = find_class_in_tree(tree, &candidate) {
-            return Some(class_def);
-        }
-    }
-    None
+    let target_def_id = comp.target_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record constructor/function call `{comp}`"),
+            comp.span,
+        ))
+    })?;
+    tree.get_class_by_def_id(target_def_id).ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record constructor/function target `{comp}` ({target_def_id:?})"),
+            comp.span,
+        ))
+    })
 }
 
 fn unique_constructor_record_field(
@@ -495,29 +509,29 @@ fn unique_constructor_record_field(
     } else {
         &components
     };
-    let mut matches = components
-        .iter()
-        .filter(|(_name, component)| component_record_type_matches(tree, component, target_record))
-        .map(|(name, component)| {
-            component
-                .def_id
-                .map(|def_id| (name.clone(), def_id))
-                .ok_or_else(|| {
-                    Box::new(InstantiateError::missing_resolved_identity(
-                        name,
-                        component.location.span(),
-                    ))
-                })
-        });
+    let mut matches = Vec::new();
+    for (name, component) in components {
+        if !component_record_type_matches(tree, component, target_record)? {
+            continue;
+        }
+        let def_id = component.def_id.ok_or_else(|| {
+            Box::new(InstantiateError::missing_resolved_identity(
+                name,
+                component.location.span(),
+            ))
+        })?;
+        matches.push((name.clone(), def_id));
+    }
+    let mut matches = matches.into_iter();
     let Some(first) = matches.next() else {
         return Ok(None);
     };
-    let first = first?;
     match matches.next() {
-        Some(next) => {
-            next?;
-            Ok(None)
-        }
+        Some(_) => Err(Box::new(InstantiateError::redeclare_error(
+            target_record.name.text.as_ref(),
+            "record-returning call has multiple exact fields compatible with the projection target",
+            target_record.location.span(),
+        ))),
         None => Ok(Some(first)),
     }
 }
@@ -526,49 +540,63 @@ fn component_record_type_matches(
     tree: &ast::ClassTree,
     component: &ast::Component,
     target_record: &ast::ClassDef,
-) -> bool {
-    if component.type_def_id.is_some() && component.type_def_id == target_record.def_id {
-        return true;
-    }
-    let component_type = component.type_name.to_string();
-    let target_name = target_record
-        .def_id
-        .and_then(|def_id| tree.def_map.get(&def_id))
-        .cloned()
-        .unwrap_or_else(|| target_record.name.text.to_string());
-    component_type == target_name || is_type_subtype(tree, &component_type, &target_name)
+) -> InstantiateResult<bool> {
+    let component_type_def_id = component.type_def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record component type `{}`", component.type_name),
+            component.location.span(),
+        ))
+    })?;
+    let target_record_def_id = target_record.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("target record `{}`", target_record.name.text),
+            target_record.location.span(),
+        ))
+    })?;
+    crate::inheritance::is_type_subtype_by_def_id(
+        tree,
+        component_type_def_id,
+        target_record_def_id,
+        &mut crate::inheritance::SubtypeCache::default(),
+    )
 }
 
 fn is_default_record_constructor_call(
     expr: &ast::Expression,
     nested_class: &ast::ClassDef,
-) -> bool {
+) -> InstantiateResult<bool> {
     match expr {
         // MLS §12.6: only `R()` for the declared record `R` preserves the
         // record's own field defaults. A different zero-argument record
         // constructor (e.g. `BaseData x = Derived()`) must still project the
         // bound record fields rather than freezing the declared base defaults.
         ast::Expression::FunctionCall { comp, args, .. } => {
-            args.is_empty() && record_constructor_matches_class(comp, nested_class)
+            Ok(args.is_empty() && record_constructor_matches_class(comp, nested_class)?)
         }
         ast::Expression::Parenthesized { inner, .. } => {
             is_default_record_constructor_call(inner, nested_class)
         }
-        _ => false,
+        _ => Ok(false),
     }
 }
 
 fn record_constructor_matches_class(
     comp: &ast::ComponentReference,
     nested_class: &ast::ClassDef,
-) -> bool {
-    if let (Some(comp_def_id), Some(class_def_id)) = (comp.root_def_id(), nested_class.def_id) {
-        return comp_def_id == class_def_id;
-    }
-
-    comp.parts
-        .last()
-        .is_some_and(|part| part.ident.text.as_ref() == nested_class.name.text.as_ref())
+) -> InstantiateResult<bool> {
+    let comp_def_id = comp.target_def_id().ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record constructor `{comp}`"),
+            comp.span,
+        ))
+    })?;
+    let class_def_id = nested_class.def_id.ok_or_else(|| {
+        Box::new(InstantiateError::missing_resolved_identity(
+            format!("record projection target `{}`", nested_class.name.text),
+            nested_class.location.span(),
+        ))
+    })?;
+    Ok(comp_def_id == class_def_id)
 }
 
 fn has_declared_field_default(comp: &ast::Component) -> bool {

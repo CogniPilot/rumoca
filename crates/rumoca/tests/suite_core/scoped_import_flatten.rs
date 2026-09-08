@@ -1,10 +1,10 @@
 //! Regression tests for flatten-time scoped import resolution.
 
 use rumoca_ir_ast as ast;
-use rumoca_phase_flatten::flatten_ref;
+use rumoca_phase_flatten::{FlattenOptions, flatten_typed};
 use rumoca_phase_instantiate::{InstantiationOutcome, instantiate_model_with_outcome};
 use rumoca_phase_resolve::resolve;
-use rumoca_phase_typecheck::typecheck_instanced;
+use rumoca_phase_typecheck::typecheck_instanced_tree;
 
 fn flatten_model(source: &str, model: &str) -> rumoca_ir_flat::Model {
     let def = rumoca_phase_parse::parse_to_ast(source, "scoped_imports.mo").unwrap();
@@ -13,15 +13,16 @@ fn flatten_model(source: &str, model: &str) -> rumoca_ir_flat::Model {
     let parsed = rumoca_ir_ast::ParsedTree::new(tree);
     let resolved = resolve(parsed).expect("resolve should succeed");
     let tree = resolved.inner();
-    let mut overlay = match instantiate_model_with_outcome(tree, model) {
+    let overlay = match instantiate_model_with_outcome(tree, model) {
         InstantiationOutcome::Success(overlay) => overlay,
         InstantiationOutcome::NeedsInner { missing_inners, .. } => {
             panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
         }
         InstantiationOutcome::Error(error) => panic!("fixture instantiation failed: {error}"),
     };
-    typecheck_instanced(&resolved, &mut overlay, model).expect("typecheck should succeed");
-    flatten_ref(tree, &overlay, model).expect("flatten should succeed")
+    let typed =
+        typecheck_instanced_tree(&resolved, overlay, model).expect("typecheck should succeed");
+    flatten_typed(typed, FlattenOptions::default()).expect("flatten should succeed")
 }
 
 fn expr_real(expr: &rumoca_core::Expression) -> f64 {

@@ -29,7 +29,6 @@ impl TypeChecker {
             "integer" => self.check_integer_builtin(comp, args, type_table),
             "identity" => self.check_identity_builtin(comp, args, type_table),
             "delay" => self.check_delay_builtin(comp, args, type_table),
-            "der" => self.check_der_builtin(comp, args, type_table),
             "String" => self.check_string_builtin(comp, args, type_table),
             "reinit" => self.check_reinit_builtin(comp, args, type_table),
             "homotopy" => self.check_homotopy_builtin(comp, args, type_table),
@@ -172,7 +171,8 @@ impl TypeChecker {
         );
         let first_root = self
             .infer_expression_type(first, type_table)
-            .map(|ty| self.resolve_type_root(type_table, ty));
+            .value_identity()
+            .map(|ty| self.resolve_type_root(ty));
         let has_significant_digits = args.iter().any(|arg| {
             matches!(
                 arg,
@@ -193,21 +193,15 @@ impl TypeChecker {
         }
     }
 
-    /// Expected positional-argument count ranges for the elementary builtin
-    /// functions (MLS §3.7). Only names with a fixed contract are listed;
-    /// anything else is left to later phases.
-    fn builtin_arity(name: &str) -> Option<(usize, usize)> {
-        Some(match name {
-            "abs" | "sign" | "sqrt" | "exp" | "log" | "log10" | "sin" | "cos" | "tan" | "asin"
-            | "acos" | "sinh" | "cosh" | "tanh" | "atan" | "der" | "pre" | "edge" | "change"
-            | "noEvent" | "pure" | "identity" => (1, 1),
-            "atan2" | "div" | "mod" | "rem" | "cross" => (2, 2),
-            "skew" => (1, 1),
-            "semiLinear" => (3, 3),
-            "initial" | "terminal" => (0, 0),
-            "smooth" => (2, 2),
-            _ => return None,
-        })
+    /// Expected positional-argument count ranges for builtins visible by name
+    /// at this boundary. Identity-gated synchronous intrinsics are checked once
+    /// their exact `BuiltinFunction` has been minted.
+    fn builtin_arity(name: &str) -> Option<(usize, Option<usize>)> {
+        if name == "pure" {
+            return Some((1, Some(1)));
+        }
+        rumoca_core::BuiltinFunction::from_name(name)
+            .map(rumoca_core::BuiltinFunction::argument_count_range)
     }
 
     fn check_builtin_arity(
@@ -219,17 +213,17 @@ impl TypeChecker {
         let Some((min, max)) = Self::builtin_arity(name) else {
             return;
         };
-        if (min..=max).contains(&args.len()) {
+        if args.len() >= min && max.is_none_or(|max| args.len() <= max) {
             return;
         }
         let location = &comp.parts[0].ident.location;
         let Some(span) = self.diagnostic_location_span(location, "builtin arity validation") else {
             return;
         };
-        let expected = if min == max {
-            format!("{min}")
-        } else {
-            format!("{min}..{max}")
+        let expected = match max {
+            Some(max) if min == max => format!("{min}"),
+            Some(max) => format!("{min}..{max}"),
+            None => format!("at least {min}"),
         };
         self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
             "ET008",
@@ -242,27 +236,62 @@ impl TypeChecker {
         ));
     }
 
-    /// MLS §3.7.4: `der(expr)` requires a Real (or Real-rooted) expression.
-    fn check_der_builtin(
+    /// MLS §3.7.4: the typed derivative call has exactly one Real argument.
+    pub(crate) fn check_derivative_call(
         &mut self,
-        comp: &rumoca_ir_ast::ComponentReference,
         args: &[Expression],
+        call_span: rumoca_core::Span,
         type_table: &TypeTable,
     ) {
-        let [arg] = args else {
+        let arg = match args {
+            [arg] => arg,
+            args => {
+                self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                    "ET008",
+                    format!("der() expects 1 argument(s), found {}", args.len()),
+                    "builtin call here",
+                    call_span,
+                ));
+                return;
+            }
+        };
+        if let Some((description, span)) = derivative_argument_value_violation(arg) {
+            self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+                "ET009",
+                format!(
+                    "der() requires one positional value expression; {description} is not a \
+                     derivative operand (MLS §3.7.4)"
+                ),
+                "invalid derivative argument here",
+                span,
+            ));
+            return;
+        }
+        let Some(found_type) = self.infer_expression_type(arg, type_table).value_identity() else {
             return;
         };
-        self.require_builtin_argument_type(
-            comp,
-            arg,
-            type_table,
-            BuiltinArgumentRule {
-                operator: "der",
-                argument_name: "argument",
-                expected_type: "Real",
-                predicate: Self::is_real_type,
-            },
-        );
+        if found_type.is_unknown() {
+            return;
+        }
+        let found_root = self.resolve_type_root(found_type);
+        if Self::is_unresolved_alias_root(type_table, found_root)
+            || Self::is_real_type(found_root, type_table)
+        {
+            return;
+        }
+        let span = match arg.get_location().and_then(|location| {
+            self.diagnostic_location_span(location, "derivative argument validation")
+        }) {
+            Some(span) => span,
+            None => call_span,
+        };
+        let found = Self::format_type_name(type_table, found_type);
+        self.emit_typecheck_error(TypeCheckError::phase_diagnostic(
+            "ET002",
+            format!("der() argument must have type `Real`, found `{found}`"),
+            "builtin argument here",
+            span,
+        ));
     }
 
     fn check_integer_builtin(
@@ -407,14 +436,14 @@ impl TypeChecker {
         type_table: &TypeTable,
         rule: BuiltinArgumentRule,
     ) {
-        let Some(found_type) = self.infer_expression_type(arg, type_table) else {
+        let Some(found_type) = self.infer_expression_type(arg, type_table).value_identity() else {
             return;
         };
         if found_type.is_unknown() {
             return;
         }
 
-        let found_root = self.resolve_type_root(type_table, found_type);
+        let found_root = self.resolve_type_root(found_type);
         if Self::is_unresolved_alias_root(type_table, found_root)
             || (rule.predicate)(found_root, type_table)
         {
@@ -512,11 +541,13 @@ impl TypeChecker {
         expr: &Expression,
         type_table: &TypeTable,
     ) -> Option<BuiltinTypeClass> {
-        let found = self.infer_expression_type(expr, type_table)?;
+        let found = self
+            .infer_expression_type(expr, type_table)
+            .value_identity()?;
         if found.is_unknown() {
             return None;
         }
-        let root = self.resolve_type_root(type_table, found);
+        let root = self.resolve_type_root(found);
         match type_table.get(root) {
             Some(Type::Builtin(BuiltinType::Real | BuiltinType::Integer)) => {
                 Some(BuiltinTypeClass::Numeric)
@@ -539,7 +570,7 @@ impl TypeChecker {
             iterator_ranges: Vec::new(),
             if_branches: Vec::new(),
         };
-        let _ = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expr);
+        let _visit_outcome = rumoca_ir_ast::Visitor::visit_expression(&mut collector, expr);
         // MLS §10.3.4.1 / ARR-034: expressions in array-comprehension
         // iterators shall be vector expressions.
         for range in collector.iterator_ranges {
@@ -641,11 +672,13 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         let root_of = |checker: &mut Self, expr: &Expression| -> Option<TypeId> {
-            let ty = checker.infer_expression_type(expr, type_table)?;
+            let ty = checker
+                .infer_expression_type(expr, type_table)
+                .value_identity()?;
             if ty.is_unknown() {
                 return None;
             }
-            Some(checker.resolve_type_root(type_table, ty))
+            Some(checker.resolve_type_root(ty))
         };
         let Some(lhs_root) = root_of(self, lhs) else {
             return;
@@ -919,10 +952,10 @@ impl TypeChecker {
         type_table: &TypeTable,
     ) {
         for arg in args {
-            let Some(found) = self.infer_expression_type(arg, type_table) else {
+            let Some(found) = self.infer_expression_type(arg, type_table).value_identity() else {
                 continue;
             };
-            let root = self.resolve_type_root(type_table, found);
+            let root = self.resolve_type_root(found);
             if matches!(
                 type_table.get(root),
                 Some(Type::Builtin(BuiltinType::String))
@@ -945,6 +978,27 @@ impl TypeChecker {
             _ => None,
         }
     }
+}
+
+fn derivative_argument_value_violation(
+    argument: &Expression,
+) -> Option<(&'static str, rumoca_core::Span)> {
+    let carrier = match argument {
+        Expression::NamedArgument { .. } => Some("a named call-argument carrier"),
+        Expression::Modification { .. } | Expression::ClassModification { .. } => {
+            Some("a modification carrier")
+        }
+        _ => None,
+    };
+    if let Some(description) = carrier {
+        return Some((description, argument.span()));
+    }
+    let violation = rumoca_ir_ast::expression_required_value_violation(argument)?;
+    let span = match violation.span {
+        Some(span) => span,
+        None => argument.span(),
+    };
+    Some((violation.kind.description(), span))
 }
 
 #[derive(Clone, Copy, PartialEq)]

@@ -11,17 +11,19 @@ pipeline. All of these work with both `rumoca compile` and `rumoca sim`.
 | Stage | What you see |
 |---|---|
 | `ast-json` | The parsed, resolved semantic tree (no lossy Modelica reconstruction) |
-| `flat-mo` / `flat-json` | The flattened model: hierarchy and `connect`s expanded |
+| `flat-json` | The exact flattened model: hierarchy and `connect`s expanded |
 | `dae-mo` / `dae-json` | The DAE system: equations partitioned, ready for analysis |
 | `solve-json` | The solver IR: sorted, torn, scheduled for execution |
 
 ```bash
-rumoca compile Model.mo --emit flat-mo          # to stdout
+rumoca compile Model.mo --emit flat-json        # to stdout
 rumoca compile Model.mo --emit dae-json -o m.json
 ```
 
-Reading `flat-mo` answers "what did my modifications and connects actually
-produce?". Reading `dae-mo` answers "what equation system is the solver
+Reading `flat-json` answers "what did my modifications and connects actually
+produce?" without reconstructing incomplete Modelica text. `--emit flat-mo`
+returns `unsupported-feature:flat-modelica-text-export` until Flat construction
+can prove a lossless equation-body view. Reading `dae-mo` answers "what equation system is the solver
 given?" — the live examples in this book expose the same view through their
 **Show DAE** button.
 
@@ -78,7 +80,7 @@ rumoca cache status                  # compilation cache usage
 ## Verbose Compilation
 
 ```bash
-rumoca compile Model.mo --target c-ode -o out -v
+rumoca compile Model.mo --target fmi3 -o out -v
 ```
 
 `-v` prints friendly `[rumoca] Phase ...` progress lines, which localizes

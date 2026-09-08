@@ -4,21 +4,6 @@ use rumoca_ir_solve as solve;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 
-pub(super) fn optional_compiled<T>(label: &str, result: Result<T, String>) -> Option<T> {
-    match result {
-        Ok(compiled) => Some(compiled),
-        Err(error) => {
-            tracing::debug!(
-                target: "rumoca_solver::native_execution",
-                label,
-                %error,
-                "optional compiled backend unavailable"
-            );
-            None
-        }
-    }
-}
-
 pub(super) fn zero_runtime_values(
     len: usize,
     context: &'static str,
@@ -90,10 +75,9 @@ where
 
 pub(super) fn build_visible_name_index(model: &solve::SolveModel) -> FxHashMap<String, usize> {
     model
-        .visible_names
-        .iter()
+        .visible_names()
         .enumerate()
-        .map(|(idx, name)| (name.clone(), idx))
+        .map(|(idx, name)| (name.to_string(), idx))
         .collect()
 }
 

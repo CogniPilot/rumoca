@@ -3,8 +3,8 @@ use rumoca_ir_solve as solve;
 
 use crate::RuntimeSolveError;
 
-use super::SolveRuntime;
 use super::event_update::DiscretePreSnapshot;
+use super::{InterpreterPermit, SolveRuntime};
 
 impl SolveRuntime {
     pub(super) fn guarded_assignment_active_at(
@@ -52,84 +52,18 @@ impl SolveRuntime {
                     "prepared guarded assignment program {program_index} is out of bounds"
                 ))
             })?;
-        if let Some(compiled) = self
-            .compiled_guarded_assignments
-            .borrow()
-            .get(&program_index)
-            .cloned()
-        {
-            out.resize(prepared.output_count(), 0.0);
-            if compiled
-                .call(
-                    y,
-                    p,
-                    t,
-                    self.model.external_tables.as_slice(),
-                    out.as_mut_slice(),
-                )
-                .is_ok()
-            {
-                return Ok(());
-            }
-        } else {
-            self.compile_guarded_assignment(program_index);
-            if self
-                .compiled_guarded_assignments
-                .borrow()
-                .contains_key(&program_index)
-            {
-                return self.eval_guarded_assignment_outputs(program_index, y, p, t, out);
-            }
-        }
         prepared
-            .eval_outputs_with_context(y, p, t, self.row_eval_context(), out)
+            .eval_outputs_with_context(
+                y,
+                p,
+                t,
+                self.execution_plan
+                    .interpreter
+                    .guarded_assignments
+                    .row_eval_context(self),
+                out,
+            )
             .map_err(Into::into)
-    }
-
-    fn compile_guarded_assignment(&self, program_index: usize) {
-        let Some(backend) = &self.execution_backend else {
-            return;
-        };
-        if self
-            .failed_guarded_assignments
-            .borrow()
-            .contains(&program_index)
-        {
-            return;
-        }
-        let Some(prepared) = self.guarded_assignment_programs.get(program_index) else {
-            self.failed_guarded_assignments
-                .borrow_mut()
-                .insert(program_index);
-            return;
-        };
-        let block = match solve::ScalarProgramBlock::with_output_indices(
-            vec![prepared.program().to_vec()],
-            vec![prepared.span()],
-            (0..prepared.output_count()).collect(),
-        ) {
-            Ok(block) => block,
-            Err(error) => {
-                super::trace_native_execution_failure(program_index, &error.to_string());
-                self.failed_guarded_assignments
-                    .borrow_mut()
-                    .insert(program_index);
-                return;
-            }
-        };
-        match backend.compile_expression(&block) {
-            Ok(expression) => {
-                self.compiled_guarded_assignments
-                    .borrow_mut()
-                    .insert(program_index, expression);
-            }
-            Err(error) => {
-                super::trace_native_execution_failure(program_index, &error);
-                self.failed_guarded_assignments
-                    .borrow_mut()
-                    .insert(program_index);
-            }
-        }
     }
 
     pub(super) fn apply_guarded_assignment_outputs(
@@ -154,7 +88,7 @@ impl SolveRuntime {
             for offset in 0..range.count() {
                 let target = guarded_target_at(range.base(), offset)?;
                 let value = guarded_relation_override(
-                    &self.model.problem.events.root_relation_memory_targets,
+                    &self.model.problem().events().root_relation_memory_targets,
                     root_relation_overrides,
                     target,
                 )
@@ -178,8 +112,8 @@ impl SolveRuntime {
         program_index: usize,
     ) -> Result<&solve::GuardedAssignmentProgram, RuntimeSolveError> {
         self.model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .guarded_assignments
             .get(program_index)
             .ok_or_else(|| {

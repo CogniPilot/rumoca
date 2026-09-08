@@ -332,7 +332,7 @@ mod tests {
             .ok()
             .and_then(|contents| contents.parse::<u32>().ok());
         if marker_parent == linux_parent_process_id() {
-            let _ = std::fs::remove_file(&marker);
+            std::fs::remove_file(&marker).expect("remove isolated watchdog child marker");
             run_runtime_accounting_failure_child();
         }
 
@@ -346,11 +346,16 @@ mod tests {
             ])
             .status()
             .expect("spawn isolated watchdog child");
-        let _ = std::fs::remove_file(marker);
+        let cleanup_result = std::fs::remove_file(&marker);
         assert_eq!(
             status.code(),
             Some(MODEL_WORKER_MEMORY_LIMIT_UNAVAILABLE_EXIT_CODE)
         );
+        match cleanup_result {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove isolated watchdog parent marker: {error}"),
+        }
     }
 
     #[cfg(target_os = "linux")]

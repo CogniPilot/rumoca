@@ -1,6 +1,6 @@
 [package]
 name = "rumoca-phase-galec"
-description = "Checked DAE and Solve projection into the GALEC Algorithm Code export IR"
+description = "Checked DAE projection into the GALEC Algorithm Code export IR"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

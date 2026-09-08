@@ -68,6 +68,7 @@ pub enum TensorOutputMapError {
         value: isize,
     },
     OutputIndexOverflow,
+    NonInjective,
 }
 
 impl TensorOutputMap {
@@ -147,6 +148,59 @@ impl TensorOutputMap {
             }
         }
         Ok((minimum, maximum))
+    }
+
+    /// Proves that this affine map writes one compact dense interval exactly once.
+    fn exact_dense_interval(
+        &self,
+        domain: &StructuredIndexDomain,
+    ) -> Result<(usize, usize, usize), TensorOutputMapError> {
+        let extents = domain
+            .extents()
+            .map_err(|error| TensorOutputMapError::StructuredIndexDomain { error })?;
+        let scalar_count = extents
+            .iter()
+            .try_fold(1usize, |count, extent| count.checked_mul(*extent))
+            .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        if scalar_count == 0 {
+            return Ok((self.start, self.start, 0));
+        }
+
+        let strides = aggregate_affine_index_strides(&self.strides, domain.binders.len())?;
+        let mut active = extents
+            .iter()
+            .copied()
+            .zip(strides)
+            .filter(|(extent, _)| *extent > 1)
+            .map(|(extent, stride)| (stride.unsigned_abs(), extent))
+            .collect::<Vec<_>>();
+        active.sort_unstable_by_key(|(stride, _)| *stride);
+        let mut expected_stride = 1u128;
+        for (stride, extent) in active {
+            if stride != expected_stride {
+                return Err(TensorOutputMapError::NonInjective);
+            }
+            expected_stride = expected_stride
+                .checked_mul(extent as u128)
+                .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        }
+
+        let (minimum, maximum) = self.output_bounds(&extents, domain.binders.len())?;
+        if minimum < 0 {
+            let value =
+                isize::try_from(minimum).map_err(|_| TensorOutputMapError::OutputIndexOverflow)?;
+            return Err(TensorOutputMapError::NegativeIndex { value });
+        }
+        let start =
+            usize::try_from(minimum).map_err(|_| TensorOutputMapError::OutputIndexOverflow)?;
+        let end = usize::try_from(maximum)
+            .map_err(|_| TensorOutputMapError::OutputIndexOverflow)?
+            .checked_add(1)
+            .ok_or(TensorOutputMapError::OutputIndexOverflow)?;
+        if end.checked_sub(start) != Some(scalar_count) {
+            return Err(TensorOutputMapError::NonInjective);
+        }
+        Ok((start, end, scalar_count))
     }
 
     fn output_index(
@@ -440,11 +494,12 @@ impl ComputeBlock {
         for (node_index, node) in self.nodes.iter().enumerate() {
             match node {
                 ComputeNode::ScalarPrograms(block) => {
-                    outputs.extend(block.compute_block_output_indices(
+                    append_unique_output_indices(
+                        &mut outputs,
+                        block.compute_block_output_indices(context, node_index, output_cursor)?,
                         context,
-                        node_index,
-                        output_cursor,
-                    )?);
+                        block.first_source_span(),
+                    )?;
                     output_cursor = block.advance_compute_block_output_cursor(
                         context,
                         node_index,
@@ -500,19 +555,43 @@ impl ComputeBlock {
                     let end = output_cursor
                         .checked_add(count)
                         .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
-                    outputs.extend(output_cursor..end);
+                    append_unique_output_indices(
+                        &mut outputs,
+                        output_cursor..end,
+                        context,
+                        Some(*span),
+                    )?;
                     output_cursor = end;
                 }
                 ComputeNode::LinSolve { n, span, .. } => {
                     let end = output_cursor
                         .checked_add(*n)
                         .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
-                    outputs.extend(output_cursor..end);
+                    append_unique_output_indices(
+                        &mut outputs,
+                        output_cursor..end,
+                        context,
+                        Some(*span),
+                    )?;
                     output_cursor = end;
                 }
             }
         }
         Ok(outputs.into_iter().collect())
+    }
+
+    /// Proves exact-once coverage of `0..expected_count` without expanding a
+    /// tensor domain or allocating an expected-index vector.
+    pub(crate) fn validate_exact_output_coverage(
+        &self,
+        context: &'static str,
+        expected_count: usize,
+    ) -> Result<(), SolveProblemShapeContractError> {
+        let mut proof = ExactOutputCoverage::default();
+        for (node_index, node) in self.nodes.iter().enumerate() {
+            append_exact_node_coverage(&mut proof, node, context, node_index)?;
+        }
+        validate_exact_coverage(proof, context, expected_count, self.nodes.len())
     }
 
     pub fn is_empty(&self) -> bool {
@@ -567,6 +646,224 @@ impl ComputeBlock {
     }
 }
 
+#[derive(Clone, Copy)]
+struct OutputCoverageSpan {
+    start: usize,
+    end: usize,
+    node_index: usize,
+    span: Option<Span>,
+}
+
+#[derive(Default)]
+struct ExactOutputCoverage {
+    output_cursor: usize,
+    declared_count: usize,
+    spans: Vec<OutputCoverageSpan>,
+}
+
+fn append_exact_node_coverage(
+    proof: &mut ExactOutputCoverage,
+    node: &ComputeNode,
+    context: &'static str,
+    node_index: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    match node {
+        ComputeNode::ScalarPrograms(block) => {
+            append_scalar_coverage(proof, block, context, node_index)
+        }
+        ComputeNode::Map {
+            domain,
+            output_map,
+            span,
+            ..
+        }
+        | ComputeNode::AffineStencil {
+            domain,
+            output_map,
+            span,
+            ..
+        } => append_affine_coverage(proof, output_map, domain, context, node_index, *span),
+        ComputeNode::MatMul { m, n, span, .. } => {
+            let count = m
+                .checked_mul(*n)
+                .ok_or_else(|| output_index_overflow(context, node_index, Some(*span)))?;
+            append_cursor_coverage(proof, count, context, node_index, *span)
+        }
+        ComputeNode::LinSolve { n, span, .. } => {
+            append_cursor_coverage(proof, *n, context, node_index, *span)
+        }
+    }
+}
+
+fn append_scalar_coverage(
+    proof: &mut ExactOutputCoverage,
+    block: &ScalarProgramBlock,
+    context: &'static str,
+    node_index: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    let span = block.first_source_span();
+    let indices = block.compute_block_output_indices(context, node_index, proof.output_cursor)?;
+    add_declared_count(
+        proof,
+        block.stored_output_count(),
+        context,
+        node_index,
+        span,
+    )?;
+    for index in indices {
+        let end = index
+            .checked_add(1)
+            .ok_or_else(|| output_index_overflow(context, node_index, span))?;
+        proof.spans.push(OutputCoverageSpan {
+            start: index,
+            end,
+            node_index,
+            span,
+        });
+    }
+    proof.output_cursor =
+        block.advance_compute_block_output_cursor(context, node_index, proof.output_cursor)?;
+    Ok(())
+}
+
+fn append_affine_coverage(
+    proof: &mut ExactOutputCoverage,
+    output_map: &TensorOutputMap,
+    domain: &StructuredIndexDomain,
+    context: &'static str,
+    node_index: usize,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    let (start, end, count) = output_map.exact_dense_interval(domain).map_err(|error| {
+        exact_affine_coverage_error(error, output_map.start, context, node_index, span)
+    })?;
+    add_declared_count(proof, count, context, node_index, Some(span))?;
+    if count != 0 {
+        proof.spans.push(OutputCoverageSpan {
+            start,
+            end,
+            node_index,
+            span: Some(span),
+        });
+        proof.output_cursor = proof.output_cursor.max(end);
+    }
+    Ok(())
+}
+
+fn exact_affine_coverage_error(
+    error: TensorOutputMapError,
+    output_start: usize,
+    context: &'static str,
+    node_index: usize,
+    span: Span,
+) -> SolveProblemShapeContractError {
+    if error == TensorOutputMapError::NonInjective {
+        return SolveProblemShapeContractError::DerivativeOutputCoverage {
+            context,
+            node_index,
+            kind: DerivativeOutputCoverageKind::NonInjective,
+            index: output_start,
+            span: Some(span),
+        };
+    }
+    tensor_output_map_error(context, node_index, "derivative output", error, span)
+}
+
+fn append_cursor_coverage(
+    proof: &mut ExactOutputCoverage,
+    count: usize,
+    context: &'static str,
+    node_index: usize,
+    span: Span,
+) -> Result<(), SolveProblemShapeContractError> {
+    let end = proof
+        .output_cursor
+        .checked_add(count)
+        .ok_or_else(|| output_index_overflow(context, node_index, Some(span)))?;
+    add_declared_count(proof, count, context, node_index, Some(span))?;
+    proof.spans.push(OutputCoverageSpan {
+        start: proof.output_cursor,
+        end,
+        node_index,
+        span: Some(span),
+    });
+    proof.output_cursor = end;
+    Ok(())
+}
+
+fn add_declared_count(
+    proof: &mut ExactOutputCoverage,
+    count: usize,
+    context: &'static str,
+    node_index: usize,
+    span: Option<Span>,
+) -> Result<(), SolveProblemShapeContractError> {
+    proof.declared_count = proof
+        .declared_count
+        .checked_add(count)
+        .ok_or_else(|| output_index_overflow(context, node_index, span))?;
+    Ok(())
+}
+
+fn validate_exact_coverage(
+    mut proof: ExactOutputCoverage,
+    context: &'static str,
+    expected_count: usize,
+    terminal_node_index: usize,
+) -> Result<(), SolveProblemShapeContractError> {
+    validate_count(context, expected_count, proof.declared_count)?;
+    proof
+        .spans
+        .sort_unstable_by_key(|entry| (entry.start, entry.end));
+    let mut next = 0usize;
+    for entry in proof.spans {
+        next = validate_coverage_span(entry, next, context, expected_count)?;
+    }
+    if next == expected_count {
+        return Ok(());
+    }
+    Err(SolveProblemShapeContractError::DerivativeOutputCoverage {
+        context,
+        node_index: terminal_node_index,
+        kind: DerivativeOutputCoverageKind::Hole,
+        index: next,
+        span: None,
+    })
+}
+
+fn validate_coverage_span(
+    entry: OutputCoverageSpan,
+    next: usize,
+    context: &'static str,
+    expected_count: usize,
+) -> Result<usize, SolveProblemShapeContractError> {
+    if entry.end > expected_count {
+        return Err(SolveProblemShapeContractError::SolverIndexOutOfBounds {
+            context,
+            index: entry.end - 1,
+            upper_bound: expected_count,
+            span: entry.span,
+        });
+    }
+    let kind = if entry.start < next {
+        Some(DerivativeOutputCoverageKind::Overlap)
+    } else if entry.start > next {
+        Some(DerivativeOutputCoverageKind::Hole)
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        return Err(SolveProblemShapeContractError::DerivativeOutputCoverage {
+            context,
+            node_index: entry.node_index,
+            kind,
+            index: entry.start.min(next),
+            span: entry.span,
+        });
+    }
+    Ok(entry.end)
+}
+
 fn tensor_output_count_for_node(
     context: &'static str,
     node_index: usize,
@@ -608,7 +905,24 @@ fn append_tensor_output_indices(
             context.span,
         )
     })?;
-    outputs.extend(indices);
+    append_unique_output_indices(outputs, indices, context.context, Some(context.span))
+}
+
+fn append_unique_output_indices(
+    outputs: &mut BTreeSet<usize>,
+    indices: impl IntoIterator<Item = usize>,
+    context: &'static str,
+    span: Option<Span>,
+) -> Result<(), SolveProblemShapeContractError> {
+    for index in indices {
+        if !outputs.insert(index) {
+            return Err(SolveProblemShapeContractError::DuplicateIndex {
+                context,
+                index,
+                span,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -651,6 +965,15 @@ fn tensor_output_map_error(
         }
         TensorOutputMapError::OutputIndexOverflow => {
             output_index_overflow(context, node_index, Some(span))
+        }
+        TensorOutputMapError::NonInjective => {
+            SolveProblemShapeContractError::DerivativeOutputCoverage {
+                context: "compute_block.derivative_output_coverage",
+                node_index,
+                kind: DerivativeOutputCoverageKind::NonInjective,
+                index: 0,
+                span: Some(span),
+            }
         }
     }
 }
@@ -933,6 +1256,66 @@ fn validate_affine_load_index_ranges(
     validation: &AffineValidationContext<'_>,
     load_strides: &[AffineStencilLoadStride],
 ) -> Result<(), SolveProblemShapeContractError> {
+    derive_affine_load_index_ranges(validation, load_strides).map(|_| ())
+}
+
+pub(crate) struct AffineLoadIndexRanges {
+    pub(crate) empty_domain: bool,
+    pub(crate) by_op: Box<[Option<(usize, usize)>]>,
+}
+
+pub(crate) fn affine_load_index_ranges_for_node(
+    node: &ComputeNode,
+    context: &str,
+    node_index: usize,
+) -> Result<Option<AffineLoadIndexRanges>, SolveProblemShapeContractError> {
+    let (node_kind, dimension, domain, base_ops, load_strides, span) = match node {
+        ComputeNode::Map {
+            domain,
+            base_ops,
+            load_strides,
+            span,
+            ..
+        } => (
+            AffineTensorNodeKind::Map,
+            "Map",
+            domain,
+            base_ops.as_slice(),
+            load_strides.as_slice(),
+            *span,
+        ),
+        ComputeNode::AffineStencil {
+            domain,
+            base_ops,
+            load_strides,
+            span,
+            ..
+        } => (
+            AffineTensorNodeKind::AffineStencil,
+            "AffineStencil",
+            domain,
+            base_ops.as_slice(),
+            load_strides.as_slice(),
+            *span,
+        ),
+        _ => return Ok(None),
+    };
+    let validation = AffineValidationContext {
+        context,
+        node_index,
+        node_kind,
+        dimension,
+        domain,
+        base_ops,
+        span,
+    };
+    derive_affine_load_index_ranges(&validation, load_strides).map(Some)
+}
+
+fn derive_affine_load_index_ranges(
+    validation: &AffineValidationContext<'_>,
+    load_strides: &[AffineStencilLoadStride],
+) -> Result<AffineLoadIndexRanges, SolveProblemShapeContractError> {
     let extents = validation.domain.extents().map_err(|error| {
         SolveProblemShapeContractError::StructuredIndexDomain {
             context: validation.context.to_string(),
@@ -963,6 +1346,13 @@ fn validate_affine_load_index_ranges(
             })?;
         }
     }
+    if extents.contains(&0) {
+        return Ok(AffineLoadIndexRanges {
+            empty_domain: true,
+            by_op: vec![None; validation.base_ops.len()].into_boxed_slice(),
+        });
+    }
+    let mut bounds_by_op = vec![None; validation.base_ops.len()];
     for (op_position, strides) in by_op.into_iter().enumerate() {
         let Some(strides) = strides else {
             continue;
@@ -994,15 +1384,19 @@ fn validate_affine_load_index_ranges(
                 span: validation.span,
             });
         }
+        bounds_by_op[op_position] = Some((minimum as usize, maximum as usize));
     }
-    Ok(())
+    Ok(AffineLoadIndexRanges {
+        empty_domain: false,
+        by_op: bounds_by_op.into_boxed_slice(),
+    })
 }
 
 fn affine_index_bounds(base: usize, strides: &[i128], extents: &[usize]) -> Option<(i128, i128)> {
     let mut minimum = i128::try_from(base).ok()?;
     let mut maximum = minimum;
     for (&stride, &extent) in strides.iter().zip(extents) {
-        let last = i128::try_from(extent.saturating_sub(1)).ok()?;
+        let last = i128::try_from(extent.checked_sub(1)?).ok()?;
         let offset = last.checked_mul(stride)?;
         if offset < 0 {
             minimum = minimum.checked_add(offset)?;

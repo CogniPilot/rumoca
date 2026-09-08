@@ -34,7 +34,8 @@ end Test;
 "#;
     let tree = resolve_parsed_tree_source(source)
         .unwrap_or_else(|diagnostics| panic!("resolution failed: {diagnostics:#?}"))
-        .into_inner();
+        .inner()
+        .clone();
     let class_id = tree
         .definitions
         .classes
@@ -65,7 +66,7 @@ for i in 1:n loop
 end for;
 end Test;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -93,7 +94,7 @@ for i in 1:n loop
 end for;
 end Test;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -121,7 +122,7 @@ while n > 0 loop
 end while;
 end Test;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
     let model = tree
         .definitions
         .classes
@@ -149,7 +150,7 @@ end TestPkg;
     let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
-    let tree = result.unwrap().into_inner();
+    let tree = result.unwrap().inner().clone();
     let pkg = tree
         .definitions
         .classes

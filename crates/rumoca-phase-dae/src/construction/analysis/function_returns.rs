@@ -9,7 +9,10 @@ pub(super) fn validate_guarded_function_return(
         return Ok(None);
     }
     let Some((first, tail)) = function.body.split_first() else {
-        unreachable!("a function containing return has a statement")
+        return Err(function_statement_product_error(
+            "return analysis lost the function's source statement",
+            function.span,
+        ));
     };
     let rumoca_core::Statement::If {
         cond_blocks,
@@ -55,13 +58,17 @@ pub(super) fn validate_guarded_function_return(
         let mut branch_definitions = FunctionDefinitions::new(function);
         let plans = validate_function_statements(statements, context, &mut branch_definitions)?;
         validate_return_definitions(function, statements, &plans, &targets, *span)?;
-        branches.push(plans);
+        branches.push(issue_function_statement_sequence(
+            statements.to_vec(),
+            plans,
+            *span,
+        )?);
     }
     let mut definitions = FunctionDefinitions::new(function);
-    let tail = validate_function_statements(tail, context, &mut definitions)?;
+    let tail_plans = validate_function_statements(tail, context, &mut definitions)?;
     if targets
         .iter()
-        .any(|target| !sequence_defines_target(&tail, target))
+        .any(|target| !sequence_defines_target(&tail_plans, target))
     {
         return Err(ToDaeError::unsupported_flat(
             "function return",
@@ -72,10 +79,13 @@ pub(super) fn validate_guarded_function_return(
             *span,
         ));
     }
+    let tail = issue_function_statement_sequence(tail.to_vec(), tail_plans, *span)?;
     Ok(Some(FunctionPlan::GuardedReturn {
+        conditions: cond_blocks.iter().map(|block| block.cond.clone()).collect(),
         branches,
         tail,
         targets,
+        span: *span,
     }))
 }
 
@@ -107,7 +117,7 @@ pub(super) fn normalize_function_returns(
     let mut active: Option<Expression> = None;
     for statement in statements {
         if let Some((cond_blocks, span)) = guarded_return(statement) {
-            let return_condition = disjoin_conditions(cond_blocks, span);
+            let return_condition = disjoin_conditions(cond_blocks, span)?;
             let guard_span = cond_blocks
                 .iter()
                 .filter_map(|block| block.stmts.last())
@@ -134,7 +144,7 @@ pub(super) fn normalize_function_returns(
             let guarded_blocks = cond_blocks
                 .iter()
                 .filter_map(|block| {
-                    let statements = &block.stmts[..block.stmts.len() - 1];
+                    let (_, statements) = block.stmts.split_last()?;
                     (!statements.is_empty()).then(|| rumoca_core::StatementBlock {
                         cond: active.as_ref().map_or_else(
                             || block.cond.clone(),
@@ -173,25 +183,23 @@ pub(super) fn normalize_function_returns(
                 span,
             ));
         }
-        if let Some(expanded) = snapshot_loop_conditional(statement, active.as_ref(), &mut guards) {
+        if let Some(expanded) = snapshot_loop_conditional(statement, active.as_ref(), &mut guards)?
+        {
             normalized.extend(expanded);
             continue;
         }
-        normalized.push(active.as_ref().map_or_else(
-            || statement.clone(),
-            |active| {
-                rumoca_core::Statement::If {
-                    cond_blocks: vec![rumoca_core::StatementBlock {
-                        cond: active.clone(),
-                        stmts: vec![statement.clone()],
-                    }],
-                    else_block: None,
-                    span: statement
-                        .source_span()
-                        .expect("return normalization preserves statement provenance"),
-                }
+        let normalized_statement = match active.as_ref() {
+            None => statement.clone(),
+            Some(active) => rumoca_core::Statement::If {
+                cond_blocks: vec![rumoca_core::StatementBlock {
+                    cond: active.clone(),
+                    stmts: vec![statement.clone()],
+                }],
+                else_block: None,
+                span: required_statement_span(statement, "return normalization")?,
             },
-        ));
+        };
+        normalized.push(normalized_statement);
     }
     Ok(NormalizedFunctionReturns {
         statements: normalized,
@@ -204,30 +212,33 @@ fn snapshot_loop_conditional(
     statement: &rumoca_core::Statement,
     active: Option<&Expression>,
     guards: &mut Vec<GeneratedBooleanDefinition>,
-) -> Option<Vec<rumoca_core::Statement>> {
+) -> Result<Option<Vec<rumoca_core::Statement>>, ToDaeError> {
     let rumoca_core::Statement::If {
         cond_blocks,
         else_block,
         span,
     } = statement
     else {
-        return None;
+        return Ok(None);
     };
     if !cond_blocks
         .iter()
         .any(|block| statements_contain_loop(&block.stmts))
         && !else_block.as_deref().is_some_and(statements_contain_loop)
     {
-        return None;
+        return Ok(None);
     }
     let mut expanded = Vec::new();
-    let mut remaining = active.cloned().unwrap_or(Expression::Literal {
-        value: Literal::Boolean(true),
-        span: *span,
-    });
+    let mut remaining = match active {
+        Some(active) => active.clone(),
+        None => Expression::Literal {
+            value: Literal::Boolean(true),
+            span: *span,
+        },
+    };
     let mut branch_guards = Vec::with_capacity(cond_blocks.len());
     for block in cond_blocks {
-        let guard_span = expression_span(&block.cond).ok()?;
+        let guard_span = expression_span(&block.cond)?;
         let target = rumoca_core::function_branch_guard_name(guard_span.start.0);
         let value = Expression::If {
             branches: vec![(remaining.clone(), block.cond.clone())],
@@ -259,22 +270,30 @@ fn snapshot_loop_conditional(
         );
         branch_guards.push(guard);
     }
-    for (block, guard) in cond_blocks.iter().zip(branch_guards) {
-        expanded.extend(
-            block
-                .stmts
-                .iter()
-                .map(|statement| guarded_statement(statement, guard.clone())),
-        );
+    let mut blocks = cond_blocks.iter();
+    let mut branch_guards = branch_guards.into_iter();
+    loop {
+        match (blocks.next(), branch_guards.next()) {
+            (Some(block), Some(guard)) => {
+                for statement in &block.stmts {
+                    expanded.push(guarded_statement(statement, guard.clone())?);
+                }
+            }
+            (None, None) => break,
+            _ => {
+                return Err(function_statement_product_error(
+                    "return snapshot lost an exact conditional branch",
+                    *span,
+                ));
+            }
+        }
     }
     if let Some(fallback) = else_block {
-        expanded.extend(
-            fallback
-                .iter()
-                .map(|statement| guarded_statement(statement, remaining.clone())),
-        );
+        for statement in fallback {
+            expanded.push(guarded_statement(statement, remaining.clone())?);
+        }
     }
-    Some(expanded)
+    Ok(Some(expanded))
 }
 
 fn statements_contain_loop(statements: &[rumoca_core::Statement]) -> bool {
@@ -297,17 +316,15 @@ fn statements_contain_loop(statements: &[rumoca_core::Statement]) -> bool {
 fn guarded_statement(
     statement: &rumoca_core::Statement,
     condition: Expression,
-) -> rumoca_core::Statement {
-    rumoca_core::Statement::If {
+) -> Result<rumoca_core::Statement, ToDaeError> {
+    Ok(rumoca_core::Statement::If {
         cond_blocks: vec![rumoca_core::StatementBlock {
             cond: condition,
             stmts: vec![statement.clone()],
         }],
         else_block: None,
-        span: statement
-            .source_span()
-            .expect("conditional snapshot preserves statement provenance"),
-    }
+        span: required_statement_span(statement, "conditional return snapshot")?,
+    })
 }
 
 pub(super) fn certify_nonleading_return_branches(
@@ -324,12 +341,13 @@ pub(super) fn certify_nonleading_return_branches(
             continue;
         };
         for block in blocks {
-            let (rumoca_core::Statement::Return { span }, statements) = block
-                .stmts
-                .split_last()
-                .expect("a guarded return branch has a return")
+            let Some((rumoca_core::Statement::Return { span }, statements)) =
+                block.stmts.split_last()
             else {
-                unreachable!("guarded_return checks the last statement")
+                return Err(function_statement_product_error(
+                    "guarded return branch lost its terminal return",
+                    function.span,
+                ));
             };
             let mut definitions = FunctionDefinitions::new(function);
             let plans = validate_function_statements(statements, context, &mut definitions)?;
@@ -368,7 +386,10 @@ fn guarded_return(
     .then_some((cond_blocks, *span))
 }
 
-fn disjoin_conditions(blocks: &[rumoca_core::StatementBlock], span: Span) -> Expression {
+fn disjoin_conditions(
+    blocks: &[rumoca_core::StatementBlock],
+    span: Span,
+) -> Result<Expression, ToDaeError> {
     blocks
         .iter()
         .map(|block| block.cond.clone())
@@ -378,7 +399,7 @@ fn disjoin_conditions(blocks: &[rumoca_core::StatementBlock], span: Span) -> Exp
             rhs: Box::new(right),
             span,
         })
-        .expect("a guarded return has at least one condition")
+        .ok_or_else(|| function_statement_product_error("guarded return has no condition", span))
 }
 
 fn and_condition(left: Expression, right: Expression, span: Span) -> Expression {
@@ -404,7 +425,19 @@ fn validate_return_definitions(
         .chain(&function.locals)
         .map(|value| VarName::new(&value.name))
         .collect::<HashSet<_>>();
-    for (statement, plan) in statements.iter().zip(plans) {
+    let mut statements = statements.iter();
+    let mut plans = plans.iter();
+    loop {
+        let (statement, plan) = match (statements.next(), plans.next()) {
+            (Some(statement), Some(plan)) => (statement, plan),
+            (None, None) => break,
+            _ => {
+                return Err(function_statement_product_error(
+                    "return definedness received a mismatched source sequence",
+                    span,
+                ));
+            }
+        };
         let statement_span =
             required_statement_span(statement, "guarded function return definition")?;
         let (values, assignments): (Vec<&Expression>, Vec<&FunctionAssignmentPlan>) =
@@ -471,7 +504,9 @@ fn sequence_defines_target(plans: &[FunctionStatementPlan], target: &VarName) ->
         FunctionStatementPlan::Assignment(assignment) if assignment.is_whole() => {
             assignment.target() == target
         }
-        FunctionStatementPlan::If { targets, .. } => targets.contains(target),
+        FunctionStatementPlan::If { targets, .. } => {
+            targets.iter().any(|candidate| candidate.name == *target)
+        }
         // A proven branch runs unconditionally, so it defines exactly what its
         // own statement sequence defines.
         FunctionStatementPlan::ProvenBranch { statements, .. } => {

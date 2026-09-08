@@ -1,17 +1,17 @@
 # Code Generation Engine
 
-`rumoca-phase-codegen` renders text from IRs through Jinja templates. A
-*target* is a directory: a `target.toml` manifest plus templates. Built-in
-targets are bundled into the binary; users can supply their own directory
-or a raw template (see the user guide's
+`rumoca-phase-codegen` renders text from checked IR views through Jinja
+templates. A *target* is a directory: a `target.toml` manifest plus templates.
+Built-in targets are bundled into the binary; users can supply their own
+manifest directory (see the user guide's
 [Custom Targets](https://cognipilot.github.io/rumoca/user-guide/codegen/custom-targets.html)
 chapter for the user-facing workflow).
 
 ## Ownership Rules
 
-- **The target owns its IR choice.** A manifest declares which stage it
-  consumes (`ast`/`flat`/`dae`/`solve`); individual templates may not
-  silently switch IRs. Targets consume the lowest IR they need — no lower.
+- **The manifest owns every checked input.** Each file declares its exact IR
+  context and checked semantic view; individual templates cannot switch IRs or
+  artifact kinds. Targets consume the lowest IR they need — no lower.
 - **The engine renders; it does not decide semantics.** Scalarization,
   structural analysis, and lowering happen in compiler phases; templates
   receive prepared data.

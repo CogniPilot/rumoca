@@ -122,14 +122,55 @@ fn read_shard_json(shard_dir: &Path, file_name: &str) -> Result<Value, String> {
     serde_json::from_str(&raw).map_err(|e| format!("merge-shards: invalid {}: {e}", file.display()))
 }
 
-fn load_shard_json_payloads(shard_dirs: &[PathBuf], file_name: &str) -> Result<Vec<Value>, String> {
-    let mut payloads = Vec::with_capacity(shard_dirs.len());
+/// The per-shard parity inputs a merge consumes, each vector in shard order:
+/// the OMC reference payloads, the trace comparison payloads, and the
+/// validated trace reports that witness them.
+struct ValidatedShardParity {
+    omc_payloads: Vec<Value>,
+    trace_payloads: Vec<Value>,
+    witnesses: Vec<rumoca_test_msl::msl_tools::omc_simulation_reference::ValidatedTraceReport>,
+}
+
+fn load_validated_shard_parity(shard_dirs: &[PathBuf]) -> Result<ValidatedShardParity, String> {
+    let mut omc_payloads = Vec::with_capacity(shard_dirs.len());
+    let mut trace_payloads = Vec::with_capacity(shard_dirs.len());
+    let mut witnesses = Vec::with_capacity(shard_dirs.len());
     for shard_dir in shard_dirs {
-        let payload = read_shard_json(shard_dir, file_name)?;
-        println!("Loaded {}", shard_dir.join(file_name).display());
-        payloads.push(payload);
+        let omc_file = shard_dir.join(SHARD_OMC_REFERENCE_FILE);
+        let trace_file = shard_dir.join(SHARD_TRACE_COMPARISON_FILE);
+        let omc_bytes = fs::read(&omc_file).map_err(|error| {
+            format!("merge-shards: cannot read {}: {error}", omc_file.display())
+        })?;
+        let trace_bytes = fs::read(&trace_file).map_err(|error| {
+            format!(
+                "merge-shards: cannot read {}: {error}",
+                trace_file.display()
+            )
+        })?;
+        let paths =
+            rumoca_test_msl::msl_tools::common::MslPaths::current().with_results_dir(shard_dir);
+        let witness = rumoca_test_msl::msl_tools::omc_simulation_reference::validate_trace_report_against_sources(
+            &paths,
+            &trace_bytes,
+            &omc_bytes,
+        )
+        .map_err(|error| {
+            format!(
+                "merge-shards: source validation failed for {}: {error:#}",
+                trace_file.display()
+            )
+        })?;
+        let omc = serde_json::from_slice(&omc_bytes)
+            .map_err(|error| format!("merge-shards: invalid {}: {error}", omc_file.display()))?;
+        trace_payloads.push(witness.payload().clone());
+        omc_payloads.push(omc);
+        witnesses.push(witness);
     }
-    Ok(payloads)
+    Ok(ValidatedShardParity {
+        omc_payloads,
+        trace_payloads,
+        witnesses,
+    })
 }
 
 fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -627,6 +668,7 @@ struct MergedTraceCounts {
     policy_excluded: usize,
     trace_nonidentifiable: usize,
     high: usize,
+    strict_high: usize,
     minor: usize,
     deviation: usize,
     total_channels: usize,
@@ -687,6 +729,11 @@ fn collect_flat_trace_counts(trace_values: &[&Value]) -> Result<MergedTraceCount
             &["agreement_high"],
             "trace_comparison.agreement_high",
         )?,
+        strict_high: sum_required_usize(
+            trace_values,
+            &["strict_high_models"],
+            "trace_comparison.strict_high_models",
+        )?,
         minor: trace_minor_count(trace_values)?,
         deviation: sum_required_usize(
             trace_values,
@@ -733,8 +780,8 @@ fn trace_minor_count(trace_values: &[&Value]) -> Result<usize, String> {
     .or_else(|_| {
         sum_required_usize(
             trace_values,
-            &["agreement_near"],
-            "trace_comparison.agreement_near",
+            &["agreement_minor"],
+            "trace_comparison.agreement_minor",
         )
     })
 }
@@ -754,10 +801,11 @@ fn build_base_flat_trace_summary(
         "policy_excluded_models": counts.policy_excluded,
         "trace_nonidentifiable_models": counts.trace_nonidentifiable,
         "agreement_high": counts.high,
+        "strict_high_models": counts.strict_high,
         "agreement_high_percent": percent(counts.high, counts.models_compared),
-        "agreement_near": counts.minor,
         "agreement_minor": counts.minor,
-        "agreement_near_percent": percent(counts.minor, counts.models_compared),
+        "agreement_minor": counts.minor,
+        "agreement_minor_percent": percent(counts.minor, counts.models_compared),
         "agreement_minor_percent": percent(counts.minor, counts.models_compared),
         "agreement_deviation": counts.deviation,
         "agreement_deviation_percent": percent(counts.deviation, counts.models_compared),
@@ -926,6 +974,11 @@ fn merge_trace_comparison_payloads(
     let missing_trace =
         merge_optional_object_maps(trace_payloads, &["missing_trace"], "missing_trace")?;
     let skipped = merge_optional_object_maps(trace_payloads, &["skipped"], "skipped")?;
+    let trace_nonidentifiable = merge_optional_object_maps(
+        trace_payloads,
+        &["trace_nonidentifiable"],
+        "trace_nonidentifiable",
+    )?;
     let mut payload = trace_payloads
         .first()
         .cloned()
@@ -936,6 +989,10 @@ fn merge_trace_comparison_payloads(
     root.insert("models".to_string(), Value::Object(trace_models.clone()));
     root.insert("missing_trace".to_string(), Value::Object(missing_trace));
     root.insert("skipped".to_string(), Value::Object(skipped));
+    root.insert(
+        "trace_nonidentifiable".to_string(),
+        Value::Object(trace_nonidentifiable),
+    );
     root.insert(
         "models_compared".to_string(),
         json!(trace_summary_usize(summary, "models_compared")),
@@ -955,6 +1012,10 @@ fn merge_trace_comparison_payloads(
     root.insert(
         "trace_nonidentifiable_models".to_string(),
         json!(trace_summary_usize(summary, "trace_nonidentifiable_models")),
+    );
+    root.insert(
+        "strict_high_models".to_string(),
+        json!(trace_summary_usize(summary, "strict_high_models")),
     );
     root.insert(
         "agreement_bands".to_string(),
@@ -1087,20 +1148,28 @@ fn merge_omc_reference_payloads(
     Ok(payload)
 }
 
-fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<(), String> {
+fn write_pretty_json_file(path: &Path, payload: &Value) -> Result<Vec<u8>, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("merge-shards: cannot create {}: {e}", parent.display()))?;
     }
     let json = serde_json::to_string_pretty(payload)
         .map_err(|e| format!("merge-shards: cannot serialize {}: {e}", path.display()))?;
-    fs::write(path, json).map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))
+    fs::write(path, json.as_bytes())
+        .map_err(|e| format!("merge-shards: cannot write {}: {e}", path.display()))?;
+    Ok(json.into_bytes())
 }
 
-fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), String> {
+fn merge_shard_parity_artifacts(
+    dir: &Path,
+    results_dir: &Path,
+) -> Result<CurrentRunTraceComparison, String> {
     let shard_dirs = list_shard_dirs(dir)?;
-    let omc_payloads = load_shard_json_payloads(&shard_dirs, SHARD_OMC_REFERENCE_FILE)?;
-    let trace_payloads = load_shard_json_payloads(&shard_dirs, SHARD_TRACE_COMPARISON_FILE)?;
+    let ValidatedShardParity {
+        omc_payloads,
+        trace_payloads,
+        witnesses,
+    } = load_validated_shard_parity(&shard_dirs)?;
     let omc_models = merge_required_object_maps(&omc_payloads, &["models"], "OMC model")?;
     let trace_models = merge_required_object_maps(&trace_payloads, &["models"], "trace model")?;
     let trace_summary = build_flat_trace_summary(&omc_payloads, &trace_models)?;
@@ -1108,8 +1177,9 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
         merge_trace_comparison_payloads(&trace_payloads, trace_models, &trace_summary)?;
     let merged_omc = merge_omc_reference_payloads(&omc_payloads, omc_models, &trace_summary)?;
 
-    write_pretty_json_file(&results_dir.join(SHARD_OMC_REFERENCE_FILE), &merged_omc)?;
-    write_pretty_json_file(
+    let omc_bytes =
+        write_pretty_json_file(&results_dir.join(SHARD_OMC_REFERENCE_FILE), &merged_omc)?;
+    let trace_bytes = write_pretty_json_file(
         &results_dir.join(SHARD_TRACE_COMPARISON_FILE),
         &merged_trace,
     )?;
@@ -1117,7 +1187,7 @@ fn merge_shard_parity_artifacts(dir: &Path, results_dir: &Path) -> Result<(), St
         "Merged shard parity artifacts into {}",
         results_dir.display()
     );
-    Ok(())
+    merged_trace_comparison_receipt(results_dir, &trace_bytes, &omc_bytes, &witnesses)
 }
 
 /// Fan-in entry: load the shard partials, merge them, and run the real quality
@@ -1143,14 +1213,18 @@ fn test_msl_merge_and_gate() {
     // Reuse the un-sharded write + validate + snapshot + gate sequence.
     write_msl_results(&merged).expect("write merged msl_results.json + reports");
     // The comparator ran per shard; this job's comparator stage is the merge of
-    // those bands. `MergedShardArtifacts` says so, so the gate reads the merged
-    // reference instead of reporting "the stage never executed" — and a merge
-    // that produced no readable reference still lands as "parity unmeasured".
-    let parity_stage = MslParityStageOutcome::MergedShardArtifacts;
-    merge_shard_parity_artifacts(&dir, &msl_results_dir())
+    // those bands. The opaque receipt carries this invocation's merged payload,
+    // so later reports cannot rediscover a stale file by name.
+    let trace_comparison = merge_shard_parity_artifacts(&dir, &msl_results_dir())
         .expect("write merged OMC parity artifacts");
-    write_msl_package_trace_accuracy_report(&merged)
-        .expect("write merged package trace accuracy report");
+    let parity_stage = MslParityStageOutcome::MergedShardArtifacts(trace_comparison);
+    write_msl_package_trace_accuracy_report(
+        &merged,
+        parity_stage
+            .trace_comparison()
+            .expect("merged stage owns its trace-comparison receipt"),
+    )
+    .expect("write merged package trace accuracy report");
     assert_msl_run_is_measurable(&merged);
     if merged.sim_attempted > 0 {
         write_current_msl_quality_snapshot(&merged, &parity_stage)
@@ -1292,6 +1366,7 @@ fn shard_flat_trace_summary_fixture() -> Value {
         "policy_excluded_models": 0,
         "trace_nonidentifiable_models": 0,
         "agreement_high": 1,
+        "strict_high_models": 1,
         "agreement_minor": 0,
         "agreement_deviation": 0,
         "total_channels_compared": 2,
@@ -1325,14 +1400,24 @@ fn collect_flat_trace_counts_sums_typed_boundaries() {
 fn shard_omc_model_fixture() -> Value {
     json!({
         "status": "success",
+        "error": null,
         "sim_system_seconds": 2.0,
         "total_system_seconds": 5.0,
         "omc_wall_seconds": 3.0,
+        "result_file": null,
+        "trace_file": "sim_traces/omc/trace.json",
+        "trace_error": null,
         "rumoca_status": "sim_ok",
+        "rumoca_ic_status": "ic_ok",
+        "rumoca_ic_error": null,
+        "rumoca_ic_seconds": 0.0,
         "rumoca_sim_seconds": 1.0,
         "rumoca_sim_run_seconds": 1.0,
         "rumoca_sim_build_seconds": 0.5,
-        "rumoca_sim_wall_seconds": 1.5
+        "rumoca_sim_wall_seconds": 1.5,
+        "rumoca_trace_file": "sim_traces/rumoca/trace.json",
+        "rumoca_trace_error": null,
+        "failed_attempts": 0
     })
 }
 
@@ -1356,40 +1441,39 @@ fn shard_omc_reference_fixture(model: &str) -> Value {
 }
 
 fn shard_trace_model_fixture(model: &str) -> Value {
+    let trace: rumoca_sim::sim_trace_compare::SimTrace =
+        serde_json::from_value(shard_source_trace_fixture(model))
+            .expect("parse source trace fixture");
+    let metric = rumoca_sim::sim_trace_compare::compare_model_traces(model, &trace, &trace)
+        .expect("compare source trace fixture");
+    let mut payload = serde_json::to_value(metric)
+        .expect("serialize source-bound metric")
+        .as_object()
+        .cloned()
+        .expect("metric object");
+    for (key, value) in [
+        ("state_selection", Value::Null),
+        ("rumoca_sim_wall_seconds", json!(1.5)),
+        ("rumoca_sim_seconds", json!(1.0)),
+        ("rumoca_sim_build_seconds", json!(0.5)),
+        ("rumoca_sim_run_seconds", json!(1.0)),
+        ("omc_sim_system_seconds", json!(2.0)),
+        ("omc_total_system_seconds", json!(5.0)),
+        ("omc_wall_seconds", json!(3.0)),
+    ] {
+        payload.insert(key.to_string(), value);
+    }
+    Value::Object(payload)
+}
+
+fn shard_source_trace_fixture(model: &str) -> Value {
     json!({
         "model_name": model,
-        "compared_variables": 2,
-        "samples_compared": 10,
-        "bounded_normalized_l1_score": 0.0,
-        "mean_channel_bounded_normalized_l1": 0.0,
-        "max_channel_bounded_normalized_l1": 0.0,
-        "channel_high_count": 2,
-        "channel_minor_count": 0,
-        "channel_deviation_count": 0,
-        "channel_severe_count": 0,
-        "channel_high_percent": 1.0,
-        "channel_minor_percent": 0.0,
-        "channel_deviation_percent": 0.0,
-        "channel_severe_percent": 0.0,
-        "channel_violation_mass": 0.0,
-        "initial_condition": {
-            "channels_compared": 1,
-            "high_count": 1,
-            "minor_count": 0,
-            "deviation_count": 0,
-            "severe_count": 0,
-            "violation_mass_total": 0.0,
-            "mean_channel_bounded_normalized_error": 0.0,
-            "max_channel_bounded_normalized_error": 0.0
-        },
-        "worst_variables": [],
-        "rumoca_sim_wall_seconds": 1.5,
-        "rumoca_sim_seconds": 1.0,
-        "rumoca_sim_build_seconds": 0.5,
-        "rumoca_sim_run_seconds": 1.0,
-        "omc_sim_system_seconds": 2.0,
-        "omc_total_system_seconds": 5.0,
-        "omc_wall_seconds": 3.0
+        "times": [0.0, 1.0],
+        "names": ["channel-00000000", "channel-00000001"],
+        "data": [[0.0, 1.0], [1.0, 2.0]],
+        "variable_meta": null,
+        "certification_profile": null
     })
 }
 
@@ -1397,13 +1481,24 @@ fn shard_trace_comparison_fixture(model: &str) -> Value {
     json!({
         "models": { model: shard_trace_model_fixture(model) },
         "missing_trace": {},
-        "skipped": {}
+        "skipped": {},
+        "trace_nonidentifiable": {}
     })
 }
 
 fn write_shard_fixture(dir: &Path, shard: usize, model: &str) {
     let shard_dir = dir.join(format!("shard-{shard}"));
     fs::create_dir_all(&shard_dir).expect("create shard dir");
+    fs::create_dir_all(shard_dir.join("sim_traces/omc")).expect("create OMC trace dir");
+    fs::create_dir_all(shard_dir.join("sim_traces/rumoca")).expect("create Rumoca trace dir");
+    write_json_fixture(
+        &shard_dir.join("sim_traces/omc/trace.json"),
+        &shard_source_trace_fixture(model),
+    );
+    write_json_fixture(
+        &shard_dir.join("sim_traces/rumoca/trace.json"),
+        &shard_source_trace_fixture(model),
+    );
     write_json_fixture(
         &shard_dir.join("msl_results.json"),
         &serde_json::to_value(shard_summary(model)).expect("serialize summary"),
@@ -1426,7 +1521,8 @@ fn merge_shard_parity_artifacts_writes_full_omc_and_trace_inputs() {
     write_shard_fixture(&shard_root, 1, "Modelica.Blocks.Examples.A");
     write_shard_fixture(&shard_root, 2, "Modelica.Blocks.Examples.B");
 
-    merge_shard_parity_artifacts(&shard_root, &results_dir).expect("merge parity artifacts");
+    let receipt =
+        merge_shard_parity_artifacts(&shard_root, &results_dir).expect("merge parity artifacts");
 
     let omc = read_shard_json(&results_dir, SHARD_OMC_REFERENCE_FILE).expect("read merged OMC");
     let trace =
@@ -1453,6 +1549,15 @@ fn merge_shard_parity_artifacts_writes_full_omc_and_trace_inputs() {
         Some(2)
     );
     assert_eq!(json_usize(&trace, &["models_compared"]), Some(2));
+    assert_eq!(
+        receipt
+            .payload()
+            .get("models")
+            .and_then(Value::as_object)
+            .map(serde_json::Map::len),
+        Some(2),
+        "the merge returns the exact in-memory payload used by downstream reports"
+    );
     for field in ["policy_excluded_models", "trace_nonidentifiable_models"] {
         assert_eq!(
             json_usize(&omc, &["trace_comparison", field]),

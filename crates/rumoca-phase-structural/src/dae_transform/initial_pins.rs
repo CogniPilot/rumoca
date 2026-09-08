@@ -556,7 +556,7 @@ fn aggregate_pins(view: dae::DaeView<'_>) -> Vec<InitialValuePin> {
         if target.scalar_count() != variable.scalar_count() {
             continue;
         }
-        let role = if target.fixed() == Some(true) || definitions.contains(&state) {
+        let role = if target.fixed() == rumoca_core::Fixity::Fixed || definitions.contains(&state) {
             InitialValueRole::Check
         } else {
             definitions.push(state);
@@ -950,7 +950,7 @@ impl ValueClosure {
 /// with `fixed = false` is an unknown of the initialization system rather than
 /// a stated value.
 fn carries_a_stated_initial_value(variable: dae::VariableView<'_>) -> bool {
-    variable.fixed() == Some(true)
+    variable.fixed() == rumoca_core::Fixity::Fixed
         && variable.value_type().scalar_type() == dae::ScalarType::Real
         && matches!(
             variable.role(),

@@ -100,7 +100,7 @@ fn project_expression_selection(
         &ast::ModificationEnvironment::default(),
         effective_components,
         tree,
-    );
+    )?;
     let is_declared_vector = matches!(
         expr,
         ast::Expression::ComponentReference(reference)
@@ -180,11 +180,20 @@ pub(super) fn project_array_selection_for_element(
             ast::Subscript::Expression(ast::Expression::Range { .. }) => projected.push(
                 project_range_selection(&eval_ctx, subscript, result_index.next())?,
             ),
-            ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+            ast::Subscript::Range { .. } => {
                 projected.push(result_index.next().map_or_else(
                     || subscript.clone(),
                     |index| generated_integer_subscript(index, span),
                 ));
+            }
+            ast::Subscript::Empty => {
+                return Err(InstantiateError::array_dim_mismatch(
+                    "array modifier selection".to_string(),
+                    "a source range, colon, or value subscript".to_string(),
+                    "Subscript::Empty parser-recovery node".to_string(),
+                    span,
+                )
+                .into());
             }
             ast::Subscript::Expression(expr) => projected.push(project_expression_selection(
                 tree,

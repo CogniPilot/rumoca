@@ -7,6 +7,25 @@
 
 use super::*;
 
+fn local_source_variable_attributes<'dae>() -> dae::VariableAttributes<'dae> {
+    dae::VariableAttributes {
+        component_ref: None,
+        binding: None,
+        start: None,
+        fixed: None,
+        min: None,
+        max: None,
+        nominal: None,
+        unit: None,
+        state_select: rumoca_core::StateSelect::Default,
+        description: None,
+        causality: dae::VariableCausality::Local,
+        is_tunable: false,
+        is_held: false,
+        origin: dae::VariableOrigin::Source,
+    }
+}
+
 #[test]
 fn causal_event_held_algebraic_owns_typed_solve_time_domain() {
     let source = TestSource::new("Real x; equation x = 1;");
@@ -23,6 +42,7 @@ fn causal_event_held_algebraic_owns_typed_solve_time_domain() {
         let algebraic = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -61,12 +81,14 @@ fn explicit_state_equation_lowers_to_derivative_program() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let residual = model.expressions(|expressions| {
@@ -89,13 +111,13 @@ fn explicit_state_equation_lowers_to_derivative_program() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(solve.solve_layout().state_scalar_count(), 1);
-    assert!(solve.continuous().residual.nodes.is_empty());
-    assert!(solve.continuous().implicit_rhs.nodes.is_empty());
-    assert!(solve.continuous().implicit_row_targets.is_empty());
-    assert!(solve.continuous().algebraic_projection_plan.is_empty());
+    assert!(solve.continuous().residual().nodes.is_empty());
+    assert!(solve.continuous().implicit_rhs().nodes.is_empty());
+    assert!(solve.continuous().implicit_row_targets().is_empty());
+    assert!(solve.continuous().algebraic_projection_plan().is_empty());
     reseal_solve_problem(&solve)
         .expect("lowered explicit state system satisfies the Solve shape contract");
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one scalar derivative block expected");
     };
@@ -131,11 +153,8 @@ fn complete_solve_model_owns_exact_state_and_static_template_values() {
                 state_at,
             )
         })?;
-        let (state_start, gain_binding, bias_binding) = model.expressions(|expressions| {
+        let (gain_binding, bias_binding) = model.expressions(|expressions| {
             Ok((
-                expressions
-                    .at(state_at)
-                    .literal(dae::DaeLiteral::Real(-0.0))?,
                 expressions
                     .at(parameter_at)
                     .literal(dae::DaeLiteral::Real(2.5))?,
@@ -144,18 +163,18 @@ fn complete_solve_model_owns_exact_state_and_static_template_values() {
                     .literal(dae::DaeLiteral::Real(7.0))?,
             ))
         })?;
+        let state_attributes = real_state_attributes(model, state_at, -0.0, true)?;
         let state = model.variables(|variables| {
             let state = variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 state_at,
-                dae::VariableAttributes {
-                    start: Some(state_start),
-                    ..dae::VariableAttributes::default()
-                },
+                state_attributes,
             )?;
             variables.parameter(
                 VarName::new("gain"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 parameter_at,
                 dae::VariableAttributes {
@@ -165,6 +184,7 @@ fn complete_solve_model_owns_exact_state_and_static_template_values() {
             )?;
             variables.constant(
                 VarName::new("bias"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 constant_at,
                 dae::VariableAttributes {
@@ -241,12 +261,14 @@ fn explicit_array_state_equation_rejects_uncontracted_numeric_reduction_at_call(
                 .functions(|functions| functions.assign(&mut body, output, result, function_at))?;
             model.functions(|functions| functions.define(body, function_at))
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(6),
                 vector,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let residual = model.expressions(|expressions| {
@@ -320,18 +342,21 @@ fn exact_aggregate_call_projections_share_one_multi_output_program() {
             Ok((
                 variables.algebraic(
                     VarName::new("a"),
+                    rumoca_core::InstanceId::new(7),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("b"),
+                    rumoca_core::InstanceId::new(8),
                     real,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("c"),
+                    rumoca_core::InstanceId::new(9),
                     real,
                     at,
                     dae::VariableAttributes::default(),
@@ -395,22 +420,114 @@ fn exact_aggregate_call_projections_share_one_multi_output_program() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.row_count(), 2);
     assert_eq!(rows.stored_output_count(), 3);
     assert_eq!(rows.output_indices(), [0, 1, 2]);
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&rows.programs()[0]),
-        2,
+        rows.stored_output_count_for_program(0),
+        Some(2),
         "two projections of one issued call occurrence share one program"
     );
     assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&rows.programs()[1]),
-        1,
+        rows.stored_output_count_for_program(1),
+        Some(1),
         "a distinct call ExprId is never inferred equivalent from its arguments"
     );
+}
+
+#[test]
+fn aggregate_algebraic_residual_consumes_its_owner_once() {
+    let source = TestSource::new("parameter Real p[2]; Real y[2]; equation y = p;");
+    let at = source.at(0, 47);
+    let model = dae::Dae::construct(source.map, |model| {
+        let vector = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::array(dae::ScalarType::Real, [2]),
+                at,
+            )
+        })?;
+        let (parameter, algebraic) = model.variables(|variables| {
+            Ok((
+                variables.parameter(
+                    VarName::new("p"),
+                    rumoca_core::InstanceId::new(19),
+                    vector,
+                    at,
+                    local_source_variable_attributes(),
+                )?,
+                variables.algebraic(
+                    VarName::new("y"),
+                    rumoca_core::InstanceId::new(20),
+                    vector,
+                    at,
+                    local_source_variable_attributes(),
+                )?,
+            ))
+        })?;
+        let residual = model.expressions(|expressions| {
+            let lhs = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Algebraic(algebraic))?;
+            let rhs = expressions
+                .at(at)
+                .coordinate(dae::CoordinateInput::Parameter(parameter))?;
+            expressions
+                .at(at)
+                .binary(dae::BinaryOperator::Subtract, lhs, rhs)
+        })?;
+        model.continuous(|continuous| continuous.value_equation(at, residual))
+    })
+    .unwrap();
+
+    let solve = lower_solve_problem(&model).unwrap();
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
+        panic!("one compact algebraic residual block expected");
+    };
+    assert_eq!(rows.output_indices(), [0, 1]);
+    assert_eq!(rows.stored_output_count_for_program(0), Some(2));
+    let [program] = rows.programs() else {
+        panic!("the aggregate residual owner must be lowered exactly once");
+    };
+    assert!(matches!(
+        program.as_slice(),
+        [
+            LinearOp::TensorLoad {
+                dst_start: 0,
+                input: rumoca_ir_solve::TensorInputKind::Y,
+                input_start: 0,
+                count: 2,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::TensorLoad {
+                dst_start: 2,
+                input: rumoca_ir_solve::TensorInputKind::P,
+                input_start: 0,
+                count: 2,
+                seed_start: None,
+                lanes: 1,
+            },
+            LinearOp::TensorBinary {
+                dst_start: 4,
+                op: rumoca_ir_solve::BinaryOp::Sub,
+                lhs_start: 0,
+                rhs_start: 2,
+                count: 2,
+                lhs_stride: 1,
+                rhs_stride: 1,
+                lanes: 1,
+            },
+            LinearOp::StoreOutputRange {
+                start: 4,
+                count: 2,
+                stride: 1,
+            },
+        ]
+    ));
 }
 
 #[test]
@@ -440,6 +557,7 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(10),
                 real_array,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -473,8 +591,8 @@ fn nested_comprehension_binders_lower_through_lexical_domain_scopes() {
 
     let solve = lower_solve_problem(&model).unwrap();
     assert_eq!(solve.solve_layout().algebraic_scalar_count(), 6);
-    assert_eq!(solve.continuous().residual.len().unwrap(), 6);
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    assert_eq!(solve.continuous().residual().len().unwrap(), 6);
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one compact multi-output residual block expected");
     };
     assert_eq!(rows.row_count(), 1);
@@ -507,22 +625,26 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
                 )?,
             ))
         })?;
+        let state_attributes = real_state_attributes(model, state_at, 0.0, true)?;
         let (state, matrix_parameter, rhs_parameter) = model.variables(|variables| {
             Ok((
                 variables.state(
                     VarName::new("omega"),
+                    rumoca_core::InstanceId::new(11),
                     vector,
                     state_at,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
                 variables.parameter(
                     VarName::new("J"),
+                    rumoca_core::InstanceId::new(12),
                     matrix,
                     matrix_at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.parameter(
                     VarName::new("tau"),
+                    rumoca_core::InstanceId::new(13),
                     vector,
                     rhs_at,
                     dae::VariableAttributes::default(),
@@ -562,7 +684,7 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
             span,
             ..
         },
-    ] = solve.continuous().derivative_rhs.nodes.as_slice()
+    ] = solve.continuous().derivative_rhs().nodes.as_slice()
     else {
         panic!("one checked linear-solve node expected");
     };
@@ -601,7 +723,7 @@ fn square_matrix_state_equation_lowers_to_one_checked_linear_solve() {
         "the checked linear solve consumes two compact tensor loads without scalar Move repacking"
     );
 
-    let rows = rumoca_eval_solve::to_scalar_program_block(&solve.continuous().derivative_rhs)
+    let rows = rumoca_eval_solve::to_scalar_program_block(solve.continuous().derivative_rhs())
         .expect("checked linear solve has a scalar execution view");
     let mut derivative = [0.0; 2];
     rumoca_eval_solve::eval_scalar_program_block(
@@ -639,6 +761,7 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
             Ok((
                 variables.parameter(
                     VarName::new("p"),
+                    rumoca_core::InstanceId::new(14),
                     real,
                     parameter_at,
                     dae::VariableAttributes {
@@ -648,6 +771,7 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(15),
                     real,
                     algebraic_at,
                     dae::VariableAttributes::default(),
@@ -672,13 +796,13 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
     let solve = lower_solve_problem(&model).unwrap();
     assert!(matches!(
         solve.layout().binding("y"),
-        Some(ScalarSlot::Y { index: 0, .. })
+        Some(ScalarSlot::Y { index: 0 })
     ));
     assert!(matches!(
         solve.layout().binding("p"),
-        Some(ScalarSlot::P { index: 0, .. })
+        Some(ScalarSlot::P { index: 0 })
     ));
-    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual.nodes.as_slice() else {
+    let [ComputeNode::ScalarPrograms(rows)] = solve.continuous().residual().nodes.as_slice() else {
         panic!("one scalar residual block expected");
     };
     assert_eq!(rows.output_indices(), [0]);
@@ -692,24 +816,22 @@ fn algebraic_residual_uses_checked_y_and_p_layouts() {
             .iter()
             .any(|op| matches!(op, LinearOp::LoadP { index: 0, .. }))
     );
-    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous().implicit_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(implicit)] =
+        solve.continuous().implicit_rhs().nodes.as_slice()
     else {
         panic!("the matched algebraic row must be executable by the runtime");
     };
     assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
-        solve.continuous().implicit_row_targets,
-        [Some(ScalarSlot::Y {
-            index: 0,
-            byte_offset: 0,
-        })]
+        solve.continuous().implicit_row_targets(),
+        [Some(ScalarSlot::Y { index: 0 })]
     );
     assert_eq!(
-        solve.continuous().algebraic_projection_plan.blocks[0].rows,
+        solve.continuous().algebraic_projection_plan().blocks[0].rows,
         [0]
     );
     assert_eq!(
-        solve.continuous().algebraic_projection_plan.blocks[0].y_indices,
+        solve.continuous().algebraic_projection_plan().blocks[0].y_indices,
         [0]
     );
 }
@@ -728,16 +850,19 @@ fn algebraic_projection_keeps_equation_rows_distinct_from_y_indices() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let (state, algebraic) = model.variables(|variables| {
             Ok((
                 variables.state(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(16),
                     real,
                     declaration,
-                    dae::VariableAttributes::default(),
+                    state_attributes,
                 )?,
                 variables.algebraic(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(17),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
@@ -776,24 +901,22 @@ fn algebraic_projection_keeps_equation_rows_distinct_from_y_indices() {
     .unwrap();
 
     let solve = lower_solve_problem(&model).unwrap();
-    let [ComputeNode::ScalarPrograms(implicit)] = solve.continuous().implicit_rhs.nodes.as_slice()
+    let [ComputeNode::ScalarPrograms(implicit)] =
+        solve.continuous().implicit_rhs().nodes.as_slice()
     else {
         panic!("the algebraic equation must remain executable");
     };
     assert_eq!(implicit.output_indices(), [0]);
     assert_eq!(
-        solve.continuous().implicit_row_targets,
-        [Some(ScalarSlot::Y {
-            index: 1,
-            byte_offset: 8,
-        })]
+        solve.continuous().implicit_row_targets(),
+        [Some(ScalarSlot::Y { index: 1 })]
     );
     assert_eq!(
-        solve.continuous().algebraic_projection_plan.blocks[0].rows,
+        solve.continuous().algebraic_projection_plan().blocks[0].rows,
         [0]
     );
     assert_eq!(
-        solve.continuous().algebraic_projection_plan.blocks[0].y_indices,
+        solve.continuous().algebraic_projection_plan().blocks[0].y_indices,
         [1]
     );
     reseal_solve_problem(&solve)
@@ -813,12 +936,14 @@ fn implicit_derivative_form_fails_at_the_equation_span() {
                 declaration,
             )
         })?;
+        let state_attributes = real_state_attributes(model, declaration, 0.0, true)?;
         let state = model.variables(|variables| {
             variables.state(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(18),
                 real,
                 declaration,
-                dae::VariableAttributes::default(),
+                state_attributes,
             )
         })?;
         let residual = model.expressions(|expressions| {

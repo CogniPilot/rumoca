@@ -3,6 +3,8 @@ use std::process::Command;
 
 use tempfile::tempdir;
 
+use super::required_tool_markers::omc_differential_is_required;
+
 const ENCAPSULATED_SCOPE_SOURCE: &str = r#"
 package P
   constant Real c = 1;
@@ -23,7 +25,7 @@ fn omc_available() -> bool {
 fn encapsulated_scope_rejection_matches_omc() {
     if !omc_available() {
         assert!(
-            !std::path::Path::new("target/msl/omc-differential-required").is_file(),
+            !omc_differential_is_required(),
             "OMC differential semantics are required in this lane, but a working `omc` is not on PATH"
         );
         eprintln!("skipping OMC differential test: omc not available");

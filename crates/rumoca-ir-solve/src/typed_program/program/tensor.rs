@@ -1,6 +1,7 @@
 //! Checked compact tensor-algebra construction.
 
 use super::*;
+use crate::typed_program::reduction::SolveMatrixMultiplyPlanIssuanceError;
 
 impl<'program> TypedProgramBuilder<'program> {
     pub fn broadcast_binary(
@@ -20,6 +21,9 @@ impl<'program> TypedProgramBuilder<'program> {
             || !binary_operator_accepts(operator, aggregate_type.element_type())
         {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
+        }
+        if integer_binary_result_range_is_unproved(operator, aggregate_type.element_type()) {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
         }
         let destination = self.issue_register(aggregate_type, provenance)?;
         self.push(
@@ -149,6 +153,14 @@ impl<'program> TypedProgramBuilder<'program> {
         if !operand_type.element_type().is_numeric() {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
         }
+        if *extent >= 2
+            && matches!(
+                operand_type.element_type(),
+                SolveScalarType::Integer(domain) if !domain.contains(0)
+            )
+        {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+        }
         let result_type =
             SolveValueType::tensor(operand_type.element_type(), vec![*extent, *extent])
                 .map_err(|_| SolveProgramConstructionError::InvalidTensorAlgebra { provenance })?;
@@ -170,13 +182,18 @@ impl<'program> TypedProgramBuilder<'program> {
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
-        let integer_identity_is_representable = match element_type {
-            SolveScalarType::Integer(domain) => domain.contains(0) && domain.contains(1),
-            SolveScalarType::Real { .. } => true,
-            SolveScalarType::Boolean => false,
-        };
-        if !element_type.belongs_to(self.arithmetic) || !integer_identity_is_representable {
+        if !element_type.belongs_to(self.arithmetic) || element_type == SolveScalarType::Boolean {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
+        }
+        if let SolveScalarType::Integer(domain) = element_type {
+            let result_range_is_unproved = match extent {
+                0 => false,
+                1 => !domain.contains(1),
+                _ => !domain.contains(0) || !domain.contains(1),
+            };
+            if result_range_is_unproved {
+                return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+            }
         }
         let result_type = SolveValueType::tensor(element_type, vec![extent, extent])
             .map_err(|_| SolveProgramConstructionError::InvalidTensorAlgebra { provenance })?;
@@ -263,6 +280,12 @@ impl<'program> TypedProgramBuilder<'program> {
         {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
         }
+        if integer_binary_result_range_is_unproved(
+            SolveBinaryOperator::Multiply,
+            aggregate_type.element_type(),
+        ) {
+            return Err(SolveProgramConstructionError::UnprovedIntegerRange { provenance });
+        }
         let destination = self.issue_register(aggregate_type, provenance)?;
         self.push(
             SolveOperation::Scale {
@@ -309,20 +332,27 @@ impl<'program> TypedProgramBuilder<'program> {
         require_provenance(provenance)?;
         let lhs_type = self.register_type(lhs, provenance)?.clone();
         let rhs_type = self.register_type(rhs, provenance)?;
-        let dimensions = matrix_product_dimensions(&lhs_type, rhs_type)
-            .ok_or(SolveProgramConstructionError::InvalidTensorAlgebra { provenance })?;
-        let result_type = if dimensions.is_empty() {
-            SolveValueType::scalar(lhs_type.element_type())
-        } else {
-            SolveValueType::tensor(lhs_type.element_type(), dimensions)
-                .map_err(|_| SolveProgramConstructionError::InvalidTensorAlgebra { provenance })?
-        };
+        let (plan, result_type) =
+            SolveMatrixMultiplyPlan::issued(self.arithmetic, &lhs_type, rhs_type).map_err(
+                |error| match error {
+                    SolveMatrixMultiplyPlanIssuanceError::InvalidAlgebra => {
+                        SolveProgramConstructionError::InvalidTensorAlgebra { provenance }
+                    }
+                    SolveMatrixMultiplyPlanIssuanceError::UnsupportedArithmetic => {
+                        SolveProgramConstructionError::MissingReductionContract { provenance }
+                    }
+                    SolveMatrixMultiplyPlanIssuanceError::EmptyFirstProductDomain => {
+                        SolveProgramConstructionError::EmptyFirstProductDomain { provenance }
+                    }
+                },
+            )?;
         let destination = self.issue_register(result_type, provenance)?;
         self.push(
             SolveOperation::MatrixMultiply {
                 destination: destination.id,
                 lhs: lhs.id,
                 rhs: rhs.id,
+                plan,
             },
             provenance,
         );
@@ -336,25 +366,9 @@ impl<'program> TypedProgramBuilder<'program> {
         provenance: Span,
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
-        let lhs_type = self.register_type(lhs, provenance)?.clone();
-        let rhs_type = self.register_type(rhs, provenance)?;
-        if lhs_type.dimensions() != [3]
-            || rhs_type.dimensions() != [3]
-            || lhs_type.element_type() != rhs_type.element_type()
-            || !lhs_type.element_type().is_numeric()
-        {
-            return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
-        }
-        let destination = self.issue_register(lhs_type, provenance)?;
-        self.push(
-            SolveOperation::Cross {
-                destination: destination.id,
-                lhs: lhs.id,
-                rhs: rhs.id,
-            },
-            provenance,
-        );
-        Ok(destination)
+        self.register_type(lhs, provenance)?;
+        self.register_type(rhs, provenance)?;
+        Err(SolveProgramConstructionError::MissingReductionContract { provenance })
     }
 
     pub fn reduce(
@@ -365,18 +379,16 @@ impl<'program> TypedProgramBuilder<'program> {
     ) -> Result<ProgramRegister<'program>, SolveProgramConstructionError> {
         require_provenance(provenance)?;
         let operand_type = self.register_type(operand, provenance)?;
-        let valid_element = match operator {
-            SolveReductionOperator::All => operand_type.element_type() == SolveScalarType::Boolean,
-            SolveReductionOperator::Sum
-            | SolveReductionOperator::Product
-            | SolveReductionOperator::Minimum
-            | SolveReductionOperator::Maximum => operand_type.element_type().is_numeric(),
-        };
-        if operand_type.dimensions().is_empty() || !valid_element {
+        if operator != SolveReductionOperator::All {
+            return Err(SolveProgramConstructionError::MissingReductionContract { provenance });
+        }
+        if operand_type.dimensions().is_empty()
+            || operand_type.element_type() != SolveScalarType::Boolean
+        {
             return Err(SolveProgramConstructionError::InvalidTensorAlgebra { provenance });
         }
-        let result_type = SolveValueType::scalar(operand_type.element_type());
-        let destination = self.issue_register(result_type, provenance)?;
+        let destination =
+            self.issue_register(SolveValueType::scalar(SolveScalarType::Boolean), provenance)?;
         self.push(
             SolveOperation::Reduce {
                 destination: destination.id,
@@ -416,19 +428,4 @@ pub fn promoted_concatenate_dimensions(value_type: &SolveValueType, rank: usize)
         .copied()
         .chain(std::iter::repeat_n(1, rank - value_type.dimensions().len()))
         .collect()
-}
-
-fn matrix_product_dimensions(lhs: &SolveValueType, rhs: &SolveValueType) -> Option<Vec<u32>> {
-    if lhs.element_type() != rhs.element_type() || !lhs.element_type().is_numeric() {
-        return None;
-    }
-    match (lhs.dimensions(), rhs.dimensions()) {
-        ([inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => Some(Vec::new()),
-        ([rows, inner_lhs], [inner_rhs]) if inner_lhs == inner_rhs => Some(vec![*rows]),
-        ([inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => Some(vec![*columns]),
-        ([rows, inner_lhs], [inner_rhs, columns]) if inner_lhs == inner_rhs => {
-            Some(vec![*rows, *columns])
-        }
-        _ => None,
-    }
 }

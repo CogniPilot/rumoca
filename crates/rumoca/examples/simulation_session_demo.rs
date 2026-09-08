@@ -1,5 +1,3 @@
-// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-#![allow(clippy::excessive_nesting)]
 //! Interactive real-time session demo.
 //!
 //! Simulates a mass-spring-damper with keyboard control:
@@ -37,12 +35,9 @@ const DT: f64 = 0.02; // 50 Hz simulation
 const FORCE_STEP: f64 = 2.0;
 
 fn main() -> anyhow::Result<()> {
-    // Compile the model
     let compiler = rumoca::Compiler::new().model("MassSpringDamperControl");
     let result = compiler.compile_str(MODEL_SOURCE, "demo.mo")?;
-
-    // Create the session
-    let mut session = SimulationSession::new(&result.dae, SimOptions::default())?;
+    let mut session = SimulationSession::new(result.dae().as_ref(), SimOptions::default())?;
 
     println!("Inputs:  {:?}", session.input_names());
     println!("Variables: {:?}", session.variable_names());
@@ -50,88 +45,96 @@ fn main() -> anyhow::Result<()> {
     println!("Controls: Left/Right = apply force, Space = zero force, q = quit");
     println!();
 
-    // Enter raw terminal mode
     terminal::enable_raw_mode()?;
     let mut stdout = stdout();
-
-    let mut force: f64 = 0.0;
-    let mut running = true;
-
-    while running {
-        let step_start = Instant::now();
-
-        // Poll for keyboard input (non-blocking)
-        while event::poll(Duration::from_millis(0))? {
-            if let Event::Key(KeyEvent {
-                code, modifiers, ..
-            }) = event::read()?
-            {
-                match code {
-                    KeyCode::Left => force -= FORCE_STEP,
-                    KeyCode::Right => force += FORCE_STEP,
-                    KeyCode::Char(' ') => force = 0.0,
-                    KeyCode::Char('q') | KeyCode::Esc => running = false,
-                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                        running = false
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if !running {
-            break;
-        }
-
-        // Apply input and step
-        session.set_input("u", force)?;
-        session.advance_to(session.time() + DT)?;
-
-        let t = session.time();
-        let x = session
-            .get("x")?
-            .ok_or_else(|| anyhow::anyhow!("session variable 'x' is not visible"))?;
-        let v = session
-            .get("v")?
-            .ok_or_else(|| anyhow::anyhow!("session variable 'v' is not visible"))?;
-
-        // Render a simple ASCII visualization
-        let bar_width = 60i32;
-        let center = bar_width / 2;
-        let pos = (center as f64 + x * 8.0).round() as i32;
-        let pos = pos.clamp(0, bar_width - 1);
-
-        let mut bar = vec![b' '; bar_width as usize];
-        bar[center as usize] = b'|'; // equilibrium
-        bar[pos as usize] = b'O'; // mass
-
-        execute!(
-            stdout,
-            cursor::MoveToColumn(0),
-            terminal::Clear(ClearType::CurrentLine)
-        )?;
-        write!(
-            stdout,
-            "t={:.2}  x={:+.3}  v={:+.3}  u={:+.1}  [{}]",
-            t,
-            x,
-            v,
-            force,
-            std::str::from_utf8(&bar).unwrap()
-        )?;
-        stdout.flush()?;
-
-        // Wait for the remainder of the time step
-        let elapsed = step_start.elapsed();
-        let target = Duration::from_secs_f64(DT);
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
-        }
-    }
-
-    // Restore terminal
-    terminal::disable_raw_mode()?;
+    let run_result = run_demo(&mut session, &mut stdout);
+    let restore_result = terminal::disable_raw_mode();
+    run_result?;
+    restore_result?;
     println!();
     println!("Done.");
     Ok(())
+}
+
+fn run_demo(session: &mut SimulationSession, stdout: &mut impl Write) -> anyhow::Result<()> {
+    let mut force: f64 = 0.0;
+    loop {
+        let step_start = Instant::now();
+        if !poll_controls(&mut force)? {
+            break;
+        }
+
+        session.set_input("u", force)?;
+        session.advance_to(session.time() + DT)?;
+        render_state(stdout, session, force)?;
+        wait_for_step(step_start);
+    }
+    Ok(())
+}
+
+fn poll_controls(force: &mut f64) -> anyhow::Result<bool> {
+    let mut running = true;
+    while event::poll(Duration::from_millis(0))? {
+        let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        else {
+            continue;
+        };
+        match code {
+            KeyCode::Left => *force -= FORCE_STEP,
+            KeyCode::Right => *force += FORCE_STEP,
+            KeyCode::Char(' ') => *force = 0.0,
+            KeyCode::Char('q') | KeyCode::Esc => running = false,
+            KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => running = false,
+            _ => {}
+        }
+    }
+    Ok(running)
+}
+
+fn read_visible(session: &SimulationSession, name: &str) -> anyhow::Result<f64> {
+    session
+        .get(name)?
+        .ok_or_else(|| anyhow::anyhow!("session variable '{name}' is not visible"))
+}
+
+fn render_state(
+    stdout: &mut impl Write,
+    session: &SimulationSession,
+    force: f64,
+) -> anyhow::Result<()> {
+    let time = session.time();
+    let x = read_visible(session, "x")?;
+    let v = read_visible(session, "v")?;
+    let bar_width = 60i32;
+    let center = bar_width / 2;
+    let pos = (center as f64 + x * 8.0).round() as i32;
+    let pos = pos.clamp(0, bar_width - 1);
+
+    let mut bar = vec![b' '; bar_width as usize];
+    bar[center as usize] = b'|';
+    bar[pos as usize] = b'O';
+    let bar = std::str::from_utf8(&bar)?;
+
+    execute!(
+        stdout,
+        cursor::MoveToColumn(0),
+        terminal::Clear(ClearType::CurrentLine)
+    )?;
+    write!(
+        stdout,
+        "t={:.2}  x={:+.3}  v={:+.3}  u={:+.1}  [{}]",
+        time, x, v, force, bar
+    )?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn wait_for_step(step_start: Instant) {
+    let elapsed = step_start.elapsed();
+    let target = Duration::from_secs_f64(DT);
+    if elapsed < target {
+        std::thread::sleep(target - elapsed);
+    }
 }

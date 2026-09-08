@@ -40,9 +40,9 @@ pub(super) struct SourceTrace {
     line: Option<u32>,
     /// 1-based UTF-16 column of the first byte.
     column: Option<u32>,
-    /// 1-based line of the last byte (inclusive end of the statement text).
+    /// 1-based line of the final character in the statement text.
     end_line: Option<u32>,
-    /// 1-based UTF-16 column of the last byte.
+    /// 1-based UTF-16 column of the final character.
     end_column: Option<u32>,
     /// Stable source identity, retained for the file legend and for any
     /// consumer that keys on the hash.
@@ -80,6 +80,17 @@ pub(super) struct TraceLegend {
     files: Vec<SourceFile>,
 }
 
+impl TraceLegend {
+    /// Explicit absence of a DAE trace authority on the standalone editor
+    /// route. This is not a failed lookup against a caller-supplied map.
+    pub(super) const fn unavailable() -> Self {
+        Self {
+            root: None,
+            files: Vec::new(),
+        }
+    }
+}
+
 /// Byte-offset → line/column conversion for one source, plus its path.
 ///
 /// The text is borrowed from the session's [`SourceMap`], which outlives every
@@ -110,6 +121,7 @@ impl<'a> SourceLines<'a> {
     /// 1-based line and 1-based UTF-16 column of `offset`.
     fn position(&self, offset: usize) -> (u32, u32) {
         let clamped = offset.min(self.text.len());
+        debug_assert!(self.text.is_char_boundary(clamped));
         // `partition_point` yields the count of line starts at or before
         // `clamped`, which is the 1-based line number.
         let line = self.line_starts.partition_point(|start| *start <= clamped);
@@ -122,6 +134,23 @@ impl<'a> SourceLines<'a> {
             u32::try_from(line).unwrap_or(u32::MAX),
             column_units.saturating_add(1),
         )
+    }
+
+    /// Position of the last character in one checked `[start, end)` range.
+    /// Empty ranges retain their point position. Origin closure has already
+    /// proved both offsets are UTF-8 boundaries, so this performs no second
+    /// validation pass.
+    fn inclusive_end_position(&self, start: usize, end: usize) -> (u32, u32) {
+        let last = if end > start {
+            let relative = self.text[start..end]
+                .char_indices()
+                .next_back()
+                .map_or(0, |(offset, _)| offset);
+            start + relative
+        } else {
+            start
+        };
+        self.position(last)
     }
 }
 
@@ -167,10 +196,10 @@ impl<'a> SourceTraceResolver<'a> {
             });
         };
         let (line, column) = lines.position(byte_start);
-        // The end position names the last byte *inside* the statement, so a
-        // one-line statement reports `line:col-line:endcol` rather than
-        // pointing one past its own text.
-        let (end_line, end_column) = lines.position(byte_end.max(byte_start.saturating_add(1)) - 1);
+        // The end position names the final character, not an arbitrary byte
+        // inside it. Origin closure has proved this exact range is bounded and
+        // character-aligned.
+        let (end_line, end_column) = lines.inclusive_end_position(byte_start, byte_end);
         Some(SourceTrace {
             path: Some(lines.path.to_owned()),
             line: Some(line),
@@ -310,11 +339,11 @@ mod tests {
         let sources = source_map_with("A.mo", text);
         let id = sources.get_id("A.mo").expect("registered");
         let resolver = SourceTraceResolver::new(&sources);
-        for (offset, _) in text.char_indices() {
+        for (offset, character) in text.char_indices() {
             let span = Span {
                 source: id,
                 start: BytePos(offset),
-                end: BytePos(offset + 1),
+                end: BytePos(offset + character.len_utf8()),
             };
             let trace = resolver.trace(&span).expect("non-dummy span");
             let expected = byte_offset_to_position(text, offset);
@@ -327,6 +356,35 @@ mod tests {
                 "byte {offset} disagreed with byte_offset_to_position"
             );
         }
+    }
+
+    #[test]
+    fn unicode_end_anchor_names_the_final_character_not_an_interior_byte() {
+        let text = "  é := 𝔸;\n";
+        let sources = source_map_with("unicode.mo", text);
+        let id = sources.get_id("unicode.mo").expect("registered");
+        let resolver = SourceTraceResolver::new(&sources);
+        let start = text.find('é').expect("start character");
+        let final_character = text.find('𝔸').expect("end character");
+        let end = final_character + '𝔸'.len_utf8();
+        let span = Span::from_offsets(id, start, end);
+        let trace = resolver.trace(&span).expect("non-dummy span");
+        let expected_start = byte_offset_to_position(text, start);
+        let expected_end = byte_offset_to_position(text, final_character);
+        assert_eq!(
+            (trace.line, trace.column),
+            (
+                Some(expected_start.line + 1),
+                Some(expected_start.character + 1),
+            ),
+        );
+        assert_eq!(
+            (trace.end_line, trace.end_column),
+            (
+                Some(expected_end.line + 1),
+                Some(expected_end.character + 1),
+            ),
+        );
     }
 
     #[test]

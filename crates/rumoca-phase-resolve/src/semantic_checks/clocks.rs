@@ -166,7 +166,7 @@ fn clock_prefix_error(
 pub(super) fn run_clock_expression_semantic_checks(def: &StoredDefinition) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let mut visitor = ClockExpressionVisitor { diags: &mut diags };
-    let _ = visitor.visit_stored_definition(def);
+    let _visit_outcome = visitor.visit_stored_definition(def);
     diags
 }
 
@@ -184,6 +184,34 @@ impl ast::Visitor for ClockExpressionVisitor<'_> {
             return Continue(());
         }
         self.visit_expression(expr)
+    }
+
+    fn visit_expression(&mut self, expr: &Expression) -> std::ops::ControlFlow<()> {
+        if let Expression::DerivativeCall { args, .. } = expr
+            && let Some(Expression::FunctionCall {
+                comp: inner_comp, ..
+            }) = args.first()
+            && let Some(inner_name) = builtin_name(inner_comp)
+            && matches!(
+                inner_name,
+                "sample" | "subSample" | "superSample" | "shiftSample" | "backSample" | "noClock"
+            )
+            && let Some(inner_token) = inner_comp.parts.first().map(|part| &part.ident)
+        {
+            self.diags.push(semantic_error(
+                ER069_DER_ON_CLOCK_OPERATOR,
+                format!(
+                    "der() cannot be applied to {}() expressions (MLS §16.5.2)",
+                    inner_name
+                ),
+                label_from_token(
+                    inner_token,
+                    "run_clock_expression_semantic_checks/der_on_clock_operator",
+                    format!("{inner_name}() cannot appear under der()"),
+                ),
+            ));
+        }
+        walk_expression_default(self, expr)
     }
 
     fn visit_expr_function_call_ctx(
@@ -238,32 +266,6 @@ impl ast::Visitor for ClockExpressionVisitor<'_> {
                 ));
             }
         }
-        if matches!(ctx, ast::FunctionCallContext::Expression)
-            && let Some("der") = builtin_name(comp)
-            && let Some(Expression::FunctionCall {
-                comp: inner_comp, ..
-            }) = args.first()
-            && let Some(inner_name) = builtin_name(inner_comp)
-            && matches!(
-                inner_name,
-                "sample" | "subSample" | "superSample" | "shiftSample" | "backSample" | "noClock"
-            )
-            && let Some(inner_token) = inner_comp.parts.first().map(|part| &part.ident)
-        {
-            self.diags.push(semantic_error(
-                ER069_DER_ON_CLOCK_OPERATOR,
-                format!(
-                    "der() cannot be applied to {}() expressions (MLS §16.5.2)",
-                    inner_name
-                ),
-                label_from_token(
-                    inner_token,
-                    "run_clock_expression_semantic_checks/der_on_clock_operator",
-                    format!("{inner_name}() cannot appear under der()"),
-                ),
-            ));
-        }
-
         ast::visitor::walk_expr_function_call_ctx_default(self, comp, args, ctx)
     }
 }
@@ -379,11 +381,11 @@ fn check_event_clock_resampling(class: &ClassDef, diags: &mut Vec<Diagnostic>) {
     };
     for (_, comp) in &class.components {
         if let Some(binding) = comp.binding.as_ref() {
-            let _ = collector.visit_expression(binding);
+            let _visit_outcome = collector.visit_expression(binding);
         }
     }
     for eq in class.equations.iter().chain(class.initial_equations.iter()) {
-        let _ = collector.visit_equation(eq);
+        let _visit_outcome = collector.visit_equation(eq);
     }
     for (operator, token) in collector.found {
         let reason = match operator.as_str() {
@@ -619,7 +621,7 @@ fn clock_partition_key(cond: &Expression) -> String {
 /// backSample). Returns dotted names with their tokens.
 fn unwrapped_clocked_reads(expr: &Expression) -> Vec<(String, Token)> {
     let mut collector = UnwrappedReadCollector { found: Vec::new() };
-    let _ = collector.visit_expression(expr);
+    let _visit_outcome = collector.visit_expression(expr);
     collector.found
 }
 

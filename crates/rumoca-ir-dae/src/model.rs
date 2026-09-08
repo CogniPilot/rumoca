@@ -1,3 +1,5 @@
+mod callable_inventory;
+mod callable_regions;
 mod construction_checks;
 mod domains;
 mod external_functions;
@@ -17,8 +19,8 @@ mod wire;
 use std::marker::PhantomData;
 
 use rumoca_core::{
-    ComponentReference, InlineAnnotation, SourceMap, Span, StateSelect, StructuredIndexDomain,
-    TypeId, VarName,
+    ComponentReference, Fixity, InlineAnnotation, InstanceId, SourceMap, SourceOccurrenceId, Span,
+    StateSelect, StructuredIndexDomain, TypeId, VarName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,12 +57,28 @@ use crate::{
     AlgebraicId, ClockId, ClockOwnershipId, ConditionId, ContinuousEquationId, ContinuousFamilyId,
     DaeConstructionError, DaeGeneration, DaeLiteral, DaeProvenance, DelayId, DiscreteRealId,
     DiscreteValueId, DiscreteValueOwnerId, DomainBinderId, DomainId, EventActionId, ExprId,
-    FunctionDefinitionId, FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId,
-    InitializationEquationId, InitializationFamilyId, InputId, ModelEventTransactionId,
-    ModelEventTransactions, ParameterId, PreviousId, RelationId, RootId, ScalarType, StateId,
-    StructuredRootId, TerminalId, TimeEventId, ValueTypeId, VariableId,
+    FunctionAssertionId, FunctionCallId, FunctionConditionalId, FunctionDefinitionId,
+    FunctionFoldId, FunctionId, FunctionParameterId, FunctionValueId, InitializationEquationId,
+    InitializationFamilyId, InputId, ModelEventTransactionId, ModelEventTransactions, ParameterId,
+    PreviousId, RelationId, RootId, ScalarType, StateId, StructuredRootId, TerminalId, TimeEventId,
+    ValueTypeId, VariableId,
 };
 
+pub use callable_inventory::{
+    CallableAssertionOccurrence, CallableCallOccurrence, CallableCallProjectionOccurrence,
+    CallableConditionalOccurrence, CallableDefinitionOccurrence, CallableExpressionOccurrence,
+    CallableFoldOccurrence, CallableFunctionOccurrence, CallableSourceInventoryView,
+};
+use callable_inventory::{CallableSourceInventory, issue_callable_source_inventory};
+pub use callable_regions::{
+    CallableCallProjectionUseOccurrence, CallableCallUseId, CallableCallUseOccurrence,
+    CallableCaptureOccurrence, CallableCaptureSource, CallableConditionalRegionSource,
+    CallableConditionalRegionsOccurrence, CallableExpressionConditionalRegionsOccurrence,
+    CallableExpressionUseId, CallableExpressionUseOccurrence, CallableExternalBodyOccurrence,
+    CallableFoldBodyOccurrence, CallableMapBodyOccurrence, CallableSourceRegionActivation,
+    CallableSourceRegionId, CallableSourceRegionKind, CallableSourceRegionOccurrence,
+};
+use callable_regions::{CallableRegionInventory, issue_callable_region_inventory};
 pub(crate) use construction_checks::{
     check_provenance, check_type_capacity, checked_u32, duplicate, function_definition_rhs,
     incomplete, invalid_arity, unknown,
@@ -148,7 +166,14 @@ pub(crate) use construction_checks::{
 /// from its carried targets. Replay clears those locals on entry and restores
 /// the enclosing reaching definitions on exit, so a superseded payload cannot
 /// reinterpret nonescaping scratch as loop-carried state.
-pub const DAE_SCHEMA_VERSION: u16 = 33;
+///
+/// 34 gives every function one required closed Modelica-or-external body tag
+/// instead of parallel statements and optional external-body fields.
+///
+/// 35 gives every DAE variable one mandatory nonzero Flat-issued source
+/// occurrence identity. The identity is distinct from display names and spans,
+/// and wire replay cannot omit it or reconstruct it from presentation data.
+pub const DAE_SCHEMA_VERSION: u16 = 36;
 
 pub use domains::Domains;
 pub(crate) use domains::insert_domain;
@@ -167,20 +192,21 @@ pub use value_types::ValueTypes;
 use variable_types::VariableTypeCapability;
 
 pub use view::{
-    ContinuousOwnerView, CoordinateView, DaeView, DomainView, ExpressionKind, ExpressionOperands,
-    ExpressionOperation, ExpressionView, ExternalArgumentView, ExternalFunctionView,
-    FunctionConditionalView, FunctionDefinitionValues, FunctionDefinitionView, FunctionFoldView,
-    FunctionParameterView, FunctionStatementView, FunctionStatements, FunctionValueView,
-    FunctionView, InitializationOwnerView, RangeBoundView, RangeView, RecordFieldLayout,
-    ResidualEquationView, RuntimeQuotientOwnerKind, RuntimeQuotientOwnerView,
-    StringConversionFormatView, StructuredFamilyView, SubscriptView, SubscriptsView,
-    ValueTypeOperands, VariableIdentity, VariableView,
+    ContinuousOwnerView, CoordinateView, DaeVariableRefinementEntry, DaeVariableRefinementView,
+    DaeView, DomainView, ExpressionKind, ExpressionOperands, ExpressionOperation, ExpressionView,
+    ExternalArgumentView, ExternalFunctionView, FunctionConditionalView, FunctionDefinitionValues,
+    FunctionDefinitionView, FunctionFoldView, FunctionParameterView, FunctionStatementView,
+    FunctionStatements, FunctionValueView, FunctionView, InitializationOwnerView, RangeBoundView,
+    RangeView, RecordFieldLayout, ResidualEquationView, RuntimeQuotientOwnerKind,
+    RuntimeQuotientOwnerView, StringConversionFormatView, StructuredFamilyView, SubscriptView,
+    SubscriptsView, ValueTypeOperands, VariableIdentity, VariableView,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VariableEntry {
     pub(crate) name: VarName,
+    pub(crate) source_occurrence: SourceOccurrenceId,
     pub(crate) role: VariableRole,
     variability: ExpressionVariability,
     pub(crate) value_type: u32,
@@ -194,7 +220,7 @@ pub(crate) struct VariableAttributesWire {
     component_ref: Option<ComponentReference>,
     binding: Option<u32>,
     start: Option<u32>,
-    fixed: Option<bool>,
+    fixed: Fixity,
     min: Option<u32>,
     max: Option<u32>,
     nominal: Option<u32>,
@@ -244,6 +270,38 @@ pub enum VariableRole {
     DiscreteValue,
 }
 
+/// The one place an absent `fixed` spelling becomes a semantic value.
+///
+/// Every DAE variable definition funnels through here: an explicit source
+/// spelling passes through unchanged, and an omitted spelling takes the MLS
+/// 3.6 §4.8.1 default of the role being defined: `true` for parameters and
+/// constants, `false` for every other variable. Nothing at or after the
+/// checked DAE interprets absence again, because nothing after this point
+/// can represent absence, and the defaulting match lives only inside this
+/// private join, so no separately callable operation exists that could
+/// recompute the default from a role elsewhere.
+///
+/// Roles may change downstream of DAE construction (index reduction demotes
+/// a state to an algebraic and promotes an algebraic to a state), but only
+/// within one default class: the reconstruction copies the already-total
+/// [`Fixity`], so the effective value survives every role it is legal to
+/// move to.
+const fn effective_fixity(role: VariableRole, declared: Option<Fixity>) -> Fixity {
+    match (declared, role) {
+        (Some(fixity), _) => fixity,
+        (None, VariableRole::Parameter | VariableRole::Constant) => Fixity::Fixed,
+        (
+            None,
+            VariableRole::Input
+            | VariableRole::State
+            | VariableRole::Algebraic
+            | VariableRole::Output
+            | VariableRole::DiscreteReal
+            | VariableRole::DiscreteValue,
+        ) => Fixity::Free,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputVariability {
     Discrete,
@@ -284,7 +342,12 @@ pub struct VariableAttributes<'dae> {
     pub component_ref: Option<ComponentReference>,
     pub binding: Option<ExprId<'dae>>,
     pub start: Option<ExprId<'dae>>,
-    pub fixed: Option<bool>,
+    /// The explicit source spelling of `fixed`, when the declaration wrote
+    /// one. `None` is not a value: it means the declaration omitted the
+    /// attribute, and [`Variables::define`] decides the MLS 3.6 §4.8.1 role
+    /// default exactly once. The stored model and every view carry the total
+    /// [`Fixity`]; this `Option` exists only on the construction input.
+    pub fixed: Option<Fixity>,
     pub min: Option<ExprId<'dae>>,
     pub max: Option<ExprId<'dae>>,
     pub nominal: Option<ExprId<'dae>>,
@@ -480,6 +543,8 @@ pub(crate) struct Storage {
     flat_type_lookup: rustc_hash::FxHashMap<TypeId, u32>,
     structural_type_lookup: rustc_hash::FxHashMap<ValueType, u32>,
     pub(crate) variables: Vec<VariableEntry>,
+    variable_names: rustc_hash::FxHashSet<VarName>,
+    variable_source_occurrences: rustc_hash::FxHashSet<SourceOccurrenceId>,
     pub(crate) functions: Vec<FunctionEntry>,
     pub(crate) function_folds: Vec<FunctionFoldEntry>,
     domains: Vec<DomainEntry>,
@@ -520,6 +585,7 @@ pub(crate) struct Storage {
     pub(crate) terminals: Vec<TerminalEntry>,
     pub(crate) delays: Vec<DelayEntry>,
     pub(crate) function_read_sets: FunctionReadSets,
+    pending_integer_subscript_bounds: Vec<PendingIntegerSubscriptBound>,
     unfilled_variables: usize,
     unfilled_functions: usize,
     unfilled_function_folds: usize,
@@ -527,6 +593,20 @@ pub(crate) struct Storage {
     pub(crate) required_discrete_value_count: usize,
     pub(crate) first_required_discrete_value: Option<(u32, DaeProvenance)>,
     pub(crate) discrete_value_topology_complete: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingIntegerSubscriptBound {
+    expression: u32,
+    axis_extent: u32,
+    provenance: DaeProvenance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticIntegerResolution {
+    Known(i64),
+    PendingParameter(u32),
+    Dynamic,
 }
 
 #[derive(Debug, PartialEq)]
@@ -567,6 +647,7 @@ struct FrozenStorage {
     previous_values: Box<[PreviousEntry]>,
     terminals: Box<[TerminalEntry]>,
     delays: Box<[DelayEntry]>,
+    callable_inventory: CallableSourceInventory,
 }
 
 /// Immutable, valid-by-construction current-schema DAE.
@@ -600,7 +681,8 @@ impl Dae {
             build(&mut construction)?;
         }
         storage.finish_construction()?;
-        let storage = storage.freeze();
+        let callable_inventory = issue_callable_source_inventory(&storage)?;
+        let storage = storage.freeze(callable_inventory);
         let active_discrete_scalar_count = active_discrete_scalar_count(&storage);
         Ok(Self {
             schema_version: DAE_SCHEMA_VERSION,
@@ -851,6 +933,94 @@ pub struct Variables<'storage, 'dae> {
     marker: PhantomData<&'dae mut &'dae ()>,
 }
 
+/// Proof that a complete variable may be admitted with its declared type and
+/// definition-owner obligations.
+///
+/// Only [`Variables::complete_variable_capability`] can mint this transient
+/// capability. It is consumed by the private insertion operation and is never
+/// retained in finalized DAE storage or on the wire.
+struct CompleteVariableCapability<'dae> {
+    variable_type: VariableTypeCapability<'dae>,
+    requires_discrete_value_owner: bool,
+}
+
+impl Storage {
+    fn reserve_variable_membership(
+        &mut self,
+        name: &VarName,
+        source_occurrence: SourceOccurrenceId,
+        declaration: DaeProvenance,
+    ) -> Result<u32, DaeConstructionError> {
+        if self.variable_names.contains(name) {
+            return Err(DaeConstructionError::DuplicateKey {
+                kind: "variable",
+                key: name.to_string(),
+                span: declaration.span(),
+            });
+        }
+        if self
+            .variable_source_occurrences
+            .contains(&source_occurrence)
+        {
+            return Err(DaeConstructionError::DuplicateSourceOccurrence {
+                occurrence: source_occurrence.instance_id(),
+                span: declaration.span(),
+            });
+        }
+        let raw = checked_u32(self.variables.len(), "variable arena", declaration)?;
+        let inserted_name = self.variable_names.insert(name.clone());
+        let inserted_occurrence = self.variable_source_occurrences.insert(source_occurrence);
+        debug_assert!(inserted_name && inserted_occurrence);
+        Ok(raw)
+    }
+}
+
+#[cfg(test)]
+mod variable_membership_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_membership_does_not_depend_on_scanning_variable_entries() {
+        let first_instance = InstanceId::new(71);
+        let second_instance = InstanceId::new(72);
+        let mut sources = SourceMap::new();
+        let source = sources.add("membership.mo", "Real x; Real y;");
+        let first = DaeProvenance::source(Span::from_offsets(source, 0, 7)).unwrap();
+        let second = DaeProvenance::source(Span::from_offsets(source, 8, 15)).unwrap();
+        let first_occurrence = SourceOccurrenceId::try_from(first_instance).unwrap();
+        let second_occurrence = SourceOccurrenceId::try_from(second_instance).unwrap();
+        let dae = Dae::construct(sources, |model| {
+            let storage = &mut *model.storage;
+            storage
+                .reserve_variable_membership(&VarName::new("x"), first_occurrence, first)
+                .unwrap();
+            assert!(storage.variables.is_empty());
+            assert_eq!(
+                storage
+                    .reserve_variable_membership(&VarName::new("x"), second_occurrence, second)
+                    .unwrap_err(),
+                DaeConstructionError::DuplicateKey {
+                    kind: "variable",
+                    key: "x".to_owned(),
+                    span: second.span(),
+                }
+            );
+            assert_eq!(
+                storage
+                    .reserve_variable_membership(&VarName::new("y"), first_occurrence, second)
+                    .unwrap_err(),
+                DaeConstructionError::DuplicateSourceOccurrence {
+                    occurrence: first_instance,
+                    span: second.span(),
+                }
+            );
+            Ok(())
+        })
+        .expect("construction-only indexes are omitted from the finalized empty root");
+        assert_eq!(dae.inspect(|view| view.variable_count()), 0);
+    }
+}
+
 macro_rules! variable_role_constructors {
     ($(
         $complete:ident / $reserve:ident
@@ -860,16 +1030,24 @@ macro_rules! variable_role_constructors {
         $(pub fn $complete(
             &mut self,
             name: VarName,
+            source_occurrence: InstanceId,
             value_type: ValueTypeId<'dae>,
             $($argument: $argument_type,)*
             declaration: DaeProvenance,
             attributes: VariableAttributes<'dae>,
         ) -> Result<$id<'dae>, DaeConstructionError> {
-            self.add_complete(
-                name,
+            let capability = self.complete_variable_capability(
+                &name,
                 $role,
                 $variability,
                 value_type,
+                declaration,
+                attributes.causality,
+            )?;
+            self.add_complete(
+                name,
+                source_occurrence,
+                capability,
                 declaration,
                 attributes,
             )
@@ -879,12 +1057,14 @@ macro_rules! variable_role_constructors {
         pub fn $reserve(
             &mut self,
             name: VarName,
+            source_occurrence: InstanceId,
             value_type: ValueTypeId<'dae>,
             $($argument: $argument_type,)*
             declaration: DaeProvenance,
         ) -> Result<($id<'dae>, VariableReservation<'dae>), DaeConstructionError> {
             let id = self.reserve_forward(
                 name,
+                source_occurrence,
                 $role,
                 $variability,
                 value_type,
@@ -945,7 +1125,7 @@ impl<'dae> Variables<'_, 'dae> {
         if entry.attributes.is_some() {
             return Err(duplicate("variable", variable.index(), provenance));
         }
-        entry.attributes = Some(erase_variable_attributes(attributes));
+        entry.attributes = Some(erase_variable_attributes(role, attributes));
         if requires_discrete_value_owner {
             self.storage
                 .register_required_discrete_value(variable.index(), provenance);
@@ -957,23 +1137,22 @@ impl<'dae> Variables<'_, 'dae> {
     fn add_complete(
         &mut self,
         name: VarName,
-        role: VariableRole,
-        variability: ExpressionVariability,
-        value_type: ValueTypeId<'dae>,
+        source_occurrence: InstanceId,
+        capability: CompleteVariableCapability<'dae>,
         declaration: DaeProvenance,
         attributes: VariableAttributes<'dae>,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
-        let requires_discrete_value_owner =
-            role == VariableRole::DiscreteValue && attributes.causality != VariableCausality::Input;
-        if requires_discrete_value_owner {
-            self.storage
-                .expect_discrete_value_topology_open(declaration)?;
-        }
-        let id = self.reserve_forward(name, role, variability, value_type, declaration)?;
+        let id = self.insert_reservation(
+            name,
+            source_occurrence,
+            capability.variable_type,
+            declaration,
+        )?;
         self.validate_attributes(id, &attributes, declaration)?;
+        let role = self.storage.variables[id.index() as usize].role;
         self.storage.variables[id.index() as usize].attributes =
-            Some(erase_variable_attributes(attributes));
-        if requires_discrete_value_owner {
+            Some(erase_variable_attributes(role, attributes));
+        if capability.requires_discrete_value_owner {
             self.storage
                 .register_required_discrete_value(id.index(), declaration);
         }
@@ -981,9 +1160,39 @@ impl<'dae> Variables<'_, 'dae> {
         Ok(id)
     }
 
+    fn complete_variable_capability(
+        &self,
+        name: &VarName,
+        role: VariableRole,
+        variability: ExpressionVariability,
+        value_type: ValueTypeId<'dae>,
+        declaration: DaeProvenance,
+        causality: VariableCausality,
+    ) -> Result<CompleteVariableCapability<'dae>, DaeConstructionError> {
+        let requires_discrete_value_owner =
+            role == VariableRole::DiscreteValue && causality != VariableCausality::Input;
+        if requires_discrete_value_owner {
+            self.storage
+                .expect_discrete_value_topology_open(declaration)?;
+        }
+        check_provenance(self.source_map, declaration)?;
+        let variable_type = self.storage.variable_type_capability(
+            name,
+            role,
+            variability,
+            value_type,
+            declaration,
+        )?;
+        Ok(CompleteVariableCapability {
+            variable_type,
+            requires_discrete_value_owner,
+        })
+    }
+
     fn reserve_forward(
         &mut self,
         name: VarName,
+        source_occurrence: InstanceId,
         role: VariableRole,
         variability: ExpressionVariability,
         value_type: ValueTypeId<'dae>,
@@ -997,30 +1206,28 @@ impl<'dae> Variables<'_, 'dae> {
             value_type,
             declaration,
         )?;
-        self.insert_reservation(name, capability, declaration)
+        self.insert_reservation(name, source_occurrence, capability, declaration)
     }
 
     fn insert_reservation(
         &mut self,
         name: VarName,
+        source_occurrence: InstanceId,
         capability: VariableTypeCapability<'dae>,
         declaration: DaeProvenance,
     ) -> Result<VariableId<'dae>, DaeConstructionError> {
-        if self
-            .storage
-            .variables
-            .iter()
-            .any(|entry| entry.name == name)
-        {
-            return Err(DaeConstructionError::DuplicateKey {
-                kind: "variable",
-                key: name.to_string(),
+        let source_occurrence = SourceOccurrenceId::try_from(source_occurrence).map_err(|_| {
+            DaeConstructionError::UnsetSourceOccurrence {
+                name: name.clone(),
                 span: declaration.span(),
-            });
-        }
-        let raw = checked_u32(self.storage.variables.len(), "variable arena", declaration)?;
+            }
+        })?;
+        let raw =
+            self.storage
+                .reserve_variable_membership(&name, source_occurrence, declaration)?;
         self.storage.variables.push(VariableEntry {
             name,
+            source_occurrence,
             role: capability.role(),
             variability: capability.variability(),
             value_type: capability.value_type().index(),
@@ -1093,12 +1300,15 @@ impl<'dae> Variables<'_, 'dae> {
     }
 }
 
-fn erase_variable_attributes(attributes: VariableAttributes<'_>) -> VariableAttributesWire {
+fn erase_variable_attributes(
+    role: VariableRole,
+    attributes: VariableAttributes<'_>,
+) -> VariableAttributesWire {
     VariableAttributesWire {
         component_ref: attributes.component_ref,
         binding: attributes.binding.map(ExprId::index),
         start: attributes.start.map(ExprId::index),
-        fixed: attributes.fixed,
+        fixed: effective_fixity(role, attributes.fixed),
         min: attributes.min.map(ExprId::index),
         max: attributes.max.map(ExprId::index),
         nominal: attributes.nominal.map(ExprId::index),
@@ -1477,6 +1687,37 @@ impl<'dae> Functions<'_, 'dae> {
         self.assign_after_owner_checks(body, target, value, provenance)
     }
 
+    /// Construct and assign one nonempty aggregate from its ordered members.
+    ///
+    /// The exact function target is the sole source of the expected element
+    /// type. Generic expression clients cannot supply a context type, and the
+    /// resulting aggregate needs no second compatibility check: construction
+    /// has already checked every member against the target in source order.
+    pub fn assign_array(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        target: FunctionValueId<'dae>,
+        elements: impl IntoIterator<Item = ExprId<'dae>>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
+        check_provenance(self.source_map, provenance)?;
+        check_function_value_owner(body.function, target, provenance)?;
+        let target_type = function_value_entry(self.storage, target, provenance)?.value_type;
+        let elements = elements.into_iter().collect::<Vec<_>>();
+        for element in &elements {
+            expect_function_body_expression(self.storage, body, *element, provenance)?;
+            validate_function_value_reads(self.storage, body, *element, provenance)?;
+        }
+        let value = Expressions {
+            source_map: self.source_map,
+            storage: self.storage,
+            marker: PhantomData,
+        }
+        .at(provenance)
+        .array_for_expected_type(ValueTypeId::from_raw(target_type), elements)?;
+        self.commit_assignment(body, target, value, provenance)
+    }
+
     /// Commit several function-value assignments atomically against the shared
     /// definition state that precedes them.
     ///
@@ -1638,6 +1879,16 @@ impl<'dae> Functions<'_, 'dae> {
             .ok_or_else(|| unknown("expression", value.index(), provenance))?;
         self.storage
             .expect_value_type_compatible(entry.value_type, found, provenance)?;
+        self.commit_assignment(body, target, value, provenance)
+    }
+
+    fn commit_assignment(
+        &mut self,
+        body: &mut FunctionBody<'dae>,
+        target: FunctionValueId<'dae>,
+        value: ExprId<'dae>,
+        provenance: DaeProvenance,
+    ) -> Result<(), DaeConstructionError> {
         let definition = insert_function_definition(self.storage, target, value, provenance)?;
         let build = function_build_state_mut(self.storage, body);
         build.current_values[target.ordinal() as usize] = Some(definition.ordinal());

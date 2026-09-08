@@ -1,6 +1,7 @@
 mod clocks;
 mod comprehensions;
 mod delays;
+mod derivatives;
 mod derived_parameters;
 mod discrete_values;
 mod equation_partitions;
@@ -19,6 +20,7 @@ mod function_ranges;
 mod function_record_assemblies;
 mod function_reductions;
 mod function_returns;
+pub(in crate::construction) mod function_statement_products;
 mod function_value_types;
 mod history_operators;
 mod initial_algorithms;
@@ -29,8 +31,9 @@ mod model_algorithms;
 mod model_expression_owners;
 mod model_roles;
 mod multi_output_equations;
-mod record_array_fields;
+pub(in crate::construction) mod record_array_fields;
 mod record_equations;
+mod reference_identity;
 mod sample_aliases;
 mod source_balance;
 mod structured_families;
@@ -38,10 +41,14 @@ mod unexecuted_branches;
 mod when_chains;
 
 use super::*;
+use crate::balance::BalanceDetail;
 use clocks::SampledTarget;
+#[cfg(test)]
+pub(super) use clocks::expression_preorder_ordinal;
 use clocks::{ClockAnalysis, ClockDomainAnalysis, analyze_clocks};
 pub(super) use clocks::{
-    ClockPlan, ClockedValuePlan, is_inferred_clock_condition, is_whole_clock_coordinate,
+    ClockOwnerId, ClockPlan, ClockTransferPlans, ClockedValuePlan, WhenOccurrenceId,
+    is_inferred_clock_condition, is_whole_clock_coordinate,
 };
 use comprehensions::analyze_comprehensions;
 pub(super) use comprehensions::{
@@ -49,27 +56,31 @@ pub(super) use comprehensions::{
 };
 pub(super) use delays::DelayPlan;
 use delays::analyze_delays;
+pub(in crate::construction) use derivatives::DerivativePlans;
+use derivatives::{
+    DerivativeCandidates, StateTargets, admit_derivative_roles, analyze_derivatives,
+};
 pub(super) use derived_parameters::DerivedParameterPlan;
-use derived_parameters::analyze_derived_parameters;
+use derived_parameters::{DerivedParameterAnalysis, analyze_derived_parameters};
 pub(super) use discrete_values::DiscreteValueTopologyPlan;
 use discrete_values::analyze_discrete_value_topology;
 pub(super) use equation_partitions::{
-    AggregateDiscreteConnections, DiscreteValueAssignmentPlan, EquationPartition,
-    discrete_value_assignment, equation_partition, structured_discrete_assignments,
+    AggregateDiscreteConnections, DiscreteValueAssignmentPlan, EquationPartition, ModelEquationRow,
+    ModelEquationSequence, discrete_value_assignment, structured_discrete_assignments,
     structured_discrete_element_assignments,
 };
 use equation_partitions::{
     aggregate_discrete_connections, defined_discrete_targets, discrete_connection_ranks,
 };
 use event_conditions::{
-    evaluate_clock_seconds, evaluate_sample_schedule, validate_algorithm_condition,
-    validate_condition_expression, validate_when_activation_condition,
-    validate_when_condition_expression,
+    evaluate_sample_schedule, validate_algorithm_condition, validate_condition_expression,
+    validate_when_activation_condition, validate_when_condition_expression,
 };
-use expression_events::analyze_expression_events;
 pub(super) use expression_events::{
-    DynamicTimeEventOperand, ExpressionEventPlan, ExpressionEventPlans,
+    AlgorithmConditionProduct, AlgorithmRelationOwner, DynamicTimeEventOperand,
+    ExpressionEventPlan, ExpressionEventPlans,
 };
+use expression_events::{analyze_expression_event_ownership, issue_algorithm_condition};
 use expression_semi_linear::analyze_semi_linear_rules;
 pub(super) use expression_semi_linear::{SemiLinearRowFilter, SemiLinearRules};
 use expression_validation::{
@@ -80,7 +91,6 @@ use expression_validation::{
     when_body_context,
 };
 use function_array_assemblies::coalesce_function_array_assemblies;
-pub(super) use function_bodies::function_assertion;
 use function_bodies::{
     plan_function_statements, resolve_function_definitions,
     validate_function_expression_with_roles, validate_function_statements,
@@ -101,12 +111,21 @@ use function_ranges::{
     immutable_integer_defaults, static_function_range, validate_function_range_expression,
 };
 use function_record_assemblies::{
-    plan_staged_record_assemblies, record_constructor, validate_record_output_assembly,
+    function_value_def_id, plan_staged_record_assemblies, record_constructor,
+    require_constructor_field, resolved_constructor_fields, resolved_record_value,
+    validate_record_output_assembly,
 };
 use function_reductions::validate_integer_reduction;
 use function_returns::{
     certify_nonleading_return_branches, nonreturn_path, normalize_function_returns,
     validate_guarded_function_return,
+};
+pub(super) use function_statement_products::{
+    FunctionArrayAssemblyPlan, FunctionIntegerReduction, FunctionPlan, FunctionStatementProduct,
+    FunctionStatementSequence,
+};
+use function_statement_products::{
+    function_statement_product_error, issue_function_statement_sequence,
 };
 pub(super) use function_value_types::record_field_projections;
 use function_value_types::validate_function_value_type;
@@ -118,11 +137,14 @@ use initial_algorithms::{
     reject_unsupported_initial_algorithm_statements,
 };
 use loop_compaction::compact_function_loops;
-use model_algorithm_calls::analyze_event_function_calls;
+use model_algorithm_calls::ModelEventCallAnalysis;
 pub(super) use model_algorithm_calls::{ModelEventFunctionCallPlan, ModelEventFunctionOutputPlan};
 use model_algorithm_statements::validate_model_algorithm;
-use model_algorithms::analyze_model_algorithm;
-pub(super) use model_algorithms::{ModelAlgorithmPlan, ModelEventTensorLoopPlan};
+use model_algorithms::analyze_event_algorithms;
+pub(super) use model_algorithms::{
+    EventAssignmentRoute, EventBlockPlan, EventElseProduct, EventLoweringProduct,
+    EventStatementPlan, ModelAlgorithmPlan, ModelAlgorithmSequence, ModelEventTensorLoopPlan,
+};
 pub(super) use model_algorithms::{
     algorithm_targets, event_targets, is_event_condition, model_algorithm_targets,
     when_chain_targets,
@@ -135,24 +157,31 @@ pub(in crate::construction) use multi_output_equations::MultiOutputEquationPlan;
 use multi_output_equations::analyze_multi_output_equations;
 pub(super) use record_array_fields::{RecordArrayFieldPlan, RecordArrayFieldPlans};
 use record_array_fields::{
-    analyze_record_array_fields, validate_record_array_field_runtime_coordinates,
+    analyze_record_array_fields, reference_declarations,
+    validate_record_array_field_runtime_coordinates,
 };
-use record_equations::analyze_record_equations;
+use record_equations::{
+    analyze_record_equations, reject_initial_record_equations, reject_record_family_rows,
+    reject_structured_record_equations,
+};
 use sample_aliases::analyze_sample_aliases;
 use source_balance::{SourceBalanceInput, source_balance};
-use structured_families::validate_structured_families;
+use structured_families::{
+    StructuredEquationOwners, analyze_structured_equation_owners, validate_structured_templates,
+};
 use unexecuted_branches::{check_function_assignment_shapes, check_unexecuted_branches};
 use when_chains::validate_when_chains;
 
-pub(super) struct Analysis {
+pub(super) struct Analysis<'flat> {
     pub(super) constants: EvalContext,
     pub(super) delay_plans: HashMap<Span, DelayPlan>,
+    /// Exact analysis certificates for every admitted MLS `der(...)` occurrence.
+    pub(super) derivatives: DerivativePlans,
     /// Exact analysis certificates for MLS §3.7.5 `edge`/`change` occurrences.
     pub(super) history_operators: HistoryOperatorPlans,
     pub(super) roles: HashMap<VarName, PlannedRole>,
     pub(super) balance: BalanceDetail,
-    pub(super) continuous_family_rows: HashSet<usize>,
-    pub(super) initialization_family_rows: HashSet<usize>,
+    pub(super) structured_equation_owners: StructuredEquationOwners<'flat>,
     /// Scalar initial-equation rows represented by typed initial discrete-value
     /// definitions rather than numeric initialization residuals.
     pub(super) initial_discrete_equation_rows: HashSet<usize>,
@@ -168,10 +197,10 @@ pub(super) struct Analysis {
     pub(super) clocked_equation_owners: HashMap<usize, ClockPlan>,
     pub(super) clocked_value_owners: HashMap<InstanceId, ClockedValuePlan>,
     /// Owning clock of every `when Clock()` branch, keyed by the branch span.
-    pub(super) clocked_when_owners: HashMap<Span, ClockPlan>,
+    pub(super) clocked_when_owners: HashMap<WhenOccurrenceId, ClockPlan>,
     /// Owning clock of every runtime coordinate in a clocked partition.
     pub(super) clocked_coordinate_owners: HashMap<InstanceId, ClockPlan>,
-    pub(super) model_algorithm_plans: Vec<ModelAlgorithmPlan>,
+    pub(super) clock_transfer_plans: ClockTransferPlans,
     /// `fixed = false` parameters an initial algorithm determines (MLS §8.6).
     pub(super) initial_parameters: HashMap<VarName, Expression>,
     /// Discrete coordinates whose initialization-instant value an initial
@@ -189,12 +218,9 @@ pub(super) struct Analysis {
     pub(super) record_equations: HashMap<usize, RecordEquationPlan>,
     /// Continuous MLS §12.4.3 tuple equations lowered by result ordinal.
     pub(super) multi_output_equations: HashMap<usize, MultiOutputEquationPlan>,
-    pub(super) initial_record_equations: HashMap<usize, RecordEquationPlan>,
     /// Initial MLS §12.4.3 tuple equations lowered by result ordinal.
     pub(super) initial_multi_output_equations: HashMap<usize, MultiOutputEquationPlan>,
     pub(super) discrete_value_topology: DiscreteValueTopologyPlan,
-    pub(super) discrete_connection_ranks: HashMap<VarName, usize>,
-    pub(super) aggregate_discrete_connections: AggregateDiscreteConnections,
     pub(super) assigned_discrete_targets: HashSet<VarName>,
     /// MLS §3.7.4.5 Rule 1 / Rule 2 replacement residuals, keyed by the model
     /// equation row they replace. Empty until
@@ -202,41 +228,19 @@ pub(super) struct Analysis {
     pub(super) semi_linear_rules: SemiLinearRules,
 }
 
+pub(super) struct AnalyzedModel<'flat> {
+    pub(super) analysis: Analysis<'flat>,
+    pub(super) model_algorithms: ModelAlgorithmSequence<'flat>,
+    /// The sole source-ordered role assignment for ordinary model equations.
+    pub(super) model_equations: ModelEquationSequence<'flat>,
+}
+
 struct SourceBalanceAnalysis {
     detail: BalanceDetail,
     assigned_discrete_targets: HashSet<VarName>,
 }
 
-pub(super) enum FunctionPlan {
-    Statements {
-        /// The source statements the plans were built from. Exact tensor-native
-        /// loop rewrites may replace the shared body, so construction lowers this
-        /// aligned sequence rather than rediscovering those rewrites.
-        source: Vec<rumoca_core::Statement>,
-        statements: Vec<FunctionStatementPlan>,
-        generated_booleans: Vec<(VarName, Span)>,
-        certified_output_seeds: Vec<(VarName, FunctionValueSeed)>,
-    },
-    GuardedReturn {
-        branches: Vec<Vec<FunctionStatementPlan>>,
-        tail: Vec<FunctionStatementPlan>,
-        targets: Vec<VarName>,
-    },
-    IntegerReduction {
-        initial: Vec<FunctionStatementPlan>,
-        result: VarName,
-        reduction: FunctionIntegerReduction,
-    },
-    /// MLS §12.9 external interface; the function has no Modelica body.
-    External(ExternalFunctionPlan),
-}
-
-pub(super) enum FunctionIntegerReduction {
-    WhileExclusive,
-    ForInclusiveCapped,
-}
-
-pub(super) enum FunctionStatementPlan {
+enum FunctionStatementPlan {
     Assignment(FunctionAssignmentPlan),
     /// An MLS §8.3.7 assertion whose condition this exact value-proven
     /// specialization establishes as `true`.
@@ -265,7 +269,7 @@ pub(super) enum FunctionStatementPlan {
     If {
         branches: Vec<Vec<FunctionStatementPlan>>,
         fallback: Option<Vec<FunctionStatementPlan>>,
-        targets: Vec<VarName>,
+        targets: Vec<FunctionConditionalTarget>,
     },
     /// An MLS §11.5 conditional whose executed branch this specialization
     /// proves, planned as the unconditional statement sequence it denotes.
@@ -288,7 +292,7 @@ pub(super) enum FunctionStatementPlan {
     /// A pure multi-result call whose receiving list defines every field of
     /// one record-valued function output or local.
     RecordMultiOutputAssembly(FunctionRecordCallAssemblyPlan),
-    ArrayAssembly(FunctionArrayAssemblyPlan),
+    ArrayAssembly(AnalyzedFunctionArrayAssemblyPlan),
     ArrayAssemblyMember,
     RecordAssembly(FunctionRecordAssemblyPlan),
     RecordAssemblyMember,
@@ -298,8 +302,19 @@ pub(super) enum FunctionStatementPlan {
     RecordFieldAssemblyMember,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct FunctionConditionalTarget {
+    pub(super) name: VarName,
+    pub(super) target_def_id: rumoca_core::DefId,
+    pub(super) record_field: Option<FunctionRecordFieldIdentity>,
+}
+
 pub(super) struct FunctionAssignmentPlan {
     target: VarName,
+    target_def_id: rumoca_core::DefId,
+    record_field: Option<FunctionRecordFieldIdentity>,
+    record_root_name: VarName,
+    record_field_name: Option<VarName>,
     subscripts: Box<[Subscript]>,
     /// Aggregate seed this element write starts from, proven dead by the
     /// definedness certificate that every declared element is written.
@@ -311,8 +326,26 @@ impl FunctionAssignmentPlan {
         &self.target
     }
 
+    pub(super) fn target_def_id(&self) -> rumoca_core::DefId {
+        self.target_def_id
+    }
+
     pub(super) fn subscripts(&self) -> &[Subscript] {
         &self.subscripts
+    }
+
+    pub(super) fn record_field(&self) -> Option<FunctionRecordFieldIdentity> {
+        self.record_field
+    }
+
+    pub(super) fn resolved_record_field(
+        &self,
+    ) -> Option<(&VarName, FunctionRecordFieldIdentity, &VarName)> {
+        Some((
+            &self.record_root_name,
+            self.record_field?,
+            self.record_field_name.as_ref()?,
+        ))
     }
 
     pub(super) fn is_whole(&self) -> bool {
@@ -324,15 +357,131 @@ impl FunctionAssignmentPlan {
     }
 }
 
-pub(super) struct FunctionArrayAssemblyPlan {
-    pub(super) target: VarName,
-    pub(super) direct_count: usize,
-    pub(super) loop_plan: Option<Box<FunctionStatementPlan>>,
-    pub(super) seed: Option<FunctionValueSeed>,
+/// Advance the exact staged-field reaching definitions across one checked plan.
+///
+/// Registered staging locals are storage only. This source-point state is the
+/// capability proving which of them contains the current semantic field value.
+fn advance_function_record_staging(
+    plan: &FunctionStatementPlan,
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    match plan {
+        FunctionStatementPlan::Assignment(assignment) => {
+            advance_assignment_record_staging(assignment, available);
+        }
+        FunctionStatementPlan::MultiOutputCall { outputs } => {
+            for assignment in outputs.iter().flatten() {
+                advance_assignment_record_staging(assignment, available);
+            }
+        }
+        FunctionStatementPlan::RecordMultiOutputAssembly(assembly) => {
+            available.retain(|identity| identity.target != assembly.target_def_id);
+        }
+        FunctionStatementPlan::RecordAssembly(assembly) => {
+            available.retain(|identity| identity.target != assembly.target_def_id);
+        }
+        FunctionStatementPlan::RecordFieldAssembly(assembly) => {
+            let identity = FunctionRecordFieldIdentity {
+                target: assembly.target_def_id,
+                field: assembly.field.def_id,
+            };
+            if assembly.finalize_fields.is_some() {
+                available.retain(|field| field.target != identity.target);
+            } else {
+                available.insert(identity);
+            }
+        }
+        FunctionStatementPlan::If {
+            branches, fallback, ..
+        } => {
+            let mut paths = branches
+                .iter()
+                .map(|branch| record_staging_after(branch, available))
+                .collect::<Vec<_>>();
+            paths.push(match fallback {
+                Some(fallback) => record_staging_after(fallback, available),
+                None => available.clone(),
+            });
+            intersect_record_staging_paths(available, &paths);
+        }
+        FunctionStatementPlan::ProvenBranch { statements, .. } => {
+            for statement in statements {
+                advance_function_record_staging(statement, available);
+            }
+        }
+        FunctionStatementPlan::For { statements, .. } => {
+            let body = record_staging_after(statements, available);
+            available.retain(|identity| body.contains(identity));
+        }
+        FunctionStatementPlan::ProvenAssertion
+        | FunctionStatementPlan::RuntimeAssertion
+        | FunctionStatementPlan::GeneratedBooleanAssignment { .. }
+        | FunctionStatementPlan::ArrayAssembly(_)
+        | FunctionStatementPlan::ArrayAssemblyMember
+        | FunctionStatementPlan::RecordAssemblyMember
+        | FunctionStatementPlan::RecordFieldAssemblyMember => {}
+    }
+}
+
+fn advance_assignment_record_staging(
+    assignment: &FunctionAssignmentPlan,
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+) {
+    match assignment.record_field() {
+        Some(identity) if assignment.is_whole() => {
+            available.insert(identity);
+        }
+        Some(_) => {}
+        None => {
+            available.retain(|identity| identity.target != assignment.target_def_id());
+        }
+    }
+}
+
+fn record_staging_after(
+    plans: &[FunctionStatementPlan],
+    incoming: &HashSet<FunctionRecordFieldIdentity>,
+) -> HashSet<FunctionRecordFieldIdentity> {
+    let mut available = incoming.clone();
+    for plan in plans {
+        advance_function_record_staging(plan, &mut available);
+    }
+    available
+}
+
+fn intersect_record_staging_paths(
+    available: &mut HashSet<FunctionRecordFieldIdentity>,
+    paths: &[HashSet<FunctionRecordFieldIdentity>],
+) {
+    let Some(first) = paths.first() else {
+        available.clear();
+        return;
+    };
+    *available = first
+        .iter()
+        .copied()
+        .filter(|identity| paths[1..].iter().all(|path| path.contains(identity)))
+        .collect();
+}
+
+struct AnalyzedFunctionArrayAssemblyPlan {
+    target: VarName,
+    target_def_id: rumoca_core::DefId,
+    direct_members: Vec<AnalyzedFunctionArrayDirectMember>,
+    extent: usize,
+    suffix_index: Option<rumoca_core::ForIndex>,
+    loop_plan: Option<Box<FunctionStatementPlan>>,
+    seed: Option<FunctionValueSeed>,
+}
+
+struct AnalyzedFunctionArrayDirectMember {
+    subscripts: Box<[Subscript]>,
+    one_based_index: i64,
 }
 
 pub(super) struct FunctionRecordAssemblyPlan {
     pub(super) target: VarName,
+    pub(super) target_def_id: rumoca_core::DefId,
     pub(super) statement_count: usize,
     pub(super) fields: Vec<FunctionRecordFieldAssembly>,
     pub(super) seed: Option<FunctionValueSeed>,
@@ -340,18 +489,25 @@ pub(super) struct FunctionRecordAssemblyPlan {
 
 pub(super) struct FunctionRecordFieldAssemblyPlan {
     pub(super) target: VarName,
+    pub(super) target_def_id: rumoca_core::DefId,
     pub(super) statement_count: usize,
     pub(super) field: FunctionRecordFieldAssembly,
     /// Earlier field definitions this field's expressions may read directly.
-    pub(super) available_fields: Vec<VarName>,
-    /// Constructor-order field names when this field completes the record.
-    pub(super) finalize_fields: Option<Vec<VarName>>,
+    pub(super) available_fields: Vec<ResolvedFunctionRecordField>,
+    /// Constructor-order fields when this field completes the record.
+    pub(super) finalize_fields: Option<Vec<ResolvedFunctionRecordField>>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct FunctionRecordFieldCoordinate {
-    pub(super) target: VarName,
-    pub(super) field: VarName,
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(super) struct FunctionRecordFieldIdentity {
+    pub(super) target: rumoca_core::DefId,
+    pub(super) field: rumoca_core::DefId,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct ResolvedFunctionRecordField {
+    pub(super) name: VarName,
+    pub(super) def_id: rumoca_core::DefId,
 }
 
 pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> VarName {
@@ -360,6 +516,7 @@ pub(super) fn function_record_field_name(target: &VarName, field: &VarName) -> V
 
 pub(super) struct FunctionRecordFieldAssembly {
     pub(super) name: VarName,
+    pub(super) def_id: rumoca_core::DefId,
     pub(super) scalar_type: Option<dae::ScalarType>,
     pub(super) dimensions: Vec<u32>,
     pub(super) scalars: Vec<FunctionRecordScalarSource>,
@@ -368,18 +525,19 @@ pub(super) struct FunctionRecordFieldAssembly {
 
 pub(super) struct FunctionRecordCallAssemblyPlan {
     pub(super) target: VarName,
+    pub(super) target_def_id: rumoca_core::DefId,
     pub(super) fields: Vec<FunctionRecordCallField>,
 }
 
 pub(super) struct FunctionRecordCallField {
     pub(super) name: VarName,
+    pub(super) def_id: rumoca_core::DefId,
     pub(super) result_ordinal: usize,
 }
 
 #[derive(Clone)]
 pub(super) struct FunctionRecordScalarSource {
     pub(super) statement_offset: usize,
-    pub(super) value_field: Option<VarName>,
     pub(super) value_coordinates: Vec<u32>,
 }
 
@@ -402,7 +560,7 @@ struct FunctionValidationContext<'scope> {
     generated_booleans: &'scope [function_returns::GeneratedBooleanDefinition],
     /// Record-field coordinates already constructed by an enclosing staged
     /// assembly at this exact source position.
-    staged_record_fields: &'scope HashSet<FunctionRecordFieldCoordinate>,
+    staged_record_fields: &'scope HashSet<FunctionRecordFieldIdentity>,
     /// Whether this source sequence maps directly to the call-scoped action
     /// sequence rather than a loop or runtime-conditional value owner.
     call_scoped_actions: bool,
@@ -493,130 +651,355 @@ impl PlannedRole {
     }
 }
 
+/// The sole checked interpretation of one Flat whole-record equation.
+///
+/// Analysis authenticates occurrence, nominal/effective layout, leaf type,
+/// role, and shape exactly once before issuing this private plan. Balance,
+/// topology, and lowering consume its derived facts; they must not reopen Flat
+/// to repeat or repair those checks.
 pub(super) struct RecordEquationPlan {
     pub(super) fields: Vec<RecordEquationFieldPlan>,
+    pub(super) aggregate: Option<RecordEquationAggregateSide>,
 }
 
-pub(super) struct RecordEquationFieldPlan {
-    pub(super) target: VarName,
-    pub(super) value: RecordEquationFieldValue,
+#[derive(Clone, Copy)]
+pub(super) enum RecordEquationAggregateSide {
+    Left,
+    Right,
+}
+
+pub(super) enum RecordEquationFieldPlan {
+    ContinuousRealResidual {
+        target: RecordEquationCoordinate,
+        value: RecordEquationFieldValue,
+    },
+    DiscreteRealResidual {
+        target: RecordEquationCoordinate,
+        value: RecordEquationFieldValue,
+    },
+    DiscreteValueDefinition {
+        target: RecordEquationCoordinate,
+        value: RecordEquationFieldValue,
+        dependencies: HashSet<VarName>,
+    },
+}
+
+impl RecordEquationFieldPlan {
+    pub(super) fn target(&self) -> &RecordEquationCoordinate {
+        match self {
+            Self::ContinuousRealResidual { target, .. }
+            | Self::DiscreteRealResidual { target, .. }
+            | Self::DiscreteValueDefinition { target, .. } => target,
+        }
+    }
+
+    pub(super) fn value(&self) -> &RecordEquationFieldValue {
+        match self {
+            Self::ContinuousRealResidual { value, .. }
+            | Self::DiscreteRealResidual { value, .. }
+            | Self::DiscreteValueDefinition { value, .. } => value,
+        }
+    }
 }
 
 pub(super) enum RecordEquationFieldValue {
     AggregateProjection(Box<[usize]>),
-    Coordinate(VarName),
+    Coordinate(RecordEquationCoordinate),
 }
 
-pub(super) fn analyze(flat: &flat::Model) -> Result<Analysis, ToDaeError> {
+#[derive(Clone)]
+pub(super) struct RecordEquationCoordinate {
+    /// Diagnostic/display identity only; semantic transition uses
+    /// `instance_id`.
+    name: VarName,
+    instance_id: rumoca_core::InstanceId,
+    /// Derived once from the checked Flat leaf at plan construction.
+    scalar_count: usize,
+    /// Derived once from the checked Appendix-B role at plan construction.
+    discrete_unknown: bool,
+}
+
+impl RecordEquationCoordinate {
+    pub(super) fn name(&self) -> &VarName {
+        &self.name
+    }
+
+    pub(super) fn instance_id(&self) -> rumoca_core::InstanceId {
+        self.instance_id
+    }
+
+    pub(super) fn scalar_count(&self) -> usize {
+        self.scalar_count
+    }
+
+    pub(super) fn is_discrete_unknown(&self) -> bool {
+        self.discrete_unknown
+    }
+}
+
+pub(super) fn analyze<'flat>(flat: &'flat flat::Model) -> Result<AnalyzedModel<'flat>, ToDaeError> {
     validate_source_model(flat)?;
+    let structured_equation_owners = analyze_structured_equation_owners(flat)?;
+    // DAE-C02 is an input-shape and occurrence-identity contract, so issue its
+    // complete occurrence certificates before any unrelated semantic analysis
+    // can choose a later diagnostic.
+    let (states, derivative_candidates) = analyze_derivatives(&structured_equation_owners)?;
     // Fold the parameter fixed point before shape analysis: MLS §12.2 array
     // dimensions can depend on the settled parameter values from MLS §4.5.
     let constants = constant_context(flat)?;
     let function_shapes = FunctionShapeAnalysis::analyze(flat, &constants)?;
-    let record_array_fields = Arc::clone(function_shapes.record_array_fields());
+    // Preserve the established first-error contract: function-body defects
+    // refuse as soon as their shape environment closes, before unrelated
+    // model ownership analyses can select a different diagnostic.
     let function_plans = validate_functions(flat, &function_shapes)?;
-    let record_equations = analyze_record_equation_sets(flat)?;
-    let expression_support = analyze_expression_support(flat, &constants)?;
+    let record_array_fields = Arc::clone(function_shapes.record_array_fields());
+    let expression_support = analyze_expression_support(&structured_equation_owners, &constants)?;
     let clocks = analyze_clocks(flat, &constants)?;
     let ModelRoles {
-        states,
-        variables: mut roles,
-        expressions: mut expression_roles,
-    } = analyze_model_roles(flat, &clocks.sampled_targets)?;
-    validate_runtime_coordinates(flat, &roles, &record_array_fields)?;
-    let derived_parameters = analyze_derived_parameters(flat, &roles)?;
-    apply_derived_parameter_roles(&derived_parameters.plans, &mut roles, &mut expression_roles);
-    let clock_domains =
-        analyze_clocked_partitions(flat, &clocks, &constants, &mut roles, &mut expression_roles)?;
-    let history_operators = analyze_history_operators(flat, &roles)?;
-    let multi_output_equations =
-        analyze_multi_output_equation_sets(flat, &expression_roles, &states, &function_shapes)?;
-    let (continuous_family_rows, initialization_family_rows) =
-        validate_expressions_and_structured_rows(ExpressionValidationInput {
-            flat,
-            roles: &roles,
-            expression_roles: &expression_roles,
-            states: &states,
-            record_array_fields: &record_array_fields,
-            values: function_shapes.model_values(),
-            multi_output_equations: &multi_output_equations.continuous,
-            initial_multi_output_equations: &multi_output_equations.initialization,
-        })?;
-    let (mut sample_lattices, model_algorithm_plans) = analyze_event_algorithms(
+        derivatives,
+        variables: roles,
+        expressions: expression_roles,
+    } = analyze_model_roles(flat, &clocks.sampled_targets, states, derivative_candidates)?;
+    let record_equations = analyze_record_equation_sets(flat, &roles)?;
+    analyze_from_foundation(
         flat,
-        &roles,
-        &expression_roles,
-        &states,
-        &constants,
-        &function_shapes,
+        AnalysisFoundation {
+            constants,
+            function_shapes,
+            function_plans,
+            record_array_fields,
+            expression_support,
+            clocks,
+            derivatives,
+            roles,
+            expression_roles,
+            record_equations,
+            structured_equation_owners,
+        },
+    )
+}
+
+struct AnalysisFoundation<'flat> {
+    constants: EvalContext,
+    function_shapes: FunctionShapeAnalysis,
+    function_plans: HashMap<FunctionSpecializationKey, FunctionPlan>,
+    record_array_fields: Arc<RecordArrayFieldPlans>,
+    expression_support: ExpressionSupportPlans,
+    clocks: ClockAnalysis,
+    derivatives: DerivativePlans,
+    roles: HashMap<VarName, PlannedRole>,
+    expression_roles: HashMap<VarName, PlannedRole>,
+    record_equations: RecordEquationSets,
+    structured_equation_owners: StructuredEquationOwners<'flat>,
+}
+
+struct AnalysisCompletion<'flat> {
+    derived_parameters: DerivedParameterAnalysis,
+    clock_domains: ClockDomainAnalysis,
+    history_operators: HistoryOperatorPlans,
+    multi_output_equations: MultiOutputEquationSets,
+    sample_lattices: Vec<(Span, PeriodicClockSchedule)>,
+    model_algorithms: ModelAlgorithmSequence<'flat>,
+    model_equations: ModelEquationSequence<'flat>,
+    discrete_value_topology: DiscreteValueTopologyPlan,
+    initial_algorithms: InitialAlgorithmAnalysis,
+    initial_discrete_equation_rows: HashSet<usize>,
+    balance: SourceBalanceAnalysis,
+    expression_events: ExpressionEventPlans,
+    sample_alias_schedules: HashMap<VarName, PeriodicClockSchedule>,
+}
+
+struct InitialOwnershipAndBalance {
+    algorithms: InitialAlgorithmAnalysis,
+    equation_rows: HashSet<usize>,
+    balance: SourceBalanceAnalysis,
+}
+
+fn analyze_from_foundation<'flat>(
+    flat: &'flat flat::Model,
+    mut foundation: AnalysisFoundation<'flat>,
+) -> Result<AnalyzedModel<'flat>, ToDaeError> {
+    validate_runtime_coordinates(flat, &foundation.roles, &foundation.record_array_fields)?;
+    let derived_parameters = analyze_derived_parameters(flat, &foundation.roles)?;
+    apply_derived_parameter_roles(
+        &derived_parameters.plans,
+        &mut foundation.roles,
+        &mut foundation.expression_roles,
+    );
+    let clock_domains = analyze_clocked_partitions(
+        flat,
+        &foundation.clocks,
+        &foundation.constants,
+        &mut foundation.roles,
+        &mut foundation.expression_roles,
     )?;
-    let (discrete_connection_ranks, aggregate_discrete_connections, discrete_value_topology) =
-        analyze_discrete_connections(flat, &roles)?;
-    let (initial_algorithms, initial_discrete_equation_rows) =
-        analyze_initial_owners(flat, &roles, &states, &constants, &mut sample_lattices)?;
-    let balance = analyze_source_balance(SourceBalanceAnalysisInput {
+    let history_operators =
+        analyze_history_operators(&foundation.structured_equation_owners, &foundation.roles)?;
+    let multi_output_equations = analyze_multi_output_equation_sets(
         flat,
-        roles: &roles,
-        clock_equation_rows: &clocks.equation_rows,
-        derived_parameter_rows: &derived_parameters.rows,
-        record_equations: &record_equations.continuous,
+        &foundation.expression_roles,
+        &foundation.function_shapes,
+    )?;
+    validate_expressions_and_structured_rows(ExpressionValidationInput {
+        flat,
+        structured_equation_owners: &foundation.structured_equation_owners,
+        roles: &foundation.roles,
+        expression_roles: &foundation.expression_roles,
+        record_array_fields: &foundation.record_array_fields,
+        values: foundation.function_shapes.model_values(),
         multi_output_equations: &multi_output_equations.continuous,
-        connection_ranks: &discrete_connection_ranks,
-        aggregate_connections: &aggregate_discrete_connections,
+        initial_multi_output_equations: &multi_output_equations.initialization,
     })?;
-    let (expression_events, sample_alias_schedules) = analyze_expression_event_ownership(
-        flat,
-        &roles,
-        &constants,
-        &discrete_connection_ranks,
-        &aggregate_discrete_connections,
+    let continuous_family_rows = foundation
+        .structured_equation_owners
+        .continuous()
+        .structured_row_indices()
+        .collect::<HashSet<_>>();
+    reject_record_family_rows(
+        &foundation.record_equations.continuous,
+        &continuous_family_rows,
+        &flat.equations,
     )?;
-    Ok(Analysis {
-        constants,
-        delay_plans: expression_support.delays,
-        history_operators,
-        roles,
-        balance: balance.detail,
-        continuous_family_rows,
-        initialization_family_rows,
-        initial_discrete_equation_rows,
-        sample_lattices,
-        expression_events,
-        sample_alias_schedules,
-        clock_plans: clocks.plans,
-        clock_equation_rows: clocks.equation_rows,
-        clocked_equation_owners: clock_domains.equation_owners,
-        clocked_value_owners: clock_domains.value_owners,
-        clocked_when_owners: clock_domains.when_owners,
-        clocked_coordinate_owners: clock_domains.coordinate_owners,
-        model_algorithm_plans,
-        initial_parameters: initial_algorithms.parameters,
-        initial_discrete_values: initial_algorithms.discrete_values,
-        initial_algorithm_assertions: initial_algorithms.assertions,
-        function_plans,
-        function_shapes,
-        comprehension_plans: expression_support.comprehensions,
-        record_array_fields,
-        derived_parameters: derived_parameters.plans,
-        derived_parameter_families: derived_parameters.families,
-        derived_parameter_rows: derived_parameters.rows,
-        record_equations: record_equations.continuous,
-        multi_output_equations: multi_output_equations.continuous,
-        initial_record_equations: record_equations.initialization,
-        initial_multi_output_equations: multi_output_equations.initialization,
-        discrete_value_topology,
-        discrete_connection_ranks,
+    let (discrete_connection_ranks, aggregate_discrete_connections) = analyze_discrete_connections(
+        flat,
+        &foundation.roles,
+        &foundation.record_equations.continuous,
+    )?;
+    let model_equations = ModelEquationSequence::issue(
+        flat,
+        &foundation.roles,
+        &discrete_connection_ranks,
         aggregate_discrete_connections,
-        assigned_discrete_targets: balance.assigned_discrete_targets,
+    )?;
+    let discrete_value_topology = analyze_discrete_value_topology(
+        &model_equations,
+        &foundation.roles,
+        &foundation.record_equations.continuous,
+    )?;
+    let (expression_events, sample_alias_schedules) = analyze_expression_event_ownership(
+        &model_equations,
+        &foundation.roles,
+        &foundation.constants,
+    )?;
+    let (mut sample_lattices, model_algorithms) = analyze_event_algorithms(
+        flat,
+        &foundation.roles,
+        &foundation.expression_roles,
+        &foundation.constants,
+        &foundation.function_shapes,
+        &sample_alias_schedules,
+    )?;
+    let initial = analyze_initial_ownership_and_balance(
+        flat,
+        &foundation,
+        &derived_parameters,
+        &multi_output_equations,
+        &model_equations,
+        &mut sample_lattices,
+    )?;
+    finish_analysis(
+        foundation,
+        AnalysisCompletion {
+            derived_parameters,
+            clock_domains,
+            history_operators,
+            multi_output_equations,
+            sample_lattices,
+            model_algorithms,
+            model_equations,
+            discrete_value_topology,
+            initial_algorithms: initial.algorithms,
+            initial_discrete_equation_rows: initial.equation_rows,
+            balance: initial.balance,
+            expression_events,
+            sample_alias_schedules,
+        },
+    )
+}
+
+fn analyze_initial_ownership_and_balance(
+    flat: &flat::Model,
+    foundation: &AnalysisFoundation<'_>,
+    derived_parameters: &DerivedParameterAnalysis,
+    multi_output_equations: &MultiOutputEquationSets,
+    model_equations: &ModelEquationSequence<'_>,
+    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
+) -> Result<InitialOwnershipAndBalance, ToDaeError> {
+    let (algorithms, equation_rows) = analyze_initial_owners(
+        flat,
+        &foundation.roles,
+        &foundation.constants,
+        sample_lattices,
+    )?;
+    let balance = analyze_source_balance(SourceBalanceAnalysisInput {
+        equations: model_equations,
+        roles: &foundation.roles,
+        clock_equation_rows: &foundation.clocks.equation_rows,
+        derived_parameter_rows: &derived_parameters.rows,
+        record_equations: &foundation.record_equations.continuous,
+        multi_output_equations: &multi_output_equations.continuous,
+    })?;
+    Ok(InitialOwnershipAndBalance {
+        algorithms,
+        equation_rows,
+        balance,
+    })
+}
+
+fn finish_analysis<'flat>(
+    foundation: AnalysisFoundation<'flat>,
+    completion: AnalysisCompletion<'flat>,
+) -> Result<AnalyzedModel<'flat>, ToDaeError> {
+    let model_algorithms = completion.model_algorithms;
+    let model_equations = completion.model_equations;
+    let analysis = Analysis {
+        constants: foundation.constants,
+        delay_plans: foundation.expression_support.delays,
+        derivatives: foundation.derivatives,
+        history_operators: completion.history_operators,
+        roles: foundation.roles,
+        balance: completion.balance.detail,
+        structured_equation_owners: foundation.structured_equation_owners,
+        initial_discrete_equation_rows: completion.initial_discrete_equation_rows,
+        sample_lattices: completion.sample_lattices,
+        expression_events: completion.expression_events,
+        sample_alias_schedules: completion.sample_alias_schedules,
+        clock_plans: foundation.clocks.plans,
+        clock_equation_rows: foundation.clocks.equation_rows,
+        clocked_equation_owners: completion.clock_domains.equation_owners,
+        clocked_value_owners: completion.clock_domains.value_owners,
+        clocked_when_owners: completion.clock_domains.when_owners,
+        clocked_coordinate_owners: completion.clock_domains.coordinate_owners,
+        clock_transfer_plans: completion.clock_domains.transfers,
+        initial_parameters: completion.initial_algorithms.parameters,
+        initial_discrete_values: completion.initial_algorithms.discrete_values,
+        initial_algorithm_assertions: completion.initial_algorithms.assertions,
+        function_plans: foundation.function_plans,
+        function_shapes: foundation.function_shapes,
+        comprehension_plans: foundation.expression_support.comprehensions,
+        record_array_fields: foundation.record_array_fields,
+        derived_parameters: completion.derived_parameters.plans,
+        derived_parameter_families: completion.derived_parameters.families,
+        derived_parameter_rows: completion.derived_parameters.rows,
+        record_equations: foundation.record_equations.continuous,
+        multi_output_equations: completion.multi_output_equations.continuous,
+        initial_multi_output_equations: completion.multi_output_equations.initialization,
+        discrete_value_topology: completion.discrete_value_topology,
+        assigned_discrete_targets: completion.balance.assigned_discrete_targets,
         semi_linear_rules: SemiLinearRules::default(),
+    };
+    Ok(AnalyzedModel {
+        analysis,
+        model_algorithms,
+        model_equations,
     })
 }
 
 struct ExpressionValidationInput<'a> {
     flat: &'a flat::Model,
+    structured_equation_owners: &'a StructuredEquationOwners<'a>,
     roles: &'a HashMap<VarName, PlannedRole>,
     expression_roles: &'a HashMap<VarName, PlannedRole>,
-    states: &'a HashSet<VarName>,
     record_array_fields: &'a RecordArrayFieldPlans,
     values: &'a ShapeEnvironment,
     multi_output_equations: &'a HashMap<usize, MultiOutputEquationPlan>,
@@ -629,44 +1012,46 @@ struct ExpressionSupportPlans {
 }
 
 fn analyze_expression_support(
-    flat: &flat::Model,
+    owners: &StructuredEquationOwners<'_>,
     constants: &EvalContext,
 ) -> Result<ExpressionSupportPlans, ToDaeError> {
+    let flat = owners.model();
     Ok(ExpressionSupportPlans {
         comprehensions: analyze_comprehensions(all_model_expressions(flat), constants)?,
-        delays: analyze_delays(flat, constants)?,
+        delays: analyze_delays(owners, constants)?,
     })
 }
 
 struct RecordEquationSets {
     continuous: HashMap<usize, RecordEquationPlan>,
-    initialization: HashMap<usize, RecordEquationPlan>,
 }
 
-fn analyze_record_equation_sets(flat: &flat::Model) -> Result<RecordEquationSets, ToDaeError> {
+fn analyze_record_equation_sets(
+    flat: &flat::Model,
+    roles: &HashMap<VarName, PlannedRole>,
+) -> Result<RecordEquationSets, ToDaeError> {
+    reject_initial_record_equations(flat)?;
+    reject_structured_record_equations(flat)?;
     Ok(RecordEquationSets {
-        continuous: analyze_record_equations(flat, &flat.equations)?,
-        initialization: analyze_record_equations(flat, &flat.initial_equations)?,
+        continuous: analyze_record_equations(flat, &flat.equations, roles)?,
     })
 }
 
 fn validate_expressions_and_structured_rows(
     input: ExpressionValidationInput<'_>,
-) -> Result<(HashSet<usize>, HashSet<usize>), ToDaeError> {
+) -> Result<(), ToDaeError> {
     validate_model_expressions(
         input.flat,
         input.expression_roles,
-        input.states,
         input.record_array_fields,
         input.values,
         input.multi_output_equations,
         input.initial_multi_output_equations,
     )?;
-    analyze_structured_family_rows(
-        input.flat,
+    validate_structured_templates(
+        input.structured_equation_owners,
         input.roles,
         input.expression_roles,
-        input.states,
         input.record_array_fields,
         input.values,
     )
@@ -675,14 +1060,12 @@ fn validate_expressions_and_structured_rows(
 fn analyze_multi_output_equation_sets(
     flat: &flat::Model,
     expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     function_shapes: &FunctionShapeAnalysis,
 ) -> Result<MultiOutputEquationSets, ToDaeError> {
     let continuous = analyze_multi_output_equations(
         flat,
         &flat.equations,
         expression_roles,
-        states,
         function_shapes,
         false,
     )?;
@@ -690,7 +1073,6 @@ fn analyze_multi_output_equation_sets(
         flat,
         &flat.initial_equations,
         expression_roles,
-        states,
         function_shapes,
         true,
     )?;
@@ -710,61 +1092,7 @@ fn validate_runtime_coordinates(
     roles: &HashMap<VarName, PlannedRole>,
     record_array_fields: &RecordArrayFieldPlans,
 ) -> Result<(), ToDaeError> {
-    validate_runtime_coordinate_instances(flat, roles)?;
     validate_record_array_field_runtime_coordinates(flat, record_array_fields, roles)
-}
-
-fn analyze_structured_family_rows(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    record_array_fields: &RecordArrayFieldPlans,
-    values: &ShapeEnvironment,
-) -> Result<(HashSet<usize>, HashSet<usize>), ToDaeError> {
-    let continuous = validate_structured_families(
-        &flat.structured_equations,
-        flat.equations.len(),
-        roles,
-        expression_roles,
-        states,
-        record_array_fields,
-        values,
-    )?;
-    let initialization = validate_structured_families(
-        &flat.initial_structured_equations,
-        flat.initial_equations.len(),
-        roles,
-        expression_roles,
-        states,
-        record_array_fields,
-        values,
-    )?;
-    Ok((continuous, initialization))
-}
-
-fn analyze_expression_event_ownership(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    constants: &EvalContext,
-    connection_ranks: &HashMap<VarName, usize>,
-    aggregate_connections: &AggregateDiscreteConnections,
-) -> Result<
-    (
-        ExpressionEventPlans,
-        HashMap<VarName, PeriodicClockSchedule>,
-    ),
-    ToDaeError,
-> {
-    let events = analyze_expression_events(flat, roles, constants)?;
-    let aliases = analyze_sample_aliases(
-        flat,
-        roles,
-        &events,
-        connection_ranks,
-        aggregate_connections,
-    )?;
-    Ok((events, aliases))
 }
 
 /// Prove initial-algorithm ownership and claim initial discrete equation rows
@@ -776,46 +1104,12 @@ fn analyze_expression_event_ownership(
 fn analyze_initial_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(InitialAlgorithmAnalysis, HashSet<usize>), ToDaeError> {
-    let mut algorithms =
-        analyze_initial_algorithm_owners(flat, roles, states, constants, sample_lattices)?;
+    let mut algorithms = analyze_initial_algorithm_owners(flat, roles, constants, sample_lattices)?;
     let rows = claim_initial_discrete_equations(flat, roles, &mut algorithms.discrete_values)?;
     Ok((algorithms, rows))
-}
-
-type EventAlgorithmAnalysis = (Vec<(Span, PeriodicClockSchedule)>, Vec<ModelAlgorithmPlan>);
-
-fn analyze_event_algorithms(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    function_shapes: &FunctionShapeAnalysis,
-) -> Result<EventAlgorithmAnalysis, ToDaeError> {
-    let mut sample_lattices = Vec::new();
-    validate_when_chains(
-        &flat.when_chains,
-        roles,
-        expression_roles,
-        states,
-        constants,
-        function_shapes.model_values(),
-        &mut sample_lattices,
-    )?;
-    let plans = analyze_model_algorithms(
-        flat,
-        roles,
-        expression_roles,
-        states,
-        constants,
-        function_shapes,
-        &mut sample_lattices,
-    )?;
-    Ok((sample_lattices, plans))
 }
 
 fn validate_source_model(flat: &flat::Model) -> Result<(), ToDaeError> {
@@ -829,21 +1123,14 @@ fn validate_source_model(flat: &flat::Model) -> Result<(), ToDaeError> {
 fn analyze_discrete_connections(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Result<
-    (
-        HashMap<VarName, usize>,
-        AggregateDiscreteConnections,
-        DiscreteValueTopologyPlan,
-    ),
-    ToDaeError,
-> {
-    let ranks = discrete_connection_ranks(flat, roles);
+    record_equations: &HashMap<usize, RecordEquationPlan>,
+) -> Result<(HashMap<VarName, usize>, AggregateDiscreteConnections), ToDaeError> {
+    let ranks = discrete_connection_ranks(flat, roles, record_equations)?;
     let aggregates = aggregate_discrete_connections(flat, roles, &ranks)?;
-    let topology = analyze_discrete_value_topology(flat, roles, &ranks, &aggregates)?;
-    Ok((ranks, aggregates, topology))
+    Ok((ranks, aggregates))
 }
 
-impl Analysis {
+impl AnalyzedModel<'_> {
     /// Prove the MLS §3.7.4.5 Rule 1 / Rule 2 replacements over the model
     /// equation rows, completing the plan [`analyze`] leaves empty.
     ///
@@ -851,19 +1138,21 @@ impl Analysis {
     /// proven once the rest of the analysis exists. Construction is the caller;
     /// `balance_detail` deliberately is not, because the source balance the
     /// rules preserve is counted on the untransformed rows.
-    pub(super) fn with_semi_linear_rules(mut self, flat: &flat::Model) -> Self {
-        let mut claimed = self.continuous_family_rows.clone();
-        claimed.extend(&self.clock_equation_rows);
-        claimed.extend(&self.derived_parameter_rows);
-        self.semi_linear_rules = analyze_semi_linear_rules(
-            flat,
-            &self.roles,
-            &self.discrete_connection_ranks,
-            &self.aggregate_discrete_connections,
+    pub(super) fn with_semi_linear_rules(mut self) -> Self {
+        let mut claimed = self
+            .analysis
+            .structured_equation_owners
+            .continuous()
+            .structured_row_indices()
+            .collect::<HashSet<_>>();
+        claimed.extend(&self.analysis.clock_equation_rows);
+        claimed.extend(&self.analysis.derived_parameter_rows);
+        self.analysis.semi_linear_rules = analyze_semi_linear_rules(
+            &self.model_equations,
             &SemiLinearRowFilter {
                 excluded: &claimed,
-                records: &self.record_equations,
-                clocked: &self.clocked_equation_owners,
+                records: &self.analysis.record_equations,
+                clocked: &self.analysis.clocked_equation_owners,
             },
         );
         self
@@ -907,66 +1196,6 @@ fn analyze_clocked_partitions(
     )
 }
 
-fn analyze_model_algorithms(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-    expression_roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
-    constants: &EvalContext,
-    function_shapes: &FunctionShapeAnalysis,
-    sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
-) -> Result<Vec<ModelAlgorithmPlan>, ToDaeError> {
-    flat.algorithms
-        .iter()
-        .map(|algorithm| {
-            validate_model_algorithm(
-                algorithm,
-                expression_roles,
-                states,
-                function_shapes.model_values(),
-                constants,
-                sample_lattices,
-            )?;
-            analyze_model_algorithm(flat, algorithm, roles, function_shapes)
-        })
-        .collect()
-}
-
-fn validate_runtime_coordinate_instances(
-    flat: &flat::Model,
-    roles: &HashMap<VarName, PlannedRole>,
-) -> Result<(), ToDaeError> {
-    let mut instances = HashMap::new();
-    for variable in flat.variables.values() {
-        if !matches!(
-            roles.get(&variable.name),
-            Some(
-                PlannedRole::Parameter
-                    | PlannedRole::Constant
-                    | PlannedRole::Input
-                    | PlannedRole::State
-                    | PlannedRole::Algebraic
-                    | PlannedRole::Output
-                    | PlannedRole::DiscreteReal
-                    | PlannedRole::DiscreteValue
-            )
-        ) {
-            continue;
-        }
-        if let Some(previous) = instances.insert(variable.instance_id, &variable.name) {
-            return Err(ToDaeError::unsupported_flat(
-                "runtime coordinate identity",
-                format!(
-                    "Flat variables `{previous}` and `{}` share exact instance {}",
-                    variable.name, variable.instance_id
-                ),
-                variable.source_span,
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn apply_derived_parameter_roles(
     plans: &HashMap<VarName, DerivedParameterPlan>,
     roles: &mut HashMap<VarName, PlannedRole>,
@@ -981,7 +1210,6 @@ fn apply_derived_parameter_roles(
 fn validate_model_expressions(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     record_array_fields: &RecordArrayFieldPlans,
     model_values: &ShapeEnvironment,
     multi_output_equations: &HashMap<usize, MultiOutputEquationPlan>,
@@ -997,7 +1225,6 @@ fn validate_model_expressions(
                 validate_model_expression_with_record_array_fields(
                     expression,
                     roles,
-                    states,
                     record_array_fields,
                     model_values,
                 )?;
@@ -1013,7 +1240,6 @@ fn validate_model_expressions(
         validate_model_expression_with_record_array_fields(
             expression,
             roles,
-            states,
             record_array_fields,
             model_values,
         )?;
@@ -1027,7 +1253,6 @@ fn validate_model_expressions(
         validate_model_expression_with_record_array_fields(
             expression,
             roles,
-            states,
             record_array_fields,
             model_values,
         )?;
@@ -1057,47 +1282,46 @@ fn validate_flat_shape(flat: &flat::Model) -> Result<(), ToDaeError> {
         });
     }
     flat.validate().map_err(|error| {
-        ToDaeError::unsupported_flat("Flat shape contract", format!("{error:?}"), error.span())
+        let detail = format!("{error:?}");
+        match error.span() {
+            Some(span) => ToDaeError::unsupported_flat("Flat shape contract", detail, span),
+            None => ToDaeError::internal(format!(
+                "Flat shape contract failed without a source owner: {detail}"
+            )),
+        }
     })
 }
 
 struct SourceBalanceAnalysisInput<'scope> {
-    flat: &'scope flat::Model,
+    equations: &'scope ModelEquationSequence<'scope>,
     roles: &'scope HashMap<VarName, PlannedRole>,
     clock_equation_rows: &'scope HashSet<usize>,
     derived_parameter_rows: &'scope HashSet<usize>,
     record_equations: &'scope HashMap<usize, RecordEquationPlan>,
     multi_output_equations: &'scope HashMap<usize, MultiOutputEquationPlan>,
-    connection_ranks: &'scope HashMap<VarName, usize>,
-    aggregate_connections: &'scope AggregateDiscreteConnections,
 }
 
 fn analyze_source_balance(
     input: SourceBalanceAnalysisInput<'_>,
 ) -> Result<SourceBalanceAnalysis, ToDaeError> {
     let SourceBalanceAnalysisInput {
-        flat,
+        equations,
         roles,
         clock_equation_rows,
         derived_parameter_rows,
         record_equations,
         multi_output_equations,
-        connection_ranks,
-        aggregate_connections,
     } = input;
-    let assigned_discrete_targets =
-        defined_discrete_targets(flat, roles, connection_ranks, aggregate_connections)?;
+    let assigned_discrete_targets = defined_discrete_targets(equations, roles, record_equations);
     let mut non_runtime_rows = clock_equation_rows.clone();
     non_runtime_rows.extend(derived_parameter_rows);
     let detail = source_balance(SourceBalanceInput {
-        flat,
+        equations,
         roles,
         assigned_targets: &assigned_discrete_targets,
         excluded_equation_rows: &non_runtime_rows,
         record_equations,
         multi_output_equations,
-        connection_ranks,
-        aggregate_connections,
     })?;
     Ok(SourceBalanceAnalysis {
         detail,
@@ -1111,18 +1335,16 @@ fn analyze_source_balance(
 fn analyze_initial_algorithm_owners(
     flat: &flat::Model,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<InitialAlgorithmAnalysis, ToDaeError> {
-    let initial_algorithms = analyze_initial_algorithms(flat, roles, states, constants)?;
+    let initial_algorithms = analyze_initial_algorithms(flat, roles, constants)?;
     validate_assertions(
         flat.assert_equations
             .iter()
             .chain(&flat.initial_assert_equations)
             .chain(&initial_algorithms.assertions),
         roles,
-        states,
         constants,
         sample_lattices,
     )?;
@@ -1132,22 +1354,15 @@ fn analyze_initial_algorithm_owners(
 fn validate_assertions<'flat>(
     assertions: impl IntoIterator<Item = &'flat flat::AssertEquation>,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
 ) -> Result<(), ToDaeError> {
     for assertion in assertions {
         require_span(assertion.span, "assert equation")?;
-        validate_condition_expression(
-            &assertion.condition,
-            roles,
-            states,
-            constants,
-            sample_lattices,
-        )?;
-        validate_expression(&assertion.message, roles, states)?;
+        validate_condition_expression(&assertion.condition, roles, constants, sample_lattices)?;
+        validate_expression(&assertion.message, roles)?;
         if let Some(level) = &assertion.level {
-            validate_expression(level, roles, states)?;
+            validate_expression(level, roles)?;
         }
     }
     Ok(())
@@ -1195,25 +1410,14 @@ fn structured_template_expressions(
 /// `RuntimeDependentReason`. Any other failure proves the model or the
 /// evaluator wrong and is reported at the binding.
 fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
-    let mut context = EvalContext::with_capacity(flat.variables.len(), 0, flat.functions.len() * 2);
-    for function in flat.functions.values() {
-        context.add_function(function.clone());
-    }
-    for (name, variable) in &flat.variables {
-        context.add_array_dimensions(name.to_string(), variable.dims.clone());
-    }
-    // MLS §4.8.5.2: an enumeration literal's semantic identity is its ordinal,
-    // and both `Integer(...)` and the relational operators are defined on that
-    // ordinal. Seeding the constant table with the model's exact ordinals is
-    // what lets a parameter expression over an enumeration — such as the
-    // `resolution < Resolution.s` guard of a periodic clock — evaluate.
-    for (literal, ordinal) in &flat.enum_literal_ordinals {
-        context.add_parameter(literal.clone(), EvalValue::Integer(*ordinal));
-    }
+    let mut settled = HashMap::new();
     for _ in 0..flat.variables.len() {
+        let context = resolved_constant_context(flat, &settled)?;
         let mut progress = false;
+        let mut newly_settled = Vec::new();
         for (name, variable) in &flat.variables {
-            if context.instance_value(variable.instance_id).is_some()
+            let identity = variable_occurrence_identity(name, variable)?;
+            if settled.contains_key(&identity)
                 || !matches!(
                     variable.variability,
                     Variability::Constant(_) | Variability::Parameter(_)
@@ -1228,7 +1432,7 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
             };
             match eval_expr(binding, &context) {
                 Ok(value) => {
-                    context.add_instance_parameter(variable.instance_id, name.to_string(), value);
+                    newly_settled.push((identity, value));
                     progress = true;
                 }
                 Err(error) if error.runtime_dependent_reason().is_some() => {}
@@ -1241,12 +1445,100 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
                 }
             }
         }
+        settled.extend(newly_settled);
         if !progress {
             break;
         }
     }
-    register_deferred_parameters(flat, &mut context);
+    let mut context = resolved_constant_context(flat, &settled)?;
+    register_deferred_parameters(flat, &mut context)?;
     Ok(context)
+}
+
+fn resolved_constant_context(
+    flat: &flat::Model,
+    settled: &HashMap<rumoca_eval_flat::constant::ResolvedOccurrenceKey, EvalValue>,
+) -> Result<EvalContext, ToDaeError> {
+    let mut values = Vec::with_capacity(settled.len());
+    let mut shapes = Vec::with_capacity(flat.variables.len());
+    for variable in flat.variables.values() {
+        let Some(reference) = variable.component_ref.as_ref() else {
+            return Err(ToDaeError::unsupported_flat(
+                "parameter identity inventory",
+                format!(
+                    "Flat variable `{}` has no structured component reference",
+                    variable.name
+                ),
+                variable.source_span,
+            ));
+        };
+        let identity = rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+            instance_id: variable.instance_id,
+            root_def_id: reference.root_def_id(),
+        };
+        shapes.push(rumoca_eval_flat::constant::ResolvedShapeBinding {
+            identity,
+            dimensions: variable.dims.clone(),
+        });
+        if let Some(value) = settled.get(&identity) {
+            values.push(rumoca_eval_flat::constant::ResolvedValueBinding {
+                identity,
+                value: value.clone(),
+            });
+        }
+    }
+    let inventory =
+        rumoca_eval_flat::constant::ResolvedIdentityInventory::try_from_bindings(values, shapes)
+            .map_err(|error| ToDaeError::internal(error.to_string()))?;
+    let mut context = EvalContext::resolved(
+        flat.variables.len(),
+        flat.functions.len() * 2,
+        inventory,
+        rumoca_eval_flat::constant::ResolvedEnumCatalog::empty(),
+    );
+    let mut issued_functions = HashMap::new();
+    for function in flat.functions.values() {
+        if let Some(instance_id) = function.instance_id
+            && issued_functions
+                .get(&instance_id)
+                .is_some_and(|existing| *existing == function)
+        {
+            continue;
+        }
+        context
+            .try_add_function(function.clone())
+            .map_err(|error| {
+                ToDaeError::unsupported_flat(
+                    "constant function catalog",
+                    error.to_string(),
+                    function.span,
+                )
+            })?;
+        if let Some(instance_id) = function.instance_id {
+            issued_functions.insert(instance_id, function);
+        }
+    }
+    for (name, variable) in &flat.variables {
+        context.add_array_dimensions(name.to_string(), variable.dims.clone());
+    }
+    Ok(context)
+}
+
+fn variable_occurrence_identity(
+    name: &VarName,
+    variable: &flat::Variable,
+) -> Result<rumoca_eval_flat::constant::ResolvedOccurrenceKey, ToDaeError> {
+    let reference = variable.component_ref.as_ref().ok_or_else(|| {
+        ToDaeError::unsupported_flat(
+            "parameter identity inventory",
+            format!("Flat variable `{name}` has no structured component reference"),
+            variable.source_span,
+        )
+    })?;
+    Ok(rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+        instance_id: variable.instance_id,
+        root_def_id: reference.root_def_id(),
+    })
 }
 
 /// Name every `fixed = false` parameter the initialization system settles, and
@@ -1290,17 +1582,22 @@ fn constant_context(flat: &flat::Model) -> Result<EvalContext, ToDaeError> {
 /// registering a failed-fold binding over deferred free names as deferred
 /// itself. Both belong with the start-relative-schedule work that would let
 /// these sample starts construct at all, rather than with this diagnostic.
-fn register_deferred_parameters(flat: &flat::Model, context: &mut EvalContext) {
+fn register_deferred_parameters(
+    flat: &flat::Model,
+    context: &mut EvalContext,
+) -> Result<(), ToDaeError> {
     for (name, variable) in &flat.variables {
+        let identity = variable_occurrence_identity(name, variable)?;
         if !matches!(variable.variability, Variability::Parameter(_))
             || variable.fixed != Some(false)
             || variable.binding.is_some()
-            || context.instance_value(variable.instance_id).is_some()
+            || context.occurrence_value(identity).is_some()
         {
             continue;
         }
         context.add_deferred_parameter(name.to_string(), deferred_parameter_source(flat, name));
     }
+    Ok(())
 }
 
 /// What settles `target`: the start instant, or the initialization system.
@@ -1397,33 +1694,32 @@ fn validate_known_function_calls(
         name,
         args,
         is_constructor,
+        call_kind,
         span,
     } = expression
     {
-        if *is_constructor && name.as_str().starts_with("__rumoca_named_arg__.") {
-            if args.len() != 1 {
+        match rumoca_core::classify_named_function_arg_marker(
+            name,
+            args,
+            *is_constructor,
+            *call_kind,
+        ) {
+            rumoca_core::NamedFunctionArgMarker::Valid { .. } => {
                 return Err(ToDaeError::unsupported_flat(
                     "named function argument",
-                    "a resolved named argument must contain exactly one value",
+                    "generated named-argument wrappers must be eliminated before DAE construction",
                     *span,
                 ));
             }
-        } else if enumeration_conversion(flat, name, args, *span)?.is_none() {
-            let function = flat
-                .functions
-                .get(name.var_name())
-                .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), *span))?;
-            if args.len() != function.inputs.len() {
+            rumoca_core::NamedFunctionArgMarker::Malformed => {
                 return Err(ToDaeError::unsupported_flat(
-                    "function call arity",
-                    format!(
-                        "`{}` expects {} inputs but receives {}",
-                        function.name,
-                        function.inputs.len(),
-                        args.len()
-                    ),
+                    "named function argument",
+                    "a generated named argument must be a constructor invocation with one value and a nonempty name",
                     *span,
                 ));
+            }
+            rumoca_core::NamedFunctionArgMarker::NotMarker => {
+                validate_regular_function_call(flat, name, args, *span)?;
             }
         }
     }
@@ -1431,6 +1727,34 @@ fn validate_known_function_calls(
         validate_known_function_calls(child, flat)?;
     }
     Ok(())
+}
+
+fn validate_regular_function_call(
+    flat: &flat::Model,
+    name: &rumoca_core::Reference,
+    args: &[Expression],
+    span: Span,
+) -> Result<(), ToDaeError> {
+    if enumeration_conversion(flat, name, args, span)?.is_some() {
+        return Ok(());
+    }
+    let function = flat
+        .functions
+        .get(name.var_name())
+        .ok_or_else(|| ToDaeError::unresolved_reference(name.as_str(), span))?;
+    if args.len() == function.inputs.len() {
+        return Ok(());
+    }
+    Err(ToDaeError::unsupported_flat(
+        "function call arity",
+        format!(
+            "`{}` expects {} inputs but receives {}",
+            function.name,
+            function.inputs.len(),
+            args.len()
+        ),
+        span,
+    ))
 }
 
 /// Which sample of a record's fields a structured assignment reads.
@@ -1441,29 +1765,40 @@ fn validate_known_function_calls(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum StructuredSource {
     /// `target := source`.
-    Current(VarName),
+    Current(StructuredLeaf),
     /// `target := pre(source)`. Modelica defines `pre` of a record
     /// component-wise, so every field reads its own previous sample and the
     /// whole-record form means exactly the field-wise form.
-    Previous(VarName),
+    Previous(StructuredLeaf),
 }
 
 impl StructuredSource {
     pub(super) fn name(&self) -> &VarName {
         match self {
-            Self::Current(name) | Self::Previous(name) => name,
+            Self::Current(leaf) | Self::Previous(leaf) => &leaf.name,
         }
     }
 }
 
-pub(super) fn structured_assignment_names<'a>(
-    target: &VarName,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StructuredLeaf {
+    pub(super) name: VarName,
+    pub(super) identity: rumoca_eval_flat::constant::ResolvedOccurrenceKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct StructuredAssignmentPlan {
+    pub(super) pairs: Vec<(StructuredLeaf, StructuredSource)>,
+}
+
+pub(super) fn structured_assignment_plan(
+    flat: &flat::Model,
+    target: &rumoca_core::ComponentReference,
     value: &Expression,
-    names: impl IntoIterator<Item = &'a VarName>,
-) -> Option<Vec<(VarName, StructuredSource)>> {
+) -> Option<StructuredAssignmentPlan> {
     // See through `pre`: the record form is the field-wise form, so the
     // pairing below is identical and only the sample each field reads differs.
-    let (value, wrap): (&Expression, fn(VarName) -> StructuredSource) = match value {
+    let (value, wrap): (&Expression, fn(StructuredLeaf) -> StructuredSource) = match value {
         Expression::BuiltinCall {
             function: rumoca_core::BuiltinFunction::Pre,
             args,
@@ -1480,40 +1815,79 @@ pub(super) fn structured_assignment_names<'a>(
     if !subscripts.is_empty() {
         return None;
     }
-    let target_prefix = format!("{target}.");
-    let source_prefix = format!("{}.", name.var_name());
-    let names = names.into_iter().cloned().collect::<HashSet<_>>();
-    let target_leaves = names
+    let source = name.component_ref()?;
+    let target_instance = flat.record_instances.get(&target.to_var_name())?;
+    let source_instance = flat.record_instances.get(name.var_name())?;
+    if name.instance_id()? != source_instance.instance_id {
+        return None;
+    }
+    let target_prefix = target
+        .parts()
         .iter()
-        .filter(|candidate| candidate.as_str().starts_with(&target_prefix))
-        .cloned()
+        .map(|part| part.def_id)
         .collect::<Vec<_>>();
-    let source_leaves = names
+    let source_prefix = source
+        .parts()
         .iter()
-        .filter_map(|candidate| {
-            candidate
-                .as_str()
-                .strip_prefix(&source_prefix)
-                .map(str::to_owned)
-        })
-        .collect::<HashSet<_>>();
+        .map(|part| part.def_id)
+        .collect::<Vec<_>>();
+    let target_leaves = structured_leaves(flat, target_instance.instance_id, &target_prefix)?;
+    let source_leaves = structured_leaves(flat, source_instance.instance_id, &source_prefix)?;
     if target_leaves.is_empty() || target_leaves.len() != source_leaves.len() {
         return None;
     }
     let mut pairs = Vec::with_capacity(target_leaves.len());
-    for target_leaf in target_leaves {
-        let suffix = target_leaf
-            .as_str()
-            .strip_prefix(&target_prefix)
-            .expect("target leaves were selected by the same prefix");
-        let source_leaf = VarName::new(format!("{source_prefix}{suffix}"));
-        if !source_leaves.contains(suffix) || !names.contains(&source_leaf) {
-            return None;
-        }
+    for (suffix, target_leaf) in target_leaves {
+        let source_leaf = source_leaves.get(&suffix)?.clone();
         pairs.push((target_leaf, wrap(source_leaf)));
     }
-    pairs.sort_by(|(lhs, _), (rhs, _)| lhs.as_str().cmp(rhs.as_str()));
-    Some(pairs)
+    pairs.sort_by(|(lhs, _), (rhs, _)| lhs.name.as_str().cmp(rhs.name.as_str()));
+    Some(StructuredAssignmentPlan { pairs })
+}
+
+fn structured_leaves(
+    flat: &flat::Model,
+    owner: rumoca_core::InstanceId,
+    prefix: &[rumoca_core::DefId],
+) -> Option<HashMap<Vec<rumoca_core::DefId>, StructuredLeaf>> {
+    let mut leaves = HashMap::new();
+    for (name, variable) in &flat.variables {
+        if !occurrence_descends_from(flat, variable.instance_id, owner)? {
+            continue;
+        }
+        let reference = variable.component_ref.as_ref()?;
+        let declarations = reference_declarations(reference);
+        if !declarations.starts_with(prefix) || declarations.len() == prefix.len() {
+            continue;
+        }
+        let suffix = declarations[prefix.len()..].to_vec();
+        let leaf = StructuredLeaf {
+            name: name.clone(),
+            identity: rumoca_eval_flat::constant::ResolvedOccurrenceKey {
+                instance_id: variable.instance_id,
+                root_def_id: reference.root_def_id(),
+            },
+        };
+        if leaves.insert(suffix, leaf).is_some() {
+            return None;
+        }
+    }
+    Some(leaves)
+}
+
+fn occurrence_descends_from(
+    flat: &flat::Model,
+    descendant: rumoca_core::InstanceId,
+    ancestor: rumoca_core::InstanceId,
+) -> Option<bool> {
+    let mut cursor = Some(descendant);
+    while let Some(instance) = cursor {
+        if instance == ancestor {
+            return Some(true);
+        }
+        cursor = flat.instance_relations.get(&instance)?.owner;
+    }
+    Some(false)
 }
 
 pub(super) fn effective_function_scalar_type(

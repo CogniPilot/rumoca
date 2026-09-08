@@ -7,11 +7,22 @@
 use rumoca_ir_solve as solve;
 use serde::{Deserialize, Serialize};
 
+/// Require a current-wire optional key while preserving explicit `null` as
+/// `None`. Naming a field deserializer suppresses Serde's implicit
+/// absent-`Option` completion.
+fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 /// Current canonical `SolveModel` wire schema.
 ///
 /// The model schema is distinct from `SOLVE_SCHEMA_VERSION`, which versions
 /// the nested canonical `SolveProblem`.
-pub const SOLVE_MODEL_SCHEMA_VERSION: u16 = 1;
+pub const SOLVE_MODEL_SCHEMA_VERSION: u16 = 5;
 
 /// Borrowed canonical construction inputs for one solver model.
 ///
@@ -26,10 +37,8 @@ pub struct SolveModelWireRef<'model> {
     initial_y: &'model [f64],
     solver_nominals: &'model [f64],
     parameters: &'model [f64],
-    external_tables: &'model solve::ExternalTables,
-    visible_names: &'model [String],
     visible_value_rows: &'model solve::ScalarProgramBlock,
-    variable_meta: &'model [solve::SolveVariableMeta],
+    variable_catalog: SolveVariableCatalogWireRef<'model>,
 }
 
 /// Borrow the canonical, artifact-free wire view of a constructed model.
@@ -40,35 +49,21 @@ pub struct SolveModelWireRef<'model> {
 pub fn solve_model_wire(
     model: &solve::SolveModel,
 ) -> Result<SolveModelWireRef<'_>, SolveModelWireError> {
-    model
-        .validate()
-        .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
     if !matches!(
-        model.artifacts.continuous.mass_matrix,
+        model.artifacts().continuous().mass_matrix,
         solve::MassMatrix::Identity
     ) {
         return Err(SolveModelWireError::UnsupportedMassMatrix);
     }
-    validate_correlations(CorrelationView {
-        problem: &model.problem,
-        initial_y: &model.initial_y,
-        solver_nominals: &model.solver_nominals,
-        parameters: &model.parameters,
-        visible_names: &model.visible_names,
-        visible_value_rows: &model.visible_value_rows,
-        variable_meta: &model.variable_meta,
-    })?;
     Ok(SolveModelWireRef {
         schema_version: SOLVE_MODEL_SCHEMA_VERSION,
-        problem: &model.problem,
-        pure_calls: &model.pure_calls,
-        initial_y: &model.initial_y,
-        solver_nominals: &model.solver_nominals,
-        parameters: &model.parameters,
-        external_tables: &model.external_tables,
-        visible_names: &model.visible_names,
-        visible_value_rows: &model.visible_value_rows,
-        variable_meta: &model.variable_meta,
+        problem: model.problem(),
+        pure_calls: model.pure_calls(),
+        initial_y: model.initial_y(),
+        solver_nominals: model.solver_nominals(),
+        parameters: model.parameters(),
+        visible_value_rows: model.visible_value_rows(),
+        variable_catalog: variable_catalog_wire(model.variable_catalog()),
     })
 }
 
@@ -81,10 +76,8 @@ struct SolveModelWire {
     initial_y: Vec<f64>,
     solver_nominals: Vec<f64>,
     parameters: Vec<f64>,
-    external_tables: solve::ExternalTables,
-    visible_names: Vec<String>,
     visible_value_rows: solve::ScalarProgramBlock,
-    variable_meta: Vec<solve::SolveVariableMeta>,
+    variable_catalog: SolveVariableCatalogWire,
 }
 
 /// Replay one canonical solver model from an arbitrary Serde input.
@@ -108,129 +101,145 @@ fn replay_solve_model(wire: SolveModelWire) -> Result<solve::SolveModel, SolveMo
             expected: SOLVE_MODEL_SCHEMA_VERSION,
         });
     }
-    validate_correlations(CorrelationView {
-        problem: &wire.problem,
-        initial_y: &wire.initial_y,
-        solver_nominals: &wire.solver_nominals,
-        parameters: &wire.parameters,
-        visible_names: &wire.visible_names,
-        visible_value_rows: &wire.visible_value_rows,
-        variable_meta: &wire.variable_meta,
-    })?;
+    let variable_entries = replay_variable_catalog_entries(wire.variable_catalog);
     let artifacts =
         super::artifacts::lower_solve_artifacts(&wire.problem, solve::MassMatrix::Identity)
             .map_err(|error| SolveModelWireError::ArtifactDerivation(error.to_string()))?;
-    let model = solve::SolveModel {
-        problem: wire.problem,
-        pure_calls: wire.pure_calls,
+    solve::SolveModel::construct(
+        wire.problem,
+        wire.pure_calls,
         artifacts,
-        initial_y: wire.initial_y,
-        solver_nominals: wire.solver_nominals,
-        parameters: wire.parameters,
-        external_tables: wire.external_tables,
-        visible_names: wire.visible_names,
-        visible_value_rows: wire.visible_value_rows,
-        variable_meta: wire.variable_meta,
-    };
-    model
-        .validate()
-        .map_err(|error| SolveModelWireError::Root(error.to_string()))?;
-    Ok(model)
+        solve::SolveModelRuntimeInputs {
+            initial_y: wire.initial_y,
+            solver_nominals: wire.solver_nominals,
+            parameters: wire.parameters,
+        },
+        wire.visible_value_rows,
+        variable_entries,
+    )
+    .map_err(SolveModelWireError::Construction)
 }
 
-struct CorrelationView<'model> {
-    problem: &'model solve::SolveProblem,
-    initial_y: &'model [f64],
-    solver_nominals: &'model [f64],
-    parameters: &'model [f64],
-    visible_names: &'model [String],
-    visible_value_rows: &'model solve::ScalarProgramBlock,
-    variable_meta: &'model [solve::SolveVariableMeta],
+#[derive(Debug, Serialize)]
+struct SolveVariableCatalogWireRef<'catalog> {
+    entries: Vec<SolveVariableCatalogEntryWireRef<'catalog>>,
 }
 
-fn validate_correlations(view: CorrelationView<'_>) -> Result<(), SolveModelWireError> {
-    require_vector_length(
-        "initial_y",
-        view.problem.layout.y_scalars(),
-        view.initial_y.len(),
-    )?;
-    require_vector_length(
-        "solver_nominals",
-        view.problem.layout.y_scalars(),
-        view.solver_nominals.len(),
-    )?;
-    require_vector_length(
-        "parameters",
-        view.problem.layout.p_scalars(),
-        view.parameters.len(),
-    )?;
-    require_vector_length(
-        "visible_value_rows",
-        view.visible_names.len(),
-        view.visible_value_rows.row_count(),
-    )?;
-    require_vector_length(
-        "visible_value_outputs",
-        view.visible_names.len(),
-        view.visible_value_rows.output_count(),
-    )?;
-    require_vector_length(
-        "variable_meta",
-        view.visible_names.len(),
-        view.variable_meta.len(),
-    )?;
-    if !view
-        .visible_value_rows
-        .uses_local_contiguous_output_indices()
-    {
-        return Err(SolveModelWireError::VisibleOutputIndices);
-    }
-    for (index, (name, metadata)) in view
-        .visible_names
-        .iter()
-        .zip(view.variable_meta)
-        .enumerate()
-    {
-        if metadata.name != *name {
-            return Err(SolveModelWireError::VariableMetaName { index });
-        }
-    }
-    Ok(())
+#[derive(Debug, Serialize)]
+struct SolveVariableCatalogEntryWireRef<'entry> {
+    source_occurrence: rumoca_core::SourceOccurrenceId,
+    name: &'entry str,
+    dimensions: &'entry [u32],
+    scalar_names: &'entry [String],
+    provenance: rumoca_core::Span,
+    causality: solve::SolveVariableCausality,
+    variability: solve::SolveVariableVariability,
+    tunable: bool,
+    unit: Option<&'entry str>,
+    description: Option<&'entry str>,
+    fixed: rumoca_core::Fixity,
+    start: Option<&'entry [f64]>,
+    minimum: Option<&'entry [f64]>,
+    maximum: Option<&'entry [f64]>,
+    nominal: Option<&'entry [f64]>,
 }
 
-fn require_vector_length(
-    field: &'static str,
-    expected: usize,
-    actual: usize,
-) -> Result<(), SolveModelWireError> {
-    if actual == expected {
-        return Ok(());
+fn variable_catalog_wire(catalog: &solve::SolveVariableCatalog) -> SolveVariableCatalogWireRef<'_> {
+    SolveVariableCatalogWireRef {
+        entries: catalog
+            .entries()
+            .iter()
+            .map(|entry| SolveVariableCatalogEntryWireRef {
+                source_occurrence: entry.source_occurrence(),
+                name: entry.name(),
+                dimensions: entry.dimensions(),
+                scalar_names: entry.scalar_names(),
+                provenance: entry.provenance(),
+                causality: entry.causality(),
+                variability: entry.variability(),
+                tunable: entry.is_tunable(),
+                unit: entry.unit(),
+                description: entry.description(),
+                fixed: entry.fixed(),
+                start: entry.start(),
+                minimum: entry.minimum(),
+                maximum: entry.maximum(),
+                nominal: entry.nominal(),
+            })
+            .collect(),
     }
-    Err(SolveModelWireError::VectorLength {
-        field,
-        expected,
-        actual,
-    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolveVariableCatalogWire {
+    entries: Vec<SolveVariableCatalogEntryWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SolveVariableCatalogEntryWire {
+    source_occurrence: rumoca_core::SourceOccurrenceId,
+    name: String,
+    dimensions: Vec<u32>,
+    scalar_names: Vec<String>,
+    provenance: rumoca_core::Span,
+    causality: solve::SolveVariableCausality,
+    variability: solve::SolveVariableVariability,
+    tunable: bool,
+    #[serde(deserialize_with = "required_option")]
+    unit: Option<String>,
+    #[serde(deserialize_with = "required_option")]
+    description: Option<String>,
+    fixed: rumoca_core::Fixity,
+    #[serde(deserialize_with = "required_option")]
+    start: Option<Vec<f64>>,
+    #[serde(deserialize_with = "required_option")]
+    minimum: Option<Vec<f64>>,
+    #[serde(deserialize_with = "required_option")]
+    maximum: Option<Vec<f64>>,
+    #[serde(deserialize_with = "required_option")]
+    nominal: Option<Vec<f64>>,
+}
+
+fn replay_variable_catalog_entries(
+    wire: SolveVariableCatalogWire,
+) -> Vec<solve::SolveVariableCatalogSourceEntry> {
+    wire.entries
+        .into_iter()
+        .map(|entry| {
+            let source = solve::SolveVariableSource::new(
+                entry.source_occurrence,
+                entry.name,
+                entry.dimensions,
+                entry.scalar_names,
+                entry.provenance,
+            );
+            let attributes = solve::SolveVariableSourceAttributes::new(
+                entry.causality,
+                entry.variability,
+                entry.tunable,
+                entry.unit,
+                entry.description,
+                entry.fixed,
+            );
+            let values = solve::SolveVariableEvaluatedValues::new(
+                entry.start,
+                entry.minimum,
+                entry.maximum,
+                entry.nominal,
+            );
+            (source, attributes, values)
+        })
+        .collect()
 }
 
 #[derive(Debug)]
 pub enum SolveModelWireError {
-    SchemaVersion {
-        actual: u16,
-        expected: u16,
-    },
-    VectorLength {
-        field: &'static str,
-        expected: usize,
-        actual: usize,
-    },
-    VisibleOutputIndices,
-    VariableMetaName {
-        index: usize,
-    },
+    SchemaVersion { actual: u16, expected: u16 },
     UnsupportedMassMatrix,
     ArtifactDerivation(String),
-    Root(String),
+    Construction(solve::SolveModelConstructionError),
 }
 
 impl std::fmt::Display for SolveModelWireError {
@@ -239,21 +248,6 @@ impl std::fmt::Display for SolveModelWireError {
             Self::SchemaVersion { actual, expected } => write!(
                 formatter,
                 "unsupported SolveModel schema_version {actual}; expected {expected}"
-            ),
-            Self::VectorLength {
-                field,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "SolveModel {field} contains {actual} entries, expected {expected}"
-            ),
-            Self::VisibleOutputIndices => formatter.write_str(
-                "SolveModel visible-value rows do not use one dense local output per visible name",
-            ),
-            Self::VariableMetaName { index } => write!(
-                formatter,
-                "SolveModel variable metadata at index {index} does not name the matching visible value"
             ),
             Self::UnsupportedMassMatrix => formatter.write_str(
                 "canonical SolveModel wire cannot encode a caller-selected non-identity mass matrix",
@@ -264,9 +258,104 @@ impl std::fmt::Display for SolveModelWireError {
                     "failed to reconstruct SolveModel artifacts: {error}"
                 )
             }
-            Self::Root(error) => write!(formatter, "replayed SolveModel is invalid: {error}"),
+            Self::Construction(error) => {
+                write!(formatter, "replayed SolveModel is invalid: {error}")
+            }
         }
     }
 }
 
 impl std::error::Error for SolveModelWireError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variable_catalog_wire_requires_every_optional_key_but_accepts_null() {
+        let complete = serde_json::json!({
+            "source_occurrence": 1,
+            "name": "x",
+            "dimensions": [],
+            "scalar_names": ["x"],
+            "provenance": rumoca_core::Span::DUMMY,
+            "causality": "local",
+            "variability": "continuous",
+            "tunable": false,
+            "unit": null,
+            "description": null,
+            "fixed": false,
+            "start": null,
+            "minimum": null,
+            "maximum": null,
+            "nominal": null,
+        });
+
+        serde_json::from_value::<SolveVariableCatalogEntryWire>(complete.clone())
+            .expect("explicit null is valid current-wire absence");
+
+        for field in [
+            "unit",
+            "description",
+            "fixed",
+            "start",
+            "minimum",
+            "maximum",
+            "nominal",
+        ] {
+            let mut missing = complete.clone();
+            missing
+                .as_object_mut()
+                .expect("catalog entry is an object")
+                .remove(field)
+                .expect("fixture contains every required optional key");
+            assert!(
+                serde_json::from_value::<SolveVariableCatalogEntryWire>(missing).is_err(),
+                "current Solve variable-catalog wire must reject omitted `{field}`"
+            );
+        }
+
+        let mut null_fixed = complete;
+        null_fixed
+            .as_object_mut()
+            .expect("catalog entry is an object")
+            .insert("fixed".to_string(), serde_json::Value::Null);
+        assert!(
+            serde_json::from_value::<SolveVariableCatalogEntryWire>(null_fixed).is_err(),
+            "the Solve variable-catalog wire carries a total `fixed`; null is not a value"
+        );
+    }
+
+    #[test]
+    fn variable_catalog_wire_requires_a_nonzero_source_occurrence() {
+        let complete = serde_json::json!({
+            "source_occurrence": 1,
+            "name": "x",
+            "dimensions": [],
+            "scalar_names": ["x"],
+            "provenance": rumoca_core::Span::DUMMY,
+            "causality": "local",
+            "variability": "continuous",
+            "tunable": false,
+            "unit": null,
+            "description": null,
+            "fixed": false,
+            "start": null,
+            "minimum": null,
+            "maximum": null,
+            "nominal": null,
+        });
+
+        let mut missing = complete.clone();
+        missing
+            .as_object_mut()
+            .expect("catalog entry is an object")
+            .remove("source_occurrence")
+            .expect("fixture carries source occurrence");
+        assert!(serde_json::from_value::<SolveVariableCatalogEntryWire>(missing).is_err());
+
+        let mut zero = complete;
+        zero["source_occurrence"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<SolveVariableCatalogEntryWire>(zero).is_err());
+    }
+}

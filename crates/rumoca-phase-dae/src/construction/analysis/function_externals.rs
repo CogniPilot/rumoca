@@ -27,10 +27,13 @@ pub(super) fn validate_external_function(
     function: &rumoca_core::Function,
     context: FunctionValidationContext<'_>,
 ) -> Result<ExternalFunctionPlan, ToDaeError> {
-    let external = function
-        .external
-        .as_ref()
-        .expect("external analysis runs only for declared external functions");
+    let Some(external) = function.external.as_ref() else {
+        return Err(ToDaeError::unsupported_flat(
+            "external function interface",
+            format!("`{}` carries no external declaration", function.name),
+            function.span,
+        ));
+    };
     if function.is_constructor {
         return Err(ToDaeError::unsupported_flat(
             "external function interface",

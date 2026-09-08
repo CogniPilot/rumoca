@@ -1,6 +1,6 @@
 use rumoca_ir_solve::{
     ComputeBlock, ComputeNode, LinearOp, RefreshScalarProgramSource, Reg, ScalarProgramBlock,
-    SolveProblemShapeContractError, SolveVisitor,
+    SolveProblemShapeContractError,
 };
 
 mod affine;
@@ -54,7 +54,11 @@ pub fn to_scalar_program_projection(
         .validate_shape_contract("scalarize compute block")
         .map_err(ScalarizeError::from)?;
     let mut collector = ScalarProgramCollector::default();
-    collector.visit_compute_block(block)?;
+    for (node_index, node) in block.nodes.iter().enumerate() {
+        let output_cursor_before = collector.next_output;
+        collector.append_compute_node(node_index, node)?;
+        collector.trace_compute_node(node_index, node, output_cursor_before);
+    }
     let block = ScalarProgramBlock::with_output_indices(
         collector.rows,
         collector.program_spans,
@@ -544,49 +548,6 @@ fn compute_node_trace_fields(node: &ComputeNode) -> (&'static str, String) {
     }
 }
 
-impl SolveVisitor for ScalarProgramCollector {
-    type Error = ScalarizeError;
-
-    fn visit_compute_node(
-        &mut self,
-        node_index: usize,
-        node: &ComputeNode,
-    ) -> Result<(), Self::Error> {
-        let output_cursor_before = self.next_output;
-        self.append_compute_node(node_index, node)?;
-        self.trace_compute_node(node_index, node, output_cursor_before);
-        Ok(())
-    }
-
-    fn visit_scalar_program(
-        &mut self,
-        _program_index: usize,
-        span: Option<rumoca_core::Span>,
-        ops: &[LinearOp],
-    ) -> Result<(), Self::Error> {
-        let span = span.ok_or(ScalarizeError::MissingSourceSpan {
-            kind: "scalar program row",
-        })?;
-        reserve_vec_additional(&mut self.rows, 1, "scalar program rows", span)?;
-        self.rows
-            .push(cloned_linear_ops(ops, "scalar program", span)?);
-        reserve_vec_additional(&mut self.sources, 1, "scalar program sources", span)?;
-        self.sources.push(None);
-        reserve_vec_additional(&mut self.program_spans, 1, "scalar program spans", span)?;
-        self.program_spans.push(span);
-        reserve_vec_additional(
-            &mut self.output_indices,
-            1,
-            "scalar program output indices",
-            span,
-        )?;
-        self.output_indices.push(self.next_output);
-        self.next_output =
-            checked_contiguous_output_count(self.next_output, 1, "scalar program", span)?;
-        Ok(())
-    }
-}
-
 fn scalar_program_block_span(block: &ScalarProgramBlock) -> Option<rumoca_core::Span> {
     block.first_source_span()
 }
@@ -603,16 +564,6 @@ fn cloned_scalar_rows_optional(
     Ok(cloned)
 }
 
-fn cloned_linear_ops(
-    ops: &[LinearOp],
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<LinearOp>, ScalarizeError> {
-    let mut cloned = scalarize_vec_with_capacity(ops.len(), kind, span)?;
-    cloned.extend_from_slice(ops);
-    Ok(cloned)
-}
-
 fn cloned_linear_ops_optional(
     ops: &[LinearOp],
     kind: &'static str,
@@ -621,22 +572,6 @@ fn cloned_linear_ops_optional(
     let mut cloned = scalarize_vec_with_capacity_optional(ops.len(), kind, span)?;
     cloned.extend_from_slice(ops);
     Ok(cloned)
-}
-
-fn scalarize_vec_with_capacity<T>(
-    capacity: usize,
-    kind: &'static str,
-    span: rumoca_core::Span,
-) -> Result<Vec<T>, ScalarizeError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(capacity)
-        .map_err(|_| ScalarizeError::AllocationOverflow {
-            kind,
-            capacity,
-            span,
-        })?;
-    Ok(values)
 }
 
 pub(super) fn scalarize_vec_with_capacity_optional<T>(

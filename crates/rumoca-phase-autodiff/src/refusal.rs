@@ -79,6 +79,16 @@ impl Site {
             span: location.filter(|at| at.has_source()).map(Location::span),
         }
     }
+
+    /// Preserve an exact offending span while retaining the nearest honest
+    /// line/column for syntax shapes that do not carry their own location.
+    pub fn with_span(file: &str, location: Option<&Location>, span: Span) -> Self {
+        let mut site = Self::at(file, location);
+        if !span.is_dummy() {
+            site.span = Some(span);
+        }
+        site
+    }
 }
 
 impl fmt::Display for Site {

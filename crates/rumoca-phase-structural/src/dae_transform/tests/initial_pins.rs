@@ -68,14 +68,20 @@ fn pinned_alias_model(form: AliasForm, state: StateDeclaration) -> dae::Dae {
         let (p_id, x_id, x_reservation, y_id, y_reservation) = model.variables(|variables| {
             let p_id = variables.parameter(
                 VarName::new("p"),
+                InstanceId::new(1),
                 real,
                 at("parameter Real p = 2"),
                 dae::VariableAttributes::default(),
             )?;
-            let (x_id, x_reservation) =
-                variables.reserve_state(VarName::new("x"), real, at("Real x"))?;
+            let (x_id, x_reservation) = variables.reserve_state(
+                VarName::new("x"),
+                InstanceId::new(2),
+                real,
+                at("Real x"),
+            )?;
             let (y_id, y_reservation) = variables.reserve_algebraic(
                 VarName::new("y"),
+                InstanceId::new(3),
                 real,
                 at("Real y(start = 1, fixed = true)"),
             )?;
@@ -101,7 +107,7 @@ fn pinned_alias_model(form: AliasForm, state: StateDeclaration) -> dae::Dae {
                 x_reservation,
                 dae::VariableAttributes {
                     start: x_start,
-                    fixed: state.pinned.then_some(true),
+                    fixed: state.pinned.then_some(rumoca_core::Fixity::Fixed),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real x"),
@@ -110,7 +116,7 @@ fn pinned_alias_model(form: AliasForm, state: StateDeclaration) -> dae::Dae {
                 y_reservation,
                 dae::VariableAttributes {
                     start: y_start,
-                    fixed: Some(true),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real y(start = 1, fixed = true)"),
@@ -359,12 +365,14 @@ fn a_pinned_algebraic_without_a_state_is_retained_as_a_check() {
         let (q, a, reservation) = model.variables(|variables| {
             let q = variables.parameter(
                 VarName::new("q"),
+                InstanceId::new(1),
                 real,
                 at("parameter Real q"),
                 dae::VariableAttributes::default(),
             )?;
             let (a, reservation) = variables.reserve_algebraic(
                 VarName::new("a"),
+                InstanceId::new(2),
                 real,
                 at("Real a(start = 0, fixed = true)"),
             )?;
@@ -391,7 +399,7 @@ fn a_pinned_algebraic_without_a_state_is_retained_as_a_check() {
                 reservation,
                 dae::VariableAttributes {
                     start: Some(start),
-                    fixed: Some(true),
+                    fixed: Some(rumoca_core::Fixity::Fixed),
                     ..dae::VariableAttributes::default()
                 },
                 at("Real a(start = 0, fixed = true)"),

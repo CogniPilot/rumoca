@@ -7,11 +7,14 @@
 mod builtins;
 mod execution;
 mod interpreter;
+mod numeric;
 mod runtime;
 mod value;
 
 pub use interpreter::{EvaluationError, Evaluator};
-pub use value::{IntegerDomain, Value};
+pub use value::Value;
 
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;

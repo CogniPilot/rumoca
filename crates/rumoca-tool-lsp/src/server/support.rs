@@ -35,6 +35,13 @@ pub(super) struct SourceRootLoadOutcome {
     pub(super) status: Option<SourceRootStatusSnapshot>,
 }
 
+#[derive(Debug, Clone)]
+#[must_use = "source-root load dispositions must be checked before semantic work"]
+pub(super) enum SourceRootLoadDisposition {
+    Loaded(Box<SourceRootLoadOutcome>),
+    AlreadyLoaded,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct DurableSourceRootLoadTiming {
     pub(super) cache: SourceRootCacheTiming,
@@ -201,7 +208,7 @@ pub(super) fn write_completion_timing_summary(
     let Ok(payload) = serde_json::to_string(summary) else {
         return;
     };
-    let _ = writeln!(file, "{payload}");
+    let _write_result = writeln!(file, "{payload}");
 }
 
 pub(super) fn write_completion_progress_summary(
@@ -217,7 +224,7 @@ pub(super) fn write_completion_progress_summary(
     let Ok(payload) = serde_json::to_string(summary) else {
         return;
     };
-    let _ = writeln!(file, "{payload}");
+    let _write_result = writeln!(file, "{payload}");
 }
 
 pub(super) fn write_diagnostics_timing_summary(
@@ -233,7 +240,7 @@ pub(super) fn write_diagnostics_timing_summary(
     let Ok(payload) = serde_json::to_string(summary) else {
         return;
     };
-    let _ = writeln!(file, "{payload}");
+    let _write_result = writeln!(file, "{payload}");
 }
 
 pub(super) fn write_navigation_timing_summary(
@@ -249,7 +256,7 @@ pub(super) fn write_navigation_timing_summary(
     let Ok(payload) = serde_json::to_string(summary) else {
         return;
     };
-    let _ = writeln!(file, "{payload}");
+    let _write_result = writeln!(file, "{payload}");
 }
 
 pub(super) fn write_startup_timing_summary(
@@ -265,7 +272,7 @@ pub(super) fn write_startup_timing_summary(
     let Ok(payload) = serde_json::to_string(summary) else {
         return;
     };
-    let _ = writeln!(file, "{payload}");
+    let _write_result = writeln!(file, "{payload}");
 }
 
 fn timing_output_path(explicit_path: Option<&Path>) -> Option<PathBuf> {

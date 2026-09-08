@@ -1,20 +1,21 @@
 //! Checked B.1c and clocked discrete-Real projection into GALEC `DoStep`.
 
+mod call_plan;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashSet;
 
 use super::*;
+pub(super) use call_plan::ClockedCallPlan;
 
 #[derive(Clone)]
 pub(super) struct ClockedAssignment {
     pub(super) targets: HashSet<u32>,
     pub(super) reads: HashSet<u32>,
+    pub(super) regions: HashSet<EmissionRegion>,
     pub(super) statements: Vec<gast::Spanned<gast::Statement>>,
     pub(super) span: Span,
-    pub(super) is_preamble: bool,
-    pub(super) requires_preamble: bool,
 }
 
 pub(super) struct ClockedAssignments {
@@ -23,99 +24,90 @@ pub(super) struct ClockedAssignments {
     pub(super) locals: Vec<gast::VariableDeclaration>,
     pub(super) called_user_functions: HashSet<u32>,
     pub(super) assignments: Vec<ClockedAssignment>,
-    /// Whether this domain evaluates a shared call at a scheduled position.
-    pub(super) schedules_shared_calls: bool,
+    pub(super) call_actions: Vec<PreparedCallActions>,
 }
-
-mod shared_calls;
-
-use shared_calls::{
-    SharedClockCalls, lower_clock_domain_shared_calls, scheduled_sharing_preserves_arguments,
-    synthetic_schedule_floor, value_activation,
-};
 
 #[cfg(test)]
 pub(super) fn lower_clocked_assignments<'dae>(
     lowering: BlockLowering<'_, 'dae>,
     clock: dae::ClockId<'dae>,
 ) -> Result<ClockedAssignments, GalecTargetError> {
-    lower_clocked_assignments_for_domain(lowering, clock, true, true)
+    let plan = ClockedCallPlan::construct(lowering, &HashSet::from([clock.index()]), clock)?;
+    let mut retained_calls = RetainedCallResults::default();
+    lower_clocked_assignments_for_domain(lowering, clock, &plan, &mut retained_calls, true)
 }
 
-pub(super) fn lower_clocked_assignments_for_domain<'dae>(
-    lowering: BlockLowering<'_, 'dae>,
+pub(super) fn lower_clocked_assignments_for_domain<'refs, 'dae>(
+    lowering: BlockLowering<'refs, 'dae>,
     clock: dae::ClockId<'dae>,
-    include_unclocked_actions: bool,
-    allow_scheduled_shared_calls: bool,
+    call_plan: &ClockedCallPlan<'refs, 'dae>,
+    retained_calls: &mut RetainedCallResults,
+    retain_unguarded: bool,
 ) -> Result<ClockedAssignments, GalecTargetError> {
     let BlockLowering {
         view,
         definitions,
         by_id,
         pre_names,
-        emission,
+        arithmetic,
     } = lowering;
     let mut pending = Vec::new();
     let mut locals = Vec::new();
     let mut called_user_functions = HashSet::new();
-    let mut lowerer = ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names)
-        .with_causal_inlining()
-        .with_temporary_namespace(format!("clocked{}", clock.index()))
-        .with_emission(emission);
+    let mut call_actions = Vec::new();
+    let real_plan = call_plan.real_domain(clock);
+    let discrete_value_owners = call_plan.discrete_value_domain(clock);
+    let event_actions = call_plan.event_action_domain(clock);
+    let mut lowerer =
+        ExpressionLowerer::with_do_step_effects(view, definitions, by_id, pre_names, arithmetic)
+            .with_causal_inlining()
+            .with_temporary_namespace(TemporaryNamespace::Clocked(clock));
     let causal = CausalReadExpansion::new(view, definitions);
-    let shared_calls = lower_clock_domain_shared_calls(
-        view,
-        clock,
-        include_unclocked_actions,
-        allow_scheduled_shared_calls,
-        &causal,
-        &mut lowerer,
-        &mut pending,
-    )?;
     lower_discrete_value_owners(
         &mut DiscreteValueLowering {
             view,
             clock,
             by_id,
             lowerer: &mut lowerer,
-            shared_calls: &shared_calls,
+            call_actions: &mut call_actions,
         },
-        include_unclocked_actions,
+        discrete_value_owners,
         &mut pending,
     )?;
     lower_discrete_real_equations(
+        &mut DiscreteRealLowering {
+            view,
+            clock,
+            lowerer: &mut lowerer,
+            call_actions: &mut call_actions,
+            retained_calls,
+            retain_unguarded,
+        },
+        &mut pending,
+        real_plan,
+    )?;
+    lower_event_actions(
         view,
         clock,
-        by_id,
-        &mut pending,
+        event_actions,
         &mut lowerer,
-        &shared_calls,
+        &mut pending,
+        &mut call_actions,
     )?;
     locals.extend(lowerer.take_temporary_locals());
     called_user_functions.extend(lowerer.take_called_user_functions());
-    lower_event_actions(lowering, clock, include_unclocked_actions, &mut pending)?;
     for assignment in &mut pending {
-        assignment.reads = causal.expand(std::mem::take(&mut assignment.reads));
-    }
-    if shared_calls.scheduled
-        && !scheduled_sharing_preserves_arguments(&pending, synthetic_schedule_floor(view))
-    {
-        return lower_clocked_assignments_for_domain(
-            lowering,
-            clock,
-            include_unclocked_actions,
-            false,
-        );
+        assignment.reads = causal.expand(std::mem::take(&mut assignment.reads), assignment.span)?;
     }
     #[cfg(test)]
-    let statements = order_assignments(&pending)?;
+    let statements = order_assignments(&pending, &call_actions)?;
     Ok(ClockedAssignments {
         #[cfg(test)]
         statements,
         locals,
         called_user_functions,
         assignments: pending,
-        schedules_shared_calls: shared_calls.scheduled,
+        call_actions,
     })
 }
 
@@ -154,69 +146,115 @@ impl<'a, 'dae> CausalReadExpansion<'a, 'dae> {
     /// definition, so both forms are followed.
     /// [`rumoca_phase_structural::CausalDefinitions`] is the construction proof
     /// that this traversal is finite and semantics-preserving.
-    fn expand(&self, mut reads: HashSet<u32>) -> HashSet<u32> {
+    fn expand(
+        &self,
+        mut reads: HashSet<u32>,
+        consumer_span: Span,
+    ) -> Result<HashSet<u32>, GalecTargetError> {
         let mut pending = reads.iter().copied().collect::<Vec<_>>();
         let mut expanded = HashSet::new();
         while let Some(index) = pending.pop() {
             if !expanded.insert(index) {
                 continue;
             }
-            let Some(&variable) = self.variables.get(&index) else {
-                continue;
-            };
+            let variable = require_causal_variable(&self.variables, index, consumer_span)?;
             let mut definition_reads = HashSet::new();
-            self.collect_definition_reads(variable, &mut definition_reads);
+            self.collect_definition_reads(variable, &mut definition_reads, consumer_span)?;
             pending.extend(
                 definition_reads
                     .into_iter()
                     .filter(|dependency| reads.insert(*dependency)),
             );
         }
-        reads
+        Ok(reads)
     }
 
-    /// The expression the `DoStep` lowering substitutes for one coordinate.
-    ///
-    /// Only a whole-variable algebraic definition answers, because that is the
-    /// substitution [`ExpressionLowerer::inline_algebraic_coordinate`] takes
-    /// without knowing which coordinate is being projected. A per-scalar
-    /// definition set answers `None`: which of its members a use reaches
-    /// depends on the index, so admitting them here would count a call the
-    /// value never evaluates.
-    fn inlined_definition(
+    fn collect_definition_reads(
         &self,
-        coordinate: dae::CoordinateView<'dae>,
-    ) -> Option<dae::ExprId<'dae>> {
-        match coordinate {
-            dae::CoordinateView::Algebraic(variable) => self.definitions.definition(variable),
-            _ => None,
-        }
-    }
-
-    fn collect_definition_reads(&self, variable: dae::VariableId<'dae>, reads: &mut HashSet<u32>) {
+        variable: dae::VariableId<'dae>,
+        reads: &mut HashSet<u32>,
+        consumer_span: Span,
+    ) -> Result<(), GalecTargetError> {
         if let Some(definition) = self.definitions.definition_for_variable(variable) {
             collect_current_reads(self.view, definition, reads);
-            return;
+            return Ok(());
         }
         if !self.definitions.fully_defines_variable(variable) {
-            return;
+            return Ok(());
         }
-        let Some(scalar_count) = self
-            .view
-            .variable(variable)
-            .and_then(|declaration| u32::try_from(declaration.scalar_count()).ok())
-        else {
-            return;
-        };
-        for scalar in 0..scalar_count {
-            if let Some(definition) = self
-                .definitions
-                .scalar_definition_for_variable(variable, scalar)
-            {
+        let declaration =
+            self.view
+                .variable(variable)
+                .ok_or(GalecTargetError::ForeignCausalRead {
+                    variable_index: variable.index(),
+                    span: consumer_span,
+                })?;
+        visit_complete_scalar_definition_family(
+            declaration.name().as_str(),
+            declaration.scalar_count(),
+            declaration.declaration().span(),
+            |scalar| {
+                self.definitions
+                    .scalar_definition_for_variable(variable, scalar)
+            },
+            |definition| {
                 collect_current_reads(self.view, definition, reads);
-            }
-        }
+            },
+        )
     }
+}
+
+fn require_causal_variable<T: Copy>(
+    variables: &HashMap<u32, T>,
+    index: u32,
+    span: Span,
+) -> Result<T, GalecTargetError> {
+    variables
+        .get(&index)
+        .copied()
+        .ok_or(GalecTargetError::ForeignCausalRead {
+            variable_index: index,
+            span,
+        })
+}
+
+/// Visit one construction-claimed complete scalar family exactly once.
+///
+/// Acceptance contract (SPEC_0008): every family whose scalar count fits the
+/// DAE `u32` identity domain and supplies exactly one definition at every
+/// ordinal is accepted and visited in canonical ordinal order. Overflow or a
+/// missing member rejects before a partial family can authorize scheduling.
+fn visit_complete_scalar_definition_family<T: Copy>(
+    variable: &str,
+    scalar_count: usize,
+    span: Span,
+    mut definition: impl FnMut(u32) -> Option<T>,
+    mut visit: impl FnMut(T),
+) -> Result<(), GalecTargetError> {
+    let scalar_capacity = scalar_count;
+    let scalar_count = u32::try_from(scalar_count).map_err(|_| {
+        GalecTargetError::CausalScalarDefinitionOverflow {
+            variable: variable.to_owned(),
+            scalar_count,
+            span,
+        }
+    })?;
+    let mut complete = Vec::with_capacity(scalar_capacity);
+    for scalar in 0..scalar_count {
+        let value = definition(scalar).ok_or_else(|| {
+            GalecTargetError::IncompleteCausalScalarDefinitions {
+                variable: variable.to_owned(),
+                missing_scalar: scalar,
+                scalar_count,
+                span,
+            }
+        })?;
+        complete.push(value);
+    }
+    for value in complete {
+        visit(value);
+    }
+    Ok(())
 }
 
 /// One planned clocked discrete-`Real` definition, before emission.
@@ -323,33 +361,37 @@ fn group_planned_discrete_reals<'dae>(
     groups
 }
 
-fn lower_discrete_real_equations<'dae>(
+struct DiscreteRealLowering<'context, 'refs, 'dae> {
     view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
-    by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
+    lowerer: &'context mut ExpressionLowerer<'refs, 'dae>,
+    call_actions: &'context mut Vec<PreparedCallActions>,
+    retained_calls: &'context mut RetainedCallResults,
+    retain_unguarded: bool,
+}
+
+#[derive(Clone, Copy)]
+struct DiscreteRealGroup<'group, 'refs, 'dae> {
+    index: usize,
+    planned: &'group [PlannedDiscreteReal<'refs, 'dae>],
+    slots: &'group [usize],
+}
+
+fn lower_discrete_real_equations<'refs, 'dae>(
+    context: &mut DiscreteRealLowering<'_, 'refs, 'dae>,
     pending: &mut Vec<ClockedAssignment>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls<'dae>,
+    plan: &call_plan::ClockedRealDomainPlan<'refs, 'dae>,
 ) -> Result<(), GalecTargetError> {
-    let planned = plan_clocked_discrete_reals(view, clock, by_id)?;
-    let groups = group_planned_discrete_reals(view, &planned);
+    let planned = plan.planned();
     let mut owners: HashMap<u32, (usize, bool)> = HashMap::new();
-    for group in &groups {
-        let assignment = lower_discrete_real_group(
-            view,
-            clock,
-            lowerer,
-            shared_calls,
-            &planned,
-            group.as_slice(),
-        )?;
-        merge_discrete_real_assignment(
-            pending,
-            &mut owners,
-            &planned,
-            group.as_slice(),
-            assignment,
-        )?;
+    for (group_index, group) in plan.groups().iter().enumerate() {
+        let group = DiscreteRealGroup {
+            index: group_index,
+            planned,
+            slots: group.as_slice(),
+        };
+        let assignment = lower_discrete_real_group(context, group)?;
+        merge_discrete_real_assignment(pending, &mut owners, planned, group.slots, assignment)?;
     }
     Ok(())
 }
@@ -360,101 +402,152 @@ fn lower_discrete_real_equations<'dae>(
 /// the shared call materializes once and the later projections read its result
 /// temporaries.
 fn lower_discrete_real_group<'dae>(
-    view: dae::DaeView<'dae>,
-    clock: dae::ClockId<'dae>,
-    lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls<'dae>,
-    planned: &[PlannedDiscreteReal<'_, 'dae>],
-    group: &[usize],
+    context: &mut DiscreteRealLowering<'_, '_, 'dae>,
+    group: DiscreteRealGroup<'_, '_, 'dae>,
 ) -> Result<ClockedAssignment, GalecTargetError> {
-    let head = &planned[group[0]];
+    let DiscreteRealLowering {
+        view,
+        clock,
+        lowerer,
+        call_actions,
+        retained_calls,
+        retain_unguarded,
+    } = context;
+    let head = &group.planned[group.slots[0]];
     let span = head.span;
-    // The memo this group may restore is the one written under its own
-    // activation. Installing it before the guard lowers is what keeps a guard,
-    // which is lowered ahead of the group's first statement boundary, from
-    // taking a temporary a node under a different activation wrote.
-    let activation = value_activation(view, head.activation, clock);
-    let shared = shared_calls.calls_for(activation).clone();
-    lowerer.begin_shared_call_group(&shared);
+    let targets = group
+        .slots
+        .iter()
+        .map(|slot| group.planned[*slot].target.index())
+        .collect::<HashSet<_>>();
+    let mut regions = HashSet::new();
     let (guard, guard_prefix) = match head.activation {
         dae::DiscreteRealActivation::Always => (None, Vec::new()),
         dae::DiscreteRealActivation::When { trigger, guard } => {
-            require_periodic_trigger(view, trigger, clock, span)?;
-            let guard = lower_action_guard(
-                &mut ActionGuardContext {
-                    view,
-                    expected: clock,
-                    lowerer,
-                    span,
+            require_periodic_trigger(*view, trigger, *clock, span)?;
+            let region = EmissionRegion::ClockedRealGuard {
+                clock: clock.index(),
+                group: group.index,
+            };
+            regions.insert(region);
+            let prepared = lowerer.prepare_emission_group(
+                region,
+                &HashSet::new(),
+                CrossGroupCallRetention::Refuse,
+                |lowerer, _| {
+                    lower_action_guard(
+                        &mut ActionGuardContext {
+                            view: *view,
+                            expected: *clock,
+                            lowerer,
+                            span,
+                        },
+                        guard,
+                    )
                 },
-                guard,
             )?;
-            let prefix = lowerer.take_prefix_statements_with_shared_calls(&shared);
+            let mut prefix = Vec::new();
+            let guard = prepared.commit_into(&mut prefix, call_actions);
             (guard, prefix)
         }
     };
-    let mut assignments = Vec::new();
-    let mut reads = HashSet::new();
-    let mut targets = HashSet::new();
-    for &slot in group {
-        let plan = &planned[slot];
-        targets.insert(plan.target.index());
-        collect_current_reads(view, plan.value, &mut reads);
-        if let dae::DiscreteRealActivation::When { trigger, guard } = plan.activation {
-            collect_condition_current_reads(view, trigger, &mut reads);
-            collect_condition_current_reads(view, guard, &mut reads);
+    let mut reads = collect_discrete_real_group_reads(*view, group);
+    let value_region = EmissionRegion::ClockedRealValue {
+        clock: clock.index(),
+        group: group.index,
+    };
+    regions.insert(value_region);
+    let retention = match (*retain_unguarded, head.activation, guard.is_some()) {
+        (true, dae::DiscreteRealActivation::Always, false)
+        | (true, dae::DiscreteRealActivation::When { .. }, false) => {
+            CrossGroupCallRetention::Unguarded(retained_calls)
         }
-        append_definition_assignments(
-            lowerer,
-            plan.value,
-            plan.classified,
-            plan.span,
-            &mut assignments,
-        )?;
-    }
+        (true, dae::DiscreteRealActivation::When { guard, .. }, true) => {
+            CrossGroupCallRetention::ExactGuard {
+                retained: retained_calls,
+                activation: RetainedCallActivation::exact(*clock, guard),
+            }
+        }
+        _ => CrossGroupCallRetention::Refuse,
+    };
+    let prepared = lowerer.prepare_emission_group(
+        value_region,
+        &targets,
+        retention,
+        |lowerer, assignments| {
+            for &slot in group.slots {
+                let plan = &group.planned[slot];
+                append_definition_assignments(
+                    lowerer,
+                    plan.value,
+                    plan.classified,
+                    plan.span,
+                    assignments,
+                )?;
+            }
+            Ok(())
+        },
+    )?;
+    let mut body = Vec::new();
+    prepared.commit_into(&mut body, call_actions);
     // A merged group writes its own targets in causal order, so a read of one
     // of them by a later member is satisfied inside the group exactly as the
     // scheduler would have satisfied it between the separate groups. Retaining
     // such a read would be a self-dependency and would reject a valid model.
     // An unmerged group keeps its read set byte-for-byte as before, so a single
     // definition's self-read still reaches the scheduler unchanged.
-    if group.len() > 1 {
+    if group.slots.len() > 1 {
         for target in &targets {
             reads.remove(target);
         }
     }
-    let mut body = lowerer.take_prefix_statements_with_shared_calls(&shared);
-    body.extend(assignments);
-    let statements = match guard {
-        Some(condition) => {
-            let mut statements = guard_prefix;
-            statements.push(gast::Spanned::new(
-                gast::Statement::If(gast::IfStatement {
-                    branches: vec![gast::IfBranch {
-                        condition: gast::Condition::Expression(condition),
-                        body,
-                        span,
-                    }],
-                    else_body: None,
-                }),
-                span,
-            ));
-            statements
-        }
-        None => body,
-    };
-    // A group that took a scheduled shared call's result temporaries reads the
-    // node that wrote them, so the scheduler keeps that node ahead of it.
-    let consumed = lowerer.take_consumed_scheduled_calls();
-    reads.extend(SharedClockCalls::consumed_reads(&consumed));
+    let statements = compose_discrete_real_statements(guard, guard_prefix, body, span);
     Ok(ClockedAssignment {
         targets,
         reads,
+        regions,
         statements,
         span,
-        is_preamble: false,
-        requires_preamble: !shared.is_empty(),
     })
+}
+
+fn collect_discrete_real_group_reads<'dae>(
+    view: dae::DaeView<'dae>,
+    group: DiscreteRealGroup<'_, '_, 'dae>,
+) -> HashSet<u32> {
+    let mut reads = HashSet::new();
+    for &slot in group.slots {
+        let plan = &group.planned[slot];
+        collect_current_reads(view, plan.value, &mut reads);
+        if let dae::DiscreteRealActivation::When { trigger, guard } = plan.activation {
+            collect_condition_current_reads(view, trigger, &mut reads);
+            collect_condition_current_reads(view, guard, &mut reads);
+        }
+    }
+    reads
+}
+
+fn compose_discrete_real_statements(
+    guard: Option<gast::Expression>,
+    mut guard_prefix: Vec<gast::Spanned<gast::Statement>>,
+    body: Vec<gast::Spanned<gast::Statement>>,
+    span: Span,
+) -> Vec<gast::Spanned<gast::Statement>> {
+    let Some(condition) = guard else {
+        return body;
+    };
+    guard_prefix.push(gast::Spanned::new(
+        gast::Statement::If(gast::IfStatement {
+            branches: vec![gast::IfBranch {
+                condition: gast::Condition::Expression(condition),
+                body,
+                span,
+            }],
+            else_body: None,
+        }),
+        span,
+    ));
+    guard_prefix
 }
 
 /// Emit one checked clocked definition into `assignments`.
@@ -540,6 +633,7 @@ fn tensor_definition_assignments<'dae>(
 ) -> Option<Vec<gast::Spanned<gast::Statement>>> {
     if classified.variable.value_type().dimensions().is_empty()
         || !expression_projection::contains_whole_array_contraction(lowerer.view, value)
+        || lowerer.tensor_call_projection(value).contains_call
     {
         return None;
     }
@@ -572,7 +666,6 @@ fn lower_tensor_definition<'dae>(
     span: Span,
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
     let dimensions = classified.variable.value_type().dimensions();
-    user_functions::materialize_eager_aggregate_calls(value, lowerer)?;
     let names = dimensions
         .iter()
         .enumerate()
@@ -727,6 +820,7 @@ fn merge_discrete_real_assignment<'dae>(
             ));
         }
         pending[owner].reads.extend(assignment.reads);
+        pending[owner].regions.extend(assignment.regions);
         pending[owner].statements.extend(assignment.statements);
         return Ok(());
     }
@@ -775,22 +869,17 @@ fn discrete_real_clock_owners(view: dae::DaeView<'_>) -> HashMap<u32, u32> {
 }
 
 fn lower_event_actions<'dae>(
-    lowering: BlockLowering<'_, 'dae>,
+    view: dae::DaeView<'dae>,
     clock: dae::ClockId<'dae>,
-    include_unclocked: bool,
+    action_ids: &[dae::EventActionId<'dae>],
+    lowerer: &mut ExpressionLowerer<'_, 'dae>,
     pending: &mut Vec<ClockedAssignment>,
+    call_actions: &mut Vec<PreparedCallActions>,
 ) -> Result<(), GalecTargetError> {
-    let BlockLowering {
-        view,
-        definitions,
-        by_id,
-        pre_names,
-        emission,
-    } = lowering;
-    let mut lowerer = ExpressionLowerer::with_assertions(view, definitions, by_id, pre_names)
-        .with_causal_inlining()
-        .with_emission(emission);
-    for (_, action) in view.event_actions() {
+    for action_id in action_ids {
+        let action = view
+            .event_action(*action_id)
+            .expect("planned event action resolves");
         let span = action.provenance().span();
         let dae::EventActionOperation::Assert { level: None, .. } = action.operation() else {
             return Err(unsupported(
@@ -808,56 +897,63 @@ fn lower_event_actions<'dae>(
                 .operation(),
             dae::ConditionOperation::Always
         );
-        let trigger_clocks = condition_clocks(view, action.trigger());
-        if trigger_clocks.is_empty() && !include_unclocked {
-            continue;
-        }
-        if !trigger_clocks.is_empty() && !trigger_clocks.contains(&clock.index()) {
-            continue;
-        }
         if !trigger_is_always {
             require_periodic_trigger(view, action.trigger(), clock, span)?;
         }
-        let guard = lower_action_guard(
-            &mut ActionGuardContext {
-                view,
-                expected: clock,
-                lowerer: &mut lowerer,
-                span,
+        let prepared = lowerer.prepare_emission_group(
+            EmissionRegion::EventAction {
+                clock: clock.index(),
+                action: action_id.index(),
             },
-            action.guard(),
-        )?;
-        let signal = gast::Spanned::new(
-            gast::Statement::Signal(vec![gast::Identifier::new(
-                gast::PredefinedSignal::InvalidArgument.name(),
-            )]),
-            span,
-        );
-        let mut statements = lowerer.take_prefix_statements();
-        statements.extend(match guard {
-            Some(condition) => vec![gast::Spanned::new(
-                gast::Statement::If(gast::IfStatement {
-                    branches: vec![gast::IfBranch {
-                        condition: gast::Condition::Expression(condition),
-                        body: vec![signal],
+            &HashSet::new(),
+            CrossGroupCallRetention::Refuse,
+            |lowerer, statements| {
+                let guard = lower_action_guard(
+                    &mut ActionGuardContext {
+                        view,
+                        expected: clock,
+                        lowerer,
                         span,
-                    }],
-                    else_body: None,
-                }),
-                span,
-            )],
-            None => vec![signal],
-        });
+                    },
+                    action.guard(),
+                )?;
+                let signal = gast::Spanned::new(
+                    gast::Statement::Signal(vec![gast::Identifier::new(
+                        gast::PredefinedSignal::InvalidArgument.name(),
+                    )]),
+                    span,
+                );
+                statements.extend(match guard {
+                    Some(condition) => vec![gast::Spanned::new(
+                        gast::Statement::If(gast::IfStatement {
+                            branches: vec![gast::IfBranch {
+                                condition: gast::Condition::Expression(condition),
+                                body: vec![signal],
+                                span,
+                            }],
+                            else_body: None,
+                        }),
+                        span,
+                    )],
+                    None => vec![signal],
+                });
+                Ok(())
+            },
+        )?;
+        let mut statements = Vec::new();
+        prepared.commit_into(&mut statements, call_actions);
         let mut reads = HashSet::new();
         collect_condition_current_reads(view, action.trigger(), &mut reads);
         collect_condition_current_reads(view, action.guard(), &mut reads);
         pending.push(ClockedAssignment {
             targets: HashSet::new(),
             reads,
+            regions: HashSet::from([EmissionRegion::EventAction {
+                clock: clock.index(),
+                action: action_id.index(),
+            }]),
             statements,
             span,
-            is_preamble: false,
-            requires_preamble: false,
         });
     }
     Ok(())
@@ -897,35 +993,20 @@ struct DiscreteValueLowering<'context, 'refs, 'dae> {
     clock: dae::ClockId<'dae>,
     by_id: &'refs HashMap<u32, ClassifiedVariable<'dae>>,
     lowerer: &'context mut ExpressionLowerer<'refs, 'dae>,
-    shared_calls: &'context SharedClockCalls<'dae>,
+    call_actions: &'context mut Vec<PreparedCallActions>,
 }
 
 fn lower_discrete_value_owners<'dae>(
     context: &mut DiscreteValueLowering<'_, '_, 'dae>,
-    include_unclocked: bool,
+    owner_ids: &[dae::DiscreteValueOwnerId<'dae>],
     pending: &mut Vec<ClockedAssignment>,
 ) -> Result<(), GalecTargetError> {
-    let clock_owners = discrete_value_clock_owners(context.view);
-    for index in 0..context.view.discrete_value_owner_count() {
+    for owner_id in owner_ids {
         let owner = context
             .view
-            .discrete_value_owner(
-                context
-                    .view
-                    .discrete_value_owner_id(index)
-                    .expect("dense checked B.1c owner identity"),
-            )
+            .discrete_value_owner(*owner_id)
             .expect("checked B.1c owner resolves");
-        if !discrete_value_owner_runs_in_domain(
-            context.view,
-            owner,
-            context.clock,
-            include_unclocked,
-            &clock_owners,
-        )? {
-            continue;
-        }
-        pending.push(lower_discrete_value_owner(context, owner)?);
+        pending.push(lower_discrete_value_owner(context, *owner_id, owner)?);
     }
     Ok(())
 }
@@ -991,6 +1072,7 @@ fn clock_owners_of_kind(
 
 fn lower_discrete_value_owner<'dae>(
     context: &mut DiscreteValueLowering<'_, '_, 'dae>,
+    owner_id: dae::DiscreteValueOwnerId<'dae>,
     owner: dae::DiscreteValueOwnerView<'dae>,
 ) -> Result<ClockedAssignment, GalecTargetError> {
     let span = owner.provenance().span();
@@ -1010,73 +1092,141 @@ fn lower_discrete_value_owner<'dae>(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut reads = HashSet::new();
-    let mut conditional = Vec::new();
-    let mut unconditional = None;
-    for branch in owner.branches().iter() {
-        let branch_span = branch.provenance().span();
-        match branch.activation() {
-            dae::DiscreteBranchActivation::Always => {
-                unconditional = Some(lower_discrete_value_branch(
-                    context.lowerer,
-                    context.shared_calls,
-                    &classified,
-                    branch,
-                )?);
-            }
-            dae::DiscreteBranchActivation::When { trigger, guard } => {
-                require_periodic_trigger(context.view, trigger, context.clock, branch_span)?;
-                collect_condition_current_reads(context.view, trigger, &mut reads);
-                collect_condition_current_reads(context.view, guard, &mut reads);
-                let condition = lower_action_guard(
-                    &mut ActionGuardContext {
-                        view: context.view,
-                        expected: context.clock,
-                        lowerer: context.lowerer,
-                        span: branch_span,
-                    },
-                    guard,
-                )?
-                .unwrap_or(gast::Expression::Bool(true));
-                let condition_prefix = context
-                    .lowerer
-                    .take_prefix_statements_with_shared_calls(&context.shared_calls.entry);
-                let body = lower_discrete_value_branch(
-                    context.lowerer,
-                    context.shared_calls,
-                    &classified,
-                    branch,
-                )?;
-                conditional.push(GuardedDiscreteValueBranch {
-                    condition_prefix,
-                    branch: gast::IfBranch {
-                        condition: gast::Condition::Expression(condition),
-                        body,
-                        span: branch_span,
-                    },
-                });
-            }
-        }
-        for (value, _) in branch.values().iter() {
-            collect_current_reads(context.view, value, &mut reads);
-        }
+    let targets = target_variables
+        .iter()
+        .map(|target| target.index())
+        .collect::<HashSet<_>>();
+    let request = DiscreteValueOwnerRequest {
+        owner_id,
+        classified: &classified,
+        targets: &targets,
+    };
+    let mut emission = DiscreteValueOwnerEmission {
+        regions: HashSet::new(),
+        reads: HashSet::new(),
+        conditional: Vec::new(),
+        unconditional: None,
+    };
+    for (branch_index, branch) in owner.branches().iter().enumerate() {
+        lower_discrete_value_owner_branch(context, request, branch_index, branch, &mut emission)?;
     }
-    let statements = compose_discrete_value_branches(conditional, unconditional, span);
-    // A group that took a scheduled shared call's result temporaries reads the
-    // node that wrote them, so the scheduler keeps that node ahead of it.
-    let consumed = context.lowerer.take_consumed_scheduled_calls();
-    reads.extend(SharedClockCalls::consumed_reads(&consumed));
+    let statements =
+        compose_discrete_value_branches(emission.conditional, emission.unconditional, span);
     Ok(ClockedAssignment {
-        targets: target_variables
-            .into_iter()
-            .map(|target| target.index())
-            .collect(),
-        reads,
+        targets,
+        reads: emission.reads,
+        regions: emission.regions,
         statements,
         span,
-        is_preamble: false,
-        requires_preamble: !context.shared_calls.entry.is_empty(),
     })
+}
+
+#[derive(Clone, Copy)]
+struct DiscreteValueOwnerRequest<'owner, 'dae> {
+    owner_id: dae::DiscreteValueOwnerId<'dae>,
+    classified: &'owner [&'owner ClassifiedVariable<'dae>],
+    targets: &'owner HashSet<u32>,
+}
+
+struct DiscreteValueOwnerEmission {
+    regions: HashSet<EmissionRegion>,
+    reads: HashSet<u32>,
+    conditional: Vec<GuardedDiscreteValueBranch>,
+    unconditional: Option<Vec<gast::Spanned<gast::Statement>>>,
+}
+
+fn lower_discrete_value_owner_branch<'dae>(
+    context: &mut DiscreteValueLowering<'_, '_, 'dae>,
+    request: DiscreteValueOwnerRequest<'_, 'dae>,
+    branch_index: usize,
+    branch: dae::DiscreteValueBranchView<'dae>,
+    emission: &mut DiscreteValueOwnerEmission,
+) -> Result<(), GalecTargetError> {
+    let branch_span = branch.provenance().span();
+    match branch.activation() {
+        dae::DiscreteBranchActivation::Always => {
+            let region = discrete_value_region(context.clock, request.owner_id, branch_index);
+            emission.regions.insert(region);
+            let prepared = context.lowerer.prepare_emission_group(
+                region,
+                request.targets,
+                CrossGroupCallRetention::Refuse,
+                |lowerer, statements| {
+                    lower_discrete_value_branch(lowerer, request.classified, branch, statements)
+                },
+            )?;
+            let mut statements = Vec::new();
+            prepared.commit_into(&mut statements, context.call_actions);
+            emission.unconditional = Some(statements);
+        }
+        dae::DiscreteBranchActivation::When { trigger, guard } => {
+            require_periodic_trigger(context.view, trigger, context.clock, branch_span)?;
+            collect_condition_current_reads(context.view, trigger, &mut emission.reads);
+            collect_condition_current_reads(context.view, guard, &mut emission.reads);
+            let guard_region = EmissionRegion::DiscreteValueGuard {
+                clock: context.clock.index(),
+                owner: request.owner_id.index(),
+                branch: branch_index,
+            };
+            emission.regions.insert(guard_region);
+            let prepared_guard = context.lowerer.prepare_emission_group(
+                guard_region,
+                &HashSet::new(),
+                CrossGroupCallRetention::Refuse,
+                |lowerer, _| {
+                    lower_action_guard(
+                        &mut ActionGuardContext {
+                            view: context.view,
+                            expected: context.clock,
+                            lowerer,
+                            span: branch_span,
+                        },
+                        guard,
+                    )
+                },
+            )?;
+            let mut condition_prefix = Vec::new();
+            let condition = prepared_guard
+                .commit_into(&mut condition_prefix, context.call_actions)
+                .unwrap_or(gast::Expression::Bool(true));
+            let value_region = discrete_value_region(context.clock, request.owner_id, branch_index);
+            emission.regions.insert(value_region);
+            let prepared_value = context.lowerer.prepare_emission_group(
+                value_region,
+                request.targets,
+                CrossGroupCallRetention::Refuse,
+                |lowerer, statements| {
+                    lower_discrete_value_branch(lowerer, request.classified, branch, statements)
+                },
+            )?;
+            let mut body = Vec::new();
+            prepared_value.commit_into(&mut body, context.call_actions);
+            emission.conditional.push(GuardedDiscreteValueBranch {
+                condition_prefix,
+                branch: gast::IfBranch {
+                    condition: gast::Condition::Expression(condition),
+                    body,
+                    span: branch_span,
+                },
+            });
+        }
+    }
+    for (value, _) in branch.values().iter() {
+        collect_current_reads(context.view, value, &mut emission.reads);
+    }
+    Ok(())
+}
+
+fn discrete_value_region(
+    clock: dae::ClockId<'_>,
+    owner: dae::DiscreteValueOwnerId<'_>,
+    branch: usize,
+) -> EmissionRegion {
+    EmissionRegion::DiscreteValueValue {
+        clock: clock.index(),
+        owner: owner.index(),
+        branch,
+    }
 }
 
 struct GuardedDiscreteValueBranch {
@@ -1130,23 +1280,14 @@ fn compose_discrete_value_branches(
 
 fn lower_discrete_value_branch<'dae>(
     lowerer: &mut ExpressionLowerer<'_, 'dae>,
-    shared_calls: &SharedClockCalls<'dae>,
     targets: &[&ClassifiedVariable<'dae>],
     branch: dae::DiscreteValueBranchView<'dae>,
-) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let mut assignments = Vec::new();
+    statements: &mut Vec<gast::Spanned<gast::Statement>>,
+) -> Result<(), GalecTargetError> {
     for (classified, (value, provenance)) in targets.iter().zip(branch.values().iter()) {
-        append_definition_assignments(
-            lowerer,
-            value,
-            classified,
-            provenance.span(),
-            &mut assignments,
-        )?;
+        append_definition_assignments(lowerer, value, classified, provenance.span(), statements)?;
     }
-    let mut statements = lowerer.take_prefix_statements_with_shared_calls(&shared_calls.entry);
-    statements.extend(assignments);
-    Ok(statements)
+    Ok(())
 }
 
 fn collect_current_reads<'dae>(
@@ -1279,8 +1420,16 @@ fn condition_requires_clock<'dae>(
 #[cfg(test)]
 fn order_assignments(
     pending: &[ClockedAssignment],
+    call_actions: &[PreparedCallActions],
 ) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
-    let preamble = pending.iter().position(|assignment| assignment.is_preamble);
+    let dependencies = call_actions
+        .iter()
+        .map(|action| (action.region(), action.dependencies().clone()))
+        .collect::<HashMap<_, _>>();
+    let argument_reads = call_actions
+        .iter()
+        .map(|action| (action.region(), action.argument_reads()))
+        .collect::<HashMap<_, _>>();
     let targets = pending
         .iter()
         .enumerate()
@@ -1291,19 +1440,36 @@ fn order_assignments(
                 .map(move |target| (*target, index))
         })
         .collect::<HashMap<_, _>>();
+    let region_owners = pending
+        .iter()
+        .enumerate()
+        .flat_map(|(index, assignment)| {
+            assignment
+                .regions
+                .iter()
+                .map(move |region| (*region, index))
+        })
+        .collect::<HashMap<_, _>>();
     let mut emitted = vec![false; pending.len()];
     let mut emitted_owners = 0usize;
     let mut ordered = Vec::with_capacity(pending.len());
     while emitted_owners < pending.len() {
         let Some(index) = pending.iter().enumerate().position(|(index, assignment)| {
             !emitted[index]
-                && (!assignment.requires_preamble
-                    || preamble.is_none_or(|preamble| emitted[preamble]))
-                && assignment.reads.iter().all(|read| {
-                    targets
-                        .get(read)
-                        .is_none_or(|dependency| *dependency == index || emitted[*dependency])
-                })
+                && assignment_reads_are_ready(
+                    assignment,
+                    index,
+                    &emitted,
+                    &argument_reads,
+                    &targets,
+                )
+                && assignment_regions_are_ready(
+                    assignment,
+                    index,
+                    &emitted,
+                    &dependencies,
+                    &region_owners,
+                )
         }) else {
             let span = pending
                 .iter()
@@ -1323,4 +1489,80 @@ fn order_assignments(
         ordered.extend(pending[index].statements.iter().cloned());
     }
     Ok(ordered)
+}
+
+#[cfg(test)]
+fn assignment_reads_are_ready(
+    assignment: &ClockedAssignment,
+    owner: usize,
+    emitted: &[bool],
+    argument_reads: &HashMap<EmissionRegion, HashSet<u32>>,
+    targets: &HashMap<u32, usize>,
+) -> bool {
+    assignment
+        .reads
+        .iter()
+        .chain(
+            assignment
+                .regions
+                .iter()
+                .filter_map(|region| argument_reads.get(region))
+                .flatten(),
+        )
+        .all(|read| target_owner_is_ready(*read, owner, emitted, targets))
+}
+
+#[cfg(test)]
+fn target_owner_is_ready(
+    read: u32,
+    owner: usize,
+    emitted: &[bool],
+    targets: &HashMap<u32, usize>,
+) -> bool {
+    let Some(dependency) = targets.get(&read) else {
+        return true;
+    };
+    *dependency == owner || emitted[*dependency]
+}
+
+#[cfg(test)]
+fn assignment_regions_are_ready(
+    assignment: &ClockedAssignment,
+    owner: usize,
+    emitted: &[bool],
+    dependencies: &HashMap<EmissionRegion, HashSet<EmissionRegion>>,
+    region_owners: &HashMap<EmissionRegion, usize>,
+) -> bool {
+    assignment.regions.iter().all(|region| {
+        region_dependencies_are_ready(*region, owner, emitted, dependencies, region_owners)
+    })
+}
+
+#[cfg(test)]
+fn region_dependencies_are_ready(
+    region: EmissionRegion,
+    owner: usize,
+    emitted: &[bool],
+    dependencies: &HashMap<EmissionRegion, HashSet<EmissionRegion>>,
+    region_owners: &HashMap<EmissionRegion, usize>,
+) -> bool {
+    let Some(dependencies) = dependencies.get(&region) else {
+        return true;
+    };
+    dependencies
+        .iter()
+        .all(|dependency| region_owner_is_ready(*dependency, owner, emitted, region_owners))
+}
+
+#[cfg(test)]
+fn region_owner_is_ready(
+    dependency: EmissionRegion,
+    owner: usize,
+    emitted: &[bool],
+    region_owners: &HashMap<EmissionRegion, usize>,
+) -> bool {
+    let Some(dependency_owner) = region_owners.get(&dependency) else {
+        return true;
+    };
+    *dependency_owner == owner || emitted[*dependency_owner]
 }

@@ -66,8 +66,16 @@ fn require_source_clock(
     at: DaeProvenance,
 ) -> Result<(), DaeConstructionError> {
     let mut pending = vec![root];
+    // Expressions form a shared arena DAG, not a tree. Walking an untrusted
+    // diamond as a tree revisits the same child exponentially many times.
+    // Raw expression identities are arena-local and therefore form the exact
+    // visited key; the walk can inspect each retained node at most once.
+    let mut visited = rustc_hash::FxHashSet::default();
     let mut found = false;
     while let Some(raw) = pending.pop() {
+        if !visited.insert(raw) {
+            continue;
+        }
         let node = storage.expressions.nodes.get(raw as usize).ok_or_else(|| {
             DaeConstructionError::UnknownId {
                 kind: "expression",
@@ -76,6 +84,23 @@ fn require_source_clock(
             }
         })?;
         match node {
+            ExprNode::Coordinate(Coordinate::State(_) | Coordinate::Input(_)) => {
+                let span = storage
+                    .expressions
+                    .provenance
+                    .get(raw as usize)
+                    .copied()
+                    .ok_or_else(|| DaeConstructionError::UnknownId {
+                        kind: "expression provenance",
+                        index: raw,
+                        span: at.span(),
+                    })?
+                    .span();
+                return Err(DaeConstructionError::InvalidClockedOperand {
+                    operator: "clocked value conversion",
+                    span,
+                });
+            }
             ExprNode::Coordinate(
                 Coordinate::DiscreteReal(variable) | Coordinate::DiscreteValue(variable),
             ) => {

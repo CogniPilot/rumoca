@@ -1,7 +1,7 @@
 use rumoca_core::Span;
 use rumoca_ir_solve::{
-    SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveIntegerDomain,
-    SolveRealFormat, SolveScalarType, SolveUnaryOperator, SolveValueKind, SolveValueType,
+    SolveBinaryOperator, SolveCompareOperator, SolveConversionOperator, SolveRealFormat,
+    SolveScalarType, SolveUnaryOperator, SolveValueKind, SolveValueType,
 };
 
 use super::{TypedProgramEvalError, TypedValue, invalid};
@@ -11,12 +11,11 @@ pub(super) fn eval_unary_typed(
     value: &TypedValue,
     provenance: Span,
 ) -> Result<TypedValue, TypedProgramEvalError> {
-    let scalar = value.value_type.element_type();
     let elements = value
         .elements
         .iter()
         .copied()
-        .map(|element| eval_unary_element(operator, element, scalar, provenance))
+        .map(|element| eval_unary_element(operator, element, provenance))
         .collect::<Result<Vec<_>, _>>()?;
     TypedValue::checked(value.value_type.clone(), elements, provenance)
 }
@@ -24,7 +23,6 @@ pub(super) fn eval_unary_typed(
 fn eval_unary_element(
     operator: SolveUnaryOperator,
     value: SolveValueKind,
-    scalar: SolveScalarType,
     provenance: Span,
 ) -> Result<SolveValueKind, TypedProgramEvalError> {
     match value {
@@ -34,7 +32,7 @@ fn eval_unary_element(
         SolveValueKind::Real64(bits) => Ok(SolveValueKind::Real64(
             eval_real_unary_f64(operator, f64::from_bits(bits)).to_bits(),
         )),
-        SolveValueKind::Integer(value) => eval_integer_unary(operator, value, scalar, provenance),
+        SolveValueKind::Integer(value) => Ok(eval_integer_unary(operator, value)),
         SolveValueKind::Boolean(value) if operator == SolveUnaryOperator::Not => {
             Ok(SolveValueKind::Boolean(!value))
         }
@@ -42,27 +40,11 @@ fn eval_unary_element(
     }
 }
 
-fn eval_integer_unary(
-    operator: SolveUnaryOperator,
-    value: i64,
-    scalar: SolveScalarType,
-    provenance: Span,
-) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let SolveScalarType::Integer(domain) = scalar else {
-        return invalid("evaluate Integer unary operation", provenance);
-    };
-    let result = match operator {
-        SolveUnaryOperator::Negate => value.checked_neg(),
-        SolveUnaryOperator::Abs => value.checked_abs(),
-        SolveUnaryOperator::Sign => Some(value.signum()),
-        _ => None,
+fn eval_integer_unary(operator: SolveUnaryOperator, value: i64) -> SolveValueKind {
+    match operator {
+        SolveUnaryOperator::Sign => SolveValueKind::Integer(value.signum()),
+        _ => unreachable!("typed-program construction excludes unproved Integer unary ranges"),
     }
-    .filter(|result| domain.contains(*result))
-    .ok_or(TypedProgramEvalError::IntegerArithmetic {
-        operation: "unary operation",
-        provenance,
-    })?;
-    Ok(SolveValueKind::Integer(result))
 }
 
 fn eval_real_unary_f32(operator: SolveUnaryOperator, value: f32) -> f32 {
@@ -139,7 +121,7 @@ pub(super) fn eval_binary_element(
     operator: SolveBinaryOperator,
     lhs: SolveValueKind,
     rhs: SolveValueKind,
-    scalar: SolveScalarType,
+    _scalar: SolveScalarType,
     provenance: Span,
 ) -> Result<SolveValueKind, TypedProgramEvalError> {
     match (lhs, rhs) {
@@ -150,7 +132,7 @@ pub(super) fn eval_binary_element(
             eval_real_binary_f64(operator, f64::from_bits(lhs), f64::from_bits(rhs)).to_bits(),
         )),
         (SolveValueKind::Integer(lhs), SolveValueKind::Integer(rhs)) => {
-            eval_integer_binary(operator, lhs, rhs, scalar, provenance)
+            Ok(eval_integer_binary(operator, lhs, rhs))
         }
         (SolveValueKind::Boolean(lhs), SolveValueKind::Boolean(rhs)) => match operator {
             SolveBinaryOperator::And => Ok(SolveValueKind::Boolean(lhs && rhs)),
@@ -161,30 +143,13 @@ pub(super) fn eval_binary_element(
     }
 }
 
-fn eval_integer_binary(
-    operator: SolveBinaryOperator,
-    lhs: i64,
-    rhs: i64,
-    scalar: SolveScalarType,
-    provenance: Span,
-) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let SolveScalarType::Integer(domain) = scalar else {
-        return invalid("evaluate Integer binary operation", provenance);
-    };
+fn eval_integer_binary(operator: SolveBinaryOperator, lhs: i64, rhs: i64) -> SolveValueKind {
     let result = match operator {
-        SolveBinaryOperator::Add => lhs.checked_add(rhs),
-        SolveBinaryOperator::Subtract => lhs.checked_sub(rhs),
-        SolveBinaryOperator::Multiply => lhs.checked_mul(rhs),
-        SolveBinaryOperator::Min => Some(lhs.min(rhs)),
-        SolveBinaryOperator::Max => Some(lhs.max(rhs)),
-        _ => None,
-    }
-    .filter(|result| domain.contains(*result))
-    .ok_or(TypedProgramEvalError::IntegerArithmetic {
-        operation: "binary operation",
-        provenance,
-    })?;
-    Ok(SolveValueKind::Integer(result))
+        SolveBinaryOperator::Min => lhs.min(rhs),
+        SolveBinaryOperator::Max => lhs.max(rhs),
+        _ => unreachable!("typed-program construction excludes unproved Integer binary ranges"),
+    };
+    SolveValueKind::Integer(result)
 }
 
 fn eval_real_binary_f32(operator: SolveBinaryOperator, lhs: f32, rhs: f32) -> f32 {
@@ -311,46 +276,13 @@ fn convert_element(
             SolveRealFormat::Binary64 => SolveValueKind::Real64((value as f64).to_bits()),
         }),
         (
-            SolveConversionOperator::RealToIntegerTowardZero,
-            SolveValueKind::Real32(bits),
-            SolveScalarType::Integer(domain),
-        ) => convert_real_to_integer(f64::from(f32::from_bits(bits)).trunc(), domain, provenance),
-        (
-            SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
-            SolveValueKind::Real32(bits),
-            SolveScalarType::Integer(domain),
-        ) => convert_real_to_integer(f64::from(f32::from_bits(bits)).floor(), domain, provenance),
-        (
-            SolveConversionOperator::RealToIntegerTowardZero,
-            SolveValueKind::Real64(bits),
-            SolveScalarType::Integer(domain),
-        ) => convert_real_to_integer(f64::from_bits(bits).trunc(), domain, provenance),
-        (
-            SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
-            SolveValueKind::Real64(bits),
-            SolveScalarType::Integer(domain),
-        ) => convert_real_to_integer(f64::from_bits(bits).floor(), domain, provenance),
+            SolveConversionOperator::RealToIntegerTowardZero
+            | SolveConversionOperator::RealToIntegerTowardNegativeInfinity,
+            SolveValueKind::Real32(_) | SolveValueKind::Real64(_),
+            SolveScalarType::Integer(_),
+        ) => unreachable!(
+            "typed-program construction excludes Real-to-Integer without range evidence"
+        ),
         _ => invalid("convert typed value", provenance),
     }
-}
-
-fn convert_real_to_integer(
-    value: f64,
-    domain: SolveIntegerDomain,
-    provenance: Span,
-) -> Result<SolveValueKind, TypedProgramEvalError> {
-    let below_minimum = value < domain.minimum() as f64;
-    let above_maximum = if domain.maximum() == i64::MAX {
-        value >= 9_223_372_036_854_775_808.0
-    } else {
-        value > domain.maximum() as f64
-    };
-    if !value.is_finite() || below_minimum || above_maximum {
-        return Err(TypedProgramEvalError::InvalidIntegerConversion { provenance });
-    }
-    let value = value as i64;
-    if !domain.contains(value) {
-        return Err(TypedProgramEvalError::InvalidIntegerConversion { provenance });
-    }
-    Ok(SolveValueKind::Integer(value))
 }

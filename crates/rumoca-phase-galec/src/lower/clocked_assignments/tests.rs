@@ -2,6 +2,10 @@ use rumoca_core::{ClockLattice, ClockRational, SourceId, SourceMap, Span, TypeId
 
 use super::*;
 
+mod causal_read_expansion;
+mod indexed_causal_calls;
+mod shared_call_capability;
+
 fn at(source: SourceId, text: &str, needle: &str) -> dae::DaeProvenance {
     let start = text.find(needle).expect("test source contains snippet");
     dae::DaeProvenance::source(Span::from_offsets(source, start, start + needle.len()))
@@ -15,7 +19,14 @@ fn enclosed(source: SourceId, text: &str, first: &str, last: &str) -> dae::DaePr
         .expect("test owner provenance is exact")
 }
 
-fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+fn project_all(model: &dae::Dae) -> Result<ClockedAssignments, GalecTargetError> {
+    project_all_with_arithmetic(model, positive_zero_arithmetic())
+}
+
+fn project_all_with_arithmetic(
+    model: &dae::Dae,
+    arithmetic: rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile,
+) -> Result<ClockedAssignments, GalecTargetError> {
     model.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let classified =
@@ -40,11 +51,72 @@ fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, Gale
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &pre_names,
-                emission: EmissionFacts::structured(),
+                arithmetic,
             },
             clock,
         )
-        .map(|assignments| assignments.statements)
+    })
+}
+
+fn project(model: &dae::Dae) -> Result<Vec<gast::Spanned<gast::Statement>>, GalecTargetError> {
+    project_all(model).map(|assignments| assignments.statements)
+}
+
+fn validate_all_call_actions(model: &dae::Dae) -> Result<(), GalecTargetError> {
+    model.inspect(|view| {
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let classified =
+            classify_variables(view, &definitions).expect("test variables are classifiable");
+        let by_id = classified
+            .iter()
+            .map(|variable| (variable.id.index(), variable.clone()))
+            .collect::<HashMap<_, _>>();
+        let clocks = (0..view.clock_count())
+            .filter_map(|index| view.clock_id(index))
+            .filter(|clock| {
+                matches!(
+                    view.clock(*clock).map(dae::ClockView::operation),
+                    Some(dae::ClockOperation::Periodic(_))
+                )
+            })
+            .collect::<Vec<_>>();
+        let admitted = clocks.iter().map(|clock| clock.index()).collect();
+        let unclocked_owner = *clocks.first().expect("test has one periodic clock");
+        let pre_names = HashMap::new();
+        let lowering = BlockLowering {
+            view,
+            definitions: &definitions,
+            by_id: &by_id,
+            pre_names: &pre_names,
+            arithmetic: positive_zero_arithmetic(),
+        };
+        let plan = ClockedCallPlan::construct(lowering, &admitted, unclocked_owner)?;
+        let mut call_actions = Vec::new();
+        let mut retained_calls = RetainedCallResults::default();
+        let retain_unguarded = clocks.len() == 1;
+        for clock in clocks {
+            call_actions.extend(
+                lower_clocked_assignments_for_domain(
+                    lowering,
+                    clock,
+                    &plan,
+                    &mut retained_calls,
+                    retain_unguarded,
+                )?
+                .call_actions,
+            );
+        }
+        let causal_plan =
+            causal_outputs::CausalAssignmentsPlan::construct(&definitions, classified.as_slice())?;
+        call_actions.extend(
+            causal_outputs::prepare_causal_assignments(
+                lowering,
+                &causal_plan,
+                &mut retained_calls,
+            )?
+            .call_actions,
+        );
+        CommittedCallActionLedger::construct(view, call_actions).map(|_| ())
     })
 }
 
@@ -270,12 +342,14 @@ fn atomic_owner_model(
             Ok((
                 variables.discrete_value(
                     VarName::new("m"),
+                    rumoca_core::InstanceId::new(1),
                     boolean,
                     spans.m_declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("n"),
+                    rumoca_core::InstanceId::new(2),
                     boolean,
                     spans.n_declaration,
                     dae::VariableAttributes::default(),
@@ -389,6 +463,7 @@ fn unconditional_owner_lowers_directly_with_action_provenance() {
         let m = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(3),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -505,6 +580,7 @@ fn materialized_elsewhen_guards_dominate_their_uses_lazily() {
         let target = dae.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(4),
                 boolean,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -624,12 +700,14 @@ fn current_discrete_value_dependencies_keep_topological_owner_order() {
             Ok((
                 variables.discrete_value(
                     VarName::new("a"),
+                    rumoca_core::InstanceId::new(5),
                     boolean,
                     a_declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.discrete_value(
                     VarName::new("b"),
+                    rumoca_core::InstanceId::new(6),
                     boolean,
                     b_declaration,
                     dae::VariableAttributes::default(),
@@ -669,6 +747,186 @@ fn current_discrete_value_dependencies_keep_topological_owner_order() {
     );
 }
 
+struct EmptyRealDotProductFixture {
+    model: dae::Dae,
+    left_declaration: Span,
+    product: Span,
+}
+
+fn empty_real_dot_product_fixture() -> EmptyRealDotProductFixture {
+    let text = "parameter Real left[0]; parameter Real right[0]; discrete Real y; \
+                when sample(0, 1) then y = left * right; end when;";
+    let mut sources = SourceMap::new();
+    let source = sources.add("empty-real-dot-product.mo", text);
+    let left_declaration = at(source, text, "parameter Real left[0]");
+    let right_declaration = at(source, text, "parameter Real right[0]");
+    let output_declaration = at(source, text, "discrete Real y");
+    let clock_at = at(source, text, "sample(0, 1)");
+    let assignment = at(source, text, "y = left * right");
+    let product = at(source, text, "left * right");
+    let model = dae::Dae::construct(sources, |dae| {
+        let (empty_vector, real) = dae.types(|types| {
+            Ok((
+                types.derived(
+                    dae::ValueType::array(dae::ScalarType::Real, [0]),
+                    left_declaration,
+                )?,
+                types.derived(
+                    dae::ValueType::scalar(dae::ScalarType::Real),
+                    output_declaration,
+                )?,
+            ))
+        })?;
+        let ((left, left_reservation), (right, right_reservation), y) =
+            dae.variables(|variables| {
+                Ok((
+                    variables.reserve_parameter(
+                        VarName::new("left"),
+                        rumoca_core::InstanceId::new(7),
+                        empty_vector,
+                        left_declaration,
+                    )?,
+                    variables.reserve_parameter(
+                        VarName::new("right"),
+                        rumoca_core::InstanceId::new(8),
+                        empty_vector,
+                        right_declaration,
+                    )?,
+                    variables.discrete_real(
+                        VarName::new("y"),
+                        rumoca_core::InstanceId::new(9),
+                        real,
+                        output_declaration,
+                        dae::VariableAttributes::default(),
+                    )?,
+                ))
+            })?;
+        dae.variables(|variables| {
+            variables.define(
+                left_reservation,
+                dae::VariableAttributes::default(),
+                left_declaration,
+            )?;
+            variables.define(
+                right_reservation,
+                dae::VariableAttributes::default(),
+                right_declaration,
+            )
+        })?;
+        let (lhs, rhs) = dae.expressions(|expressions| {
+            let left = expressions
+                .at(product)
+                .coordinate(dae::CoordinateInput::Parameter(left))?;
+            let right = expressions
+                .at(product)
+                .coordinate(dae::CoordinateInput::Parameter(right))?;
+            let product =
+                expressions
+                    .at(product)
+                    .binary(dae::BinaryOperator::Multiply, left, right)?;
+            let output = expressions
+                .at(assignment)
+                .coordinate(dae::CoordinateInput::DiscreteReal(y))?;
+            Ok((output, product))
+        })?;
+        let clock = periodic_clock(dae, clock_at)?;
+        dae.clocks(|clocks| {
+            clocks.own_discrete_real(clock, y, output_declaration)?;
+            Ok(())
+        })?;
+        let tick = dae.conditions(|conditions| {
+            let tick = conditions.reserve(clock_at)?;
+            conditions.define(tick, dae::ConditionInput::Clock(clock), clock_at)?;
+            Ok(tick)
+        })?;
+        define_when_real_equation(dae, tick, tick, assignment, lhs, rhs)
+    })
+    .expect("checked empty Real dot-product fixture");
+    EmptyRealDotProductFixture {
+        model,
+        left_declaration: left_declaration.span(),
+        product: product.span(),
+    }
+}
+
+#[test]
+fn first_product_empty_domain_preempts_storage_rejection_at_exact_product() {
+    let fixture = empty_real_dot_product_fixture();
+    let arithmetic = rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+        rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+        rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
+    );
+    let errors = rumoca_core::with_target_invocation_brand(|brand| {
+        crate::lower_to_algorithm_code(
+            brand,
+            &crate::GalecInput::new(&fixture.model, "EmptyFirstProduct"),
+            &crate::GalecOptions::new(arithmetic),
+        )
+        .expect_err("FirstProduct rejects the exact empty contraction occurrence")
+    });
+    assert!(matches!(
+        errors.as_slice(),
+        [GalecTargetError::UnsupportedFeature { feature, span, .. }]
+            if feature == "empty-first-product-matrix-multiply"
+                && *span == Some(fixture.product)
+    ));
+    assert_ne!(errors[0].span(), Some(fixture.left_declaration));
+}
+
+#[test]
+fn positive_zero_empty_materialized_dot_product_is_canonical_positive_zero() {
+    let fixture = empty_real_dot_product_fixture();
+    let arithmetic = rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+        rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+        rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+    );
+    let lowered = project_all_with_arithmetic(&fixture.model, arithmetic)
+        .expect("PositiveZero admits the empty contraction");
+    assert!(
+        lowered.locals.is_empty(),
+        "an empty domain needs no accumulator"
+    );
+    assert!(matches!(
+        lowered.statements.as_slice(),
+        [gast::Spanned {
+            node: gast::Statement::Assignment {
+                value: gast::Expression::Real(value),
+                ..
+            },
+            ..
+        }] if value.to_bits() == 0.0f64.to_bits()
+    ));
+}
+
+#[test]
+fn positive_zero_does_not_admit_unrepresentable_empty_block_storage() {
+    let fixture = empty_real_dot_product_fixture();
+    let arithmetic = rumoca_ir_galec::package::AlgorithmCodeArithmeticProfile::construct(
+        rumoca_ir_galec::package::AlgorithmCodeRealFormat::Binary64,
+        rumoca_ir_galec::package::AlgorithmCodeIntegerFormat::I32,
+        rumoca_core::RealMatrixMultiplySemantics::SeparateMulAddAscendingPositiveZero,
+    );
+    let errors = rumoca_core::with_target_invocation_brand(|brand| {
+        crate::lower_to_algorithm_code(
+            brand,
+            &crate::GalecInput::new(&fixture.model, "EmptyPositiveZero"),
+            &crate::GalecOptions::new(arithmetic),
+        )
+        .expect_err("the arithmetic identity cannot make empty GALEC storage representable")
+    });
+    assert!(matches!(
+        errors.as_slice(),
+        [GalecTargetError::NonPositiveDimension {
+            variable,
+            dimension: 1,
+            size: 0,
+            span,
+        }] if variable == "left" && *span == fixture.left_declaration
+    ));
+}
+
 #[test]
 fn explicit_clocked_b1b_definition_lowers_with_equation_provenance() {
     let text = "discrete Real z; when sample(0, 1) then z = 1.0; end when;";
@@ -688,6 +946,7 @@ fn explicit_clocked_b1b_definition_lowers_with_equation_provenance() {
         let z = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(10),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -751,6 +1010,7 @@ fn conditional_real_value_work_remains_inside_its_runtime_guard() {
         let z = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(11),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -841,12 +1101,14 @@ fn generated_connection_alias_does_not_compete_with_its_clocked_real_owner() {
             Ok((
                 variables.discrete_real(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(12),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("connectorValue"),
+                    rumoca_core::InstanceId::new(13),
                     real,
                     connector_declaration,
                     dae::VariableAttributes::default(),
@@ -909,6 +1171,7 @@ fn periodic_interval_coordinate_lowers_to_owning_lattice_period() {
         let z = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(14),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -975,6 +1238,7 @@ fn b1b_residual_pre_reads_materialize_the_previous_state() {
         let z = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(15),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -1026,6 +1290,7 @@ fn unowned_explicit_b1b_definition_fails_before_galec_lowering() {
         let z = dae.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(16),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -1081,18 +1346,21 @@ fn clocked_local_to_output_alias_is_oriented_and_ordered() {
         let (source_value, filtered, output) = dae.variables(|variables| {
             let source_value = variables.discrete_real(
                 VarName::new("source"),
+                rumoca_core::InstanceId::new(17),
                 real,
                 source_declaration,
                 dae::VariableAttributes::default(),
             )?;
             let filtered = variables.discrete_real(
                 VarName::new("filtered"),
+                rumoca_core::InstanceId::new(18),
                 real,
                 filtered_declaration,
                 dae::VariableAttributes::default(),
             )?;
             let output = variables.discrete_real(
                 VarName::new("y"),
+                rumoca_core::InstanceId::new(19),
                 real,
                 output_declaration,
                 dae::VariableAttributes {
@@ -1158,753 +1426,5 @@ fn clocked_local_to_output_alias_is_oriented_and_ordered() {
     );
 }
 
-#[test]
-fn coupled_b1b_residual_fails_closed_at_equation_provenance() {
-    let text = "discrete Real z; discrete Real w; z + w = 1.0; sample(0, 1);";
-    let mut sources = SourceMap::new();
-    let source = sources.add("coupled-real.mo", text);
-    let z_declaration = at(source, text, "discrete Real z");
-    let w_declaration = at(source, text, "discrete Real w");
-    let equation_at = at(source, text, "z + w = 1.0");
-    let clock_at = at(source, text, "sample(0, 1)");
-    let model = dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                dae::ValueType::scalar(dae::ScalarType::Real),
-                z_declaration,
-            )
-        })?;
-        let (z, w) = dae.variables(|variables| {
-            Ok((
-                variables.discrete_real(
-                    VarName::new("z"),
-                    real,
-                    z_declaration,
-                    dae::VariableAttributes::default(),
-                )?,
-                variables.discrete_real(
-                    VarName::new("w"),
-                    real,
-                    w_declaration,
-                    dae::VariableAttributes::default(),
-                )?,
-            ))
-        })?;
-        let (lhs, rhs) = dae.expressions(|expressions| {
-            let z = expressions
-                .at(equation_at)
-                .coordinate(dae::CoordinateInput::DiscreteReal(z))?;
-            let w = expressions
-                .at(equation_at)
-                .coordinate(dae::CoordinateInput::DiscreteReal(w))?;
-            Ok((
-                expressions
-                    .at(equation_at)
-                    .binary(dae::BinaryOperator::Add, z, w)?,
-                expressions
-                    .at(equation_at)
-                    .literal(dae::DaeLiteral::Real(1.0))?,
-            ))
-        })?;
-        periodic_clock(dae, clock_at)?;
-        define_real_equation(dae, equation_at, lhs, rhs)?;
-        Ok(())
-    })
-    .expect("checked coupled B.1b fixture");
-
-    let error = project(&model).expect_err("coupled B.1b is not an assignment");
-    assert!(matches!(
-        error,
-        GalecTargetError::UnsupportedFeature {
-            feature,
-            span: Some(span),
-            ..
-        } if feature == "coupled-discrete-real-equation" && span == equation_at.span()
-    ));
-}
-
-#[test]
-fn unclocked_conditional_owner_is_rejected_at_its_source_span() {
-    let text = "discrete Boolean m; when a then m = true; end when; sample(0, 1);";
-    let mut sources = SourceMap::new();
-    let source = sources.add("unclocked.mo", text);
-    let declaration = at(source, text, "discrete Boolean m");
-    let branch = at(source, text, "when a");
-    let action = at(source, text, "m = true");
-    let clock_at = at(source, text, "sample(0, 1)");
-    let model = dae::Dae::construct(sources, |dae| {
-        let boolean = dae.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                dae::ValueType::scalar(dae::ScalarType::Boolean),
-                declaration,
-            )
-        })?;
-        let m = dae.variables(|variables| {
-            variables.discrete_value(
-                VarName::new("m"),
-                boolean,
-                declaration,
-                dae::VariableAttributes::default(),
-            )
-        })?;
-        let (condition_value, assigned_value) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(branch)
-                    .literal(dae::DaeLiteral::Boolean(true))?,
-                expressions
-                    .at(action)
-                    .literal(dae::DaeLiteral::Boolean(true))?,
-            ))
-        })?;
-        let condition = dae.conditions(|conditions| {
-            let condition = conditions.reserve(branch)?;
-            conditions.define(
-                condition,
-                dae::ConditionInput::Discrete(condition_value),
-                branch,
-            )?;
-            Ok(condition)
-        })?;
-        periodic_clock(dae, clock_at)?;
-        dae.b1c([m], |topology| {
-            define_when_owner(topology, m, condition, branch, assigned_value, action)?;
-            Ok(())
-        })
-    })
-    .expect("checked unclocked B.1c fixture");
-
-    let error = project(&model).expect_err("unclocked condition is outside DoStep");
-    assert!(matches!(
-        error,
-        GalecTargetError::UnsupportedFeature {
-            feature,
-            span: Some(span),
-            ..
-        } if feature == "runtime-event-trigger" && span == branch.span()
-    ));
-}
-
-/// Count `MultiAssignment` call statements naming `function`, at any nesting
-/// depth, so a guarded projection counts the same as a bare one.
-fn multi_assignment_call_sites(
-    statements: &[gast::Spanned<gast::Statement>],
-    function: &str,
-) -> usize {
-    statements
-        .iter()
-        .map(|statement| match &statement.node {
-            gast::Statement::MultiAssignment { call, .. } => {
-                usize::from(call.function.lexeme() == function)
-            }
-            gast::Statement::If(branching) => {
-                branching
-                    .branches
-                    .iter()
-                    .map(|branch| multi_assignment_call_sites(&branch.body, function))
-                    .sum::<usize>()
-                    + branching
-                        .else_body
-                        .as_ref()
-                        .map_or(0, |body| multi_assignment_call_sites(body, function))
-            }
-            _ => 0,
-        })
-        .sum()
-}
-
-fn define_scalar_pair<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    real: dae::ValueTypeId<'dae>,
-    provenance: dae::DaeProvenance,
-) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
-    dae.function(
-        dae::FunctionSignature::new(VarName::new("pair"), [real], [real, real], provenance),
-        |dae, reservation| {
-            let input = dae.functions(|functions| {
-                functions.parameter(&reservation, VarName::new("input"), 0, provenance)
-            })?;
-            let first = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("first"), 0, provenance)
-            })?;
-            let second = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("second"), 1, provenance)
-            })?;
-            let input = dae
-                .expressions(|expressions| expressions.at(provenance).function_parameter(input))?;
-            let two = dae.expressions(|expressions| {
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Real(2.0))
-            })?;
-            let doubled = dae.expressions(|expressions| {
-                expressions
-                    .at(provenance)
-                    .binary(dae::BinaryOperator::Multiply, input, two)
-            })?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            dae.functions(|functions| {
-                functions.assign(&mut body, first, input, provenance)?;
-                functions.assign(&mut body, second, doubled, provenance)?;
-                functions.define(body, provenance)
-            })
-        },
-    )
-    .map(|(function, _)| function)
-}
-
-fn multi_output_clocked_fixture() -> dae::Dae {
-    let text = "discrete Real a, b, c; when sample(0, 1) then c = 1.0; (a, b) = pair(c); end when;";
-    let mut sources = SourceMap::new();
-    let source = sources.add("multi-output-clocked.mo", text);
-    let declaration = at(source, text, "discrete Real a, b, c");
-    let clock_at = at(source, text, "sample(0, 1)");
-    let seed_assignment = at(source, text, "c = 1.0");
-    let assignment = at(source, text, "(a, b) = pair(c)");
-    dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                dae::ValueType::scalar(dae::ScalarType::Real),
-                declaration,
-            )
-        })?;
-        let pair = define_scalar_pair(dae, real, declaration)?;
-        let a = dae.variables(|variables| {
-            variables.discrete_real(
-                VarName::new("a"),
-                real,
-                declaration,
-                dae::VariableAttributes::default(),
-            )
-        })?;
-        let b = dae.variables(|variables| {
-            variables.discrete_real(
-                VarName::new("b"),
-                real,
-                declaration,
-                dae::VariableAttributes::default(),
-            )
-        })?;
-        let c = dae.variables(|variables| {
-            variables.discrete_real(
-                VarName::new("c"),
-                real,
-                declaration,
-                dae::VariableAttributes::default(),
-            )
-        })?;
-        let argument = dae.expressions(|expressions| {
-            expressions
-                .at(assignment)
-                .coordinate(dae::CoordinateInput::DiscreteReal(c))
-        })?;
-        let results = dae.expressions(|expressions| {
-            expressions
-                .at(assignment)
-                .call_results(pair, [0, 1], [argument])
-        })?;
-        let (a_ref, b_ref) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(assignment)
-                    .coordinate(dae::CoordinateInput::DiscreteReal(a))?,
-                expressions
-                    .at(assignment)
-                    .coordinate(dae::CoordinateInput::DiscreteReal(b))?,
-            ))
-        })?;
-        let (c_ref, seed) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(seed_assignment)
-                    .coordinate(dae::CoordinateInput::DiscreteReal(c))?,
-                expressions
-                    .at(seed_assignment)
-                    .literal(dae::DaeLiteral::Real(1.0))?,
-            ))
-        })?;
-        let clock = periodic_clock(dae, clock_at)?;
-        dae.clocks(|clocks| {
-            clocks.own_discrete_real(clock, a, declaration)?;
-            clocks.own_discrete_real(clock, b, declaration)?;
-            clocks.own_discrete_real(clock, c, declaration)?;
-            Ok(())
-        })?;
-        let tick = dae.conditions(|conditions| {
-            let tick = conditions.reserve(clock_at)?;
-            conditions.define(tick, dae::ConditionInput::Clock(clock), clock_at)?;
-            Ok(tick)
-        })?;
-        define_when_real_equation(dae, tick, tick, seed_assignment, c_ref, seed)?;
-        define_when_real_equation(dae, tick, tick, assignment, a_ref, results[0])?;
-        define_when_real_equation(dae, tick, tick, assignment, b_ref, results[1])?;
-        Ok(())
-    })
-    .expect("checked multi-output clocked fixture")
-}
-
-/// DAE-C21: the two result projections of one issued call owner are one
-/// invocation. They must reach GALEC as one call binding both results, not as
-/// one call per consumed output.
-///
-/// The call deliberately reads `c`, a discrete target this same `DoStep`
-/// writes. That makes it ineligible for the domain-entry preamble hoist (a
-/// hoisted call would read the previous tick's `c`), so the only thing that can
-/// collapse the two projections is grouping them into one emission group. A
-/// fixture whose call reads nothing would be hoisted instead and would stay
-/// green with grouping disabled.
-#[test]
-fn two_projections_of_one_call_owner_emit_one_clocked_call() {
-    let model = multi_output_clocked_fixture();
-    let statements = project(&model).expect("multi-output clocked definitions project");
-    assert_eq!(
-        multi_assignment_call_sites(&statements, "pair"),
-        1,
-        "two projections of one issued call owner must emit one call"
-    );
-}
-
-/// Every state assignment written by `statements`, as
-/// `(target name, subscript count, source name)`.
-///
-/// `source name` is the referenced name for a bare reference and `<computed>`
-/// otherwise, which is all these assertions need to tell one storage object
-/// from another.
-fn state_assignment_shapes(
-    statements: &[gast::Spanned<gast::Statement>],
-) -> Vec<(String, usize, String)> {
-    let mut shapes = Vec::new();
-    for statement in statements {
-        match &statement.node {
-            gast::Statement::Assignment {
-                target: gast::Reference::State(parts),
-                value,
-            } => {
-                let part = parts.first().expect("checked state reference is nonempty");
-                let source = match value {
-                    gast::Expression::Ref(gast::Reference::Local(source)) => {
-                        source.name.lexeme().to_owned()
-                    }
-                    gast::Expression::Ref(gast::Reference::State(source)) => source
-                        .first()
-                        .expect("checked state source is nonempty")
-                        .name
-                        .lexeme()
-                        .to_owned(),
-                    _ => "<computed>".to_owned(),
-                };
-                shapes.push((part.name.lexeme().to_owned(), part.subscripts.len(), source));
-            }
-            gast::Statement::If(branching) => {
-                for branch in &branching.branches {
-                    shapes.extend(state_assignment_shapes(&branch.body));
-                }
-                if let Some(body) = &branching.else_body {
-                    shapes.extend(state_assignment_shapes(body));
-                }
-            }
-            _ => {}
-        }
-    }
-    shapes
-}
-
-fn shapes_for<'a>(
-    shapes: &'a [(String, usize, String)],
-    target: &str,
-) -> Vec<&'a (String, usize, String)> {
-    shapes.iter().filter(|shape| shape.0 == target).collect()
-}
-
-#[derive(Clone, Copy)]
-struct WholeArraySpans {
-    parameter_declaration: dae::DaeProvenance,
-    declaration: dae::DaeProvenance,
-    clock: dae::DaeProvenance,
-    seed: dae::DaeProvenance,
-    pair: dae::DaeProvenance,
-    echo: dae::DaeProvenance,
-    alias: dae::DaeProvenance,
-    widened: dae::DaeProvenance,
-}
-
-#[derive(Clone, Copy)]
-struct WholeArrayVariables<'dae> {
-    seed: dae::DiscreteRealId<'dae>,
-    a: dae::DiscreteRealId<'dae>,
-    b: dae::DiscreteRealId<'dae>,
-    echo: dae::DiscreteRealId<'dae>,
-    alias: dae::DiscreteRealId<'dae>,
-    widened: dae::DiscreteRealId<'dae>,
-    counts: dae::ParameterId<'dae>,
-}
-
-#[derive(Clone, Copy)]
-struct WholeArrayExpressions<'dae> {
-    seed_ref: dae::ExprId<'dae>,
-    seed_value: dae::ExprId<'dae>,
-    a_ref: dae::ExprId<'dae>,
-    a_value: dae::ExprId<'dae>,
-    b_ref: dae::ExprId<'dae>,
-    b_value: dae::ExprId<'dae>,
-    echo_ref: dae::ExprId<'dae>,
-    echo_value: dae::ExprId<'dae>,
-    alias_ref: dae::ExprId<'dae>,
-    alias_value: dae::ExprId<'dae>,
-    widened_ref: dae::ExprId<'dae>,
-    widened_value: dae::ExprId<'dae>,
-}
-
-fn define_array_pair<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    vector: dae::ValueTypeId<'dae>,
-    provenance: dae::DaeProvenance,
-) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
-    dae.function(
-        dae::FunctionSignature::new(VarName::new("pair"), [vector], [vector, vector], provenance),
-        |dae, reservation| {
-            let input = dae.functions(|functions| {
-                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
-            })?;
-            let alpha = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("alpha"), 0, provenance)
-            })?;
-            let beta = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("beta"), 1, provenance)
-            })?;
-            let input = dae
-                .expressions(|expressions| expressions.at(provenance).function_parameter(input))?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            dae.functions(|functions| {
-                functions.assign(&mut body, alpha, input, provenance)?;
-                functions.assign(&mut body, beta, input, provenance)?;
-                functions.define(body, provenance)
-            })
-        },
-    )
-    .map(|(function, _)| function)
-}
-
-fn define_whole_array_variables<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    vector: dae::ValueTypeId<'dae>,
-    spans: WholeArraySpans,
-) -> Result<WholeArrayVariables<'dae>, dae::DaeConstructionError> {
-    let mut discrete_real = |name| {
-        dae.variables(|variables| {
-            variables.discrete_real(
-                VarName::new(name),
-                vector,
-                spans.declaration,
-                dae::VariableAttributes::default(),
-            )
-        })
-    };
-    let seed = discrete_real("seed")?;
-    let a = discrete_real("a")?;
-    let b = discrete_real("b")?;
-    let echo = discrete_real("echo")?;
-    let alias = discrete_real("alias")?;
-    let widened = discrete_real("widened")?;
-    let integer_vector = dae.types(|types| {
-        types.intern(
-            TypeId::new(1),
-            dae::ValueType::array(dae::ScalarType::Integer, [2]),
-            spans.parameter_declaration,
-        )
-    })?;
-    let counts = dae.variables(|variables| {
-        variables.parameter(
-            VarName::new("counts"),
-            integer_vector,
-            spans.parameter_declaration,
-            dae::VariableAttributes::default(),
-        )
-    })?;
-    Ok(WholeArrayVariables {
-        seed,
-        a,
-        b,
-        echo,
-        alias,
-        widened,
-        counts,
-    })
-}
-
-fn permuted_echo_value<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    variable: dae::DiscreteRealId<'dae>,
-    provenance: dae::DaeProvenance,
-) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    dae.expressions(|expressions| {
-        let read = expressions
-            .at(provenance)
-            .coordinate(dae::CoordinateInput::DiscreteReal(variable))?;
-        let second = expressions
-            .at(provenance)
-            .literal(dae::DaeLiteral::Integer(2))?;
-        let first = expressions
-            .at(provenance)
-            .literal(dae::DaeLiteral::Integer(1))?;
-        let high = expressions.at(provenance).index(
-            read,
-            [dae::Subscript::Index {
-                expression: second,
-                provenance,
-            }],
-        )?;
-        let low = expressions.at(provenance).index(
-            read,
-            [dae::Subscript::Index {
-                expression: first,
-                provenance,
-            }],
-        )?;
-        expressions.at(provenance).array([high, low])
-    })
-}
-
-fn define_whole_array_expressions<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    pair: dae::FunctionId<'dae>,
-    variables: WholeArrayVariables<'dae>,
-    spans: WholeArraySpans,
-) -> Result<WholeArrayExpressions<'dae>, dae::DaeConstructionError> {
-    let seed_read = dae.expressions(|expressions| {
-        expressions
-            .at(spans.pair)
-            .coordinate(dae::CoordinateInput::DiscreteReal(variables.seed))
-    })?;
-    let results = dae.expressions(|expressions| {
-        expressions
-            .at(spans.pair)
-            .call_results(pair, [0, 1], [seed_read])
-    })?;
-    let mut discrete_ref = |variable, provenance| {
-        dae.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .coordinate(dae::CoordinateInput::DiscreteReal(variable))
-        })
-    };
-    let seed_ref = discrete_ref(variables.seed, spans.seed)?;
-    let a_ref = discrete_ref(variables.a, spans.pair)?;
-    let b_ref = discrete_ref(variables.b, spans.pair)?;
-    let echo_ref = discrete_ref(variables.echo, spans.echo)?;
-    let alias_ref = discrete_ref(variables.alias, spans.alias)?;
-    let alias_value = discrete_ref(variables.a, spans.alias)?;
-    let widened_ref = discrete_ref(variables.widened, spans.widened)?;
-    let widened_value = dae.expressions(|expressions| {
-        expressions
-            .at(spans.widened)
-            .coordinate(dae::CoordinateInput::Parameter(variables.counts))
-    })?;
-    let seed_value = dae.expressions(|expressions| {
-        let one = expressions
-            .at(spans.seed)
-            .literal(dae::DaeLiteral::Real(1.0))?;
-        let two = expressions
-            .at(spans.seed)
-            .literal(dae::DaeLiteral::Real(2.0))?;
-        expressions.at(spans.seed).array([one, two])
-    })?;
-    Ok(WholeArrayExpressions {
-        seed_ref,
-        seed_value,
-        a_ref,
-        a_value: results[0],
-        b_ref,
-        b_value: results[1],
-        echo_ref,
-        echo_value: permuted_echo_value(dae, variables.b, spans.echo)?,
-        alias_ref,
-        alias_value,
-        widened_ref,
-        widened_value,
-    })
-}
-
-fn define_whole_array_clock<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    variables: WholeArrayVariables<'dae>,
-    expressions: WholeArrayExpressions<'dae>,
-    spans: WholeArraySpans,
-) -> Result<(), dae::DaeConstructionError> {
-    let clock = periodic_clock(dae, spans.clock)?;
-    dae.clocks(|clocks| {
-        for variable in [
-            variables.seed,
-            variables.a,
-            variables.b,
-            variables.echo,
-            variables.alias,
-            variables.widened,
-        ] {
-            clocks.own_discrete_real(clock, variable, spans.declaration)?;
-        }
-        Ok(())
-    })?;
-    let tick = dae.conditions(|conditions| {
-        let tick = conditions.reserve(spans.clock)?;
-        conditions.define(tick, dae::ConditionInput::Clock(clock), spans.clock)?;
-        Ok(tick)
-    })?;
-    for (provenance, lhs, rhs) in [
-        (spans.seed, expressions.seed_ref, expressions.seed_value),
-        (spans.pair, expressions.a_ref, expressions.a_value),
-        (spans.pair, expressions.b_ref, expressions.b_value),
-        (spans.echo, expressions.echo_ref, expressions.echo_value),
-        (spans.alias, expressions.alias_ref, expressions.alias_value),
-        (
-            spans.widened,
-            expressions.widened_ref,
-            expressions.widened_value,
-        ),
-    ] {
-        define_when_real_equation(dae, tick, tick, provenance, lhs, rhs)?;
-    }
-    Ok(())
-}
-
-/// A clocked definition whose value already denotes one whole array must reach
-/// GALEC as ONE array assignment; a definition that only looks array-shaped
-/// must keep one assignment per coordinate.
-///
-/// The fixture is deliberately not the easy case:
-///
-/// * `a` and `b` are two array results of ONE issued call, so an emitter that
-///   collapsed a definition onto "the call's result" without selecting the
-///   right output still emits two whole-array assignments and still compiles —
-///   the assertion that `a` reads the `alpha` temporary and `b` the `beta` one
-///   is what separates "compiles" from "computes the right thing".
-/// * `echo` is `{b[2], b[1]}`: the same extent, the same element type and one
-///   single source object, exactly like a collapsible copy, but a PERMUTED
-///   correspondence. It must stay at one assignment per coordinate.
-/// * `seed` is an array constructor of literals — complete and in order, but
-///   not a reference to storage, so there is nothing to copy from.
-fn whole_array_clocked_fixture() -> dae::Dae {
-    let text = "parameter Integer counts[2]; discrete Real seed[2], a[2], b[2], \
-                echo[2], alias[2], widened[2]; when sample(0, 1) then \
-                seed = {1.0, 2.0}; (a, b) = pair(seed); echo = {b[2], b[1]}; alias = a; \
-                widened = counts; end when;";
-    let mut sources = SourceMap::new();
-    let source = sources.add("whole-array-clocked.mo", text);
-    let spans = WholeArraySpans {
-        parameter_declaration: at(source, text, "parameter Integer counts[2]"),
-        declaration: at(source, text, "discrete Real seed[2], a[2], b[2]"),
-        clock: at(source, text, "sample(0, 1)"),
-        seed: at(source, text, "seed = {1.0, 2.0}"),
-        pair: at(source, text, "(a, b) = pair(seed)"),
-        echo: at(source, text, "echo = {b[2], b[1]}"),
-        alias: at(source, text, "alias = a"),
-        widened: at(source, text, "widened = counts"),
-    };
-    dae::Dae::construct(sources, |dae| {
-        let vector = dae.types(|types| {
-            types.intern(
-                TypeId::new(0),
-                dae::ValueType::array(dae::ScalarType::Real, [2]),
-                spans.declaration,
-            )
-        })?;
-        let pair = define_array_pair(dae, vector, spans.declaration)?;
-        let variables = define_whole_array_variables(dae, vector, spans)?;
-        let expressions = define_whole_array_expressions(dae, pair, variables, spans)?;
-        define_whole_array_clock(dae, variables, expressions, spans)
-    })
-    .expect("checked whole-array clocked fixture")
-}
-
-fn assert_whole_array_assignment_shapes(
-    statements: &[gast::Spanned<gast::Statement>],
-    shapes: &[(String, usize, String)],
-) {
-    let a_shapes = shapes_for(shapes, "a");
-    let b_shapes = shapes_for(shapes, "b");
-    assert_eq!(
-        a_shapes.len(),
-        1,
-        "`a` must be one whole-array copy: {shapes:?}"
-    );
-    assert_eq!(
-        b_shapes.len(),
-        1,
-        "`b` must be one whole-array copy: {shapes:?}"
-    );
-    assert_eq!(
-        a_shapes[0].1, 0,
-        "a whole-array target carries no subscript"
-    );
-    assert_eq!(
-        b_shapes[0].1, 0,
-        "a whole-array target carries no subscript"
-    );
-    assert!(
-        a_shapes[0].2.contains("alpha") && !a_shapes[0].2.contains("beta"),
-        "`a` must copy the `alpha` result temporary: {shapes:?}"
-    );
-    assert!(
-        b_shapes[0].2.contains("beta") && !b_shapes[0].2.contains("alpha"),
-        "`b` must copy the `beta` result temporary: {shapes:?}"
-    );
-    assert_eq!(
-        multi_assignment_call_sites(statements, "pair"),
-        1,
-        "collapsing to whole-array copies must not duplicate the call"
-    );
-
-    let echo_shapes = shapes_for(shapes, "echo");
-    assert_eq!(
-        echo_shapes.len(),
-        2,
-        "a permuted definition keeps one assignment per coordinate: {shapes:?}"
-    );
-    assert!(
-        echo_shapes.iter().all(|shape| shape.1 == 1),
-        "each permuted coordinate is subscripted: {shapes:?}"
-    );
-    let seed_shapes = shapes_for(shapes, "seed");
-    assert_eq!(
-        seed_shapes.len(),
-        2,
-        "an array constructor keeps one assignment per coordinate: {shapes:?}"
-    );
-    let alias_shapes = shapes_for(shapes, "alias");
-    assert_eq!(
-        alias_shapes.len(),
-        1,
-        "`alias` must be one whole-array copy: {shapes:?}"
-    );
-    assert_eq!(
-        alias_shapes[0].1, 0,
-        "a whole-array target has no subscript"
-    );
-    assert_eq!(
-        alias_shapes[0].2, "a",
-        "`alias` must copy the whole `a` storage: {shapes:?}"
-    );
-    let widened_shapes = shapes_for(shapes, "widened");
-    assert_eq!(
-        widened_shapes.len(),
-        2,
-        "a widening copy keeps one assignment per coordinate: {shapes:?}"
-    );
-    assert!(
-        widened_shapes
-            .iter()
-            .all(|shape| shape.1 == 1 && shape.2 == "<computed>"),
-        "each widened coordinate is a subscripted conversion: {shapes:?}"
-    );
-}
-
-#[test]
-fn whole_array_clocked_definitions_collapse_only_under_proven_correspondence() {
-    let model = whole_array_clocked_fixture();
-    let statements = project(&model).expect("whole-array clocked definitions project");
-    let shapes = state_assignment_shapes(&statements);
-    assert_whole_array_assignment_shapes(&statements, &shapes);
-}
+mod refusal_cases;
+use refusal_cases::{define_array_copy, define_scalar_pair, multi_assignment_call_sites};

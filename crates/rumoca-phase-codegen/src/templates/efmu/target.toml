@@ -1,0 +1,428 @@
+version = 1
+name = "efmu"
+description = "Correlated eFMI container with checked Algorithm Code and its Solve-owned Production C/H refinement"
+execution_mode = "packaged"
+deployment_class = "efmi"
+readiness_level = 0
+completion_message = "Checked correlated eFMI development container written to: {{ out_dir }}"
+
+[arithmetic]
+source_real = "binary32"
+source_integer = "i32"
+real_matrix_multiply = "separate_mul_add_ascending_first_product"
+
+[solve_executable.value_capabilities]
+boolean_scalar = true
+boolean_tensor = false
+signed_integer_scalar = true
+signed_integer_tensor = false
+unsigned_integer_scalar = false
+unsigned_integer_tensor = false
+real_scalar = true
+real_tensor = false
+nested_record_arrays = false
+empty_fields = false
+empty_values = false
+enum_brands = false
+opaque_value_handles = false
+
+[solve_executable.operation_effect_capabilities]
+admitted = [
+  "constant",
+  "declaration-initialization",
+  "error-signal-reset",
+  "lifecycle-method",
+  "store",
+]
+
+[solve_executable.environment]
+environment = "freestanding"
+allocation = "forbidden"
+recursion = "forbidden"
+max_automatic_payload_bytes = 65536
+failure = "returned-status"
+runtime_math = []
+concurrency = "single-threaded"
+atomics = "none"
+admitted_library_contracts = []
+isa_features = []
+
+[solve_executable.emission]
+kind = "loop"
+
+[package]
+root = "{{ model_name }}"
+required_files = [
+  "__content.xml",
+  "AlgorithmCode/manifest.xml",
+  "ProductionCode/manifest.xml",
+  "schemas/VERSION.txt",
+]
+
+[[package.members]]
+kind = "file"
+file = "alg"
+
+[[package.members]]
+kind = "file"
+file = "ac_manifest"
+
+[[package.members]]
+kind = "file"
+file = "production_header"
+
+[[package.members]]
+kind = "file"
+file = "production_source"
+
+[[package.members]]
+kind = "file"
+file = "pc_manifest"
+
+[[package.members]]
+kind = "file"
+file = "content"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/efmiAlgorithmCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "AlgorithmCode/efmiVariable.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiBehavioralModelManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiClocks.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiCsvMappings.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiScenarios.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiTolerancesSetups.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BehavioralModel/efmiVariables.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBinaryCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBinaryContainerInfoFileReferences.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiBuildInformation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiModules.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiObjectFile.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "BinaryCode/efmiRunTimeComplianceInformation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "LICENSE"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiCodeFiles.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiDimensions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiFunctions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiIncludes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiLogicalData.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiMacros.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiProductionCodeManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiSupportedLanguages.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiSupportedPlatforms.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTargetTypes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTechnicalLookUps.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiTypeDefs.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "ProductionCode/efmiVariables.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "README.md"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "VERSION.txt"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiAnnotation.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiCompilerOptions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiContainerManifest.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiFiles.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiFloatingPointPrecision.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiIdentifierType.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiLinkerOptions.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiManifestAttributes.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiManifestReferences.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiModelRepresentationKind.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiUnits.xsd"
+
+[[package.members]]
+kind = "asset"
+source = "schemas"
+path = "efmiWildcard.xsd"
+
+
+[package.archive]
+path = "{{ model_name }}.efmu"
+format = "zip"
+root = "flat"
+
+[capabilities]
+scalar_fallback = true
+continuous_states = false
+residual_equations = false
+external_functions = false
+random = false
+initialization = false
+events = true
+runtime_events = false
+clocks = true
+dynamic_ranges = false
+dynamic_derivative_subscripts = false
+forward_ad = false
+reverse_ad = false
+dynamic_control_flow = false
+host_callbacks = false
+
+# Both representations use the exact eFMI 1.0.0 Beta-1 schema release owned
+# by `galec`.  `shared_from` lends the owner's embedded bytes; this target has
+# no second vendored copy that could drift.
+[[assets]]
+source = "schemas"
+shared_from = "galec"
+dest = "schemas/"
+product_role = "schema"
+
+[[files]]
+id = "alg"
+artifact_kind = "algorithm-code"
+semantic_context = "galec"
+view = "algorithm-code-package"
+product_role = "algorithm-code-source"
+path = "AlgorithmCode/model.alg"
+template = "model.alg.jinja"
+template_shared_from = "galec"
+
+[[files]]
+id = "ac_manifest"
+artifact_kind = "xml"
+semantic_context = "galec"
+view = "algorithm-code-package"
+product_role = "algorithm-code-manifest"
+path = "AlgorithmCode/manifest.xml"
+template = "ac_manifest.xml.jinja"
+required_artifact_identities = ["ac_manifest"]
+  [[files.checksums]]
+  of = "alg"
+  algorithm = "sha1"
+  as = "alg_sha1"
+
+[[files]]
+id = "production_header"
+artifact_kind = "c-header"
+semantic_context = "solve"
+view = "solve-algorithm-block"
+product_role = "production-header"
+path = "ProductionCode/sources/production.h"
+template = "production.h.jinja"
+
+[[files]]
+id = "production_source"
+artifact_kind = "c-source"
+semantic_context = "solve"
+view = "solve-algorithm-block"
+product_role = "production-source"
+path = "ProductionCode/sources/production.c"
+template = "production.c.jinja"
+
+[[files]]
+id = "pc_manifest"
+artifact_kind = "xml"
+semantic_context = "solve"
+view = "solve-algorithm-block"
+product_role = "production-manifest"
+path = "ProductionCode/manifest.xml"
+template = "pc_manifest.xml.jinja"
+required_artifact_identities = ["ac_manifest", "pc_manifest"]
+  [[files.checksums]]
+  of = "ac_manifest"
+  algorithm = "sha1"
+  as = "ac_manifest_sha1"
+  [[files.checksums]]
+  of = "production_header"
+  algorithm = "sha1"
+  as = "production_header_sha1"
+  [[files.checksums]]
+  of = "production_source"
+  algorithm = "sha1"
+  as = "production_source_sha1"
+
+[[files]]
+id = "content"
+artifact_kind = "xml"
+semantic_context = "galec"
+view = "algorithm-code-package"
+product_role = "package-manifest"
+path = "__content.xml"
+template = "__content.xml.jinja"
+required_artifact_identities = ["ac_manifest", "content", "pc_manifest"]
+  [[files.checksums]]
+  of = "ac_manifest"
+  algorithm = "sha1"
+  as = "ac_manifest_sha1"
+  [[files.checksums]]
+  of = "pc_manifest"
+  algorithm = "sha1"
+  as = "pc_manifest_sha1"

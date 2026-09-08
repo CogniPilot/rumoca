@@ -435,10 +435,11 @@ fn compile_help_unifies_outputs_under_target() {
     assert!(!help.contains("--backend"));
     assert!(!help.contains("--template-file"));
     assert!(!help.contains("--template-ir"));
-    // Three separated concerns: --emit (dumps), --target (codegen), --phase (.jinja IR).
+    // Two separated concerns: --emit dumps one named IR artifact; --target
+    // renders one checked manifest product.
     assert!(help.contains("--emit"));
     assert!(help.contains("--target"));
-    assert!(help.contains("--phase"));
+    assert!(!help.contains("--phase"));
     assert!(help.contains("a built-in target"));
     // --emit enumerates every stage/format possibility (clap [possible values]).
     for value in ["dae-mo", "dae-json", "solve-json"] {
@@ -449,23 +450,15 @@ fn compile_help_unifies_outputs_under_target() {
 }
 
 #[test]
-fn compile_phase_maps_to_template_ir() {
-    assert_eq!(TemplateIr::from(CompilePhase::Solve), TemplateIr::Solve);
-    assert_eq!(TemplateIr::from(CompilePhase::Dae), TemplateIr::Dae);
-    assert_eq!(TemplateIr::from(CompilePhase::Flat), TemplateIr::Flat);
-    assert_eq!(TemplateIr::from(CompilePhase::Ast), TemplateIr::Ast);
-}
-
-#[test]
 fn cli_parses_compile_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output", "out",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "fmi3", "--output", "out",
     ])
     .expect("parse compile target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("c-ode"));
+            assert_eq!(args.target.as_deref(), Some("fmi3"));
             assert_eq!(args.output, Some(PathBuf::from("out")));
         }
         other => panic!("expected compile command, got {other:?}"),
@@ -475,17 +468,93 @@ fn cli_parses_compile_manifest_target() {
 #[test]
 fn cli_parses_compile_builtin_manifest_target() {
     let cli = Cli::try_parse_from([
-        "rumoca", "compile", "model.mo", "--model", "M", "--target", "c-ode", "--output",
-        "model.py",
+        "rumoca", "compile", "model.mo", "--model", "M", "--target", "fmi3", "--output", "model.py",
     ])
     .expect("parse compile template target");
     match cli.command {
         Commands::Compile(args) => {
             assert_eq!(args.input.options.model.as_deref(), Some("M"));
-            assert_eq!(args.target.as_deref(), Some("c-ode"));
+            assert_eq!(args.target.as_deref(), Some("fmi3"));
             assert_eq!(args.output, Some(PathBuf::from("model.py")));
         }
         other => panic!("expected compile command, got {other:?}"),
+    }
+}
+
+#[test]
+fn compile_artifact_session_flags_are_canonical_and_all_or_nothing() {
+    let cli = Cli::try_parse_from([
+        "rumoca",
+        "compile",
+        "model.mo",
+        "--target",
+        "efmu",
+        "--artifact-generation-instant",
+        "2026-08-30T00:00:00Z",
+        "--artifact-identity-seed",
+        "12345678-1234-5678-9234-567812345678",
+    ])
+    .expect("parse pinned artifact session");
+    let Commands::Compile(args) = cli.command else {
+        panic!("expected compile command");
+    };
+    assert_eq!(
+        args.artifact_generation_instant
+            .as_ref()
+            .map(rumoca_compile::codegen::targets::ArtifactGenerationInstant::as_str),
+        Some("2026-08-30T00:00:00Z")
+    );
+    assert_eq!(
+        args.artifact_identity_seed
+            .as_ref()
+            .map(rumoca_compile::codegen::targets::ArtifactIdentitySeed::as_str),
+        Some("12345678-1234-5678-9234-567812345678")
+    );
+
+    for rejected in [
+        vec![
+            "rumoca",
+            "compile",
+            "model.mo",
+            "--target",
+            "efmu",
+            "--artifact-generation-instant",
+            "2026-08-30T00:00:00Z",
+        ],
+        vec![
+            "rumoca",
+            "compile",
+            "model.mo",
+            "--target",
+            "efmu",
+            "--artifact-identity-seed",
+            "12345678-1234-5678-9234-567812345678",
+        ],
+        vec![
+            "rumoca",
+            "compile",
+            "model.mo",
+            "--artifact-generation-instant",
+            "2026-08-30T00:00:00Z",
+            "--artifact-identity-seed",
+            "12345678-1234-5678-9234-567812345678",
+        ],
+        vec![
+            "rumoca",
+            "compile",
+            "model.mo",
+            "--target",
+            "efmu",
+            "--artifact-generation-instant",
+            "2026-08-30T00:00:00+00:00",
+            "--artifact-identity-seed",
+            "12345678-1234-5678-9234-567812345678",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(rejected).is_err(),
+            "partial, targetless, or noncanonical artifact input must reject"
+        );
     }
 }
 
@@ -519,20 +588,21 @@ fn compile_flag_separation_is_enforced() {
     // --emit and --target are mutually exclusive (don't overload --target).
     assert!(
         Cli::try_parse_from([
-            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "c-ode"
+            "rumoca", "compile", "m.mo", "--emit", "dae-mo", "--target", "fmi3"
         ])
         .is_err()
     );
-    // --phase requires --target (it only picks the IR fed to a .jinja).
+    // There is no untyped phase selector, with or without a target.
     assert!(Cli::try_parse_from(["rumoca", "compile", "m.mo", "--phase", "flat"]).is_err());
-    // --phase + a .jinja --target parses.
     assert!(
         Cli::try_parse_from([
             "rumoca", "compile", "m.mo", "--phase", "flat", "--target", "t.jinja"
         ])
-        .is_ok()
+        .is_err()
     );
-    // every <stage>-<format> dump value is accepted.
+    // Every declared <stage>-<format> value parses. `flat-mo` is the reserved
+    // current spelling for an unimplemented product, so execution fails with
+    // the named unsupported-feature refusal and emits no bytes.
     for value in [
         "ast-json",
         "flat-mo",
@@ -552,7 +622,7 @@ fn compile_flag_separation_is_enforced() {
 
 #[test]
 fn cli_rejects_compile_backend_option() {
-    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "c-ode"])
+    let err = Cli::try_parse_from(["rumoca", "compile", "model.mo", "--backend", "fmi3"])
         .expect_err("backend option was unified into target");
     assert!(
         err.to_string().contains("unexpected argument '--backend'"),
@@ -675,35 +745,31 @@ fn cli_error_report_wraps_generic_errors_in_miette() {
 }
 
 #[test]
-fn compile_target_flat_modelica_uses_flat_template_context() {
-    let source = r#"
-        model Test
-          Real x(start = 0);
-        equation
-          der(x) = 1;
-        end Test;
-    "#;
-    let result = Compiler::new()
-        .model("Test")
-        .compile_str(source, "Test.mo")
-        .expect("model should compile");
-    let output = tempfile::tempdir().expect("temp output dir");
+fn lossy_flat_modelica_targets_are_not_registered() {
+    let registered = rumoca_compile::codegen::targets::builtin_target_descriptors()
+        .expect("check every built-in target bundle");
+    for target in ["flat-modelica", "base-modelica"] {
+        assert!(
+            !registered.iter().any(|candidate| candidate.id == target),
+            "lossy textual target `{target}` must stay out of the built-in registry"
+        );
+    }
+}
 
-    crate::target_manifest::compile_target(
-        &result,
-        "Test",
-        "flat-modelica",
-        Some(output.path().to_path_buf()),
-        None,
-        rumoca_ir_galec::package::EmissionPolicy::reviewable(),
-    )
-    .expect("flat-modelica target should render");
-
-    let rendered =
-        std::fs::read_to_string(output.path().join("Test_flat.mo")).expect("read output");
+#[test]
+fn structured_cli_flat_modelica_export_uses_the_same_named_refusal() {
+    let cli = Cli::try_parse_from(["rumoca", "compile", "Broken.mo", "--emit", "flat-mo"])
+        .expect("flat-mo remains a deliberate CLI spelling");
+    let Commands::Compile(args) = cli.command else {
+        panic!("expected compile command");
+    };
+    let error = compile_to_value(&args, "not valid Modelica")
+        .expect_err("structured Python/WASM entrypoint must refuse before compilation");
     assert!(
-        rendered.contains("class Test"),
-        "flat-modelica output should contain the rendered flat model: {rendered}"
+        error
+            .to_string()
+            .contains("unsupported-feature:flat-modelica-text-export"),
+        "structured entrypoint returned the wrong refusal: {error}"
     );
 }
 

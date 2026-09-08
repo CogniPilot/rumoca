@@ -39,7 +39,7 @@ impl PredefinedIntrinsicIds {
         }
     }
 
-    fn resolve(self, target: Option<DefId>) -> Option<rumoca_core::BuiltinFunction> {
+    pub(crate) fn resolve(self, target: Option<DefId>) -> Option<rumoca_core::BuiltinFunction> {
         let target = target?;
         self.identities
             .into_iter()
@@ -76,28 +76,43 @@ pub(crate) fn expression_from_ast_with_context(
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
     match expr {
-        ast::Expression::Empty { span } => Ok(rumoca_core::Expression::Empty { span: *span }),
+        ast::Expression::Empty { span } => Err(FlattenError::invalid_ast_recovery(
+            "Expression::Empty is a parser-recovery node",
+            *span,
+        )),
 
-        ast::Expression::Binary { op, lhs, rhs, .. } => Ok(rumoca_core::Expression::Binary {
-            op: op.clone(),
-            lhs: Box::new(expression_from_ast_with_context(lhs, context)?),
-            rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
-            span: expr.span(),
-        }),
+        ast::Expression::Binary { op, lhs, rhs, span } => {
+            binary_expression_from_ast(op, lhs, rhs, *span, context)
+        }
 
-        ast::Expression::Unary { op, rhs, .. } => Ok(rumoca_core::Expression::Unary {
-            op: op.clone(),
-            rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
-            span: expr.span(),
-        }),
+        ast::Expression::Unary { op, rhs, span } => {
+            unary_expression_from_ast(op, rhs, *span, context)
+        }
 
         ast::Expression::ComponentReference(cr) => {
             expression_from_component_ref_with_context(cr, context)
         }
 
         ast::Expression::FunctionCall {
-            comp, args, span, ..
-        } => convert_function_call_with_context(comp, args, *span, context),
+            comp,
+            args,
+            is_partial_application,
+            span,
+        } => convert_function_call_with_context(
+            comp,
+            args,
+            if *is_partial_application {
+                rumoca_core::FunctionCallKind::PartialApplication
+            } else {
+                rumoca_core::FunctionCallKind::Invocation
+            },
+            *span,
+            context,
+        ),
+
+        ast::Expression::DerivativeCall { args, span } => {
+            lower_derivative_call(args, *span, context)
+        }
 
         ast::Expression::Terminal {
             terminal_type,
@@ -131,15 +146,7 @@ pub(crate) fn expression_from_ast_with_context(
 
         ast::Expression::Range {
             start, step, end, ..
-        } => Ok(rumoca_core::Expression::Range {
-            start: Box::new(expression_from_ast_with_context(start, context)?),
-            step: step
-                .as_ref()
-                .map(|s| expression_from_ast_with_context(s, context).map(Box::new))
-                .transpose()?,
-            end: Box::new(expression_from_ast_with_context(end, context)?),
-            span: expr.span(),
-        }),
+        } => range_expression_from_ast(start, step.as_deref(), end, expr.span(), context),
 
         ast::Expression::Parenthesized { inner, .. } => {
             expression_from_ast_with_context(inner, context)
@@ -158,13 +165,15 @@ pub(crate) fn expression_from_ast_with_context(
             ..
         } => convert_class_modification_with_context(target, modifications, context),
 
-        ast::Expression::NamedArgument { value, .. } => {
-            expression_from_ast_with_context(value, context)
-        }
+        ast::Expression::NamedArgument { span, .. } => Err(FlattenError::invalid_ast_recovery(
+            "Expression::NamedArgument is only meaningful as a function-call argument",
+            *span,
+        )),
 
-        ast::Expression::Modification { value, .. } => {
-            expression_from_ast_with_context(value, context)
-        }
+        ast::Expression::Modification { span, .. } => Err(FlattenError::invalid_ast_recovery(
+            "Expression::Modification is only meaningful as a modifier or named-call carrier",
+            *span,
+        )),
 
         ast::Expression::ArrayIndex {
             base, subscripts, ..
@@ -182,6 +191,130 @@ pub(crate) fn expression_from_ast_with_context(
                 .ok_or_else(|| FlattenError::missing_flat_variable_identity(field, expr.span()))?,
             span: expr.span(),
         }),
+    }
+}
+
+fn lower_derivative_call(
+    args: &[ast::Expression],
+    span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    let function = rumoca_core::BuiltinFunction::Der;
+    Ok(rumoca_core::Expression::BuiltinCall {
+        function,
+        args: lower_builtin_call_args(function, args, span, context)?,
+        span,
+    })
+}
+
+fn binary_expression_from_ast(
+    op: &rumoca_core::OpBinary,
+    lhs: &ast::Expression,
+    rhs: &ast::Expression,
+    span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    match op {
+        rumoca_core::OpBinary::Empty => Err(FlattenError::invalid_ast_recovery(
+            "OpBinary::Empty is a parser-recovery operator",
+            span,
+        )),
+        rumoca_core::OpBinary::Assign => Err(FlattenError::invalid_ast_recovery(
+            "OpBinary::Assign is a component-modification carrier, not a value operator",
+            span,
+        )),
+        _ => Ok(rumoca_core::Expression::Binary {
+            op: op.clone(),
+            lhs: Box::new(expression_from_ast_with_context(lhs, context)?),
+            rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
+            span,
+        }),
+    }
+}
+
+fn unary_expression_from_ast(
+    op: &rumoca_core::OpUnary,
+    rhs: &ast::Expression,
+    span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    if matches!(op, rumoca_core::OpUnary::Empty) {
+        return Err(FlattenError::invalid_ast_recovery(
+            "OpUnary::Empty is a parser-recovery operator",
+            span,
+        ));
+    }
+    Ok(rumoca_core::Expression::Unary {
+        op: op.clone(),
+        rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
+        span,
+    })
+}
+
+fn range_expression_from_ast(
+    start: &ast::Expression,
+    step: Option<&ast::Expression>,
+    end: &ast::Expression,
+    span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    Ok(rumoca_core::Expression::Range {
+        start: Box::new(expression_from_ast_with_context(start, context)?),
+        step: step
+            .map(|step| expression_from_ast_with_context(step, context).map(Box::new))
+            .transpose()?,
+        end: Box::new(expression_from_ast_with_context(end, context)?),
+        span,
+    })
+}
+
+/// Lower the exact residual shape used by an MLS multi-result equation.
+/// Direct `Empty` tuple elements are omitted receivers only in this context.
+pub(crate) fn equation_residual_from_ast_with_context(
+    expression: &ast::Expression,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    let ast::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs,
+        rhs,
+        span,
+    } = expression
+    else {
+        return expression_from_ast_with_context(expression, context);
+    };
+    if !ast::is_invocation_tuple_equation(lhs, rhs) {
+        return expression_from_ast_with_context(expression, context);
+    }
+    Ok(rumoca_core::Expression::Binary {
+        op: rumoca_core::OpBinary::Sub,
+        lhs: Box::new(tuple_receiver_from_ast_with_context(lhs, context)?),
+        rhs: Box::new(expression_from_ast_with_context(rhs, context)?),
+        span: *span,
+    })
+}
+
+fn tuple_receiver_from_ast_with_context(
+    expression: &ast::Expression,
+    context: LoweringContext<'_>,
+) -> LowerResult<rumoca_core::Expression> {
+    match expression {
+        ast::Expression::Parenthesized { inner, .. } => {
+            tuple_receiver_from_ast_with_context(inner, context)
+        }
+        ast::Expression::Tuple { elements, span } => Ok(rumoca_core::Expression::Tuple {
+            elements: elements
+                .iter()
+                .map(|element| match element {
+                    ast::Expression::Empty { span } => {
+                        Ok(rumoca_core::Expression::Empty { span: *span })
+                    }
+                    _ => expression_from_ast_with_context(element, context),
+                })
+                .collect::<LowerResult<Vec<_>>>()?,
+            span: *span,
+        }),
+        _ => expression_from_ast_with_context(expression, context),
     }
 }
 
@@ -241,7 +374,10 @@ fn statement_from_ast_with_span(
     span: Span,
 ) -> LowerResult<rumoca_core::Statement> {
     match stmt {
-        ast::Statement::Empty => Ok(rumoca_core::Statement::Empty { span }),
+        ast::Statement::Empty => Err(FlattenError::invalid_ast_recovery(
+            "Statement::Empty is a parser-recovery node",
+            span,
+        )),
         ast::Statement::Assignment { comp, value } => Ok(rumoca_core::Statement::Assignment {
             comp: component_reference_from_ast_with_context(comp, context)?,
             value: expression_from_ast_with_context(value, context)?,
@@ -338,17 +474,25 @@ fn lower_function_call_statement(
             span,
         });
     }
+    let function_name = comp.to_string();
     Ok(rumoca_core::Statement::FunctionCall {
         comp: rumoca_core::Reference::from_component_reference(function_component_ref_from_ast(
             comp, context,
         )?),
+        // Multi-output call statements carry the same source-level positional and
+        // named argument layout as expression-position calls, so their actuals
+        // pass through the shared named-argument marker projection. Lowering them
+        // as plain expressions would strand an `Expression::NamedArgument` in the
+        // argument list, which the Flat construction boundary rejects.
         args: args
             .iter()
-            .map(|arg| expression_from_ast_with_context(arg, context))
+            .map(|arg| convert_call_arg_with_context(arg, context))
             .collect::<LowerResult<Vec<_>>>()?,
         outputs: outputs
             .iter()
-            .map(|output| output_component_reference_from_ast(output, context))
+            .map(|output| {
+                output_component_reference_from_ast(output, &function_name, context, span)
+            })
             .collect::<LowerResult<Vec<_>>>()?,
         span,
     })
@@ -384,13 +528,24 @@ fn if_statement_from_ast(
 
 fn output_component_reference_from_ast(
     expr: &ast::Expression,
+    function_name: &str,
     context: LoweringContext<'_>,
+    owner_span: Span,
 ) -> LowerResult<Option<rumoca_core::ComponentReference>> {
     match expr {
         ast::Expression::ComponentReference(comp) => Ok(Some(
             component_reference_from_ast_with_context(comp, context)?,
         )),
-        _ => Ok(None),
+        ast::Expression::Empty { .. } => Ok(None),
+        _ => {
+            let span = required_ast_span(expr.span(), "function-call output receiver")
+                .or_else(|_| required_ast_span(owner_span, "function-call statement owner"))?;
+            Err(FlattenError::invalid_function_call_output(
+                function_name,
+                "receiver is not a component reference or an omitted slot",
+                span,
+            ))
+        }
     }
 }
 
@@ -409,9 +564,7 @@ fn ast_statement_span(stmt: &ast::Statement, source_map: Option<&SourceMap>) -> 
 }
 
 fn required_ast_span(span: Span, context: &'static str) -> LowerResult<Span> {
-    span.require_provenance(context)
-        .map(|provenance| provenance.span())
-        .map_err(|err| FlattenError::missing_source_context(err.to_string()))
+    crate::source_spans::required_span(span, context)
 }
 
 fn ast_statement_syntax_span(stmt: &ast::Statement) -> Option<Span> {
@@ -538,10 +691,15 @@ fn subscript_from_ast(
                 span,
             ))
         }
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => Ok(
-            rumoca_core::Subscript::try_generated_colon(owner_span, "flat component subscript")
-                .map_err(|err| FlattenError::missing_source_context(err.to_string()))?,
-        ),
+        ast::Subscript::Range { .. } => Ok(rumoca_core::Subscript::try_generated_colon(
+            owner_span,
+            "flat component subscript",
+        )
+        .map_err(|err| FlattenError::missing_source_context(err.to_string()))?),
+        ast::Subscript::Empty => Err(FlattenError::invalid_ast_subscript(
+            "empty recovery subscript cannot lower as a component selector",
+            owner_span,
+        )),
     }
 }
 
@@ -715,9 +873,11 @@ fn subscript_from_ast_for_base(
                 span,
             ))
         }
-        ast::Subscript::Range { .. } | ast::Subscript::Empty => {
-            Ok(rumoca_core::Subscript::colon(owner_span))
-        }
+        ast::Subscript::Range { .. } => Ok(rumoca_core::Subscript::colon(owner_span)),
+        ast::Subscript::Empty => Err(FlattenError::invalid_ast_subscript(
+            "empty recovery subscript cannot lower as an indexed-expression selector",
+            owner_span,
+        )),
     }
 }
 
@@ -857,6 +1017,7 @@ fn convert_function_call(
     convert_function_call_with_context(
         comp,
         args,
+        rumoca_core::FunctionCallKind::Invocation,
         comp.span,
         LoweringContext {
             instance_name: None,
@@ -869,9 +1030,13 @@ fn convert_function_call(
 fn convert_function_call_with_context(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
+    call_kind: rumoca_core::FunctionCallKind,
     call_span: Span,
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
+    if call_kind == rumoca_core::FunctionCallKind::PartialApplication {
+        return lower_user_function_call(comp, args, call_kind, call_span, context);
+    }
     if is_get_instance_name_call(comp) {
         return lower_get_instance_name_call(args, context, call_span);
     }
@@ -889,29 +1054,23 @@ fn convert_function_call_with_context(
         if let Some(intrinsic) = context.predefined_intrinsics.resolve(comp.target_def_id()) {
             return Ok(rumoca_core::Expression::BuiltinCall {
                 function: intrinsic,
-                args: args
-                    .iter()
-                    .map(|argument| expression_from_ast_with_context(argument, context))
-                    .collect::<LowerResult<Vec<_>>>()?,
+                args: lower_builtin_call_args(intrinsic, args, call_span, context)?,
                 span: call_span,
             });
         }
         if let Some(builtin) = rumoca_core::BuiltinFunction::from_name(func_name) {
             if builtin.requires_predefined_identity() {
-                return lower_user_function_call(comp, args, call_span, context);
+                return lower_user_function_call(comp, args, call_kind, call_span, context);
             }
             return Ok(rumoca_core::Expression::BuiltinCall {
                 function: builtin,
-                args: args
-                    .iter()
-                    .map(|a| expression_from_ast_with_context(a, context))
-                    .collect::<LowerResult<Vec<_>>>()?,
+                args: lower_builtin_call_args(builtin, args, call_span, context)?,
                 span: call_span,
             });
         }
     }
 
-    lower_user_function_call(comp, args, call_span, context)
+    lower_user_function_call(comp, args, call_kind, call_span, context)
 }
 
 /// Erase an MLS §12.3 `pure(functionCall(…))` wrapper.
@@ -947,6 +1106,7 @@ fn lower_purity_wrapper(
 fn lower_user_function_call(
     comp: &ast::ComponentReference,
     args: &[ast::Expression],
+    call_kind: rumoca_core::FunctionCallKind,
     call_span: Span,
     context: LoweringContext<'_>,
 ) -> LowerResult<rumoca_core::Expression> {
@@ -959,8 +1119,156 @@ fn lower_user_function_call(
             .map(|a| convert_call_arg_with_context(a, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: false,
+        call_kind,
         span: call_span,
     })
+}
+
+/// Build the positional argument vector for a builtin-operator call.
+///
+/// `BuiltinCall` args are consumed positionally by the builtin evaluator, which
+/// has no step that later resolves named actuals: unlike a user function, a
+/// builtin owns no collected signature carrying `__rumoca_named_arg__` markers.
+/// Named actuals must therefore be projected into declaration order here, at the
+/// only site with both the actuals and the operator's identity in hand.
+///
+/// A call with no named actual keeps its source order untouched, so the common
+/// case never pays for slot bookkeeping.
+fn lower_builtin_call_args(
+    builtin: rumoca_core::BuiltinFunction,
+    args: &[ast::Expression],
+    call_span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<Vec<rumoca_core::Expression>> {
+    if !args
+        .iter()
+        .any(|arg| matches!(arg, ast::Expression::NamedArgument { .. }))
+    {
+        return args
+            .iter()
+            .map(|arg| expression_from_ast_with_context(arg, context))
+            .collect();
+    }
+    resolve_builtin_named_arguments(builtin, args, call_span, context)
+}
+
+/// Project a builtin call's positional and named actuals into declaration order
+/// against the operator's MLS-defined formal names.
+///
+/// Positional actuals form a prefix; named actuals fill by name. The result is
+/// the dense positional prefix the builtin evaluator expects. Arity is left to
+/// the shared builtin signature (`argument_count_range`), so under-supply that
+/// leaves a trailing slot empty simply yields a shorter vector rather than an
+/// invented default; a named actual that fills a slot past an unfilled earlier
+/// one is a gap the operator cannot default and is refused.
+fn resolve_builtin_named_arguments(
+    builtin: rumoca_core::BuiltinFunction,
+    args: &[ast::Expression],
+    call_span: Span,
+    context: LoweringContext<'_>,
+) -> LowerResult<Vec<rumoca_core::Expression>> {
+    let formals = builtin.named_formals();
+    if formals.is_empty() {
+        let named = args
+            .iter()
+            .find(|arg| matches!(arg, ast::Expression::NamedArgument { .. }))
+            .expect("a named actual is present because the caller routed here");
+        let name = match named {
+            ast::Expression::NamedArgument { name, .. } => name.text.as_ref(),
+            _ => unreachable!("filtered to a named argument"),
+        };
+        return Err(FlattenError::invalid_function_call_args(
+            builtin.name(),
+            format!(
+                "builtin operator `{}` takes only positional arguments; `{name}` was passed by name",
+                builtin.name()
+            ),
+            named.span(),
+        ));
+    }
+
+    let mut slots: Vec<Option<rumoca_core::Expression>> =
+        (0..formals.len()).map(|_| None).collect();
+    let mut next_positional = 0usize;
+    let mut seen_named = false;
+    for argument in args {
+        if let ast::Expression::NamedArgument { name, value, .. } = argument {
+            seen_named = true;
+            let Some(slot) = formals
+                .iter()
+                .position(|formal| *formal == name.text.as_ref())
+            else {
+                return Err(FlattenError::invalid_function_call_args(
+                    builtin.name(),
+                    format!(
+                        "`{}` is not a named formal of builtin operator `{}`",
+                        name.text,
+                        builtin.name()
+                    ),
+                    argument.span(),
+                ));
+            };
+            if slots[slot]
+                .replace(expression_from_ast_with_context(value, context)?)
+                .is_some()
+            {
+                return Err(FlattenError::invalid_function_call_args(
+                    builtin.name(),
+                    format!("named argument `{}` is supplied more than once", name.text),
+                    argument.span(),
+                ));
+            }
+            continue;
+        }
+        // The grammar admits named arguments only as a trailing suffix, so a
+        // positional actual after a named one cannot be parsed; this refusal is
+        // a defensive backstop for a hand-built or future AST rather than a case
+        // the parser can currently reach.
+        if seen_named {
+            return Err(FlattenError::invalid_function_call_args(
+                builtin.name(),
+                "a positional argument may not follow a named argument",
+                argument.span(),
+            ));
+        }
+        if next_positional >= formals.len() {
+            return Err(FlattenError::invalid_function_call_args(
+                builtin.name(),
+                format!(
+                    "{} positional argument(s) exceed the {} named formal(s) of builtin operator `{}`",
+                    next_positional + 1,
+                    formals.len(),
+                    builtin.name()
+                ),
+                argument.span(),
+            ));
+        }
+        slots[next_positional] = Some(expression_from_ast_with_context(argument, context)?);
+        next_positional += 1;
+    }
+
+    let mut positional = Vec::with_capacity(formals.len());
+    let mut gap_at: Option<usize> = None;
+    for (index, slot) in slots.into_iter().enumerate() {
+        match (slot, gap_at) {
+            (Some(value), None) => positional.push(value),
+            (Some(_), Some(gap)) => {
+                return Err(FlattenError::invalid_function_call_args(
+                    builtin.name(),
+                    format!(
+                        "named argument fills slot `{}` while the earlier slot `{}` has no \
+                         argument; builtin operators have no default arguments",
+                        formals[index], formals[gap]
+                    ),
+                    call_span,
+                ));
+            }
+            (None, _) => {
+                gap_at.get_or_insert(index);
+            }
+        }
+    }
+    Ok(positional)
 }
 
 fn lower_string_conversion(
@@ -1104,7 +1412,10 @@ fn convert_terminal(
             "`end` is only valid inside an array subscript with a known base dimension",
             span,
         )),
-        ast::TerminalType::Empty => Ok(rumoca_core::Literal::Integer(0)),
+        ast::TerminalType::Empty => Err(FlattenError::InvalidLiteralTerminal {
+            description: "empty AST terminal".to_string(),
+            span,
+        }),
     }
 }
 
@@ -1172,8 +1483,6 @@ fn convert_array_comprehension_with_context(
     })
 }
 
-pub(crate) const NAMED_CONSTRUCTOR_ARG_PREFIX: &str = "__rumoca_named_arg__.";
-
 fn wrap_named_constructor_arg(
     name: &str,
     value: rumoca_core::Expression,
@@ -1181,9 +1490,10 @@ fn wrap_named_constructor_arg(
 ) -> LowerResult<rumoca_core::Expression> {
     let span = required_ast_span(span, "named constructor argument")?;
     Ok(rumoca_core::Expression::FunctionCall {
-        name: Reference::generated(format!("{NAMED_CONSTRUCTOR_ARG_PREFIX}{name}")),
+        name: Reference::generated(format!("{}{name}", rumoca_core::NAMED_FUNCTION_ARG_PREFIX)),
         args: vec![value],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     })
 }
@@ -1198,7 +1508,13 @@ fn convert_call_arg_with_context(
             expression_from_ast_with_context(value, context)?,
             expr.span(),
         ),
-        ast::Expression::Modification { target, value, .. } => {
+        // A value-less modification is not a call argument; it falls through
+        // to the general lowering, which refuses a bare modification carrier.
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => {
             let arg_name = target
                 .parts
                 .iter()
@@ -1229,6 +1545,7 @@ fn convert_class_modification_with_context(
             .map(|expr| convert_call_arg_with_context(expr, context))
             .collect::<LowerResult<Vec<_>>>()?,
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: target_span,
     })
 }

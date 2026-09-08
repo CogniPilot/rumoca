@@ -1,10 +1,73 @@
 use super::{
     ConditionEvalEnv, InstantiateEvalCtx, ast, eval_scoped_string_condition_with_depth,
-    get_enum_value_with_depth, resolve_component_ref_expr, try_eval_bool_literal,
-    try_eval_integer_expr_with_depth, try_eval_real_expr_with_known,
+    get_enum_value_with_depth, resolve_class_constant_binding, resolve_component_ref_expr,
+    try_eval_bool_literal, try_eval_integer_expr_with_depth, try_eval_real_expr_with_known,
 };
+use crate::ast_scalar::{self, AstScalarContext};
 use rumoca_ir_ast::AstIndexMap as IndexMap;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::cell::RefCell;
+
+/// Canonical predefined scalar root of a resolved AST component type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AstScalarKind {
+    Boolean,
+    Integer,
+    Real,
+}
+
+/// Follow a resolved scalar type-alias chain to its exact predefined root.
+///
+/// A user class named `Boolean` is not Boolean merely because its display name
+/// matches. Conversely, a type alias whose resolved chain ends at predefined
+/// Boolean remains Boolean. Cycles, arrays, enumerations, non-type classes, and
+/// unresolved identities have no scalar-kind proof.
+pub fn canonical_scalar_kind(
+    tree: &ast::ClassTree,
+    component: &ast::Component,
+) -> Option<AstScalarKind> {
+    let mut def_id = component.type_def_id;
+    let mut visited = FxHashSet::default();
+    loop {
+        let current_def_id = def_id?;
+        if !visited.insert(current_def_id) {
+            return None;
+        }
+        if let Some(kind) = predefined_scalar_kind_by_def_id(tree, current_def_id) {
+            return Some(kind);
+        }
+        let class = tree.get_class_by_def_id(current_def_id)?;
+        if class.class_type != rumoca_core::ClassType::Type
+            || !class.enum_literals.is_empty()
+            || !class.array_subscripts.is_empty()
+        {
+            return None;
+        }
+        let [base] = class.extends.as_slice() else {
+            return None;
+        };
+        def_id = base.base_def_id;
+    }
+}
+
+fn predefined_scalar_kind_by_def_id(
+    tree: &ast::ClassTree,
+    def_id: rumoca_core::DefId,
+) -> Option<AstScalarKind> {
+    [
+        ("Boolean", AstScalarKind::Boolean),
+        ("Integer", AstScalarKind::Integer),
+        ("Real", AstScalarKind::Real),
+    ]
+    .into_iter()
+    .find_map(|(name, kind)| {
+        (tree
+            .scope_tree
+            .predefined_member(&rumoca_core::ComponentPath::from_flat_path(name))
+            == Some(def_id))
+        .then_some(kind)
+    })
+}
 
 /// Try to extract a string from an expression.
 pub fn expr_to_string(expr: &ast::Expression) -> Option<String> {
@@ -213,20 +276,346 @@ pub fn extract_binding(
 ///
 /// Returns a map of component names to their boolean values.
 /// Takes the modification environment to check for parameter overrides.
-pub fn extract_bool_params_with_mods(
-    effective_components: &IndexMap<String, ast::Component>,
-    mod_env: &ast::ModificationEnvironment,
-) -> FxHashMap<String, bool> {
-    extract_params_with_mods(effective_components, mod_env, |comp, expr| {
-        if !matches!(comp.variability, rumoca_core::Variability::Parameter(_)) {
+pub fn extract_bool_params_with_mods(ctx: &InstantiateEvalCtx<'_>) -> FxHashMap<String, bool> {
+    extract_params_with_mods(
+        ctx.effective_components,
+        ctx.mod_env,
+        |name, comp, expr, _mod_env| {
+            if !component_allows_structural_evaluation(name, comp, ctx) {
+                return None;
+            }
+            if canonical_scalar_kind(ctx.tree, comp) != Some(AstScalarKind::Boolean) {
+                return None;
+            }
+            try_eval_bool_literal(expr)
+        },
+    )
+}
+
+/// Whether one parameter/constant occurrence may contribute a value to a
+/// translation-time structural decision (MLS §4.5).
+///
+/// A binding can be numerically foldable while the occurrence is explicitly
+/// excluded from translation-time evaluation by `fixed=false` or
+/// `annotation(Evaluate=false)`. Keeping that policy beside parameter
+/// extraction prevents callers from laundering such a value through a literal
+/// map before the structural evaluator sees it.
+pub fn component_allows_structural_evaluation(
+    name: &str,
+    component: &ast::Component,
+    ctx: &InstantiateEvalCtx<'_>,
+) -> bool {
+    StructuralAttributeEvaluator::new(ctx).component_allows(name, component)
+}
+
+/// Evaluate a Boolean expression with the structural constant authority used
+/// for `fixed` and `Evaluate` attributes.
+///
+/// `None` means that the expression is not decidable from the complete
+/// instantiation-time constant environment; callers that require a
+/// source-present attribute value must turn that outcome into a phase error.
+pub fn try_eval_structural_boolean(
+    ctx: &InstantiateEvalCtx<'_>,
+    expression: &ast::Expression,
+) -> Option<bool> {
+    StructuralAttributeEvaluator::new(ctx).evaluate_boolean(expression)
+}
+
+/// Whether occurrence attributes make a parameter non-evaluable.
+///
+/// Absence preserves the MLS `fixed=true` default. Once the source supplies a
+/// `fixed` or `Evaluate` expression, however, translation-time use requires a
+/// proof that the expression evaluates to `true`; `false` and undecidable
+/// expressions both block. Constants remain translation-time values regardless
+/// of these parameter-only controls (MLS §4.5, §18.6).
+pub fn component_explicitly_disables_structural_evaluation(
+    name: &str,
+    component: &ast::Component,
+    ctx: &InstantiateEvalCtx<'_>,
+) -> bool {
+    !StructuralAttributeEvaluator::new(ctx).parameter_attributes_allow(name, component)
+}
+
+/// Whether the occurrence requests compile-time evaluation through `final` or
+/// an `Evaluate` annotation whose expression proves `true`.
+pub fn component_has_evaluate_annotation(
+    component: &ast::Component,
+    ctx: &InstantiateEvalCtx<'_>,
+) -> bool {
+    component.is_final
+        || evaluate_annotation_expression(component).is_some_and(|expression| {
+            StructuralAttributeEvaluator::new(ctx).proves_true(expression)
+        })
+}
+
+/// Whether an applied occurrence-level `fixed` expression fails to prove
+/// `true`. This covers selected record fields that are not entries in the
+/// current class's component map but do have an exact occurrence modifier.
+pub fn modification_environment_disables_structural_evaluation(
+    occurrence: &str,
+    ctx: &InstantiateEvalCtx<'_>,
+) -> bool {
+    ctx.mod_env
+        .get_attr(occurrence, "fixed")
+        .is_some_and(|expression| !StructuralAttributeEvaluator::new(ctx).proves_true(expression))
+}
+
+struct StructuralAttributeEvaluator<'ctx, 'ast> {
+    ctx: &'ctx InstantiateEvalCtx<'ast>,
+    active_components: RefCell<FxHashSet<String>>,
+    active_values: RefCell<FxHashSet<String>>,
+}
+
+impl<'ctx, 'ast> StructuralAttributeEvaluator<'ctx, 'ast> {
+    fn new(ctx: &'ctx InstantiateEvalCtx<'ast>) -> Self {
+        Self {
+            ctx,
+            active_components: RefCell::new(FxHashSet::default()),
+            active_values: RefCell::new(FxHashSet::default()),
+        }
+    }
+
+    fn component_allows(&self, occurrence: &str, component: &ast::Component) -> bool {
+        match component.variability {
+            rumoca_core::Variability::Constant(_) => return true,
+            rumoca_core::Variability::Parameter(_) => {}
+            _ => return false,
+        }
+
+        self.parameter_attributes_allow(occurrence, component)
+    }
+
+    fn parameter_attributes_allow(&self, occurrence: &str, component: &ast::Component) -> bool {
+        if !self
+            .active_components
+            .borrow_mut()
+            .insert(occurrence.to_string())
+        {
+            return false;
+        }
+        let allows = self.effective_fixed_allows(occurrence, component)
+            && evaluate_annotation_expression(component)
+                .is_none_or(|expression| self.proves_true(expression));
+        self.active_components.borrow_mut().remove(occurrence);
+        allows
+    }
+
+    fn proves_true(&self, expression: &ast::Expression) -> bool {
+        self.evaluate_boolean(expression) == Some(true)
+    }
+
+    fn evaluate_boolean(&self, expression: &ast::Expression) -> Option<bool> {
+        ast_scalar::eval_boolean(expression, self, "", 0)
+    }
+
+    fn effective_fixed_allows(&self, occurrence: &str, component: &ast::Component) -> bool {
+        self.ctx
+            .mod_env
+            .get_attr(occurrence, "fixed")
+            .or_else(|| component.modifications.get("fixed"))
+            .is_none_or(|expression| self.proves_true(expression))
+    }
+
+    fn occurrence_allows_reference(
+        &self,
+        reference: &ast::ComponentReference,
+        dotted: &str,
+    ) -> bool {
+        let mut occurrence = String::new();
+        for (index, part) in reference.parts.iter().enumerate() {
+            if index != 0 {
+                occurrence.push('.');
+            }
+            occurrence.push_str(part.ident.text.as_ref());
+            let Some(def_id) = part.def_id else {
+                continue;
+            };
+            let Some(component) = find_component_by_def_id(self.ctx.tree, def_id) else {
+                continue;
+            };
+            let is_target = index + 1 == reference.parts.len();
+            if !is_target
+                && !matches!(
+                    component.variability,
+                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+                )
+            {
+                continue;
+            }
+            if !self.component_allows(&occurrence, component) {
+                return false;
+            }
+        }
+
+        if let Some(component) = self.ctx.effective_components.get(dotted) {
+            return self.component_allows(dotted, component);
+        }
+        let Some(root) = reference.parts.first().map(|part| part.ident.text.as_ref()) else {
+            return false;
+        };
+        self.ctx
+            .effective_components
+            .get(root)
+            .is_none_or(|component| {
+                reference.parts.len() > 1
+                    && !matches!(
+                        component.variability,
+                        rumoca_core::Variability::Parameter(_)
+                            | rumoca_core::Variability::Constant(_)
+                    )
+                    || self.component_allows(root, component)
+            })
+    }
+
+    fn reference_expression(&self, reference: &ast::ComponentReference) -> Option<ast::Expression> {
+        let dotted = component_ref_to_dotted_no_subscripts(reference)?;
+        if !self.occurrence_allows_reference(reference, &dotted) {
             return None;
         }
-        let type_name = comp.type_name.to_string();
-        if !rumoca_core::qualified_type_name_matches(&type_name, "Boolean") {
+        let path = ast::QualifiedName::from_dotted(&dotted);
+        if let Some(modification) = self.ctx.mod_env.get(&path)
+            && let Some(binding) = modification.value.component_modifier_binding_value()
+        {
+            return Some(binding.clone());
+        }
+        if let Some(component) = self.ctx.effective_components.get(dotted.as_str()) {
+            return component_expr_for_structural_eval(component).cloned();
+        }
+        if reference.parts.len() == 1
+            && let Some(component) = self
+                .ctx
+                .effective_components
+                .get(reference.parts[0].ident.text.as_ref())
+        {
+            return component_expr_for_structural_eval(component).cloned();
+        }
+        if let Some(target) = reference
+            .target_def_id()
+            .and_then(|def_id| find_component_by_def_id(self.ctx.tree, def_id))
+        {
+            return component_expr_for_structural_eval(target).cloned();
+        }
+        resolve_class_constant_binding(reference, self.ctx.tree, self.ctx.resolve_class_components)
+    }
+
+    fn evaluate_reference<T>(
+        &self,
+        expression: &ast::Expression,
+        depth: usize,
+        eval: impl FnOnce(&ast::Expression, &Self, usize) -> Option<T>,
+    ) -> Option<T> {
+        let ast::Expression::ComponentReference(reference) = expression else {
+            return None;
+        };
+        let dotted = component_ref_to_dotted_no_subscripts(reference)?;
+        if !self.active_values.borrow_mut().insert(dotted.clone()) {
             return None;
         }
-        try_eval_bool_literal(expr)
+        let result = self
+            .reference_expression(reference)
+            .and_then(|binding| eval(&binding, self, depth));
+        self.active_values.borrow_mut().remove(&dotted);
+        result
+    }
+}
+
+impl AstScalarContext for StructuralAttributeEvaluator<'_, '_> {
+    fn expression_depth_limit(&self) -> Option<usize> {
+        Some(super::MAX_EXPR_EVAL_DEPTH)
+    }
+
+    fn lookup_integer(
+        &self,
+        expression: &ast::Expression,
+        _scope: &str,
+        depth: usize,
+    ) -> Option<i64> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_integer(binding, ctx, "", depth)
+        })
+    }
+
+    fn lookup_real(&self, expression: &ast::Expression, _scope: &str, depth: usize) -> Option<f64> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_real(binding, ctx, "", depth)
+        })
+    }
+
+    fn lookup_boolean(
+        &self,
+        expression: &ast::Expression,
+        _scope: &str,
+        depth: usize,
+    ) -> Option<bool> {
+        self.evaluate_reference(expression, depth, |binding, ctx, depth| {
+            ast_scalar::eval_boolean(binding, ctx, "", depth)
+        })
+    }
+
+    fn call_integer(
+        &self,
+        _function: &ast::ComponentReference,
+        _args: &[ast::Expression],
+        _scope: &str,
+        _depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        None
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+    }
+}
+
+fn evaluate_annotation_expression(component: &ast::Component) -> Option<&ast::Expression> {
+    component.annotation.iter().find_map(|entry| match entry {
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } if reference_is_single_name(target, "Evaluate") => Some(value.as_ref()),
+        ast::Expression::NamedArgument { name, value, .. } if name.text.as_ref() == "Evaluate" => {
+            Some(value.as_ref())
+        }
+        _ => None,
     })
+}
+
+fn reference_is_single_name(reference: &ast::ComponentReference, expected: &str) -> bool {
+    reference.parts.len() == 1
+        && reference.parts[0].subs.is_none()
+        && reference.parts[0].ident.text.as_ref() == expected
+}
+
+fn find_component_by_def_id(
+    tree: &ast::ClassTree,
+    target: rumoca_core::DefId,
+) -> Option<&ast::Component> {
+    fn find_in_class(class: &ast::ClassDef, target: rumoca_core::DefId) -> Option<&ast::Component> {
+        if let Some(component) = class
+            .components
+            .values()
+            .find(|component| component.def_id == Some(target))
+        {
+            return Some(component);
+        }
+        class
+            .classes
+            .values()
+            .find_map(|nested| find_in_class(nested, target))
+    }
+
+    tree.definitions
+        .classes
+        .values()
+        .find_map(|class| find_in_class(class, target))
 }
 
 /// Extract scalar Real parameter values from a class's components (MLS §4.4.5).
@@ -248,17 +637,19 @@ pub fn extract_real_params_with_mods(
     ctx: &InstantiateEvalCtx,
     known: &FxHashMap<String, f64>,
 ) -> FxHashMap<String, f64> {
-    extract_params_with_mods(ctx.effective_components, ctx.mod_env, |comp, expr| {
-        if !matches!(
-            comp.variability,
-            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-        ) || !comp.shape.is_empty()
-            || !comp.shape_expr.is_empty()
-        {
-            return None;
-        }
-        try_eval_real_expr_with_known(ctx, expr, known)
-    })
+    extract_params_with_mods(
+        ctx.effective_components,
+        ctx.mod_env,
+        |name, comp, expr, _mod_env| {
+            if !component_allows_structural_evaluation(name, comp, ctx)
+                || !comp.shape.is_empty()
+                || !comp.shape_expr.is_empty()
+            {
+                return None;
+            }
+            try_eval_real_expr_with_known(ctx, expr, known)
+        },
+    )
 }
 
 /// Extract integer parameter values from components for for-loop range evaluation.
@@ -277,22 +668,23 @@ pub fn extract_int_params_with_mods(ctx: &InstantiateEvalCtx) -> FxHashMap<Strin
         effective_components,
         resolve_class_components,
     } = ctx;
-    let mut int_params = extract_params_with_mods(effective_components, mod_env, |comp, expr| {
-        if !matches!(
-            comp.variability,
-            rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
-        ) {
-            return None;
-        }
-        try_eval_integer_expr_with_depth(
-            expr,
-            mod_env,
-            effective_components,
-            tree,
-            *resolve_class_components,
-            0,
-        )
-    });
+    let mut int_params = extract_params_with_mods(
+        effective_components,
+        mod_env,
+        |name, comp, expr, mod_env| {
+            if !component_allows_structural_evaluation(name, comp, ctx) {
+                return None;
+            }
+            try_eval_integer_expr_with_depth(
+                expr,
+                mod_env,
+                effective_components,
+                tree,
+                *resolve_class_components,
+                0,
+            )
+        },
+    );
 
     // Also add dotted keys from multi-part modifications in mod_env.
     // This handles record field references like cellData.nRC used in for-loop ranges.
@@ -334,21 +726,27 @@ fn extract_params_with_mods<T, F>(
     mut eval: F,
 ) -> FxHashMap<String, T>
 where
-    F: FnMut(&ast::Component, &ast::Expression) -> Option<T>,
+    F: FnMut(&str, &ast::Component, &ast::Expression, &ast::ModificationEnvironment) -> Option<T>,
 {
     let mut params = FxHashMap::default();
 
     for (name, comp) in effective_components {
         let mod_path = ast::QualifiedName::from_ident(name);
         if let Some(mod_value) = mod_env.get(&mod_path)
-            && let Some(value) = eval(comp, &mod_value.value)
+            && let Some(binding) = mod_value.value.component_modifier_binding_value()
         {
-            params.insert(name.clone(), value);
+            // MLS §7.2.3/§7.2.4: a present occurrence binding replaces
+            // the declaration binding even when this phase cannot evaluate it.
+            // Falling through here would launder an unknown override into the
+            // declaration default and could choose the wrong structural branch.
+            if let Some(value) = eval(name, comp, binding, mod_env) {
+                params.insert(name.clone(), value);
+            }
             continue;
         }
 
         if let Some(value_expr) = component_expr_for_structural_eval(comp)
-            && let Some(value) = eval(comp, value_expr)
+            && let Some(value) = eval(name, comp, value_expr, mod_env)
         {
             params.insert(name.clone(), value);
         }
@@ -562,6 +960,43 @@ mod tests {
         }
     }
 
+    fn integer_literal(value: i64) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedInteger,
+            token: rumoca_core::Token {
+                text: Arc::from(value.to_string()),
+                ..Default::default()
+            },
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn real_literal(value: &str) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::UnsignedReal,
+            token: rumoca_core::Token {
+                text: Arc::from(value),
+                ..Default::default()
+            },
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn scalar_param_with_binding(
+        name: &str,
+        type_name: &str,
+        binding: ast::Expression,
+    ) -> ast::Component {
+        ast::Component {
+            name: name.to_string(),
+            type_name: ast::Name::from_string(type_name),
+            variability: rumoca_core::Variability::Parameter(Default::default()),
+            binding: Some(binding),
+            has_explicit_binding: true,
+            ..ast::Component::empty_with_span(test_span())
+        }
+    }
+
     /// A component carrying `value` only in its `start` attribute — the shape
     /// the parser produces for `parameter Boolean b;` (MLS §4.9 default start)
     /// and for `parameter Boolean b(start = value);`.
@@ -576,14 +1011,7 @@ mod tests {
     }
 
     fn bool_param_with_binding(name: &str, type_name: &str, value: bool) -> ast::Component {
-        ast::Component {
-            name: name.to_string(),
-            type_name: ast::Name::from_string(type_name),
-            variability: rumoca_core::Variability::Parameter(Default::default()),
-            binding: Some(bool_literal(value)),
-            has_explicit_binding: true,
-            ..ast::Component::empty_with_span(test_span())
-        }
+        scalar_param_with_binding(name, type_name, bool_literal(value))
     }
 
     fn component_ref_expr(name: &str) -> ast::Expression {
@@ -600,6 +1028,203 @@ mod tests {
             span: rumoca_core::Span::DUMMY,
             qualified_display_name: None,
         })
+    }
+
+    fn not(expression: ast::Expression) -> ast::Expression {
+        ast::Expression::Unary {
+            op: rumoca_core::OpUnary::Not,
+            rhs: Arc::new(expression),
+            span: test_span(),
+        }
+    }
+
+    fn parenthesized(expression: ast::Expression) -> ast::Expression {
+        ast::Expression::Parenthesized {
+            inner: Arc::new(expression),
+            span: test_span(),
+        }
+    }
+
+    fn evaluate_annotation(value: ast::Expression) -> ast::Expression {
+        ast::Expression::Modification {
+            target: match component_ref_expr("Evaluate") {
+                ast::Expression::ComponentReference(reference) => reference,
+                _ => unreachable!(),
+            },
+            value: Some(Arc::new(value)),
+            span: test_span(),
+        }
+    }
+
+    fn no_op_resolve_class_components(
+        _tree: &ast::ClassTree,
+        _class: &ast::ClassDef,
+    ) -> IndexMap<String, ast::Component> {
+        IndexMap::default()
+    }
+
+    fn test_predefined_scalar_id(offset: u32) -> rumoca_core::DefId {
+        rumoca_core::DefId::new(80_000 + offset)
+    }
+
+    fn test_tree_with_predefined_scalars() -> ast::ClassTree {
+        let mut tree = ast::ClassTree::new();
+        for (offset, name) in [(1, "Boolean"), (2, "Integer"), (3, "Real")] {
+            tree.scope_tree.add_predefined_member(
+                rumoca_core::ComponentPath::from_flat_path(name),
+                test_predefined_scalar_id(offset),
+            );
+        }
+        tree
+    }
+
+    /// Simulate the resolver evidence consumed by `canonical_scalar_kind`.
+    /// Display spellings are used only to build this test input; production
+    /// classification sees the assigned identity and has no name fallback.
+    fn resolved_test_scalar_components(
+        components: &IndexMap<String, ast::Component>,
+    ) -> IndexMap<String, ast::Component> {
+        let mut resolved = components.clone();
+        for component in resolved.values_mut() {
+            if component.type_def_id.is_some() {
+                continue;
+            }
+            let name = component.type_name.to_string();
+            component.type_def_id = [(1, "Boolean"), (2, "Integer"), (3, "Real")]
+                .into_iter()
+                .find_map(|(offset, predefined)| {
+                    rumoca_core::qualified_type_name_matches(&name, predefined)
+                        .then(|| test_predefined_scalar_id(offset))
+                });
+        }
+        resolved
+    }
+
+    fn extract_test_bool_params(
+        components: &IndexMap<String, ast::Component>,
+        mod_env: &ast::ModificationEnvironment,
+    ) -> FxHashMap<String, bool> {
+        let tree = test_tree_with_predefined_scalars();
+        let components = resolved_test_scalar_components(components);
+        extract_test_bool_params_with_tree(&tree, &components, mod_env)
+    }
+
+    fn extract_test_bool_params_with_tree(
+        tree: &ast::ClassTree,
+        components: &IndexMap<String, ast::Component>,
+        mod_env: &ast::ModificationEnvironment,
+    ) -> FxHashMap<String, bool> {
+        extract_bool_params_with_mods(&InstantiateEvalCtx {
+            tree,
+            mod_env,
+            effective_components: components,
+            resolve_class_components: no_op_resolve_class_components,
+        })
+    }
+
+    fn attribute_only_modification(name: &str) -> ast::Expression {
+        ast::Expression::ClassModification {
+            target: match component_ref_expr(name) {
+                ast::Expression::ComponentReference(reference) => reference,
+                _ => unreachable!(),
+            },
+            modifications: vec![ast::Expression::NamedArgument {
+                name: rumoca_core::Token {
+                    text: Arc::from("fixed"),
+                    ..Default::default()
+                },
+                value: Arc::new(bool_literal(true)),
+                span: test_span(),
+            }],
+            each_flags: Vec::new(),
+            final_flags: Vec::new(),
+            redeclare_flags: Vec::new(),
+            span: test_span(),
+        }
+    }
+
+    #[test]
+    fn occurrence_binding_precedence_never_falls_back_to_declaration_defaults() {
+        let components = resolved_test_scalar_components(&IndexMap::from_iter([
+            (
+                "b".to_string(),
+                scalar_param_with_binding("b", "Boolean", bool_literal(true)),
+            ),
+            (
+                "i".to_string(),
+                scalar_param_with_binding("i", "Integer", integer_literal(1)),
+            ),
+            (
+                "r".to_string(),
+                scalar_param_with_binding("r", "Real", real_literal("1.0")),
+            ),
+        ]));
+        let tree = test_tree_with_predefined_scalars();
+
+        let mut known = ast::ModificationEnvironment::new();
+        known.add(
+            ast::QualifiedName::from_ident("b"),
+            ast::ModificationValue::simple(bool_literal(false)),
+        );
+        known.add(
+            ast::QualifiedName::from_ident("i"),
+            ast::ModificationValue::simple(integer_literal(2)),
+        );
+        known.add(
+            ast::QualifiedName::from_ident("r"),
+            ast::ModificationValue::simple(real_literal("2.5")),
+        );
+        let known_ctx = InstantiateEvalCtx {
+            tree: &tree,
+            mod_env: &known,
+            effective_components: &components,
+            resolve_class_components: no_op_resolve_class_components,
+        };
+        assert!(!extract_bool_params_with_mods(&known_ctx)["b"]);
+        assert_eq!(extract_int_params_with_mods(&known_ctx)["i"], 2);
+        assert_eq!(
+            extract_real_params_with_mods(&known_ctx, &FxHashMap::default())["r"],
+            2.5
+        );
+
+        let mut unknown = ast::ModificationEnvironment::new();
+        for name in ["b", "i", "r"] {
+            unknown.add(
+                ast::QualifiedName::from_ident(name),
+                ast::ModificationValue::simple(component_ref_expr("missing")),
+            );
+        }
+        let unknown_ctx = InstantiateEvalCtx {
+            tree: &tree,
+            mod_env: &unknown,
+            effective_components: &components,
+            resolve_class_components: no_op_resolve_class_components,
+        };
+        assert!(!extract_bool_params_with_mods(&unknown_ctx).contains_key("b"));
+        assert!(!extract_int_params_with_mods(&unknown_ctx).contains_key("i"));
+        assert!(
+            !extract_real_params_with_mods(&unknown_ctx, &FxHashMap::default()).contains_key("r")
+        );
+
+        let mut attributes = ast::ModificationEnvironment::new();
+        for name in ["b", "i", "r"] {
+            attributes.add(
+                ast::QualifiedName::from_ident(name),
+                ast::ModificationValue::simple(attribute_only_modification(name)),
+            );
+        }
+        let attribute_ctx = InstantiateEvalCtx {
+            tree: &tree,
+            mod_env: &attributes,
+            effective_components: &components,
+            resolve_class_components: no_op_resolve_class_components,
+        };
+        assert!(extract_bool_params_with_mods(&attribute_ctx)["b"]);
+        assert_eq!(extract_int_params_with_mods(&attribute_ctx)["i"], 1);
+        assert_eq!(
+            extract_real_params_with_mods(&attribute_ctx, &FxHashMap::default())["r"],
+            1.0
+        );
     }
 
     #[test]
@@ -627,13 +1252,239 @@ mod tests {
         );
 
         let bool_params =
-            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+            extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
 
         assert_eq!(bool_params.get("plain"), Some(&true));
         assert_eq!(bool_params.get("qualified"), Some(&false));
         assert_eq!(bool_params.get("nested"), Some(&true));
         assert!(!bool_params.contains_key("prefix_lookalike"));
         assert!(!bool_params.contains_key("suffix_lookalike"));
+    }
+
+    #[test]
+    fn bool_extraction_uses_canonical_resolved_type_identity() {
+        let builtin_boolean_id = rumoca_core::DefId::new(900);
+        let boolean_alias_id = rumoca_core::DefId::new(901);
+        let shadow_boolean_id = rumoca_core::DefId::new(902);
+        let mut boolean_alias = ast::ClassDef {
+            def_id: Some(boolean_alias_id),
+            name: rumoca_core::Token {
+                text: Arc::from("BooleanAlias"),
+                ..Default::default()
+            },
+            class_type: rumoca_core::ClassType::Type,
+            ..Default::default()
+        };
+        boolean_alias.extends.push(ast::Extend {
+            base_name: ast::Name::from_string("Boolean"),
+            base_def_id: Some(builtin_boolean_id),
+            ..Default::default()
+        });
+        let mut shadow_boolean = ast::ClassDef {
+            def_id: Some(shadow_boolean_id),
+            name: rumoca_core::Token {
+                text: Arc::from("Boolean"),
+                ..Default::default()
+            },
+            class_type: rumoca_core::ClassType::Type,
+            ..Default::default()
+        };
+        shadow_boolean.extends.push(ast::Extend {
+            base_name: ast::Name::from_string("Real"),
+            ..Default::default()
+        });
+        let mut tree = ast::ClassTree::new();
+        tree.scope_tree.add_predefined_member(
+            rumoca_core::ComponentPath::from_flat_path("Boolean"),
+            builtin_boolean_id,
+        );
+        tree.definitions
+            .classes
+            .insert("BooleanAlias".to_string(), boolean_alias);
+        tree.definitions
+            .classes
+            .insert("Boolean".to_string(), shadow_boolean);
+        tree.def_map
+            .insert(boolean_alias_id, "BooleanAlias".to_string());
+        tree.def_map
+            .insert(shadow_boolean_id, "Boolean".to_string());
+
+        let mut direct = bool_param_with_binding("direct", "Boolean", true);
+        direct.type_def_id = Some(builtin_boolean_id);
+        let mut alias = bool_param_with_binding("alias", "BooleanAlias", true);
+        alias.type_def_id = Some(boolean_alias_id);
+        let mut shadow = bool_param_with_binding("shadow", "Boolean", true);
+        shadow.type_def_id = Some(shadow_boolean_id);
+        let unresolved = bool_param_with_binding("unresolved", "Boolean", true);
+        let components = IndexMap::from_iter([
+            ("direct".to_string(), direct),
+            ("alias".to_string(), alias),
+            ("shadow".to_string(), shadow),
+            ("unresolved".to_string(), unresolved),
+        ]);
+
+        let values = extract_test_bool_params_with_tree(
+            &tree,
+            &components,
+            &ast::ModificationEnvironment::new(),
+        );
+
+        assert_eq!(values.get("direct"), Some(&true));
+        assert_eq!(values.get("alias"), Some(&true));
+        assert!(
+            !values.contains_key("shadow"),
+            "a Real alias named Boolean must not enter the Boolean map"
+        );
+        assert!(
+            !values.contains_key("unresolved"),
+            "a Boolean spelling without resolved type identity is not predefined-type evidence"
+        );
+    }
+
+    #[test]
+    fn bool_constant_is_available_to_structural_conditions() {
+        let mut components = IndexMap::default();
+        let mut constant = bool_param_with_binding("enabled", "Boolean", true);
+        constant.variability = rumoca_core::Variability::Constant(Default::default());
+        constant.annotation.push(ast::Expression::Modification {
+            target: match component_ref_expr("Evaluate") {
+                ast::Expression::ComponentReference(reference) => reference,
+                _ => unreachable!(),
+            },
+            value: Some(Arc::new(bool_literal(false))),
+            span: test_span(),
+        });
+        components.insert("enabled".to_string(), constant);
+
+        let bools = extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
+
+        assert_eq!(bools.get("enabled"), Some(&true));
+    }
+
+    #[test]
+    fn explicitly_nonevaluable_boolean_is_absent_from_structural_values() {
+        let mut fixed_false = bool_param_with_binding("fixedFalse", "Boolean", true);
+        fixed_false
+            .modifications
+            .insert("fixed".to_string(), bool_literal(false));
+        let mut evaluate_false = bool_param_with_binding("evaluateFalse", "Boolean", true);
+        evaluate_false
+            .annotation
+            .push(ast::Expression::Modification {
+                target: match component_ref_expr("Evaluate") {
+                    ast::Expression::ComponentReference(reference) => reference,
+                    _ => unreachable!(),
+                },
+                value: Some(Arc::new(bool_literal(false))),
+                span: test_span(),
+            });
+        let mut components = IndexMap::from_iter([
+            ("fixedFalse".to_string(), fixed_false),
+            ("evaluateFalse".to_string(), evaluate_false),
+        ]);
+        components.insert(
+            "modifiedFixedFalse".to_string(),
+            bool_param_with_binding("modifiedFixedFalse", "Boolean", true),
+        );
+        let mut mod_env = ast::ModificationEnvironment::new();
+        mod_env.add(
+            ast::QualifiedName::from_ident("modifiedFixedFalse").child("fixed"),
+            ast::ModificationValue::simple(bool_literal(false)),
+        );
+
+        let bools = extract_test_bool_params(&components, &mod_env);
+
+        assert!(
+            bools.is_empty(),
+            "non-evaluable literals must not enter the structural environment"
+        );
+    }
+
+    #[test]
+    fn structural_attributes_require_a_semantic_true_proof() {
+        let mut yes = bool_param_with_binding("yes", "Boolean", true);
+        yes.variability = rumoca_core::Variability::Constant(Default::default());
+
+        let mut fixed_expression = bool_param_with_binding("fixedExpression", "Boolean", true);
+        fixed_expression
+            .modifications
+            .insert("fixed".to_string(), parenthesized(not(bool_literal(false))));
+        let mut fixed_reference = bool_param_with_binding("fixedReference", "Boolean", true);
+        fixed_reference
+            .modifications
+            .insert("fixed".to_string(), component_ref_expr("yes"));
+        let mut evaluate_reference = bool_param_with_binding("evaluateReference", "Boolean", true);
+        evaluate_reference
+            .annotation
+            .push(evaluate_annotation(component_ref_expr("yes")));
+        let mut fixed_false = bool_param_with_binding("fixedFalseExpr", "Boolean", true);
+        fixed_false
+            .modifications
+            .insert("fixed".to_string(), not(bool_literal(true)));
+        let mut evaluate_unknown = bool_param_with_binding("evaluateUnknown", "Boolean", true);
+        evaluate_unknown
+            .annotation
+            .push(evaluate_annotation(component_ref_expr("missing")));
+        let mut occurrence_true = bool_param_with_binding("occurrenceTrue", "Boolean", true);
+        occurrence_true
+            .modifications
+            .insert("fixed".to_string(), bool_literal(false));
+        let occurrence_unknown = bool_param_with_binding("occurrenceUnknown", "Boolean", true);
+
+        let components = IndexMap::from_iter([
+            ("yes".to_string(), yes),
+            ("fixedExpression".to_string(), fixed_expression),
+            ("fixedReference".to_string(), fixed_reference),
+            ("evaluateReference".to_string(), evaluate_reference),
+            ("fixedFalseExpr".to_string(), fixed_false),
+            ("evaluateUnknown".to_string(), evaluate_unknown),
+            ("occurrenceTrue".to_string(), occurrence_true),
+            ("occurrenceUnknown".to_string(), occurrence_unknown),
+        ]);
+        let mut mod_env = ast::ModificationEnvironment::new();
+        mod_env.add(
+            ast::QualifiedName::from_ident("occurrenceTrue").child("fixed"),
+            ast::ModificationValue::simple(component_ref_expr("yes")),
+        );
+        mod_env.add(
+            ast::QualifiedName::from_ident("occurrenceUnknown").child("fixed"),
+            ast::ModificationValue::simple(component_ref_expr("missing")),
+        );
+
+        let values = extract_test_bool_params(&components, &mod_env);
+
+        for name in [
+            "yes",
+            "fixedExpression",
+            "fixedReference",
+            "evaluateReference",
+            "occurrenceTrue",
+        ] {
+            assert_eq!(values.get(name), Some(&true), "{name} must prove true");
+        }
+        for name in ["fixedFalseExpr", "evaluateUnknown", "occurrenceUnknown"] {
+            assert!(
+                !values.contains_key(name),
+                "{name} must not enter structural values"
+            );
+        }
+    }
+
+    #[test]
+    fn cyclic_structural_attribute_dependencies_fail_closed() {
+        let mut left = bool_param_with_binding("left", "Boolean", true);
+        left.modifications
+            .insert("fixed".to_string(), component_ref_expr("right"));
+        let mut right = bool_param_with_binding("right", "Boolean", true);
+        right
+            .modifications
+            .insert("fixed".to_string(), component_ref_expr("left"));
+        let components =
+            IndexMap::from_iter([("left".to_string(), left), ("right".to_string(), right)]);
+
+        let values = extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
+
+        assert!(values.is_empty());
     }
 
     /// MLS §4.9: `start` is an initial guess, not a value. The parser seeds
@@ -648,7 +1499,7 @@ mod tests {
         );
 
         let bool_params =
-            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+            extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
 
         assert!(!bool_params.contains_key("unbound"));
     }
@@ -664,7 +1515,7 @@ mod tests {
         components.insert("useHeatPort".to_string(), comp);
 
         let bool_params =
-            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+            extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
 
         assert_eq!(bool_params.get("useHeatPort"), Some(&true));
     }
@@ -678,7 +1529,7 @@ mod tests {
         );
 
         let bool_params =
-            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+            extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
 
         assert_eq!(bool_params.get("use_numberPort"), Some(&true));
     }
@@ -691,7 +1542,7 @@ mod tests {
         components.insert("useHeatPort".to_string(), comp);
 
         let bool_params =
-            extract_bool_params_with_mods(&components, &ast::ModificationEnvironment::new());
+            extract_test_bool_params(&components, &ast::ModificationEnvironment::new());
 
         assert!(!bool_params.contains_key("useHeatPort"));
     }

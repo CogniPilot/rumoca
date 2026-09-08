@@ -90,7 +90,9 @@ pub(super) fn function_param(
 ) -> rumoca_core::FunctionParam {
     let effective_type = EffectiveType::new(nominal, canonical, dimensions)
         .expect("fixture function type is resolved");
-    rumoca_core::FunctionParam::new(name, type_name, effective_type, span)
+    rumoca_core::FunctionParam::new(name, type_name, effective_type, span).with_def_id(
+        rumoca_core::DefId::new(test_instance_id(name).index().max(1)),
+    )
 }
 
 pub(super) fn test_instance_id(name: &str) -> InstanceId {
@@ -116,6 +118,26 @@ pub(super) fn test_component_reference(name: &str, span: Span) -> ComponentRefer
         }],
     )
     .expect("test component reference has exact identity")
+}
+
+pub(super) fn register_test_materialized_occurrence(
+    model: &mut flat::Model,
+    instance: InstanceId,
+    declaration: rumoca_core::DefId,
+) {
+    let previous = model.instance_relations.insert(
+        instance,
+        flat::InstanceRelation {
+            owner: None,
+            declaration: Some(declaration),
+            indices: Vec::new().into_boxed_slice(),
+            kind: flat::InstanceKind::Materialized,
+        },
+    );
+    assert!(
+        previous.is_none(),
+        "a test occurrence must have one exact relation"
+    );
 }
 
 pub(super) fn register_test_effective_type(
@@ -190,13 +212,64 @@ pub(super) fn scalar_real_model(source: &TestSource) -> flat::Model {
     let literal_span = source.span("1.0", 0);
     let equation_span = source.span("x - 1.0", 0);
     let mut model = test_model();
+    let class_instance = InstanceId::new(101);
+    let declaration_id = rumoca_core::DefId::new(211);
+    let string_declaration = rumoca_core::DefId::new(301);
+    model.predefined_string_declaration = Some(string_declaration);
+    model
+        .type_ids_by_def_id
+        .insert(string_declaration, TEST_STRING_TYPE);
+    for builtin in [
+        TEST_REAL_TYPE,
+        TEST_INTEGER_TYPE,
+        TEST_BOOLEAN_TYPE,
+        TEST_STRING_TYPE,
+        TEST_CLOCK_TYPE,
+    ] {
+        model.type_roots.insert(builtin, builtin);
+    }
+    let component_at = |span| {
+        ComponentReference::construct(
+            false,
+            span,
+            vec![rumoca_core::ComponentRefPart {
+                ident: "x".to_owned(),
+                span,
+                subs: Vec::new(),
+                def_id: declaration_id,
+            }],
+        )
+        .expect("fixture use and declaration share their issued DefId")
+    };
     let mut variable = flat::Variable::empty_with_span(declaration);
     variable.name = VarName::new("x");
-    variable.instance_id = test_instance_id("x");
-    variable.type_id = TypeId::new(7);
+    variable.instance_id = InstanceId::new(103);
+    variable.component_ref = Some(component_at(declaration));
+    variable.type_id = model.predefined_types.real;
     variable.variability = Variability::Continuous(Default::default());
     variable.is_primitive = true;
     register_test_real_type(&mut model, variable.type_id, &variable.dims);
+    model.instance_relations.insert(
+        class_instance,
+        flat::InstanceRelation {
+            owner: None,
+            declaration: Some(rumoca_core::DefId::new(201)),
+            indices: Vec::new().into_boxed_slice(),
+            kind: flat::InstanceKind::Class,
+        },
+    );
+    model.instance_relations.insert(
+        variable.instance_id,
+        flat::InstanceRelation {
+            owner: Some(class_instance),
+            declaration: Some(declaration_id),
+            indices: Vec::new().into_boxed_slice(),
+            kind: flat::InstanceKind::Materialized,
+        },
+    );
+    // Match Flat's canonical target reference; the expression retains its use span.
+    let reference = Reference::from_component_reference(component_at(declaration))
+        .with_instance_id(variable.instance_id);
     model.add_variable(variable.name.clone(), variable);
     model
         .variable_type_names
@@ -205,7 +278,7 @@ pub(super) fn scalar_real_model(source: &TestSource) -> flat::Model {
         Expression::Binary {
             op: OpBinary::Sub,
             lhs: Box::new(Expression::VarRef {
-                name: test_reference("x"),
+                name: reference,
                 subscripts: Vec::new(),
                 span: use_span,
             }),
@@ -235,6 +308,7 @@ pub(super) fn add_primitive_variable(
     let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
     variable.name = VarName::new(name);
     variable.instance_id = test_instance_id(name);
+    variable.component_ref = Some(test_component_reference(name, source.span(declaration, 0)));
     variable.type_id = TypeId::new(type_id);
     variable.dims = dims;
     variable.variability = if discrete {
@@ -249,6 +323,12 @@ pub(super) fn add_primitive_variable(
     } else {
         register_test_real_type(model, variable.type_id, &variable.dims);
     }
+    let declaration = variable
+        .component_ref
+        .as_ref()
+        .expect("test primitive has exact source identity")
+        .target_def_id();
+    register_test_materialized_occurrence(model, variable.instance_id, declaration);
     model.add_variable(variable.name.clone(), variable);
     model.variable_type_names.insert(
         VarName::new(name),

@@ -96,8 +96,8 @@ fn typed_stochastic_profile_is_separate_and_never_compared() {
     let exit = pointwise_nonidentifiability_exit(&pointwise_candidate(Some(profile.clone())))
         .expect("valid profile")
         .expect("non-identifiable exit");
-    assert_eq!(exit.kind, TraceExitKind::TraceNonidentifiable);
-    assert_eq!(exit.certification_profile, Some(profile));
+    assert_eq!(exit.kind(), TraceExitKind::TraceNonidentifiable);
+    assert_eq!(exit.certification_profile(), Some(&profile));
 }
 
 #[test]
@@ -105,8 +105,8 @@ fn malformed_profile_is_a_comparator_failure_not_an_exclusion() {
     let invalid = TraceCertificationProfile::stochastic(Vec::new());
     let exit = pointwise_nonidentifiability_exit(&pointwise_candidate(Some(invalid)))
         .expect_err("empty evidence must fail closed");
-    assert_eq!(exit.kind, TraceExitKind::ComparatorFailed);
-    assert!(exit.certification_profile.is_none());
+    assert_eq!(exit.kind(), TraceExitKind::ComparatorFailed);
+    assert!(exit.certification_profile().is_none());
 }
 
 #[test]
@@ -558,10 +558,7 @@ fn quantify_trace_differences_skips_excluded_model_before_trace_loading() {
     assert!(report.missing_trace.is_empty());
     assert_eq!(
         report.skipped.get(&model_name),
-        Some(&TraceExitRecord::new(
-            TraceExitKind::PolicyExcluded,
-            "stochastic"
-        )),
+        Some(&TraceExitRecord::policy_excluded("stochastic")),
         "a policy exclusion must be recorded as one, so it is never read back as a \
          comparator failure"
     );
@@ -635,8 +632,7 @@ fn quantify_trace_differences_rejects_error_status_model_with_stale_traces() {
 
     assert_eq!(
         report.missing_trace.get(&model_name),
-        Some(&TraceExitRecord::new(
-            TraceExitKind::OmcTraceMissing,
+        Some(&TraceExitRecord::omc_trace_missing(
             "OMC attempt status `error` is not successful; stale trace artifacts are ineligible"
         )),
         "an OMC-side gap must be attributed to OMC, not to rumoca"
@@ -709,8 +705,7 @@ fn quantify_trace_differences_rejects_undeclared_omc_trace_file() {
 
     assert_eq!(
         report.missing_trace.get(&model_name),
-        Some(&TraceExitRecord::new(
-            TraceExitKind::OmcTraceMissing,
+        Some(&TraceExitRecord::omc_trace_missing(
             "successful OMC attempt did not declare a trace file"
         ))
     );
@@ -764,6 +759,47 @@ fn trace_output_summary_rolls_up_initial_condition_stats() {
     assert_eq!(summary.initial_condition.total_channels_compared, 2);
     assert_eq!(summary.initial_condition.deviation_channels_total, 1);
     assert!(summary.initial_condition.violation_mass_total > 0.0);
+
+    let payload = serde_json::to_value(report.models.get("M").expect("model metric exists"))
+        .expect("serialize the exact report envelope");
+    for field in [
+        "state_selection",
+        "rumoca_sim_wall_seconds",
+        "rumoca_sim_seconds",
+        "rumoca_sim_build_seconds",
+        "rumoca_sim_run_seconds",
+        "omc_sim_system_seconds",
+        "omc_total_system_seconds",
+        "omc_wall_seconds",
+    ] {
+        assert!(
+            payload.get(field).is_some_and(serde_json::Value::is_null),
+            "nullable report field `{field}` is explicit"
+        );
+    }
+    let parsed = parse_trace_model_metric(payload.clone())
+        .expect("the writer envelope must round-trip through every report reader");
+    assert_eq!(parsed.model_name(), "M");
+
+    let mut missing = payload.clone();
+    missing
+        .as_object_mut()
+        .expect("report envelope is an object")
+        .remove("state_selection");
+    assert!(
+        parse_trace_model_metric(missing).is_err(),
+        "omitted nullable evidence is malformed, not an implicit default"
+    );
+
+    let mut unknown = payload;
+    unknown
+        .as_object_mut()
+        .expect("report envelope is an object")
+        .insert("future_unowned_field".to_string(), serde_json::Value::Null);
+    assert!(
+        parse_trace_model_metric(unknown).is_err(),
+        "unknown report evidence cannot be ignored"
+    );
 }
 
 #[test]
@@ -778,7 +814,8 @@ fn trace_output_summary_does_not_call_missing_initial_evidence_accurate() {
     };
     let metric =
         compare_model_traces("M", &trace(f64::from_bits(1)), &trace(0.0)).expect("compare traces");
-    assert_eq!(metric.initial_condition.channels_compared, 0);
+    assert_eq!(metric.initial_condition().channels_compared, 0);
+    assert_eq!(metric.initial_condition().channels_unmeasured, 1);
     let mut report = TraceQuantification::default();
     report.models.insert(
         "M".to_string(),

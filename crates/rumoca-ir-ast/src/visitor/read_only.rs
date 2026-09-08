@@ -143,6 +143,7 @@ pub fn walk_expression_default<V: Visitor + ?Sized>(
         Expression::ComponentReference(cr) => {
             visitor.visit_component_reference_ctx(cr, ComponentReferenceContext::Expression)
         }
+        Expression::DerivativeCall { args, .. } => visitor.visit_each(args, V::visit_expression),
         Expression::FunctionCall { comp, args, .. } => {
             visitor.visit_expr_function_call_ctx(comp, args, FunctionCallContext::Expression)
         }
@@ -163,7 +164,10 @@ pub fn walk_expression_default<V: Visitor + ?Sized>(
                 target,
                 ComponentReferenceContext::ModificationTarget,
             )?;
-            visitor.visit_expression(value)
+            match value {
+                Some(value) => visitor.visit_expression(value),
+                None => ControlFlow::Continue(()),
+            }
         }
         Expression::Array { elements, .. } | Expression::Tuple { elements, .. } => {
             visitor.visit_each(elements, V::visit_expression)

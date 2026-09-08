@@ -112,9 +112,9 @@ impl<'a> Evaluator<'a> {
             "solveLinearEquations" => solve_linear_equations(self, args).map(|value| vec![value]),
             "luFactorize" => lu_factorize_builtin(self, args),
             "luSolve" => lu_solve_builtin(self, args).map(|value| vec![value]),
-            "interpolation1D" => interpolation_1d(args).map(|value| vec![value]),
-            "interpolation2D" => interpolation_2d(args).map(|value| vec![value]),
-            "interpolation3D" => interpolation_3d(args).map(|value| vec![value]),
+            "interpolation1D" => interpolation_1d(self, args).map(|value| vec![value]),
+            "interpolation2D" => interpolation_2d(self, args).map(|value| vec![value]),
+            "interpolation3D" => interpolation_3d(self, args).map(|value| vec![value]),
             _ => scalar_builtin(self, name, args).map(|value| vec![value]),
         }
     }

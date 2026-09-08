@@ -136,6 +136,40 @@ fn update_atomic_max(maximum: &AtomicUsize, value: usize) {
     }
 }
 
+enum ModelWorkerSpawnOutcome {
+    Spawned(ModelWorkerDaemon),
+    Failed,
+    ReceiverClosed,
+}
+
+fn spawn_model_worker(
+    queue: &ModelWorkerQueue<'_>,
+    idx: usize,
+    name: &str,
+    startup_timeout_secs: f64,
+) -> ModelWorkerSpawnOutcome {
+    match ModelWorkerDaemon::spawn(
+        queue.source_root_path,
+        startup_timeout_secs,
+        queue.cpu_core_id,
+        model_worker_memory_limit_mb(),
+    ) {
+        Ok(worker) => ModelWorkerSpawnOutcome::Spawned(worker),
+        Err(error) => {
+            let entry = model_worker_failure_result(
+                name,
+                MODEL_WORKER_ERROR_CODE,
+                format!("model worker failed to start: {error}"),
+            );
+            if queue.result_tx.send((idx, entry)).is_ok() {
+                ModelWorkerSpawnOutcome::Failed
+            } else {
+                ModelWorkerSpawnOutcome::ReceiverClosed
+            }
+        }
+    }
+}
+
 pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
     let mut worker: Option<ModelWorkerDaemon> = None;
     let mut _worker_memory_permit: Option<ResourceTokenPermit> = None;
@@ -161,22 +195,10 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
             };
         }
         if worker.is_none() {
-            match ModelWorkerDaemon::spawn(
-                queue.source_root_path,
-                startup_timeout_secs,
-                queue.cpu_core_id,
-                model_worker_memory_limit_mb(),
-            ) {
-                Ok(spawned) => worker = Some(spawned),
-                Err(error) => {
-                    let entry = model_worker_failure_result(
-                        name,
-                        MODEL_WORKER_ERROR_CODE,
-                        format!("model worker failed to start: {error}"),
-                    );
-                    let _ = queue.result_tx.send((idx, entry));
-                    continue;
-                }
+            match spawn_model_worker(&queue, idx, name, startup_timeout_secs) {
+                ModelWorkerSpawnOutcome::Spawned(spawned) => worker = Some(spawned),
+                ModelWorkerSpawnOutcome::Failed => continue,
+                ModelWorkerSpawnOutcome::ReceiverClosed => return,
             }
         }
         let _active_model = queue.scheduler_stats.enter_active_model();
@@ -196,7 +218,9 @@ pub(super) fn run_model_worker_queue(queue: ModelWorkerQueue<'_>) {
                 explicit_sim_target: queue.explicit_sim_target,
             },
         );
-        let _ = queue.result_tx.send((idx, entry));
+        if queue.result_tx.send((idx, entry)).is_err() {
+            return;
+        }
     }
 }
 
@@ -351,7 +375,9 @@ pub(super) fn run_streaming_compile_and_render_chunk(
         },
     );
     compile_in_flight.store(false, Ordering::Relaxed);
-    let _ = compile_progress_logger.join();
+    compile_progress_logger
+        .join()
+        .expect("compile progress logger should not panic");
 
     let pipeline_seconds = pipeline_start.elapsed().as_secs_f64();
     let compile_seconds = compile_output.elapsed_seconds;
@@ -467,7 +493,9 @@ pub(super) fn run_compile_only_chunk(
         )
     };
     compile_in_flight.store(false, Ordering::Relaxed);
-    let _ = compile_progress_logger.join();
+    compile_progress_logger
+        .join()
+        .expect("compile progress logger should not panic");
     let pipeline_seconds = chunk_compile_start.elapsed().as_secs_f64();
     let compile_seconds = compile_output.elapsed_seconds;
 

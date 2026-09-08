@@ -1,8 +1,9 @@
+use super::analysis::StructuredAssignmentPlan;
 use super::*;
 
 #[derive(Clone, Copy)]
 pub(super) struct AlgorithmStatementContext<'scope, 'shape, 'dae> {
-    pub(super) coordinates: &'scope HashMap<VarName, Coordinate<'dae>>,
+    pub(super) coordinates: &'scope ModelCoordinates<'dae>,
     pub(super) functions: &'scope FunctionRegistry<'shape, 'dae>,
     pub(super) values: &'scope HashMap<VarName, dae::ExprId<'dae>>,
     pub(super) parent: Option<EventGuard<'dae>>,
@@ -14,6 +15,13 @@ pub(super) struct AlgorithmFunctionCall<'source> {
     pub(super) arguments: &'source [Expression],
     pub(super) span: Span,
     pub(super) plan: &'source ModelEventFunctionCallPlan,
+}
+
+pub(super) struct AlgorithmAssignment<'source> {
+    pub(super) component: &'source rumoca_core::ComponentReference,
+    pub(super) value: &'source Expression,
+    pub(super) span: Span,
+    pub(super) structured_plan: Option<&'source StructuredAssignmentPlan>,
 }
 
 struct AlgorithmCallTarget<'scope, 'shape, 'dae> {
@@ -63,21 +71,20 @@ fn structured_source_expression<'dae>(
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let source_leaf = structured_source.name();
     match structured_source {
-        StructuredSource::Previous(_) => {
+        StructuredSource::Previous(leaf) => {
+            let coordinate =
+                context
+                    .coordinates
+                    .event_occurrence(leaf.identity, source_leaf, span)?;
             let owner_clock =
                 owner_clock.ok_or(dae::DaeConstructionError::MissingPreviousClockOwner { span })?;
-            let coordinate = context.coordinates[source_leaf];
             let previous = construction.temporal(|temporal| match coordinate {
-                Coordinate::DiscreteReal(variable) => {
+                EventCoordinate::Real(variable) => {
                     temporal.previous_discrete_real(owner_clock.into(), variable, provenance)
                 }
-                Coordinate::DiscreteValue(variable) => {
+                EventCoordinate::Value(variable) => {
                     temporal.previous_discrete_value(owner_clock.into(), variable, provenance)
                 }
-                _ => Err(dae::DaeConstructionError::InvalidVariableRole {
-                    name: source_leaf.clone(),
-                    span,
-                }),
             })?;
             construction.expressions(|expressions| {
                 expressions
@@ -85,13 +92,15 @@ fn structured_source_expression<'dae>(
                     .coordinate(dae::CoordinateInput::Previous(previous))
             })
         }
-        StructuredSource::Current(_) => {
+        StructuredSource::Current(leaf) => {
+            let coordinate =
+                context
+                    .coordinates
+                    .readable_occurrence(leaf.identity, source_leaf, span)?;
             construction.expressions(
                 |expressions| match context.values.get(source_leaf).copied() {
                     Some(value) => Ok(value),
-                    None => expressions
-                        .at(provenance)
-                        .coordinate(context.coordinates[source_leaf].current()),
+                    None => expressions.at(provenance).coordinate(coordinate.current()),
                 },
             )
         }
@@ -103,16 +112,21 @@ pub(super) fn lower_algorithm_assignment<'dae>(
     discrete_values: &mut DiscreteValueStaging<'dae>,
     discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
-    component: &rumoca_core::ComponentReference,
-    value: &Expression,
-    span: Span,
+    assignment: AlgorithmAssignment<'_>,
 ) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    let AlgorithmAssignment {
+        component,
+        value,
+        span,
+        structured_plan,
+    } = assignment;
     let guard = statement_guard(construction, context)?;
     let target = rumoca_core::component_ref_to_base_reference(component)
         .var_name()
         .clone();
     let provenance = dae::DaeProvenance::source(span)?;
-    if let Some(&target_coordinate) = context.coordinates.get(&target) {
+    if context.coordinates.get(&target).is_some() {
+        let target_coordinate = context.coordinates.event(&target, span)?;
         let value = lower_algorithm_expression(construction, context, value)?;
         let subscripts = component
             .parts()
@@ -129,10 +143,10 @@ pub(super) fn lower_algorithm_assignment<'dae>(
                 &target,
                 target_coordinate,
                 provenance,
-                span,
             )?;
             let symbols = LoweringSymbols {
                 coordinates: context.coordinates,
+                record_staging: None,
                 functions: context.functions,
                 shapes: context.functions.shapes.model_values(),
                 function_body: None,
@@ -153,36 +167,39 @@ pub(super) fn lower_algorithm_assignment<'dae>(
             construction,
             discrete_values,
             discrete_owner,
-            target_coordinate,
+            target_coordinate.coordinate(),
             guard,
             value,
             provenance,
         )?;
         return Ok(vec![(target, value)]);
     }
-    let pairs = structured_assignment_names(&target, value, context.coordinates.keys())
-        .expect("algorithm analysis proves structured assignment leaves");
+    let plan = structured_plan.ok_or(dae::DaeConstructionError::InvalidExpressionForm { span })?;
     let value_span = value
         .span()
-        .expect("algorithm analysis proves assignment-value provenance");
-    let mut updates = Vec::with_capacity(pairs.len());
-    for (target_leaf, structured_source) in pairs {
+        .ok_or(dae::DaeConstructionError::InvalidExpressionForm { span })?;
+    let mut updates = Vec::with_capacity(plan.pairs.len());
+    for (target_leaf, structured_source) in &plan.pairs {
         let source_provenance =
             dae::DaeProvenance::generated(dae::DaeGeneration::DiscreteUpdate, value_span)?;
         let source = structured_source_expression(
             construction,
             &context,
-            &structured_source,
+            structured_source,
             guard.owner_clock,
             source_provenance,
             value_span,
         )?;
-        updates.push((target_leaf.clone(), source));
+        updates.push((target_leaf.name.clone(), source));
+        let target_coordinate =
+            context
+                .coordinates
+                .event_occurrence(target_leaf.identity, &target_leaf.name, span)?;
         lower_when_assignment(
             construction,
             discrete_values,
             discrete_owner,
-            context.coordinates[&target_leaf],
+            target_coordinate.coordinate(),
             guard,
             source,
             provenance,
@@ -195,16 +212,13 @@ fn algorithm_assignment_base<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
     target: &VarName,
-    coordinate: Coordinate<'dae>,
+    coordinate: EventCoordinate<'dae>,
     provenance: dae::DaeProvenance,
-    span: Span,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     if let Some(value) = context.values.get(target).copied() {
         return Ok(value);
     }
-    let previous = coordinate
-        .previous(span)
-        .expect("event analysis accepts only historical discrete tensor targets");
+    let previous = coordinate.previous();
     construction.expressions(|expressions| expressions.at(provenance).coordinate(previous))
 }
 
@@ -314,10 +328,9 @@ pub(super) fn lower_algorithm_tensor_loop<'dae>(
     discrete_values: &mut DiscreteValueStaging<'dae>,
     discrete_owner: Option<DiscreteValueOwnerHandle>,
     context: AlgorithmStatementContext<'_, '_, 'dae>,
-    plan: &ModelEventTensorLoopPlan,
-    statements: &[rumoca_core::Statement],
-    span: Span,
+    plan: &ModelEventTensorLoopPlan<'_>,
 ) -> Result<Vec<(VarName, dae::ExprId<'dae>)>, dae::DaeConstructionError> {
+    let span = plan.span;
     let owner = dae::DaeProvenance::source(span)?;
     let domain = construction.domains(|domains| domains.structured(plan.domain.clone(), owner))?;
     let mut binders = HashMap::with_capacity(plan.binder_spans.len());
@@ -333,17 +346,9 @@ pub(super) fn lower_algorithm_tensor_loop<'dae>(
         binders.insert(VarName::new(&binder.display_name), id);
     }
     let guard = statement_guard(construction, context)?;
-    let mut updates = Vec::with_capacity(plan.targets.len());
+    let mut updates = Vec::with_capacity(plan.assignments.len());
     let mut loop_values = context.values.clone();
-    for (target, statement) in plan.targets.iter().zip(statements) {
-        let rumoca_core::Statement::Assignment {
-            value,
-            span: assignment_span,
-            ..
-        } = statement
-        else {
-            unreachable!("event analysis proves tensor-loop assignments")
-        };
+    for assignment in &plan.assignments {
         let body = lower_scoped_model_algorithm_expression(
             construction,
             context.coordinates,
@@ -351,11 +356,15 @@ pub(super) fn lower_algorithm_tensor_loop<'dae>(
             &loop_values,
             guard.owner_clock,
             &binders,
-            value,
+            assignment.value,
         )?;
-        let value_span = value
-            .span()
-            .expect("event analysis proves tensor-loop value provenance");
+        let value_span =
+            assignment
+                .value
+                .span()
+                .ok_or(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: assignment.span,
+                })?;
         let value_provenance = dae::DaeProvenance::source(value_span)?;
         let tensor = construction.expressions(|expressions| {
             expressions.at(value_provenance).comprehension(domain, body)
@@ -364,13 +373,16 @@ pub(super) fn lower_algorithm_tensor_loop<'dae>(
             construction,
             discrete_values,
             discrete_owner,
-            context.coordinates[target],
+            context
+                .coordinates
+                .event(&assignment.target, assignment.span)?
+                .coordinate(),
             guard,
             tensor,
-            dae::DaeProvenance::source(*assignment_span)?,
+            dae::DaeProvenance::source(assignment.span)?,
         )?;
-        loop_values.insert(target.clone(), tensor);
-        updates.push((target.clone(), tensor));
+        loop_values.insert(assignment.target.clone(), tensor);
+        updates.push((assignment.target.clone(), tensor));
     }
     Ok(updates)
 }
@@ -401,15 +413,19 @@ fn lower_algorithm_expression<'dae>(
 
 pub(super) fn own_clocked_algorithm_targets<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    coordinates: &ModelCoordinates<'dae>,
     clock: dae::ClockId<'dae>,
-    function_calls: &HashMap<Span, ModelEventFunctionCallPlan>,
-    statements: &[rumoca_core::Statement],
+    statements: &[EventStatementPlan<'_>],
 ) -> Result<(), dae::DaeConstructionError> {
     for statement in statements {
         match statement {
-            rumoca_core::Statement::Assignment { comp, value, span } => {
-                if let Some(plan) = function_calls.get(span) {
+            EventStatementPlan::Assignment {
+                component,
+                span,
+                route,
+                ..
+            } => {
+                if let EventAssignmentRoute::FunctionCall { plan, .. } = route {
                     own_clocked_function_outputs(
                         construction,
                         coordinates,
@@ -419,22 +435,27 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
                     )?;
                     continue;
                 }
-                let target = rumoca_core::component_ref_to_base_reference(comp)
+                let target = rumoca_core::component_ref_to_base_reference(component)
                     .var_name()
                     .clone();
-                if let Some(&coordinate) = coordinates.get(&target) {
-                    own_clocked_coordinate(construction, clock, coordinate, *span)?;
-                    continue;
-                }
-                let targets = structured_assignment_names(&target, value, coordinates.keys())
-                    .expect("algorithm analysis proves structured assignment leaves");
-                for (target, _) in targets {
-                    own_clocked_coordinate(construction, clock, coordinates[&target], *span)?;
+                match route {
+                    EventAssignmentRoute::Coordinate => {
+                        let coordinate = coordinates.event(&target, *span)?;
+                        own_clocked_coordinate(construction, clock, coordinate, *span)?;
+                    }
+                    EventAssignmentRoute::Structured(plan) => {
+                        own_clocked_structured_targets(
+                            construction,
+                            coordinates,
+                            clock,
+                            plan,
+                            *span,
+                        )?;
+                    }
+                    EventAssignmentRoute::FunctionCall { .. } => {}
                 }
             }
-            rumoca_core::Statement::FunctionCall { outputs, span, .. } => {
-                let plan = &function_calls[span];
-                debug_assert_eq!(outputs.len(), plan.outputs.len());
+            EventStatementPlan::FunctionCall { span, plan, .. } => {
                 own_clocked_function_outputs(
                     construction,
                     coordinates,
@@ -443,59 +464,62 @@ pub(super) fn own_clocked_algorithm_targets<'dae>(
                     *span,
                 )?;
             }
-            rumoca_core::Statement::If {
-                cond_blocks,
-                else_block,
+            EventStatementPlan::If {
+                blocks,
+                else_product,
                 ..
             } => {
-                for block in cond_blocks {
-                    own_clocked_algorithm_targets(
-                        construction,
-                        coordinates,
-                        clock,
-                        function_calls,
-                        &block.stmts,
-                    )?;
-                }
-                if let Some(statements) = else_block {
-                    own_clocked_algorithm_targets(
-                        construction,
-                        coordinates,
-                        clock,
-                        function_calls,
-                        statements,
-                    )?;
-                }
-            }
-            rumoca_core::Statement::When { blocks, .. } => {
                 for block in blocks {
                     own_clocked_algorithm_targets(
                         construction,
                         coordinates,
                         clock,
-                        function_calls,
-                        &block.stmts,
+                        &block.statements,
+                    )?;
+                }
+                if let EventElseProduct::Statements(statements) = else_product {
+                    own_clocked_algorithm_targets(construction, coordinates, clock, statements)?;
+                }
+            }
+            EventStatementPlan::When { blocks, .. } => {
+                for block in blocks {
+                    own_clocked_algorithm_targets(
+                        construction,
+                        coordinates,
+                        clock,
+                        &block.statements,
                     )?;
                 }
             }
-            rumoca_core::Statement::For { equations, .. } => {
-                own_clocked_algorithm_targets(
-                    construction,
-                    coordinates,
-                    clock,
-                    function_calls,
-                    equations,
-                )?;
+            EventStatementPlan::TensorLoop(plan) => {
+                for assignment in &plan.assignments {
+                    let coordinate = coordinates.event(&assignment.target, assignment.span)?;
+                    own_clocked_coordinate(construction, clock, coordinate, assignment.span)?;
+                }
             }
-            _ => {}
+            EventStatementPlan::Assert { .. } => {}
         }
+    }
+    Ok(())
+}
+
+fn own_clocked_structured_targets<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &ModelCoordinates<'dae>,
+    clock: dae::ClockId<'dae>,
+    plan: &StructuredAssignmentPlan,
+    span: Span,
+) -> Result<(), dae::DaeConstructionError> {
+    for (target, _) in &plan.pairs {
+        let coordinate = coordinates.event_occurrence(target.identity, &target.name, span)?;
+        own_clocked_coordinate(construction, clock, coordinate, span)?;
     }
     Ok(())
 }
 
 fn own_clocked_function_outputs<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    coordinates: &ModelCoordinates<'dae>,
     clock: dae::ClockId<'dae>,
     outputs: &[Option<ModelEventFunctionOutputPlan>],
     span: Span,
@@ -508,18 +532,20 @@ fn own_clocked_function_outputs<'dae>(
 
 fn own_clocked_function_output<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
-    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    coordinates: &ModelCoordinates<'dae>,
     clock: dae::ClockId<'dae>,
     output: &ModelEventFunctionOutputPlan,
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     match output {
         ModelEventFunctionOutputPlan::Coordinate(target) => {
-            own_clocked_coordinate(construction, clock, coordinates[target], span)
+            let coordinate = coordinates.event(target, span)?;
+            own_clocked_coordinate(construction, clock, coordinate, span)
         }
         ModelEventFunctionOutputPlan::Record(fields) => {
             for field in fields {
-                own_clocked_coordinate(construction, clock, coordinates[&field.target], span)?;
+                let coordinate = coordinates.event(&field.target, span)?;
+                own_clocked_coordinate(construction, clock, coordinate, span)?;
             }
             Ok(())
         }
@@ -529,19 +555,18 @@ fn own_clocked_function_output<'dae>(
 fn own_clocked_coordinate<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     clock: dae::ClockId<'dae>,
-    coordinate: Coordinate<'dae>,
+    coordinate: EventCoordinate<'dae>,
     span: Span,
 ) -> Result<(), dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::source(span)?;
     construction.clocks(|clocks| match coordinate {
-        Coordinate::DiscreteReal(variable) => {
+        EventCoordinate::Real(variable) => {
             clocks.own_discrete_real(clock, variable, provenance)?;
             Ok(())
         }
-        Coordinate::DiscreteValue(variable) => {
+        EventCoordinate::Value(variable) => {
             clocks.own_discrete_value(clock, variable, provenance)?;
             Ok(())
         }
-        _ => unreachable!("algorithm analysis accepts only discrete event targets"),
     })
 }

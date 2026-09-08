@@ -13,5 +13,9 @@ indexmap = { workspace = true }
 serde = { workspace = true }
 rustc-hash = { workspace = true }
 
+[dev-dependencies]
+bincode = { workspace = true }
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

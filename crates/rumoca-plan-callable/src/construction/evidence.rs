@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, marker::PhantomData};
 
 use rumoca_core::OperationContractKey;
-use rumoca_ir_dae::{DaeLiteral, ExprId, ExpressionOperation, PureBuiltin, SubscriptView};
+use rumoca_ir_dae::{DaeLiteral, ExprId, ExpressionOperation, SubscriptView};
 
 use super::contract::{authenticate_contract, callable_value_type, checked_id};
 use super::plan::{
@@ -136,44 +136,6 @@ impl<'plan, 'dae> CallablePlanConstruction<'plan, 'dae> {
             .chain(indices.iter().copied())
             .collect::<Vec<_>>();
         self.finish_evidence_operation(scope, source, contract, &operands, &BTreeSet::new())
-    }
-
-    /// Construct an identity tensor from its exact literal extents. Dynamic
-    /// extents have no target-neutral construction proof and refuse here.
-    pub fn add_identity(
-        &mut self,
-        scope: ConstructionScopeId<'plan>,
-        source: CallableExpressionSource<'plan, 'dae>,
-    ) -> Result<ConstructionValueId<'plan>, PlanConstructionError> {
-        self.transaction(|construction| construction.try_add_identity(scope, source))
-    }
-
-    fn try_add_identity(
-        &mut self,
-        scope: ConstructionScopeId<'plan>,
-        source: CallableExpressionSource<'plan, 'dae>,
-    ) -> Result<ConstructionValueId<'plan>, PlanConstructionError> {
-        let span = source.provenance.span();
-        let expression = self.checked_expression(scope, source)?;
-        let ExpressionOperation::Builtin { builtin, arguments } = expression.operation() else {
-            return Err(PlanConstructionError::InvalidOperation { span });
-        };
-        if builtin != PureBuiltin::Identity {
-            return Err(PlanConstructionError::InvalidOperation { span });
-        }
-        let contract = authenticate_contract(self.dae, expression)?;
-        let mut evidence = BTreeSet::new();
-        for argument in arguments.iter() {
-            let extent = self.checked_integer_literal(source.function, argument)?;
-            if extent < 0 {
-                return Err(PlanConstructionError::InvalidOperation {
-                    span: self.dae.exact_expression(argument).provenance().span(),
-                });
-            }
-            evidence.insert(argument);
-        }
-        self.checked_outstanding_evidence(source.function, &evidence)?;
-        self.finish_evidence_operation(scope, source, contract, &[], &evidence)
     }
 
     fn checked_subscript_evidence(

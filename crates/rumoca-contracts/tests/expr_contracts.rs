@@ -627,7 +627,7 @@ fn expr_039_noevent_usage() {
 // their step points and the requirement holds only for arguments that are
 // already discrete between events. The test below therefore asserts nothing
 // beyond successful compilation, and EXPR-040 is deliberately absent from
-// `data/contract_cases.toml` and from IMPLEMENTED_CONTRACT_IDS.
+// `data/contract_cases.toml`, and its registry status remains Partial.
 //
 // A future event-root implementation must make this test assert the behavior,
 // not just the compile: that `integer(x)` owns an event root over the crossing

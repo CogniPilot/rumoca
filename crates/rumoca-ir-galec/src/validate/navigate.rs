@@ -213,7 +213,7 @@ fn resolve_reference<'a>(
             describe_var(&parameter.decl, "parameter"),
         ),
         Resolved::Local(decl) => (non_dummy(decl.span), describe_var(decl, "local")),
-        Resolved::Iterator => (None, "loop iterator : Integer".to_string()),
+        Resolved::Iterator(_) => (None, "loop iterator : Integer".to_string()),
     };
     Some(SymbolInfo {
         reference_span,
@@ -237,7 +237,8 @@ fn call_at<'a>(
     if !span_contains(call.function.span(), offset) {
         return None;
     }
-    let callee = resolve_call(ctx, &call.function)?;
+    let resolved = resolve_call(ctx, call)?;
+    let callee = resolved.callee();
     let (definition_span, hover) = match &callee {
         Callee::User(function) => (
             non_dummy(function.span),

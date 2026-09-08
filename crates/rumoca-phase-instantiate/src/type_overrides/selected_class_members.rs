@@ -15,31 +15,71 @@ pub(super) fn resolve_member_reference_in_class(
     reference: &ast::ComponentReference,
     first_member: usize,
 ) -> InstantiateResult<Vec<DefId>> {
-    let root = reference.parts.first().ok_or_else(|| {
+    let part_idents: Vec<&str> = reference
+        .parts
+        .iter()
+        .map(|part| part.ident.text.as_ref())
+        .collect();
+    resolve_member_idents_in_class(
+        tree,
+        selected_class_def_id,
+        &part_idents,
+        first_member,
+        reference.span,
+    )
+}
+
+/// The hook-side entry: consumes the visitor kernel's opaque reference view,
+/// which carries exactly the facts the member proof reads (part identifier
+/// texts and the span) and no structural node.
+pub(super) fn resolve_member_view_in_class(
+    tree: &ast::ClassTree,
+    selected_class_def_id: DefId,
+    reference: ast::ComponentReferenceView<'_>,
+    first_member: usize,
+) -> InstantiateResult<Vec<DefId>> {
+    let part_idents: Vec<&str> = reference.parts().map(|part| part.ident_text()).collect();
+    resolve_member_idents_in_class(
+        tree,
+        selected_class_def_id,
+        &part_idents,
+        first_member,
+        reference.span(),
+    )
+}
+
+fn resolve_member_idents_in_class(
+    tree: &ast::ClassTree,
+    selected_class_def_id: DefId,
+    part_idents: &[&str],
+    first_member: usize,
+    span: rumoca_core::Span,
+) -> InstantiateResult<Vec<DefId>> {
+    let root = part_idents.first().copied().ok_or_else(|| {
         Box::new(InstantiateError::redeclare_error(
             "<empty>",
             "deferred reference has no root",
-            reference.span,
+            span,
         ))
     })?;
     let mut owner_class_def_id = selected_class_def_id;
-    let mut identities = Vec::with_capacity(reference.parts.len().saturating_sub(first_member));
-    for (index, part) in reference.parts.iter().enumerate().skip(first_member) {
+    let mut identities = Vec::with_capacity(part_idents.len().saturating_sub(first_member));
+    for (index, part_ident) in part_idents.iter().copied().enumerate().skip(first_member) {
         let owner_class = tree
             .get_class_by_def_id(owner_class_def_id)
             .ok_or_else(|| {
                 Box::new(InstantiateError::redeclare_error(
-                    root.ident.text.as_ref(),
+                    root,
                     "selected redeclare class is absent from the resolved class tree",
-                    reference.span,
+                    span,
                 ))
             })?;
         if let Some((component_def_id, next_owner_def_id)) = resolve_component_member_step(
             tree,
             owner_class,
-            part.ident.text.as_ref(),
-            index + 1 < reference.parts.len(),
-            reference.span,
+            part_ident,
+            index + 1 < part_idents.len(),
+            span,
         )? {
             identities.push(component_def_id);
             if let Some(next_owner_def_id) = next_owner_def_id {
@@ -47,19 +87,19 @@ pub(super) fn resolve_member_reference_in_class(
             }
             continue;
         }
-        let nested = find_nested_class_in_hierarchy(tree, owner_class, part.ident.text.as_ref())
-            .ok_or_else(|| {
+        let nested =
+            find_nested_class_in_hierarchy(tree, owner_class, part_ident)?.ok_or_else(|| {
                 Box::new(InstantiateError::redeclare_error(
-                    part.ident.text.as_ref(),
+                    part_ident,
                     "selected redeclare class has no such member",
-                    reference.span,
+                    span,
                 ))
             })?;
         let target_def_id = nested.def_id.ok_or_else(|| {
             Box::new(InstantiateError::redeclare_error(
-                part.ident.text.as_ref(),
+                part_ident,
                 "effective nested redeclare member has no declaration identity",
-                reference.span,
+                span,
             ))
         })?;
         identities.push(target_def_id);

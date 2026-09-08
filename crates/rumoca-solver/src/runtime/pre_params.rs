@@ -13,7 +13,7 @@ pub fn write_pre_params_from_sources(
     tol: f64,
 ) -> bool {
     let mut changed = false;
-    for binding in &model.problem.solve_layout.pre_param_bindings {
+    for binding in &model.problem().solve_layout().pre_param_bindings {
         let value = match binding.source {
             solve::PreParamSource::Y { index } => source_y.get(index).copied(),
             solve::PreParamSource::P { index } => source_p.get(index).copied(),
@@ -37,10 +37,10 @@ pub fn advance_event_iteration_pre_params(
     source_p: &[f64],
     params: &mut [f64],
 ) -> Result<bool, RuntimeSolveError> {
-    let plan = &model.problem.discrete.event_iteration_plan;
+    let plan = &model.problem().discrete().event_iteration_plan;
     let mut lanes = Vec::new();
     for (run_index, run) in plan.runs.iter().enumerate() {
-        let storage = &model.problem.solve_layout.variable_storage_runs[run.variable];
+        let storage = &model.problem().solve_layout().variable_storage_runs[run.variable];
         let value_kind = storage
             .event_iteration_kind()
             .expect("validated event plan references a typed discrete variable");
@@ -48,8 +48,8 @@ pub fn advance_event_iteration_pre_params(
         for binding_offset in 0..storage.scalar_count {
             let binding_index = run.pre_binding_start + binding_offset;
             let binding = model
-                .problem
-                .solve_layout
+                .problem()
+                .solve_layout()
                 .pre_param_bindings
                 .get(binding_index)
                 .ok_or_else(|| {
@@ -102,8 +102,8 @@ pub fn seed_event_entry_pre_params(
 ) -> Result<(), RuntimeSolveError> {
     let mut writes = Vec::new();
     for (binding_index, binding) in model
-        .problem
-        .solve_layout
+        .problem()
+        .solve_layout()
         .pre_param_bindings
         .iter()
         .enumerate()
@@ -135,8 +135,8 @@ pub fn event_iteration_plan_settled(
     p: &[f64],
 ) -> Result<bool, RuntimeSolveError> {
     for (run_index, run) in model
-        .problem
-        .discrete
+        .problem()
+        .discrete()
         .event_iteration_plan
         .runs
         .iter()
@@ -145,15 +145,15 @@ pub fn event_iteration_plan_settled(
         if event_iteration_run_clock(model, run)?.is_some() {
             continue;
         }
-        let storage = &model.problem.solve_layout.variable_storage_runs[run.variable];
+        let storage = &model.problem().solve_layout().variable_storage_runs[run.variable];
         let value_kind = storage
             .event_iteration_kind()
             .expect("validated event plan references a typed discrete variable");
         for binding_offset in 0..storage.scalar_count {
             let binding_index = run.pre_binding_start + binding_offset;
             let binding = model
-                .problem
-                .solve_layout
+                .problem()
+                .solve_layout()
                 .pre_param_bindings
                 .get(binding_index)
                 .ok_or_else(|| {
@@ -189,8 +189,8 @@ fn event_iteration_run_clock(
     match run.owner {
         solve::EventIterationOwner::Hold => Ok(None),
         solve::EventIterationOwner::ScalarRows { start_row } => model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .clock_owners
             .get(start_row)
             .copied()
@@ -198,8 +198,8 @@ fn event_iteration_run_clock(
                 RuntimeSolveError::solve_ir("event-iteration scalar owner clock is out of bounds")
             }),
         solve::EventIterationOwner::StructuredUpdate { update_index } => model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .structured_updates
             .get(update_index)
             .map(|update| update.clock_owner)
@@ -209,8 +209,8 @@ fn event_iteration_run_clock(
                 )
             }),
         solve::EventIterationOwner::GuardedAssignment { program_index, .. } => model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .guarded_assignments
             .get(program_index)
             .map(solve::GuardedAssignmentProgram::clock_owner)
@@ -221,8 +221,8 @@ fn event_iteration_run_clock(
             program_index,
             target_index,
         } => model
-            .problem
-            .discrete
+            .problem()
+            .discrete()
             .event_transactions
             .get(program_index)
             .and_then(|transaction| transaction.targets().get(target_index))
@@ -283,7 +283,7 @@ pub fn commit_pre_params_after_event_at(
 ) -> bool {
     let post_event_params = params.to_vec();
     let mut changed = false;
-    for binding in &model.problem.solve_layout.pre_param_bindings {
+    for binding in &model.problem().solve_layout().pre_param_bindings {
         let should_commit = match (&binding.clock_schedule, event_time) {
             (None, _) | (Some(_), None) => true,
             (Some(schedule), Some(event_time)) => {
@@ -311,15 +311,15 @@ pub fn clear_scheduled_root_relation_memory(
 ) -> Result<(), String> {
     for &root_idx in root_indices {
         let Some(Some(target)) = model
-            .problem
-            .events
+            .problem()
+            .events()
             .root_relation_memory_targets
             .get(root_idx)
             .copied()
         else {
             continue;
         };
-        let solve::ScalarSlot::P { index, .. } = target else {
+        let solve::ScalarSlot::P { index } = target else {
             return Err(format!(
                 "scheduled sample root {root_idx} relation memory target is not a parameter slot"
             ));
@@ -343,8 +343,8 @@ fn clear_pre_params_from_source_p(
     source_index: usize,
 ) -> Result<(), String> {
     let dest_indices: Vec<_> = model
-        .problem
-        .solve_layout
+        .problem()
+        .solve_layout()
         .pre_param_bindings
         .iter()
         .filter_map(|binding| match binding.source {
@@ -387,6 +387,8 @@ pub fn update_slot(slot: &mut f64, value: f64, tol: f64) -> bool {
 mod tests {
     use super::*;
 
+    use crate::test_support::empty_binary64_first_product_model;
+
     fn binding(
         dest_p_index: usize,
         source_y_index: usize,
@@ -408,12 +410,52 @@ mod tests {
 
     #[test]
     fn clocked_pre_history_advances_only_on_its_own_tick() {
-        let mut model = solve::SolveModel::default();
-        model.problem.solve_layout.pre_param_bindings = vec![
-            binding(0, 0, None),
-            binding(1, 1, Some(0.1)),
-            binding(2, 2, Some(0.2)),
-        ];
+        let base = empty_binary64_first_product_model();
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string(), "y".to_string(), "z".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 3,
+            compiled_parameter_len: 3,
+            pre_param_bindings: vec![
+                binding(0, 0, None),
+                binding(1, 1, Some(0.1)),
+                binding(2, 2, Some(0.2)),
+            ],
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: crate::test_support::zero_derivative_rhs(
+                3,
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name("clocked_pre_constant_states.mo"),
+                    1,
+                    2,
+                ),
+            ),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 3, 3),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("clocked pre-history fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; 3],
+            solver_nominals: vec![1.0; 3],
+            parameters: vec![0.0; 3],
+            ..base
+        };
         let y = [10.0, 11.0, 12.0];
         let mut params = [0.0, 1.0, 2.0];
 
@@ -424,9 +466,48 @@ mod tests {
 
     #[test]
     fn initialization_seeds_all_pre_history() {
-        let mut model = solve::SolveModel::default();
-        model.problem.solve_layout.pre_param_bindings =
-            vec![binding(0, 0, None), binding(1, 1, Some(0.1))];
+        let base = empty_binary64_first_product_model();
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string(), "y".to_string()],
+                ..Default::default()
+            },
+            state_scalar_count: 2,
+            compiled_parameter_len: 2,
+            pre_param_bindings: vec![binding(0, 0, None), binding(1, 1, Some(0.1))],
+            ..Default::default()
+        };
+        let discrete = solve::DiscreteSolveSystem::default();
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: crate::test_support::zero_derivative_rhs(
+                2,
+                rumoca_core::Span::from_offsets(
+                    rumoca_core::SourceId::from_source_name("initial_pre_constant_states.mo"),
+                    1,
+                    2,
+                ),
+            ),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 2, 2),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("initial pre-history fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; 2],
+            solver_nominals: vec![1.0; 2],
+            parameters: vec![0.0; 2],
+            ..base
+        };
         let mut params = [0.0, 0.0];
 
         commit_pre_params_after_event(&model, &[3.0, 4.0], &mut params, 0.0);
@@ -436,29 +517,88 @@ mod tests {
 
     #[test]
     fn event_iteration_advances_ordinary_pre_but_holds_clocked_previous() {
-        let mut model = solve::SolveModel::default();
-        model.problem.solve_layout.pre_param_bindings = vec![
-            solve::PreParamBinding {
-                dest_p_index: 0,
-                source: solve::PreParamSource::P { index: 2 },
-                clock_schedule: None,
+        let base = empty_binary64_first_product_model();
+        let provenance = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("pre_event_iteration_variables.mo"),
+            1,
+            2,
+        );
+        let solve_layout = solve::SolveLayout {
+            solver_maps: solve::SolverNameIndexMaps {
+                names: vec!["x".to_string(), "y".to_string()],
+                ..Default::default()
             },
-            binding(1, 1, Some(0.1)),
-        ];
-        model.problem.discrete.event_iteration_plan = solve::EventIterationPlan {
-            runs: vec![solve::EventIterationRun {
-                variable: 0,
-                pre_binding_start: 0,
-                owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+            variable_storage_runs: vec![solve::SolveVariableStorageRun {
+                base: solve::SolveStorageCoordinate::P(2),
+                scalar_count: 1,
+                role: solve::SolveVariableStorageRole::DiscreteReal,
+                value_kind: solve::SolveVariableValueKind::Real,
             }],
+            variable_declarations: vec![solve::SolveVariableDeclaration::new(
+                solve::SolveVariableStorageRole::DiscreteReal,
+                solve::SolveVariableValueKind::Real,
+            )],
+            state_scalar_count: 2,
+            compiled_parameter_len: 3,
+            discrete_real_scalar_names: vec!["z".to_string()],
+            pre_param_bindings: vec![
+                solve::PreParamBinding {
+                    dest_p_index: 0,
+                    source: solve::PreParamSource::P { index: 2 },
+                    clock_schedule: None,
+                },
+                binding(1, 1, Some(0.1)),
+            ],
+            ..Default::default()
         };
-        model.problem.discrete.clock_owners = vec![None];
-        model.problem.solve_layout.variable_storage_runs = vec![solve::SolveVariableStorageRun {
-            base: solve::scalar_slot_p(2),
-            scalar_count: 1,
-            role: solve::SolveVariableStorageRole::DiscreteValue,
-            value_kind: solve::SolveVariableValueKind::Boolean,
-        }];
+        let discrete = solve::DiscreteSolveSystem {
+            event_iteration_plan: solve::EventIterationPlan {
+                runs: vec![solve::EventIterationRun {
+                    variable: 0,
+                    pre_binding_start: 0,
+                    owner: solve::EventIterationOwner::Hold,
+                }],
+            },
+            ..Default::default()
+        };
+        let events = solve::SolveEventPartition::default();
+        let clocks = solve::SolveClockPartition::default();
+        let continuous = crate::test_support::ContinuousSystemFixture {
+            derivative_rhs: crate::test_support::zero_derivative_rhs(2, provenance),
+            ..crate::test_support::ContinuousSystemFixture::empty()
+        };
+        let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 2, 3),
+                solve_layout,
+                continuous,
+                solve::InitializationSolveSystem::empty(),
+                discrete,
+                events,
+                clocks,
+            )
+            .expect("event-iteration pre-history fixture satisfies the checked root contract"),
+            initial_y: vec![0.0; 2],
+            solver_nominals: vec![1.0; 2],
+            parameters: vec![0.0; 3],
+            visible_value_rows: solve::ScalarProgramBlock::with_source_span(
+                vec![vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 2 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ]],
+                provenance
+                    .require_provenance("pre event-iteration visibility fixture")
+                    .expect("fixture provenance is source-backed"),
+            )
+            .expect("pre event-iteration visibility row is computable"),
+            variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+                crate::test_support::RealScalarVariableFixture::discrete_real(
+                    1, "z", 2, 0.0, provenance,
+                ),
+            ]),
+            ..base
+        };
         let mut params = [0.0, 1.0, 1.0];
 
         let changed = advance_event_iteration_pre_params(

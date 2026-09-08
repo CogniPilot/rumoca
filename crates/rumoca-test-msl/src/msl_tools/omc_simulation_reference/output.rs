@@ -1,5 +1,9 @@
 use super::*;
-use rumoca_sim::sim_trace_compare::count_agreement_bands_default;
+use rumoca_sim::sim_trace_compare::{
+    AgreementBand, MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE, MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
+    MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE, MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
+    classify_trace_metric_channel_distribution, count_agreement_bands_default,
+};
 
 struct TraceChannelSummary {
     models_with_any_channel_deviation: usize,
@@ -38,26 +42,40 @@ pub(super) fn compute_trace_output_summary(
     let agreement_high_percent = agreement.high_agreement as f64 * 100.0 / model_count_f64;
     let agreement_minor_percent = agreement.minor_agreement as f64 * 100.0 / model_count_f64;
     let agreement_deviation_percent = agreement.deviation as f64 * 100.0 / model_count_f64;
+    let strict_high_models = trace_report
+        .models
+        .values()
+        .filter(|item| {
+            item.metric.has_complete_channel_coverage()
+                && classify_trace_metric_channel_distribution(
+                    &item.metric,
+                    MODEL_HIGH_MIN_HIGH_CHANNEL_SHARE,
+                    MODEL_HIGH_MAX_DEVIATION_CHANNEL_SHARE,
+                    MODEL_MINOR_MIN_HIGH_PLUS_MINOR_CHANNEL_SHARE,
+                    MODEL_MINOR_MAX_DEVIATION_CHANNEL_SHARE,
+                ) == AgreementBand::HighAgreement
+        })
+        .count();
     let channels = trace_channel_summary(trace_report);
     let (min_l1, median_l1, mean_l1, max_l1) = metric_distribution(
         trace_report
             .models
             .values()
-            .map(|item| item.metric.bounded_normalized_l1_score),
+            .map(|item| item.metric.bounded_normalized_l1_score()),
     )
     .unwrap_or((0.0, 0.0, 0.0, 0.0));
     let (_, _, mean_model_mean, _) = metric_distribution(
         trace_report
             .models
             .values()
-            .map(|item| item.metric.mean_channel_bounded_normalized_l1),
+            .map(|item| item.metric.mean_channel_bounded_normalized_l1()),
     )
     .unwrap_or((0.0, 0.0, 0.0, 0.0));
     let (_, _, _, max_model_max) = metric_distribution(
         trace_report
             .models
             .values()
-            .map(|item| item.metric.max_channel_bounded_normalized_l1),
+            .map(|item| item.metric.max_channel_bounded_normalized_l1()),
     )
     .unwrap_or((0.0, 0.0, 0.0, 0.0));
     let initial_condition = initial_condition_summary(trace_report);
@@ -70,10 +88,11 @@ pub(super) fn compute_trace_output_summary(
         policy_excluded_models: trace_report
             .skipped
             .values()
-            .filter(|exit| exit.kind == TraceExitKind::PolicyExcluded)
+            .filter(|exit| exit.kind() == TraceExitKind::PolicyExcluded)
             .count(),
         trace_nonidentifiable_models: trace_report.trace_nonidentifiable.len(),
         agreement_high: agreement.high_agreement,
+        strict_high_models,
         agreement_minor: agreement.minor_agreement,
         agreement_deviation: agreement.deviation,
         agreement_high_percent,
@@ -112,32 +131,32 @@ fn trace_channel_summary(trace_report: &TraceQuantification) -> TraceChannelSumm
     let models_with_any_channel_deviation = trace_report
         .models
         .values()
-        .filter(|item| item.metric.channel_deviation_count > 0)
+        .filter(|item| item.metric.channel_deviation_count() > 0)
         .count();
     let models_with_severe_channel = trace_report
         .models
         .values()
-        .filter(|item| item.metric.channel_severe_count > 0)
+        .filter(|item| item.metric.channel_severe_count() > 0)
         .count();
     let total_channels_compared = trace_report
         .models
         .values()
-        .map(|item| item.metric.compared_variables)
+        .map(|item| item.metric.compared_variables())
         .sum::<usize>();
     let bad_channels_total = trace_report
         .models
         .values()
-        .map(|item| item.metric.channel_deviation_count)
+        .map(|item| item.metric.channel_deviation_count())
         .sum::<usize>();
     let severe_channels_total = trace_report
         .models
         .values()
-        .map(|item| item.metric.channel_severe_count)
+        .map(|item| item.metric.channel_severe_count())
         .sum::<usize>();
     let violation_mass_total = trace_report
         .models
         .values()
-        .map(|item| item.metric.channel_violation_mass)
+        .map(|item| item.metric.channel_violation_mass())
         .filter(|value| value.is_finite())
         .sum::<f64>();
     let totals = TraceChannelTotals {
@@ -173,7 +192,7 @@ fn trace_channel_summary_from_totals(
         max_model_channel_deviation_percent: trace_report
             .models
             .values()
-            .map(|item| item.metric.channel_deviation_percent * 100.0)
+            .map(|item| item.metric.channel_deviation_percent() * 100.0)
             .fold(0.0_f64, f64::max),
         total_channels_compared: totals.total_channels_compared,
         bad_channels_total: totals.bad_channels_total,
@@ -194,22 +213,27 @@ fn initial_condition_summary(trace_report: &TraceQuantification) -> InitialCondi
     let models_with_unmeasured_initial_conditions = trace_report
         .models
         .values()
-        .filter(|item| item.metric.initial_condition.channels_compared == 0)
+        .filter(|item| item.metric.initial_condition().channels_unmeasured > 0)
         .count();
     let models_with_initial_condition_deviation = trace_report
         .models
         .values()
-        .filter(|item| item.metric.initial_condition.deviation_count > 0)
+        .filter(|item| item.metric.initial_condition().deviation_count > 0)
         .count();
     let channels = trace_report
         .models
         .values()
-        .map(|item| &item.metric.initial_condition);
+        .map(|item| item.metric.initial_condition());
     let mut summary = InitialConditionSummary {
         models_compared: model_count,
-        models_with_accurate_initial_conditions: model_count
-            .saturating_sub(models_with_initial_condition_deviation)
-            .saturating_sub(models_with_unmeasured_initial_conditions),
+        models_with_accurate_initial_conditions: trace_report
+            .models
+            .values()
+            .filter(|item| {
+                item.metric.initial_condition().channels_unmeasured == 0
+                    && item.metric.initial_condition().deviation_count == 0
+            })
+            .count(),
         models_with_initial_condition_deviation,
         models_with_unmeasured_initial_conditions,
         ..InitialConditionSummary::default()
@@ -250,8 +274,8 @@ fn sorted_trace_metrics(quantification: &TraceQuantification) -> Vec<TraceModelM
     let mut metrics = quantification.models.values().cloned().collect::<Vec<_>>();
     metrics.sort_by(|a, b| {
         b.metric
-            .max_channel_bounded_normalized_l1
-            .partial_cmp(&a.metric.max_channel_bounded_normalized_l1)
+            .max_channel_bounded_normalized_l1()
+            .partial_cmp(&a.metric.max_channel_bounded_normalized_l1())
             .unwrap_or(Ordering::Equal)
     });
     metrics
@@ -373,7 +397,7 @@ fn trace_shape_counts(metrics: &[TraceModelMetric]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for channel in metrics
         .iter()
-        .flat_map(|metric| metric.metric.worst_variables.iter())
+        .flat_map(|metric| metric.metric.worst_variables().iter())
     {
         *counts
             .entry(channel.shape.as_str().to_string())
@@ -471,9 +495,7 @@ fn build_trace_comparison_payload(paths: &MslPaths, trace_summary: &TraceOutputS
         "trace_nonidentifiable_models": trace_summary.trace_nonidentifiable_models,
         "agreement_high": trace_summary.agreement_high,
         "agreement_high_percent": trace_summary.agreement_high_percent,
-        "agreement_near": trace_summary.agreement_minor,
         "agreement_minor": trace_summary.agreement_minor,
-        "agreement_near_percent": trace_summary.agreement_minor_percent,
         "agreement_minor_percent": trace_summary.agreement_minor_percent,
         "agreement_deviation": trace_summary.agreement_deviation,
         "agreement_deviation_percent": trace_summary.agreement_deviation_percent,
@@ -508,6 +530,10 @@ fn build_trace_comparison_payload(paths: &MslPaths, trace_summary: &TraceOutputS
     let root = payload
         .as_object_mut()
         .expect("trace comparison payload is an object");
+    root.insert(
+        "strict_high_models".to_string(),
+        json!(trace_summary.strict_high_models),
+    );
     root.insert(
         "models_with_bad_channel".to_string(),
         json!(trace_summary.models_with_bad_channel),

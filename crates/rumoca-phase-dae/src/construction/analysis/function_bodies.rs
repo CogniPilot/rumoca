@@ -140,10 +140,10 @@ fn validate_statement_function(
         returned_context,
         &mut definitions,
     )?;
-    let statements = validate_function_statements(&source, returned_context, &mut definitions)?;
+    let plans = validate_function_statements(&source, returned_context, &mut definitions)?;
     require_total_outputs(function, &definitions)?;
+    let statements = issue_function_statement_sequence(source, plans, function.span)?;
     Ok(FunctionPlan::Statements {
-        source,
         statements,
         generated_booleans: returned
             .guards
@@ -327,7 +327,7 @@ pub(super) fn validate_function_statements(
 ) -> Result<Vec<FunctionStatementPlan>, ToDaeError> {
     let mut plans = plan_function_statements(statements, context)?;
     definitions.track_record_staging(&plans);
-    annotate_iteration_locals(statements, &mut plans, context, &[], &[]);
+    annotate_iteration_locals(statements, &mut plans, context, &[], &[])?;
     resolve_function_definitions(statements, &mut plans, context, definitions)?;
     Ok(plans)
 }
@@ -344,19 +344,31 @@ fn annotate_iteration_locals<'a>(
     context: FunctionValidationContext<'_>,
     enclosing_suffix: &[&'a [rumoca_core::Statement]],
     back_edges: &[&'a [rumoca_core::Statement]],
-) {
-    debug_assert_eq!(statements.len(), plans.len());
+) -> Result<(), ToDaeError> {
+    if statements.len() != plans.len() {
+        return Err(function_statement_product_error(
+            "iteration-local analysis received a mismatched source sequence",
+            context.function.span,
+        ));
+    }
     let locals = context
         .function
         .locals
         .iter()
         .map(|local| VarName::new(&local.name))
         .collect::<HashSet<_>>();
-    for index in 0..statements.len() {
+    for (index, plan) in plans.iter_mut().enumerate() {
+        let (source_prefix, source_suffix) = statements.split_at(index + 1);
+        let Some(statement) = source_prefix.last() else {
+            return Err(function_statement_product_error(
+                "iteration-local analysis lost its exact source statement",
+                context.function.span,
+            ));
+        };
         let mut suffix = Vec::with_capacity(enclosing_suffix.len() + 1);
-        suffix.push(&statements[index + 1..]);
+        suffix.push(source_suffix);
         suffix.extend_from_slice(enclosing_suffix);
-        match (&statements[index], &mut plans[index]) {
+        match (statement, plan) {
             (
                 rumoca_core::Statement::For {
                     indices, equations, ..
@@ -375,7 +387,7 @@ fn annotate_iteration_locals<'a>(
                 let mut nested_back_edges = Vec::with_capacity(back_edges.len() + 1);
                 nested_back_edges.push(body);
                 nested_back_edges.extend_from_slice(back_edges);
-                annotate_iteration_locals(body, body_plans, context, &suffix, &nested_back_edges);
+                annotate_iteration_locals(body, body_plans, context, &suffix, &nested_back_edges)?;
             }
             (
                 rumoca_core::Statement::If {
@@ -386,17 +398,43 @@ fn annotate_iteration_locals<'a>(
                 FunctionStatementPlan::If {
                     branches, fallback, ..
                 },
-            ) => {
-                for (block, branch) in cond_blocks.iter().zip(branches) {
-                    annotate_iteration_locals(&block.stmts, branch, context, &suffix, back_edges);
-                }
-                if let (Some(source), Some(branch)) = (else_block.as_deref(), fallback.as_mut()) {
-                    annotate_iteration_locals(source, branch, context, &suffix, back_edges);
-                }
-            }
+            ) => annotate_conditional_iteration_locals(
+                cond_blocks,
+                else_block.as_deref(),
+                branches,
+                fallback.as_mut(),
+                context,
+                &suffix,
+                back_edges,
+            )?,
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn annotate_conditional_iteration_locals<'a>(
+    source_blocks: &'a [rumoca_core::StatementBlock],
+    source_fallback: Option<&'a [rumoca_core::Statement]>,
+    branches: &mut [Vec<FunctionStatementPlan>],
+    fallback: Option<&mut Vec<FunctionStatementPlan>>,
+    context: FunctionValidationContext<'_>,
+    suffix: &[&'a [rumoca_core::Statement]],
+    back_edges: &[&'a [rumoca_core::Statement]],
+) -> Result<(), ToDaeError> {
+    if source_blocks.len() != branches.len() || source_fallback.is_some() != fallback.is_some() {
+        return Err(function_statement_product_error(
+            "conditional iteration analysis received mismatched branches",
+            context.function.span,
+        ));
+    }
+    for (source, branch) in source_blocks.iter().zip(branches) {
+        annotate_iteration_locals(&source.stmts, branch, context, suffix, back_edges)?;
+    }
+    if let (Some(source), Some(branch)) = (source_fallback, fallback) {
+        annotate_iteration_locals(source, branch, context, suffix, back_edges)?;
+    }
+    Ok(())
 }
 
 fn classify_iteration_local_targets(
@@ -446,8 +484,14 @@ fn loop_has_dominating_whole_definition(
     plans: &[FunctionStatementPlan],
     target: &VarName,
 ) -> bool {
-    debug_assert_eq!(statements.len(), plans.len());
-    for (statement, plan) in statements.iter().zip(plans) {
+    let mut statements = statements.iter();
+    let mut plans = plans.iter();
+    loop {
+        let (statement, plan) = match (statements.next(), plans.next()) {
+            (Some(statement), Some(plan)) => (statement, plan),
+            (None, None) => return false,
+            _ => return false,
+        };
         let defines_whole = match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 assignment.target() == target && assignment.is_whole()
@@ -467,7 +511,6 @@ fn loop_has_dominating_whole_definition(
             return false;
         }
     }
-    false
 }
 
 fn statement_assigns_target(statement: &rumoca_core::Statement, target: &VarName) -> bool {
@@ -528,11 +571,17 @@ pub(super) fn plan_function_statements(
     let mut plans = Vec::with_capacity(statements.len());
     let mut index = 0usize;
     while index < statements.len() {
+        let Some(statement) = statements.get(index) else {
+            return Err(function_statement_product_error(
+                "function planning lost its exact source statement",
+                context.function.span,
+            ));
+        };
         let statement_context = FunctionValidationContext {
             staged_record_fields: &staged_record_fields,
             ..context
         };
-        if let rumoca_core::Statement::Empty { span } = &statements[index]
+        if let rumoca_core::Statement::Empty { span } = statement
             && let Some(guard) = context
                 .generated_booleans
                 .iter()
@@ -552,7 +601,7 @@ pub(super) fn plan_function_statements(
             index += 1;
             continue;
         }
-        if let Some(assertion) = function_assertion(&statements[index], statement_context.flat)? {
+        if let Some(assertion) = function_assertion(statement, statement_context.flat)? {
             plans.push(plan_proven_function_assertion(
                 assertion,
                 statement_context,
@@ -562,18 +611,27 @@ pub(super) fn plan_function_statements(
         }
         if let Some(assembly) = staged_records.remove(&index) {
             let count = assembly.statement_count;
+            let Some(member_count) = count.checked_sub(1) else {
+                return Err(function_statement_product_error(
+                    "staged record field assembly has an empty source run",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            };
             let plan = FunctionStatementPlan::RecordFieldAssembly(assembly);
             advance_function_record_staging(&plan, &mut staged_record_fields);
             plans.push(plan);
             plans.extend(
                 std::iter::repeat_with(|| FunctionStatementPlan::RecordFieldAssemblyMember)
-                    .take(count - 1),
+                    .take(member_count),
             );
             index += count;
             continue;
         }
         if staged_members.contains(&index) {
-            unreachable!("a staged record member follows its owning field assembly")
+            return Err(function_statement_product_error(
+                "staged record member has no exact leading owner",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
         }
         if let Some((assembly, count)) =
             validate_record_output_assembly(statements, index, statement_context)?
@@ -588,7 +646,7 @@ pub(super) fn plan_function_statements(
             index += count;
             continue;
         }
-        let plan = plan_one_function_statement(&statements[index], statement_context)?;
+        let plan = plan_one_function_statement(statement, statement_context)?;
         advance_function_record_staging(&plan, &mut staged_record_fields);
         plans.push(plan);
         index += 1;
@@ -748,7 +806,9 @@ fn plan_proven_function_assertion(
     }
     if matches!(
         context.shapes.proven_value(assertion.condition),
-        Some(ProvenValue::Boolean(true))
+        Some(ProvenValue::Settled(
+            crate::construction::function_shapes::ProvenSettledValue::Boolean(true),
+        ))
     ) {
         return Ok(FunctionStatementPlan::ProvenAssertion);
     }
@@ -799,7 +859,7 @@ fn validate_function_assignment_target(
                     target.subs.as_slice(),
                 )
             }
-            [root, field] if root.subs.is_empty() => {
+            [root, field_part] if root.subs.is_empty() => {
                 let Some(value) = resolved_record_value(root, context.function)? else {
                     return Err(ToDaeError::unsupported_flat(
                         "function assignment target",
@@ -817,7 +877,7 @@ fn validate_function_assignment_target(
                 let target_def_id = function_value_def_id(value, context.function)?;
                 let constructor = record_constructor(value, context)?;
                 let fields = resolved_constructor_fields(&value.name, constructor)?;
-                let field = require_constructor_field(&value.name, field, &fields)?;
+                let field = require_constructor_field(&value.name, field_part, &fields)?;
                 (
                     component.to_var_name(),
                     target_def_id,
@@ -827,12 +887,7 @@ fn validate_function_assignment_target(
                     }),
                     VarName::new(&value.name),
                     Some(field.name.clone()),
-                    component
-                        .parts()
-                        .last()
-                        .expect("two-part assignment retains its field")
-                        .subs
-                        .as_slice(),
+                    field_part.subs.as_slice(),
                 )
             }
             _ => {
@@ -872,18 +927,7 @@ pub(super) struct MultiOutputCallStatement<'statement> {
     pub(super) span: Span,
 }
 
-/// Prove the checked owner of an MLS §11.2.1.1 multi-result call statement.
-///
-/// MLS §11.2.1.1 writes the statement as
-/// `"(" output-expression-list ")" ":=" component-reference function-call-args`
-/// and states: "A function with n results needs m≤n receiving variables on the
-/// left-hand side, and the variables are assigned from left to right." An
-/// omitted receiver — `(out1, , out3)` — is a hole in that list, not a value.
-///
-/// The DAE owns one call expression per *read* result ordinal (the same
-/// `call(function, ordinal, ..)` node an MLS §11.2.1 single-result call builds
-/// at ordinal 0), so a receiving slot becomes an ordinary whole-value
-/// definition of its target and an omitted slot becomes nothing at all.
+/// Prove the exact left-to-right receivers of an MLS §11.2.1.1 multi-result call.
 fn plan_function_multi_output_call(
     call: MultiOutputCallStatement<'_>,
     context: FunctionValidationContext<'_>,
@@ -903,9 +947,7 @@ fn plan_function_multi_output_call(
             call.span,
         ));
     }
-    // A statement call that reads no result defines nothing, so no DAE owner
-    // observes it. MLS §12.3 admits such a call for its effect, but this body
-    // has no effect owner either way.
+    // The DAE has no effect-only owner for a call whose receivers are all holes.
     if call.outputs.iter().all(Option::is_none) {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
@@ -933,8 +975,7 @@ fn plan_function_multi_output_call(
             call.span,
         ));
     };
-    // MLS §12.6 makes a record constructor an expression-only callable: it has
-    // one result and no statement form, so it never owns a receiving list.
+    // MLS §12.6 record constructors are expression-only callables.
     if callee.is_constructor {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
@@ -944,16 +985,7 @@ fn plan_function_multi_output_call(
             call.span,
         ));
     }
-    // MLS §12.4.3 and §11.2.1.1 evaluate the right-hand call *once* and then
-    // assign the receiving variables. The canonical DAE has no multi-result
-    // node: it owns one `call(function, ordinal, ..)` per result read, so a
-    // statement that reads k results denotes k invocations. That is
-    // indistinguishable from one evaluation only for a function whose result
-    // depends on nothing but its arguments. `body_is_pure` is exactly that
-    // predicate: MLS 3.7 §12.3 treats an MLS §12.9 external body that declared
-    // no purity as impure, which is the form rumoca already reports as
-    // deprecated (WR001). Such callees are refused by name rather than being
-    // silently invoked once per receiver.
+    // The scalar-call DAE can preserve single-evaluation semantics only for pure callees.
     if !callee.body_is_pure() {
         return Err(ToDaeError::unsupported_flat(
             "function call statement",
@@ -987,10 +1019,12 @@ fn plan_function_multi_output_call(
     let key = context
         .shape_analysis
         .call_key(call.callee, call.args, context.shapes, call.span)?;
-    let certificate = context
-        .shape_analysis
-        .certificate(&key)
-        .expect("call_key proves the certificate it returns a key for");
+    let certificate = context.shape_analysis.certificate(&key).ok_or_else(|| {
+        function_statement_product_error(
+            "function call key has no exact specialization certificate",
+            call.span,
+        )
+    })?;
     plan_multi_output_call_receivers(call, callee_name, certificate, context)
 }
 
@@ -1096,9 +1130,12 @@ pub(super) fn exact_record_call_receivers(
 ) -> Result<HashMap<rumoca_core::DefId, usize>, ToDaeError> {
     let mut receivers = HashMap::with_capacity(outputs.len());
     for (ordinal, receiver) in outputs.iter().enumerate() {
-        let receiver = receiver
-            .as_ref()
-            .expect("the complete record receiver count check rejects omissions");
+        let Some(receiver) = receiver.as_ref() else {
+            return Err(function_statement_product_error(
+                "complete record call receiver set contains an omitted field",
+                function.span,
+            ));
+        };
         let [candidate_root, candidate_field] = receiver.parts() else {
             return Err(ToDaeError::unsupported_flat(
                 "record output assembly",
@@ -1160,10 +1197,25 @@ fn record_call_fields(
     span: Span,
 ) -> Result<Vec<FunctionRecordCallField>, ToDaeError> {
     let mut fields = Vec::with_capacity(constructor.inputs.len());
-    for (field, resolved_field) in constructor.inputs.iter().zip(resolved_fields) {
-        let ordinal = receivers
-            .get(&resolved_field.def_id)
-            .expect("equal unique field counts prove complete constructor coverage");
+    let mut fields_source = constructor.inputs.iter();
+    let mut resolved = resolved_fields.iter();
+    loop {
+        let (field, resolved_field) = match (fields_source.next(), resolved.next()) {
+            (Some(field), Some(resolved_field)) => (field, resolved_field),
+            (None, None) => break,
+            _ => {
+                return Err(function_statement_product_error(
+                    "record constructor field certificate count differs from its source",
+                    span,
+                ));
+            }
+        };
+        let Some(ordinal) = receivers.get(&resolved_field.def_id) else {
+            return Err(function_statement_product_error(
+                "record constructor field has no exact call receiver",
+                span,
+            ));
+        };
         let expected = field
             .dimensions()
             .iter()
@@ -1265,24 +1317,55 @@ pub(super) fn resolve_function_definitions(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    debug_assert_eq!(statements.len(), plans.len());
-    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
-    let mut index = 0usize;
-    while index < statements.len() {
-        if let FunctionStatementPlan::RecordFieldAssembly(assembly) = &plans[index] {
-            resolve_record_field_assembly_definitions(
-                &statements[index..index + assembly.statement_count],
-                assembly,
-                context,
-                definitions,
-            )?;
-            index += assembly.statement_count;
-            continue;
-        }
-        resolve_function_definition(&statements[index], &mut plans[index], context, definitions)?;
-        index += 1;
+    if statements.len() != plans.len() {
+        return Err(function_statement_product_error(
+            "definedness analysis received a mismatched source sequence",
+            context.function.span,
+        ));
     }
-    Ok(())
+    seed_guarded_sequence_scratch(statements, plans, context, definitions)?;
+    let mut remaining_source = statements;
+    let mut remaining_plans = plans;
+    while let Some((plan, plan_tail)) = remaining_plans.split_first_mut() {
+        let Some((statement, source_tail)) = remaining_source.split_first() else {
+            return Err(function_statement_product_error(
+                "definedness analysis lost its exact source statement",
+                context.function.span,
+            ));
+        };
+        if let FunctionStatementPlan::RecordFieldAssembly(assembly) = plan {
+            let count = assembly.statement_count;
+            let Some(member_count) = count.checked_sub(1) else {
+                return Err(function_statement_product_error(
+                    "record field assembly has no exact source run",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            };
+            if count > remaining_source.len() || member_count > plan_tail.len() {
+                return Err(function_statement_product_error(
+                    "record field assembly has no exact source run",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            }
+            let (source_run, source_tail) = remaining_source.split_at(count);
+            let (_, plan_tail) = plan_tail.split_at_mut(member_count);
+            resolve_record_field_assembly_definitions(source_run, assembly, context, definitions)?;
+            remaining_source = source_tail;
+            remaining_plans = plan_tail;
+        } else {
+            resolve_function_definition(statement, plan, context, definitions)?;
+            remaining_source = source_tail;
+            remaining_plans = plan_tail;
+        }
+    }
+    if remaining_source.is_empty() {
+        Ok(())
+    } else {
+        Err(function_statement_product_error(
+            "definedness analysis left source statements unconsumed",
+            context.function.span,
+        ))
+    }
 }
 
 fn resolve_record_field_assembly_definitions(
@@ -1293,7 +1376,10 @@ fn resolve_record_field_assembly_definitions(
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
-            unreachable!("record field assembly contains assignments")
+            return Err(function_statement_product_error(
+                "record field assembly contains a foreign source statement",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
         };
         definitions.require_readable(value, context, *span)?;
     }
@@ -1335,6 +1421,20 @@ fn resolve_function_definition(
         ) => {
             resolve_function_assignment_definition(value, *span, assignment, context, definitions)?
         }
+        (statement, plan) => {
+            return resolve_structured_function_definition(statement, plan, context, definitions);
+        }
+    }
+    Ok(())
+}
+
+fn resolve_structured_function_definition(
+    statement: &rumoca_core::Statement,
+    plan: &mut FunctionStatementPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    match (statement, plan) {
         (
             rumoca_core::Statement::If {
                 cond_blocks,
@@ -1409,9 +1509,17 @@ fn resolve_function_definition(
         | (_, FunctionStatementPlan::RecordAssemblyMember)
         | (_, FunctionStatementPlan::RecordFieldAssemblyMember) => {}
         (_, FunctionStatementPlan::RecordFieldAssembly(_)) => {
-            unreachable!("record field assemblies are resolved with their source run")
+            return Err(function_statement_product_error(
+                "record field assembly bypassed its source-run owner",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
         }
-        _ => unreachable!("function planning aligns statement and plan shapes"),
+        _ => {
+            return Err(function_statement_product_error(
+                "definedness certificate owns a foreign source statement",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
+        }
     }
     Ok(())
 }
@@ -1472,8 +1580,12 @@ fn resolve_function_assertion_definition(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    let assertion = function_assertion(statement, context.flat)?
-        .expect("an assertion plan owns an assertion statement");
+    let Some(assertion) = function_assertion(statement, context.flat)? else {
+        return Err(function_statement_product_error(
+            "assertion lowering certificate owns a foreign source statement",
+            statement.source_span().unwrap_or(context.function.span),
+        ));
+    };
     definitions.require_readable(assertion.condition, context, assertion.span)?;
     if reads_message {
         definitions.require_readable(assertion.message, context, assertion.span)?;
@@ -1654,103 +1766,153 @@ fn resolve_fold_iteration(
     context: FunctionValidationContext<'_>,
     definitions: &mut FunctionDefinitions,
 ) -> Result<(), ToDaeError> {
-    let mut index = 0usize;
-    while index < statements.len() {
-        if let FunctionStatementPlan::RecordAssembly(assembly) = &mut plans[index] {
+    if statements.len() != plans.len() {
+        return Err(function_statement_product_error(
+            "fold analysis received a mismatched source sequence",
+            context.function.span,
+        ));
+    }
+    let mut remaining_source = statements;
+    let mut remaining_plans = plans;
+    while let Some((plan, plan_tail)) = remaining_plans.split_first_mut() {
+        let Some((statement, source_tail)) = remaining_source.split_first() else {
+            return Err(function_statement_product_error(
+                "fold analysis lost its exact source statement",
+                context.function.span,
+            ));
+        };
+        if let FunctionStatementPlan::RecordAssembly(assembly) = plan {
             let count = assembly.statement_count;
-            resolve_fold_record_assembly(
-                &statements[index..index + count],
-                assembly,
+            let Some(member_count) = count.checked_sub(1) else {
+                return Err(function_statement_product_error(
+                    "fold record assembly has no exact source run",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            };
+            if count > remaining_source.len() || member_count > plan_tail.len() {
+                return Err(function_statement_product_error(
+                    "fold record assembly has no exact source run",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            }
+            let (source_run, source_tail) = remaining_source.split_at(count);
+            let (_, plan_tail) = plan_tail.split_at_mut(member_count);
+            resolve_fold_record_assembly(source_run, assembly, context, definitions)?;
+            remaining_source = source_tail;
+            remaining_plans = plan_tail;
+            continue;
+        }
+        resolve_fold_statement(statement, plan, context, definitions)?;
+        remaining_source = source_tail;
+        remaining_plans = plan_tail;
+    }
+    if remaining_source.is_empty() {
+        Ok(())
+    } else {
+        Err(function_statement_product_error(
+            "fold analysis left source statements unconsumed",
+            context.function.span,
+        ))
+    }
+}
+
+fn resolve_fold_statement(
+    statement: &rumoca_core::Statement,
+    plan: &mut FunctionStatementPlan,
+    context: FunctionValidationContext<'_>,
+    definitions: &mut FunctionDefinitions,
+) -> Result<(), ToDaeError> {
+    match (statement, plan) {
+        (statement, FunctionStatementPlan::ProvenAssertion) => {
+            let Some(assertion) = function_assertion(statement, context.flat)? else {
+                return Err(function_statement_product_error(
+                    "proven fold assertion owns a foreign source statement",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            };
+            definitions.require_readable(assertion.condition, context, assertion.span)?;
+        }
+        (statement, FunctionStatementPlan::RuntimeAssertion) => {
+            let Some(assertion) = function_assertion(statement, context.flat)? else {
+                return Err(function_statement_product_error(
+                    "runtime fold assertion owns a foreign source statement",
+                    statement.source_span().unwrap_or(context.function.span),
+                ));
+            };
+            definitions.require_readable(assertion.condition, context, assertion.span)?;
+            definitions.require_readable(assertion.message, context, assertion.span)?;
+        }
+        (
+            rumoca_core::Statement::Assignment { value, span, .. },
+            FunctionStatementPlan::Assignment(assignment),
+        ) => resolve_fold_assignment(value, *span, assignment, context, definitions)?,
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                span,
+            },
+            FunctionStatementPlan::If {
+                branches,
+                fallback,
+                targets,
+            },
+        ) => {
+            let point_targets = resolve_function_conditional(
+                cond_blocks,
+                else_block.as_deref(),
+                branches,
+                fallback.as_mut(),
+                *span,
                 context,
                 definitions,
             )?;
-            index += count;
-            continue;
+            union_targets(targets, point_targets);
         }
-        let statement = &statements[index];
-        let plan = &mut plans[index];
-        match (statement, plan) {
-            (statement, FunctionStatementPlan::ProvenAssertion) => {
-                let assertion = function_assertion(statement, context.flat)?
-                    .expect("a proven loop assertion owns an assertion statement");
-                definitions.require_readable(assertion.condition, context, assertion.span)?;
-            }
-            (statement, FunctionStatementPlan::RuntimeAssertion) => {
-                let assertion = function_assertion(statement, context.flat)?
-                    .expect("a runtime loop assertion owns an assertion statement");
-                definitions.require_readable(assertion.condition, context, assertion.span)?;
-                definitions.require_readable(assertion.message, context, assertion.span)?;
-            }
-            (
-                rumoca_core::Statement::Assignment { value, span, .. },
-                FunctionStatementPlan::Assignment(assignment),
-            ) => resolve_fold_assignment(value, *span, assignment, context, definitions)?,
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    span,
-                },
-                FunctionStatementPlan::If {
-                    branches,
-                    fallback,
-                    targets,
-                },
-            ) => {
-                let point_targets = resolve_function_conditional(
-                    cond_blocks,
-                    else_block.as_deref(),
-                    branches,
-                    fallback.as_mut(),
-                    *span,
-                    context,
-                    definitions,
-                )?;
-                union_targets(targets, point_targets);
-            }
-            (
-                rumoca_core::Statement::If {
-                    cond_blocks,
-                    else_block,
-                    ..
-                },
-                FunctionStatementPlan::ProvenBranch {
-                    selected,
-                    statements,
-                },
-            ) => {
-                let selected =
-                    selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
-                resolve_fold_iteration(selected, statements, context, definitions)?;
-            }
-            (
-                rumoca_core::Statement::For {
-                    indices,
-                    equations,
-                    span,
-                },
-                FunctionStatementPlan::For {
-                    domain,
-                    lowering,
-                    statements,
-                    source_depth,
-                    ..
-                },
-            ) => resolve_function_loop_definitions(
-                (indices, equations, *span),
-                (domain, *source_depth, lowering, statements),
-                context,
-                definitions,
-            )?,
-            (
-                rumoca_core::Statement::FunctionCall { args, span, .. },
-                FunctionStatementPlan::MultiOutputCall { outputs },
-            ) => {
-                resolve_multi_output_definitions(args, *span, outputs, context, definitions)?;
-            }
-            _ => unreachable!("analysis admits only checked transition statements in a fold"),
+        (
+            rumoca_core::Statement::If {
+                cond_blocks,
+                else_block,
+                ..
+            },
+            FunctionStatementPlan::ProvenBranch {
+                selected,
+                statements,
+            },
+        ) => {
+            let selected =
+                selected_conditional_statements(cond_blocks, else_block.as_deref(), *selected);
+            resolve_fold_iteration(selected, statements, context, definitions)?;
         }
-        index += 1;
+        (
+            rumoca_core::Statement::For {
+                indices,
+                equations,
+                span,
+            },
+            FunctionStatementPlan::For {
+                domain,
+                lowering,
+                statements,
+                source_depth,
+                ..
+            },
+        ) => resolve_function_loop_definitions(
+            (indices, equations, *span),
+            (domain, *source_depth, lowering, statements),
+            context,
+            definitions,
+        )?,
+        (
+            rumoca_core::Statement::FunctionCall { args, span, .. },
+            FunctionStatementPlan::MultiOutputCall { outputs },
+        ) => resolve_multi_output_definitions(args, *span, outputs, context, definitions)?,
+        _ => {
+            return Err(function_statement_product_error(
+                "fold certificate owns a foreign source statement",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
+        }
     }
     Ok(())
 }
@@ -1763,12 +1925,21 @@ fn resolve_fold_record_assembly(
 ) -> Result<(), ToDaeError> {
     for statement in statements {
         let rumoca_core::Statement::Assignment { value, span, .. } = statement else {
-            unreachable!("record assembly certificate contains assignments")
+            return Err(function_statement_product_error(
+                "fold record assembly contains a foreign source statement",
+                statement.source_span().unwrap_or(context.function.span),
+            ));
         };
         definitions.require_readable(value, context, *span)?;
     }
     if !definitions.is_defined(&assembly.target) && assembly.seed.is_none() {
-        let span = required_statement_span(&statements[0], "function loop record assembly")?;
+        let Some(first) = statements.first() else {
+            return Err(function_statement_product_error(
+                "fold record assembly has an empty source run",
+                context.function.span,
+            ));
+        };
+        let span = required_statement_span(first, "function loop record assembly")?;
         assembly.seed = Some(definitions.whole_loop_seed(&assembly.target, context, span)?);
     }
     definitions.define_function_value(&assembly.target, assembly.target_def_id);

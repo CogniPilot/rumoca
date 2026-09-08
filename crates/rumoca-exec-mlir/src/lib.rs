@@ -11,7 +11,7 @@
 //! runtime helper compilation, dynamic loading, the memref ABI bridge, and
 //! CUDA/GPU artifact handling.
 //!
-//! Compiles `SolveProblem::derivative_rhs` rows to a native shared library by:
+//! Compiles one `SolveModel`'s derivative rows to a native shared library by:
 //! 1. Asking `rumoca-phase-codegen` to render solve-IR as MLIR textual IR.
 //! 2. Running `mlir-opt-18` to lower all dialects to the LLVM dialect.
 //! 3. Running `mlir-translate-18 --mlir-to-llvmir` to produce LLVM IR.
@@ -24,23 +24,28 @@
 
 mod compile;
 mod compiled;
-pub mod cuda_driver;
-pub mod cuda_gpu_model;
+mod cuda_driver;
+mod cuda_gpu_model;
 mod error;
-pub mod euler_kernel;
-pub mod gpu_blob;
+mod euler_kernel;
+mod gpu_blob;
 pub mod libdevice;
 pub mod options;
 pub mod sim;
 
 pub use compile::{compile_derivative_rhs, compile_derivative_rhs_with_opts};
-pub use compiled::CompiledMlirResidual;
-pub use cuda_driver::CudaDriver;
-pub use cuda_gpu_model::{
-    CudaGpuOdeModel, batch_euler_cuda, batch_euler_cuda_device, build_cuda_ode_model,
-};
-pub use error::MlirError;
+pub use compiled::{CompiledMlirResidual, MlirResidualAbi};
+pub use cuda_gpu_model::{CudaGpuOdeModel, build_cuda_ode_model};
+pub use error::{MlirAbiArgument, MlirError};
 pub use euler_kernel::compile_euler_update_ptx;
-pub use gpu_blob::{GpuCompiledBlob, compile_to_gpu_blob};
+pub use gpu_blob::{GpuCompiledBlob, GpuLaunchAbi, compile_to_gpu_blob};
 pub use options::{MlirBackendOptions, MlirTarget, OptLevel};
 pub use sim::{CompiledOdeModel, build_ode_model, build_ode_model_with_opts};
+
+fn render_mlir_model(
+    model: std::sync::Arc<rumoca_ir_solve::SolveModel>,
+    model_name: &str,
+) -> Result<String, MlirError> {
+    rumoca_phase_codegen::render_mlir_execution_model(model, model_name)
+        .map_err(|error| MlirError::Template(error.to_string()))
+}

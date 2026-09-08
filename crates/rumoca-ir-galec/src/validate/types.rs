@@ -19,67 +19,143 @@
 //! (EG014/EG015): the other analyses resolve silently so each unresolved
 //! name is diagnosed exactly once.
 
+use super::context::{
+    BlockContext, BodyView, Cursor, FunctionScope, Resolved, Ty, lexeme, reference_lexeme,
+    reference_parts, resolve, resolve_call,
+};
+use super::retained::{
+    DeclarationStartRelationError, RetainedValidationBuilder, RetainedValidationError,
+    ShapeRelationError,
+};
 use crate::ast::{
     BinaryOp, Condition, Dimension, Expression, FunctionCall, IfExpression, IfStatement,
     LimitTarget, PrecedenceClass, Reference, ScalarType, Spanned, Statement, TypeRef,
     VariableDeclaration,
 };
 use crate::diagnostic::{GalecError, PathSegment};
-use rustc_hash::FxHashMap;
 
-use super::context::{
-    BlockContext, BodyView, Cursor, FunctionScope, Resolved, Ty, lexeme, reference_lexeme,
-    reference_parts, resolve, resolve_call,
-};
-
-pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) -> ExpressionTypes {
-    let mut types = ExpressionTypes::default();
+pub(super) fn check(
+    ctx: &BlockContext<'_>,
+    declaration_starts: super::DeclarationStartContract,
+    retained: &mut RetainedValidationBuilder,
+    diags: &mut Vec<GalecError>,
+) -> Result<(), RetainedValidationError> {
+    let mut index_error = None;
+    {
+        let mut checker = TypeChecker {
+            ctx,
+            scope: FunctionScope::empty(),
+            cursor: Cursor::for_block(ctx),
+            declaration_starts,
+            retained,
+            index_error: &mut index_error,
+            diags,
+        };
+        checker.block_declarations();
+    }
     for body in ctx.bodies() {
         let mut checker = TypeChecker {
             ctx,
             scope: FunctionScope::new(&body),
             cursor: Cursor::for_body(ctx, &body),
-            types: &mut types,
+            declaration_starts,
+            retained,
+            index_error: &mut index_error,
             diags,
         };
         checker.declarations(&body);
         checker.statements(body.statements);
     }
-    types
-}
-
-/// Types proven for every expression visited by the type analysis.
-///
-/// Expression addresses are stable while the immutable checked block is
-/// borrowed. Keeping this correlation here makes later analyses consume the
-/// type proof instead of independently reimplementing GALEC typing rules.
-#[derive(Default)]
-// Pointer identity is lookup-only evidence shared by later validators. It is
-// never iterated into diagnostics or serialized output, so SPEC_0021 permits
-// a hash table here and avoids O(log n) tree insertion for large tensor code.
-pub(super) struct ExpressionTypes(FxHashMap<usize, Ty>);
-
-impl ExpressionTypes {
-    pub(super) fn get(&self, expression: &Expression) -> Option<Ty> {
-        self.0
-            .get(&(std::ptr::from_ref(expression) as usize))
-            .copied()
-    }
-
-    fn insert(&mut self, expression: &Expression, ty: Ty) {
-        self.0.insert(std::ptr::from_ref(expression) as usize, ty);
-    }
+    index_error.map_or(Ok(()), Err)
 }
 
 struct TypeChecker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
     scope: FunctionScope<'a>,
     cursor: Cursor,
-    types: &'d mut ExpressionTypes,
+    declaration_starts: super::DeclarationStartContract,
+    retained: &'d mut RetainedValidationBuilder,
+    index_error: &'d mut Option<RetainedValidationError>,
     diags: &'d mut Vec<GalecError>,
 }
 
 impl<'a> TypeChecker<'a, '_> {
+    fn block_declarations(&mut self) {
+        for variable in &self.ctx.block.interface {
+            self.block_declaration(&variable.decl, variable.start.as_ref());
+        }
+        for entity in &self.ctx.block.protected {
+            self.block_declaration(&entity.decl, entity.start.as_ref());
+        }
+        for compartment in &self.ctx.block.compartments {
+            self.cursor
+                .push(PathSegment::Compartment(lexeme(&compartment.name)));
+            for entity in &compartment.entities {
+                self.block_declaration(&entity.decl, entity.start.as_ref());
+            }
+            self.cursor.pop();
+        }
+    }
+
+    fn block_declaration(
+        &mut self,
+        declaration: &'a VariableDeclaration,
+        start: Option<&'a Expression>,
+    ) {
+        self.cursor
+            .push(PathSegment::Variable(lexeme(&declaration.name)));
+        self.declaration_dims(declaration);
+        self.declaration_range(declaration);
+        if matches!(declaration.ty, TypeRef::Compartment(_)) {
+            if start.is_some() {
+                self.diags.push(GalecError::UnexpectedVariableStart {
+                    location: self.cursor.here(),
+                    name: lexeme(&declaration.name),
+                });
+            }
+            self.cursor.pop();
+            return;
+        }
+        let Some(start) = start else {
+            if matches!(
+                self.declaration_starts,
+                super::DeclarationStartContract::GeneratedPackage
+            ) {
+                self.diags.push(GalecError::MissingVariableStart {
+                    location: self.cursor.here(),
+                    name: lexeme(&declaration.name),
+                });
+            }
+            self.cursor.pop();
+            return;
+        };
+        let start_type = self.type_of(start);
+        if start_type.is_known() {
+            match self.retained.record_declaration_start(declaration, start) {
+                Ok(()) => {}
+                Err(DeclarationStartRelationError::TypeMismatch { expected, found }) => {
+                    self.mismatch(
+                        format!("start for `{}`", lexeme(&declaration.name)),
+                        expected.describe(),
+                        found.describe(),
+                    );
+                }
+                Err(DeclarationStartRelationError::ShapeMismatch) => {
+                    self.mismatch(
+                        format!("start shape for `{}`", lexeme(&declaration.name)),
+                        "declared fixed dimensions".to_string(),
+                        "different fixed dimensions".to_string(),
+                    );
+                }
+                Err(DeclarationStartRelationError::UnprovenShape) => {}
+                Err(DeclarationStartRelationError::Index(error)) => {
+                    self.retain_index_result(Err(error));
+                }
+            }
+        }
+        self.cursor.pop();
+    }
+
     fn declarations(&mut self, body: &BodyView<'a>) {
         let decls = body
             .parameters
@@ -95,7 +171,17 @@ impl<'a> TypeChecker<'a, '_> {
                 });
             }
             self.declaration_dims(decl);
+            self.declaration_range(decl);
             self.cursor.pop();
+        }
+    }
+
+    fn declaration_range(&mut self, declaration: &'a VariableDeclaration) {
+        if let Some(minimum) = &declaration.range.min {
+            self.type_of(minimum);
+        }
+        if let Some(maximum) = &declaration.range.max {
+            self.type_of(maximum);
         }
     }
 
@@ -123,7 +209,10 @@ impl<'a> TypeChecker<'a, '_> {
             Statement::Assignment { target, value } => self.assignment(target, value),
             Statement::MultiAssignment { targets, call } => self.multi_assignment(targets, call),
             Statement::Call(call) => {
-                self.check_call(call);
+                if self.check_call(call).is_some_and(|typing| typing.valid) {
+                    let result = self.retained.close_discarded_call_results(call);
+                    let _ = self.retain_shape_result(result);
+                }
             }
             Statement::If(if_statement) => self.if_statement(if_statement),
             Statement::For(for_loop) => self.for_loop(for_loop),
@@ -135,20 +224,27 @@ impl<'a> TypeChecker<'a, '_> {
     fn assignment(&mut self, target: &'a Reference, value: &'a Expression) {
         let target_ty = self.reference_ty(target);
         let value_ty = self.type_of(value);
-        if target_ty.is_known() && value_ty.is_known() && target_ty != value_ty {
+        let both_known = target_ty.is_known() && value_ty.is_known();
+        let compatible = !both_known || target_ty == value_ty;
+        if !compatible {
             self.mismatch(
                 format!("assignment to `{}`", reference_lexeme(target)),
                 target_ty.describe(),
                 value_ty.describe(),
             );
         }
+        if both_known && compatible {
+            let result = self.retained.require_assignment_shape(target, value);
+            let _ = self.retain_shape_result(result);
+        }
     }
 
     fn multi_assignment(&mut self, targets: &'a [Reference], call: &'a FunctionCall) {
         let target_tys: Vec<Ty> = targets.iter().map(|t| self.reference_ty(t)).collect();
-        let Some(outputs) = self.check_call(call) else {
+        let Some(typing) = self.check_call(call) else {
             return;
         };
+        let outputs = typing.outputs;
         if outputs.len() != targets.len() {
             self.diags.push(GalecError::CallOutputArity {
                 location: self.cursor.here(),
@@ -157,9 +253,12 @@ impl<'a> TypeChecker<'a, '_> {
                 expected: outputs.len(),
                 found: targets.len(),
             });
+            return;
         }
+        let mut compatible = typing.valid;
         for ((target, target_ty), output_ty) in targets.iter().zip(target_tys).zip(outputs) {
             if target_ty.is_known() && output_ty.is_known() && target_ty != output_ty {
+                compatible = false;
                 // Same orientation as single assignments: the target type
                 // is expected, the assigned (output) type is found.
                 self.mismatch(
@@ -168,6 +267,10 @@ impl<'a> TypeChecker<'a, '_> {
                     output_ty.describe(),
                 );
             }
+        }
+        if compatible {
+            let result = self.retained.close_multi_assignment_call_results(call);
+            let _ = self.retain_shape_result(result);
         }
     }
 
@@ -219,8 +322,14 @@ impl<'a> TypeChecker<'a, '_> {
                 continue;
             };
             self.subscript_types(reference);
-            if resolve(self.ctx, &self.scope, reference).is_err() {
-                self.unresolved(reference_lexeme(reference));
+            match resolve(self.ctx, &self.scope, reference) {
+                Ok(resolved) => {
+                    let result = self
+                        .retained
+                        .record_reference_resolution(reference, &resolved);
+                    self.retain_index_result(result);
+                }
+                Err(_) => self.unresolved(reference_lexeme(reference)),
             }
         }
     }
@@ -243,7 +352,8 @@ impl<'a> TypeChecker<'a, '_> {
             }
             Expression::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs),
         };
-        self.types.insert(expression, ty);
+        let result = self.retained.record_expression_type(expression, ty);
+        let _ = self.retain_shape_result(result);
         ty
     }
 
@@ -258,8 +368,12 @@ impl<'a> TypeChecker<'a, '_> {
                 return Ty::Unknown;
             }
         };
+        let result = self
+            .retained
+            .record_reference_resolution(reference, &resolved);
+        self.retain_index_result(result);
         let decl: &VariableDeclaration = match resolved.target {
-            Resolved::Iterator => return Ty::Scalar(ScalarType::Integer),
+            Resolved::Iterator(_) => return Ty::Scalar(ScalarType::Integer),
             Resolved::Component { decl } => {
                 self.diags.push(GalecError::ComponentValueUse {
                     location: self.cursor.here(),
@@ -289,8 +403,12 @@ impl<'a> TypeChecker<'a, '_> {
 
     fn size_query(&mut self, array: &'a Reference, dimension: &'a Expression) -> Ty {
         self.subscript_types(array);
-        if resolve(self.ctx, &self.scope, array).is_err() {
-            self.unresolved(reference_lexeme(array));
+        match resolve(self.ctx, &self.scope, array) {
+            Ok(resolved) => {
+                let result = self.retained.record_reference_resolution(array, &resolved);
+                self.retain_index_result(result);
+            }
+            Err(_) => self.unresolved(reference_lexeme(array)),
         }
         self.expect_integer(dimension, "size() dimension argument");
         Ty::Scalar(ScalarType::Integer)
@@ -299,9 +417,10 @@ impl<'a> TypeChecker<'a, '_> {
     /// Calls in expressions must have output-arity 1 (§3.2.4 call-typing
     /// rule; unnumbered `S-TODO` in Beta-1).
     fn expression_call(&mut self, call: &'a FunctionCall) -> Ty {
-        let Some(outputs) = self.check_call(call) else {
+        let Some(typing) = self.check_call(call) else {
             return Ty::Unknown;
         };
+        let outputs = typing.outputs;
         if outputs.len() != 1 {
             self.diags.push(GalecError::CallOutputArity {
                 location: self.cursor.here(),
@@ -312,13 +431,22 @@ impl<'a> TypeChecker<'a, '_> {
             });
             return Ty::Unknown;
         }
+        if !typing.valid {
+            return Ty::Unknown;
+        }
+        let result = self.retained.close_expression_call_results(call);
+        if !self.retain_shape_result(result) {
+            return Ty::Unknown;
+        }
         outputs[0]
     }
 
     /// Check a call's signature; returns its output types, or `None` when
     /// the callee is unknown (reported here, once).
-    fn check_call(&mut self, call: &'a FunctionCall) -> Option<Vec<Ty>> {
-        let Some(callee) = resolve_call(self.ctx, &call.function) else {
+    fn check_call(&mut self, call: &'a FunctionCall) -> Option<CallTyping> {
+        let Some(resolved) = resolve_call(self.ctx, call) else {
+            let result = self.retained.record_unknown_call(call);
+            self.retain_index_result(result);
             for argument in &call.arguments {
                 self.type_of(argument);
             }
@@ -328,7 +456,11 @@ impl<'a> TypeChecker<'a, '_> {
             });
             return None;
         };
+        let result = self.retained.record_call_resolution(&resolved);
+        self.retain_index_result(result);
+        let callee = resolved.callee();
         let inputs = callee.inputs();
+        let mut valid = call.arguments.len() == inputs.len();
         if call.arguments.len() != inputs.len() {
             self.diags.push(GalecError::CallInputArity {
                 location: self.cursor.here(),
@@ -344,6 +476,7 @@ impl<'a> TypeChecker<'a, '_> {
                 && found.is_known()
                 && found != *expected
             {
+                valid = false;
                 self.mismatch(
                     format!("argument {} of `{}`", index + 1, callee.display_name()),
                     expected.describe(),
@@ -351,26 +484,37 @@ impl<'a> TypeChecker<'a, '_> {
                 );
             }
         }
-        Some(callee.outputs())
+        Some(CallTyping {
+            outputs: callee.outputs(),
+            valid,
+        })
     }
 
     /// If-expression branches must be equally typed (trap T12; the `else`
     /// branch is structurally mandatory).
     fn if_expression(&mut self, if_expression: &'a IfExpression) -> Ty {
         let mut result = Ty::Unknown;
+        let mut valid = true;
         for (condition, value) in &if_expression.branches {
             self.expect_boolean(condition, "if-expression condition");
             let value_ty = self.type_of(value);
-            result = self.unify_branch(result, value_ty);
+            let (unified, compatible) = self.unify_branch(result, value_ty);
+            result = unified;
+            valid &= compatible;
         }
         let else_ty = self.type_of(&if_expression.else_value);
-        self.unify_branch(result, else_ty)
+        let (result, compatible) = self.unify_branch(result, else_ty);
+        valid &= compatible;
+        if let Some(selection) = if_expression.bounded_selection_correlation() {
+            self.reference_ty(selection.reference());
+        }
+        if valid { result } else { Ty::Unknown }
     }
 
-    fn unify_branch(&mut self, current: Ty, found: Ty) -> Ty {
+    fn unify_branch(&mut self, current: Ty, found: Ty) -> (Ty, bool) {
         match (current.is_known(), found.is_known()) {
-            (false, _) => found,
-            (true, false) => current,
+            (false, _) => (found, true),
+            (true, false) => (current, true),
             (true, true) => {
                 if current != found {
                     self.mismatch(
@@ -378,8 +522,9 @@ impl<'a> TypeChecker<'a, '_> {
                         current.describe(),
                         found.describe(),
                     );
+                    return (current, false);
                 }
-                current
+                (current, true)
             }
         }
     }
@@ -451,19 +596,31 @@ impl<'a> TypeChecker<'a, '_> {
                 }
             }
             PrecedenceClass::Relational => {
-                self.require_scalar(&operands, "relational operators compare scalars");
+                let scalar = self.require_scalar(&operands, "relational operators compare scalars");
                 self.require_numeric(&operands, "requires equally-typed Integer or Real operands");
-                Ty::Scalar(ScalarType::Boolean)
+                if scalar {
+                    Ty::Scalar(ScalarType::Boolean)
+                } else {
+                    Ty::Unknown
+                }
             }
             PrecedenceClass::Equality => {
-                self.require_scalar(&operands, "equality operators compare scalars");
+                let scalar = self.require_scalar(&operands, "equality operators compare scalars");
                 self.require_equal(&operands);
-                Ty::Scalar(ScalarType::Boolean)
+                if scalar {
+                    Ty::Scalar(ScalarType::Boolean)
+                } else {
+                    Ty::Unknown
+                }
             }
             PrecedenceClass::LogicalAnd | PrecedenceClass::LogicalOr => {
-                self.require_scalar(&operands, "logical operands must be scalar");
+                let scalar = self.require_scalar(&operands, "logical operands must be scalar");
                 self.require_boolean(&operands);
-                Ty::Scalar(ScalarType::Boolean)
+                if scalar {
+                    Ty::Scalar(ScalarType::Boolean)
+                } else {
+                    Ty::Unknown
+                }
             }
         }
     }
@@ -528,9 +685,12 @@ impl<'a> TypeChecker<'a, '_> {
         }
     }
 
-    fn require_scalar(&mut self, operands: &BinaryOperands, requirement: &'static str) {
+    fn require_scalar(&mut self, operands: &BinaryOperands, requirement: &'static str) -> bool {
         if operands.any_known_array() {
             self.operands_error(operands, requirement);
+            false
+        } else {
+            true
         }
     }
 
@@ -592,6 +752,35 @@ impl<'a> TypeChecker<'a, '_> {
             name,
         });
     }
+
+    fn retain_index_result(&mut self, result: Result<(), RetainedValidationError>) {
+        if self.index_error.is_none() {
+            *self.index_error = result.err();
+        }
+    }
+
+    fn retain_shape_result(&mut self, result: Result<(), ShapeRelationError>) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(ShapeRelationError::Mismatch { context }) => {
+                self.mismatch(
+                    context.to_string(),
+                    "compatible fixed dimensions".to_string(),
+                    "incompatible fixed dimensions".to_string(),
+                );
+                false
+            }
+            Err(ShapeRelationError::Index(error)) => {
+                self.retain_index_result(Err(error));
+                false
+            }
+        }
+    }
+}
+
+struct CallTyping {
+    outputs: Vec<Ty>,
+    valid: bool,
 }
 
 struct BinaryOperands {

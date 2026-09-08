@@ -6,16 +6,16 @@ pub(super) fn lower_function_sequence_seeds<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: FunctionSymbols<'_, 'dae>,
     mut body: dae::FunctionBody<'dae>,
-    plans: &[FunctionStatementPlan],
+    sequence: &FunctionStatementSequence,
     span: Span,
 ) -> Result<dae::FunctionBody<'dae>, dae::DaeConstructionError> {
     let mut seeds = Vec::new();
-    collect_function_sequence_seeds(plans, &mut seeds);
+    collect_function_sequence_seeds(sequence, &mut seeds);
     let provenance =
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, span)?;
     for (target, seed) in seeds {
         let value = lower_function_value_seed(construction, seed, span)?;
-        let target = function_value_coordinate(symbols.coordinates, target);
+        let target = function_value_coordinate(symbols.coordinates, target, span)?;
         construction
             .functions(|functions| functions.assign(&mut body, target, value, provenance))?;
     }
@@ -33,7 +33,7 @@ pub(super) fn lower_named_function_seeds<'dae>(
         dae::DaeProvenance::generated(dae::DaeGeneration::FunctionAggregateLowering, span)?;
     for (target, seed) in seeds {
         let value = lower_function_value_seed(construction, seed, span)?;
-        let target = function_value_coordinate(symbols.coordinates, target);
+        let target = function_value_coordinate(symbols.coordinates, target, span)?;
         construction
             .functions(|functions| functions.assign(&mut body, target, value, provenance))?;
     }
@@ -41,10 +41,11 @@ pub(super) fn lower_named_function_seeds<'dae>(
 }
 
 pub(super) fn collect_function_sequence_seeds<'plan>(
-    plans: &'plan [FunctionStatementPlan],
+    sequence: &'plan FunctionStatementSequence,
     seeds: &mut Vec<(&'plan VarName, &'plan FunctionValueSeed)>,
 ) {
-    for plan in plans {
+    for product in sequence.products() {
+        let plan = product.plan();
         match plan {
             FunctionStatementPlan::Assignment(assignment) => {
                 if let Some(seed) = assignment.seed() {

@@ -43,12 +43,22 @@ fn flatten_source() -> rumoca_ir_flat::Model {
     tree.source_map.add(file_name, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let ast::InstancedTree { tree, mut overlay } =
-        rumoca_phase_instantiate::instantiate(resolved, "UsesVectorizedCall")
-            .expect("model instantiates");
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "UsesVectorizedCall")
-        .expect("model typechecks");
-    rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesVectorizedCall")
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        "UsesVectorizedCall",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let typed =
+        rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "UsesVectorizedCall")
+            .expect("model typechecks");
+    rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
         .expect("model flattens")
 }
 

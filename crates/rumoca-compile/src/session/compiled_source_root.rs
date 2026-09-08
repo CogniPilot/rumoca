@@ -217,7 +217,7 @@ impl CompiledSourceRoot {
         }
 
         let resolved = self.resolve_target(model_name)?;
-        let result = compile_model_internal(resolved.inner(), model_name);
+        let result = compile_model_internal(&resolved, model_name);
         self.compile_cache()?
             .entry(model_name.to_string())
             .or_insert_with(|| result.clone());
@@ -246,7 +246,7 @@ impl CompiledSourceRoot {
                 .par_iter()
                 .map(|name| {
                     let resolved = self.resolve_target(name)?;
-                    Ok((name.clone(), compile_model_internal(resolved.inner(), name)))
+                    Ok((name.clone(), compile_model_internal(&resolved, name)))
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -280,7 +280,7 @@ impl CompiledSourceRoot {
         if !missing.is_empty() {
             let compiled_misses = missing
                 .par_iter()
-                .map(|name| (name.clone(), compile_model_internal(resolved.inner(), name)))
+                .map(|name| (name.clone(), compile_model_internal(resolved, name)))
                 .collect::<Vec<_>>();
 
             let mut cache = self.compile_cache()?;
@@ -339,7 +339,7 @@ impl CompiledSourceRoot {
     {
         for name in missing {
             let resolved = self.resolve_target(&name)?;
-            let result = compile_model_internal(resolved.inner(), &name);
+            let result = compile_model_internal(&resolved, &name);
             self.compile_cache()?
                 .entry(name.clone())
                 .or_insert_with(|| result.clone());
@@ -383,7 +383,7 @@ impl CompiledSourceRoot {
             .par_iter()
             .map_with(result_tx, |tx, name| -> Result<()> {
                 let resolved = self.resolve_target(name)?;
-                let result = compile_model_internal(resolved.inner(), name);
+                let result = compile_model_internal(&resolved, name);
                 self.compile_cache()?
                     .entry(name.clone())
                     .or_insert_with(|| result.clone());
@@ -416,13 +416,12 @@ impl CompiledSourceRoot {
                 });
             }
         };
-        let tree = resolved.inner();
         let closure = self.reachable_model_closure(model_name);
         let failures = Vec::new();
         let results =
             self.compile_targets_with_resolved_cache(&resolved, &closure.compile_targets)?;
         Ok(finalize_strict_compile_report(
-            tree, model_name, failures, results,
+            &resolved, model_name, failures, results,
         ))
     }
 
@@ -444,11 +443,10 @@ impl CompiledSourceRoot {
                 };
             }
         };
-        let tree = resolved.inner();
         let closure = self.reachable_model_closure(model_name);
         let failures = Vec::new();
         finalize_strict_compile_report_from_uncached_targets(
-            tree,
+            &resolved,
             model_name,
             failures,
             &closure.compile_targets,
@@ -475,7 +473,7 @@ impl CompiledSourceRoot {
         let tree = resolved.inner();
         let mut failures = Vec::new();
 
-        let requested_result = compile_model_dae_internal(tree, model_name);
+        let requested_result = compile_model_dae_internal(&resolved, model_name);
         let requested = dae_phase_result_requested_message(model_name, &requested_result);
         failures.extend(dae_phase_result_to_failures(
             tree,

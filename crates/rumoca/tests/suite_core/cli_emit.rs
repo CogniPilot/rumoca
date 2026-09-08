@@ -143,16 +143,11 @@ fn assert_emit_ok(file: &Path, emit: &str) -> String {
 #[test]
 fn emit_modelica_stages_render() {
     let (_dir, file) = fixture_file();
-    // Each Modelica-form stage renders non-empty source. (The `when` equation
-    // only survives literally in the pre-lowering AST; flat/dae lower it into
-    // discrete event handling, so it is not asserted here.)
-    for emit in ["flat-mo", "dae-mo"] {
-        let out = assert_emit_ok(&file, emit);
-        assert!(
-            out.contains("der(x)"),
-            "`--emit {emit}` should render the model equations, got:\n{out}"
-        );
-    }
+    let out = assert_emit_ok(&file, "dae-mo");
+    assert!(
+        out.contains("der(x)"),
+        "`--emit dae-mo` should render the model equations, got:\n{out}"
+    );
 }
 
 #[test]
@@ -225,32 +220,33 @@ fn emit_flat_json_exposes_structured_equation_families() {
 }
 
 #[test]
-fn flat_modelica_fails_closed_for_non_materialized_structured_families() {
-    let (_dir, file) = named_fixture_file(
-        "NonMaterializedStructuredFixture",
-        NON_MATERIALIZED_STRUCTURED_FIXTURE,
-    );
-    let output = compile_emit(&file, "flat-mo");
+fn flat_modelica_text_export_is_a_named_refusal_with_no_artifact() {
+    let (dir, file) = fixture_file();
+    let artifact = dir.path().join("stale-flat.mo");
+    fs::write(&artifact, "stale lossy output").expect("seed stale artifact");
+    let output = compile_emit_to(&file, "flat-mo", &artifact);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         !output.status.success(),
-        "non-materialized Flat families must not render placeholder equations:\n{stdout}"
+        "Flat Modelica text export must refuse every model:\n{stdout}"
     );
     assert!(
-        stderr.contains("scalar equation view is unavailable")
-            && stderr.contains("structured family"),
-        "the rejection must identify the unsupported scalar view:\n{stderr}"
+        stderr.contains("unsupported-feature:flat-modelica-text-export"),
+        "the rejection must carry its stable unsupported-feature name:\n{stderr}"
     );
     assert!(
-        stderr.contains("rumoca::codegen::EC007"),
-        "the rejection must carry its stable diagnostic code so a caller can match on \
-         the refusal rather than on prose:\n{stderr}"
+        stderr.contains("--emit flat-json"),
+        "the rejection must route callers to the exact Flat dump:\n{stderr}"
     );
     assert!(
-        !stdout.contains("= 0.0"),
-        "failed Flat export must not publish cheapened equation bodies:\n{stdout}"
+        stdout.trim().is_empty(),
+        "the refusal must not publish any textual Flat payload:\n{stdout}"
+    );
+    assert!(
+        !artifact.exists(),
+        "the refusal must invalidate a stale artifact rather than leave it consumable"
     );
 }
 

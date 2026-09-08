@@ -141,7 +141,7 @@ fn vector_is_one_compact_constructor_derived_view_and_round_trips() {
     let binder_vector = source.source("vector(k)", 0);
     let domain_input = StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "k".to_string(),
             lower: 1,
             upper: 1,
@@ -159,6 +159,7 @@ fn vector_is_one_compact_constructor_derived_view_and_round_trips() {
         let parameter = dae.variables(|variables| {
             variables.parameter(
                 VarName::new("p"),
+                rumoca_core::InstanceId::new(1),
                 parameter_type,
                 declaration,
                 VariableAttributes::default(),
@@ -217,7 +218,7 @@ fn vector_is_one_compact_constructor_derived_view_and_round_trips() {
         bincode::serialize(&PureBuiltin::Vector).unwrap(),
         38_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 33);
+    assert_eq!(DAE_SCHEMA_VERSION, 36);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"vector\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();
@@ -268,6 +269,7 @@ fn vector_rejects_forged_arity_and_two_non_unit_dimensions() {
         let input = dae.variables(|variables| {
             variables.input(
                 VarName::new("A"),
+                rumoca_core::InstanceId::new(1),
                 matrix,
                 InputVariability::Continuous,
                 at,
@@ -337,6 +339,7 @@ fn transpose_swaps_only_the_first_two_axes_and_round_trips() {
             Ok((
                 variables.input(
                     VarName::new("m"),
+                    rumoca_core::InstanceId::new(1),
                     matrix,
                     InputVariability::Continuous,
                     at,
@@ -344,6 +347,7 @@ fn transpose_swaps_only_the_first_two_axes_and_round_trips() {
                 )?,
                 variables.input(
                     VarName::new("t"),
+                    rumoca_core::InstanceId::new(2),
                     tensor,
                     InputVariability::Continuous,
                     at,
@@ -351,6 +355,7 @@ fn transpose_swaps_only_the_first_two_axes_and_round_trips() {
                 )?,
                 variables.input(
                     VarName::new("z"),
+                    rumoca_core::InstanceId::new(3),
                     empty,
                     InputVariability::Continuous,
                     at,
@@ -395,7 +400,7 @@ fn transpose_swaps_only_the_first_two_axes_and_round_trips() {
         bincode::serialize(&PureBuiltin::Transpose).unwrap(),
         39_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 33);
+    assert_eq!(DAE_SCHEMA_VERSION, 36);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"transpose\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();
@@ -442,6 +447,7 @@ fn transpose_rejects_forged_arity_rank_and_record_roots() {
             let input = dae.variables(|variables| {
                 variables.input(
                     VarName::new("A"),
+                    rumoca_core::InstanceId::new(1),
                     ty,
                     InputVariability::Continuous,
                     at,
@@ -505,6 +511,7 @@ fn diagonal_and_outer_product_are_checked_compact_matrix_operations() {
             Ok((
                 variables.input(
                     VarName::new("d"),
+                    rumoca_core::InstanceId::new(1),
                     real3,
                     InputVariability::Continuous,
                     at,
@@ -512,6 +519,7 @@ fn diagonal_and_outer_product_are_checked_compact_matrix_operations() {
                 )?,
                 variables.input(
                     VarName::new("lhs"),
+                    rumoca_core::InstanceId::new(2),
                     integer2,
                     InputVariability::Discrete,
                     at,
@@ -519,6 +527,7 @@ fn diagonal_and_outer_product_are_checked_compact_matrix_operations() {
                 )?,
                 variables.input(
                     VarName::new("rhs"),
+                    rumoca_core::InstanceId::new(3),
                     real5,
                     InputVariability::Continuous,
                     at,
@@ -572,7 +581,7 @@ fn diagonal_and_outer_product_are_checked_compact_matrix_operations() {
         bincode::serialize(&PureBuiltin::OuterProduct).unwrap(),
         41_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 33);
+    assert_eq!(DAE_SCHEMA_VERSION, 36);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"diagonal\""));
     assert!(json.contains("\"builtin\":\"outer_product\""));
@@ -618,6 +627,7 @@ fn invalid_matrix_builtin_shape(
         let (lhs, rhs) = dae.variables(|variables| {
             let lhs = variables.input(
                 VarName::new("A"),
+                rumoca_core::InstanceId::new(1),
                 lhs_type,
                 InputVariability::Continuous,
                 at,
@@ -626,6 +636,7 @@ fn invalid_matrix_builtin_shape(
             let rhs = match rhs_type {
                 Some(ty) => Some(variables.input(
                     VarName::new("B"),
+                    rumoca_core::InstanceId::new(2),
                     ty,
                     InputVariability::Continuous,
                     at,
@@ -710,6 +721,7 @@ fn skew_is_one_checked_compact_real_matrix_operation_and_round_trips() {
         let x = dae.variables(|variables| {
             variables.input(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 vector,
                 InputVariability::Continuous,
                 at,
@@ -742,7 +754,7 @@ fn skew_is_one_checked_compact_real_matrix_operation_and_round_trips() {
         bincode::serialize(&PureBuiltin::Skew).unwrap(),
         42_u32.to_le_bytes()
     );
-    assert_eq!(DAE_SCHEMA_VERSION, 33);
+    assert_eq!(DAE_SCHEMA_VERSION, 36);
     let json = serde_json::to_string(&dae).unwrap();
     assert!(json.contains("\"builtin\":\"skew\""));
     let decoded: Dae = serde_json::from_str(&json).unwrap();

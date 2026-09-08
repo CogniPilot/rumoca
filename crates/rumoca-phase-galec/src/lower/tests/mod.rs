@@ -8,6 +8,33 @@ mod dynamic_index_bounds;
 mod indexed_updates;
 mod structural_locals;
 
+fn define_scalar_passthrough_function<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    name: &'static str,
+    scalar: dae::ValueTypeId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+    let (function, ()) = dae.function(
+        dae::FunctionSignature::new(VarName::new(name), [scalar], [scalar], provenance),
+        |dae, reservation| {
+            let input = dae.functions(|functions| {
+                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+            })?;
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("y"), 0, provenance)
+            })?;
+            let input = dae
+                .expressions(|expressions| expressions.at(provenance).function_parameter(input))?;
+            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
+            dae.functions(|functions| {
+                functions.assign(&mut body, output, input, provenance)?;
+                functions.define(body, provenance)
+            })
+        },
+    )?;
+    Ok(function)
+}
+
 #[test]
 fn identity_element_is_integer_and_diagonal_by_index_equality() {
     let diagonal =
@@ -20,14 +47,16 @@ fn identity_element_is_integer_and_diagonal_by_index_equality() {
     assert_eq!(off_diagonal.expression, gast::Expression::Integer(0));
 }
 
-#[test]
-fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
+/// The dependent-parameter binding fixture: `downstream` depends on
+/// `derived`, which depends on `gain`. Split out for length; every
+/// declaration and binding is unchanged.
+fn dependent_parameter_binding_model() -> dae::Dae {
     let mut sources = SourceMap::new();
     let text = "parameter Real gain = 2; parameter Real downstream = derived + 1; parameter Real derived = 3 * gain;";
     let source = sources.add("dependent-parameters.mo", text);
     let span = Span::from_offsets(source, 0, text.len());
     let at = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |model| {
+    dae::Dae::construct(sources, |model| {
         let real = model
             .types(|types| types.derived(dae::ValueType::scalar(dae::ScalarType::Real), at))?;
         let (
@@ -36,9 +65,24 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
             (derived, derived_reservation),
         ) = model.variables(|variables| {
             Ok((
-                variables.reserve_parameter(VarName::new("gain"), real, at)?,
-                variables.reserve_parameter(VarName::new("downstream"), real, at)?,
-                variables.reserve_parameter(VarName::new("derived"), real, at)?,
+                variables.reserve_parameter(
+                    VarName::new("gain"),
+                    rumoca_core::InstanceId::new(1),
+                    real,
+                    at,
+                )?,
+                variables.reserve_parameter(
+                    VarName::new("downstream"),
+                    rumoca_core::InstanceId::new(2),
+                    real,
+                    at,
+                )?,
+                variables.reserve_parameter(
+                    VarName::new("derived"),
+                    rumoca_core::InstanceId::new(3),
+                    real,
+                    at,
+                )?,
             ))
         })?;
         let (gain_default, downstream_binding, derived_binding) =
@@ -73,7 +117,12 @@ fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
             variables.define(derived_reservation, attributes(derived_binding), at)
         })
     })
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn binding_dependencies_issue_dependent_parameters_in_topological_order() {
+    let model = dependent_parameter_binding_model();
 
     model.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
@@ -129,8 +178,18 @@ fn rank_two_dependent_parameter_fixture() -> dae::Dae {
         let ((route, route_reservation), (_, guidance_reservation)) =
             model.variables(|variables| {
                 Ok((
-                    variables.reserve_parameter(VarName::new("route"), matrix_type, at)?,
-                    variables.reserve_parameter(VarName::new("guidanceRoute"), matrix_type, at)?,
+                    variables.reserve_parameter(
+                        VarName::new("route"),
+                        rumoca_core::InstanceId::new(4),
+                        matrix_type,
+                        at,
+                    )?,
+                    variables.reserve_parameter(
+                        VarName::new("guidanceRoute"),
+                        rumoca_core::InstanceId::new(5),
+                        matrix_type,
+                        at,
+                    )?,
                 ))
             })?;
         let (route_values, route_reference) = model.expressions(|expressions| {
@@ -189,7 +248,7 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &previous,
-                emission: EmissionFacts::structured(),
+                arithmetic: positive_zero_arithmetic(),
             },
             guidance,
         )
@@ -222,7 +281,13 @@ fn rank_two_dependent_parameter_preserves_one_checked_whole_array_move() {
                     && parts[0].subscripts.is_empty()
         ));
 
-        let mut lowerer = ExpressionLowerer::new(view, &definitions, &by_id, &previous);
+        let mut lowerer = ExpressionLowerer::new(
+            view,
+            &definitions,
+            &by_id,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         for indices in [
             Vec::new(),
             vec![gast::Expression::Integer(1)],
@@ -298,8 +363,13 @@ fn dynamic_function_local_index_is_checked_and_exhaustively_projected() {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         let index = gast::Expression::Ref(gast::Reference::local(gast::Name::ident("segment")));
         let selected = lowerer
             .lower_local_reference(gast::Name::ident("waypoint"), &[3], &[index], Span::DUMMY)
@@ -339,6 +409,7 @@ fn whole_array_function_arguments_preserve_checked_references() {
         let input = dae.variables(|variables| {
             variables.input(
                 VarName::new("samples"),
+                rumoca_core::InstanceId::new(6),
                 vector,
                 dae::InputVariability::Continuous,
                 provenance,
@@ -369,8 +440,13 @@ fn whole_array_function_arguments_preserve_checked_references() {
         );
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         let argument = view.expression_id(0).unwrap();
         let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
@@ -436,8 +512,13 @@ fn whole_array_function_value_arguments_preserve_the_proven_current_storage() {
         let variables = HashMap::new();
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         lowerer.function_scope = Some(function.id());
         let direct = lowerer.direct_whole_aggregate_reference(argument).unwrap();
         assert!(matches!(
@@ -450,8 +531,7 @@ fn whole_array_function_value_arguments_preserve_the_proven_current_storage() {
     });
 }
 
-#[test]
-fn single_aggregate_function_result_writes_its_checked_destination_directly() {
+fn direct_aggregate_call_fixture() -> (dae::Dae, Span) {
     let mut sources = SourceMap::new();
     let text = "function copy input Real u[3]; output Real y[3]; algorithm y := u; end copy; function caller input Real u[3]; output Real y[3]; algorithm y := copy(u); end caller;";
     let source = sources.add("direct-aggregate-call-result.mo", text);
@@ -505,38 +585,306 @@ fn single_aggregate_function_result_writes_its_checked_destination_directly() {
         Ok(())
     })
     .unwrap();
+    (model, span)
+}
+
+#[test]
+fn protected_function_aggregate_call_uses_an_immutable_result_temporary() {
+    let (model, _) = direct_aggregate_call_fixture();
+    model.inspect(|view| {
+        let caller = view.function_id(1).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([caller.index()]),
+            positive_zero_arithmetic(),
+        )
+        .unwrap();
+        let caller = lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "caller")
+            .expect("caller remains reachable");
+        let gast::Statement::MultiAssignment { targets, .. } = &caller.statements[0].node else {
+            panic!("aggregate call first materializes into immutable temporary storage")
+        };
+        assert!(matches!(
+            targets.as_slice(),
+            [gast::Reference::Local(target)] if target.name.lexeme() != "y"
+        ));
+    });
+}
+
+#[test]
+fn one_aggregate_call_reused_in_a_function_group_executes_once() {
+    let mut sources = SourceMap::new();
+    let text = "function copy input Real u[3]; output Real y[3]; algorithm y := u; end copy; \
+                function caller input Real u[3]; output Real a[3]; output Real b[3]; \
+                algorithm (a, b) := (copy(u), copy(u)); end caller;";
+    let source = sources.add("shared-direct-aggregate-call.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let vector = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                provenance,
+            )
+        })?;
+        let (copy, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("copy"), [vector], [vector], provenance),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, input, provenance)?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        let _ = dae.function(
+            dae::FunctionSignature::new(
+                VarName::new("caller"),
+                [vector],
+                [vector, vector],
+                provenance,
+            ),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let first = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("a"), 0, provenance)
+                })?;
+                let second = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("b"), 1, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let call = dae
+                    .expressions(|expressions| expressions.at(provenance).call(copy, 0, [input]))?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign_all(
+                        &mut body,
+                        &[(first, call), (second, call)],
+                        provenance,
+                    )?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
 
     model.inspect(|view| {
-        let caller = view.function(view.function_id(1).unwrap()).unwrap();
-        let call = caller
-            .statements()
-            .find_map(|statement| match statement {
-                dae::FunctionStatementView::Assignment { definition } => {
-                    matches!(
-                        view.expression(definition.rhs()).unwrap().operation(),
-                        dae::ExpressionOperation::Call { .. }
-                    )
-                    .then_some(definition.rhs())
-                }
-                _ => None,
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
+        let caller = view.function_id(1).unwrap();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        lowerer.function_scope = Some(caller.id());
-        let statement = lowerer
-            .lower_direct_aggregate_call_assignment(call, gast::Name::ident("y"), span)
-            .unwrap()
-            .unwrap();
-        assert!(lowerer.take_prefix_statements().is_empty());
-        assert!(matches!(
-            statement.node,
-            gast::Statement::MultiAssignment { targets, .. }
-                if matches!(targets.as_slice(), [gast::Reference::Local(part)] if part.name.lexeme() == "y")
-        ));
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([caller.index()]),
+            positive_zero_arithmetic(),
+        )
+        .unwrap();
+        let caller = lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "caller")
+            .expect("caller remains reachable");
+        assert_eq!(
+            count_named_multi_calls(&caller.statements, "copy"),
+            1,
+            "one issued aggregate call reused in an assignment group executes once"
+        );
+    });
+}
+
+#[test]
+fn one_aggregate_call_reused_across_function_statements_executes_once() {
+    let mut sources = SourceMap::new();
+    let text = "function copy input Real u[3]; output Real y[3]; algorithm y := u; end copy; \
+                function caller input Real u[3]; output Real a[3]; output Real b[3]; \
+                algorithm a := copy(u); b := copy(u); end caller;";
+    let source = sources.add("shared-cross-statement-aggregate-call.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let vector = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                provenance,
+            )
+        })?;
+        let (copy, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("copy"), [vector], [vector], provenance),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, input, provenance)?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        let _ = dae.function(
+            dae::FunctionSignature::new(
+                VarName::new("caller"),
+                [vector],
+                [vector, vector],
+                provenance,
+            ),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let first = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("a"), 0, provenance)
+                })?;
+                let second = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("b"), 1, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let call = dae
+                    .expressions(|expressions| expressions.at(provenance).call(copy, 0, [input]))?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, first, call, provenance)?;
+                    functions.assign(&mut body, second, call, provenance)?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let caller = view.function_id(1).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([caller.index()]),
+            positive_zero_arithmetic(),
+        )
+        .unwrap();
+        let caller = lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "caller")
+            .expect("caller remains reachable");
+        assert_eq!(
+            count_named_multi_calls(&caller.statements, "copy"),
+            1,
+            "one issued aggregate call reused across statements executes once"
+        );
+    });
+}
+
+#[test]
+fn nested_function_calls_preserve_distinct_outer_call_paths() {
+    let mut sources = SourceMap::new();
+    let text = "function leaf input Real u; output Real y; algorithm y := u; end leaf; \
+                function wrapper input Real u; output Real y; algorithm y := leaf(u); end wrapper; \
+                function caller input Real u; output Real a; output Real b; \
+                algorithm a := wrapper(u); b := wrapper(u); end caller;";
+    let source = sources.add("nested-function-call-path.mo", text);
+    let span = Span::from_offsets(source, 0, text.len());
+    let provenance = dae::DaeProvenance::source(span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let real = dae.types(|types| {
+            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
+        })?;
+        let leaf = define_scalar_passthrough_function(dae, "leaf", real, provenance)?;
+        let (wrapper, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("wrapper"), [real], [real], provenance),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let call = dae
+                    .expressions(|expressions| expressions.at(provenance).call(leaf, 0, [input]))?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, output, call, provenance)?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        let _ = dae.function(
+            dae::FunctionSignature::new(VarName::new("caller"), [real], [real, real], provenance),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let first = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("a"), 0, provenance)
+                })?;
+                let second = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("b"), 1, provenance)
+                })?;
+                let input = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                let calls = dae.expressions(|expressions| {
+                    Ok([
+                        expressions.at(provenance).call(wrapper, 0, [input])?,
+                        expressions.at(provenance).call(wrapper, 0, [input])?,
+                    ])
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                dae.functions(|functions| {
+                    functions.assign(&mut body, first, calls[0], provenance)?;
+                    functions.assign(&mut body, second, calls[1], provenance)?;
+                    functions.define(body, provenance)
+                })
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let caller = view.function_id(2).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([caller.index()]),
+            positive_zero_arithmetic(),
+        )
+        .expect("distinct outer paths keep their nested call owners distinct");
     });
 }
 
@@ -555,6 +903,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
             Ok((
                 variables.input(
                     VarName::new("u"),
+                    rumoca_core::InstanceId::new(7),
                     real,
                     dae::InputVariability::Continuous,
                     provenance,
@@ -565,6 +914,7 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
                 )?,
                 variables.output(
                     VarName::new("y"),
+                    rumoca_core::InstanceId::new(8),
                     real,
                     provenance,
                     dae::VariableAttributes {
@@ -601,22 +951,24 @@ fn causally_defined_output_remains_an_interface_and_gets_an_assignment() {
             .iter()
             .map(|variable| (variable.id.index(), variable.clone()))
             .collect::<HashMap<_, _>>();
-        let mut statements = Vec::new();
-        let mut locals = Vec::new();
         let pre_names = HashMap::new();
-        causal_outputs::append_causal_assignments(
+        let plan =
+            causal_outputs::CausalAssignmentsPlan::construct(&definitions, classified.as_slice())
+                .unwrap();
+        let mut retained_calls = RetainedCallResults::default();
+        let prepared = causal_outputs::prepare_causal_assignments(
             BlockLowering {
                 view,
                 definitions: &definitions,
                 by_id: &by_id,
                 pre_names: &pre_names,
-                emission: EmissionFacts::structured(),
+                arithmetic: positive_zero_arithmetic(),
             },
-            classified.as_slice(),
-            &mut locals,
-            &mut statements,
+            &plan,
+            &mut retained_calls,
         )
         .unwrap();
+        let statements = prepared.statements;
         assert_eq!(statements.len(), 1);
         assert!(matches!(
             &statements[0].node,
@@ -693,9 +1045,14 @@ fn function_assertion_is_detected_before_expression_inlining() {
         let variables = HashMap::new();
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let Err(rejected) =
-            ExpressionLowerer::new(view, &definitions, &variables, &previous).lower(call)
-        else {
+        let Err(rejected) = ExpressionLowerer::new(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        )
+        .lower(call) else {
             panic!("an assertion needs an explicit call-scoped action sink")
         };
         assert!(matches!(
@@ -703,8 +1060,13 @@ fn function_assertion_is_detected_before_expression_inlining() {
             GalecTargetError::UnsupportedFeature { feature, .. }
                 if feature == "function-assertion"
         ));
-        let mut lowerer =
-            ExpressionLowerer::with_assertions(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_assertions(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         assert_eq!(
             lowerer.lower(call).unwrap().expression,
             gast::Expression::Real(0.0)
@@ -768,8 +1130,13 @@ fn prefix_boundary_rematerializes_function_calls_for_reorder_safety() {
         let variables = HashMap::new();
         let previous = HashMap::new();
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
 
         let first = lowerer.lower(call).unwrap().expression;
         let first_prefix = lowerer.take_prefix_statements();
@@ -1119,7 +1486,7 @@ fn assert_atomic_multi_output_group(model: &dae::Dae) {
             view,
             &definitions,
             HashSet::from([caller.index()]),
-            EmissionFacts::structured(),
+            positive_zero_arithmetic(),
         )
         .expect("the atomic multi-output group lowers");
         let caller = lowered
@@ -1137,8 +1504,13 @@ fn lazy_tensor_selection_guards_hoisted_calls_and_indexed_contractions() {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
         let variables = HashMap::new();
         let previous = HashMap::new();
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
+        let mut lowerer = ExpressionLowerer::with_do_step_effects(
+            view,
+            &definitions,
+            &variables,
+            &previous,
+            positive_zero_arithmetic(),
+        );
         let outer = gast::Name::ident("outer");
         let enabled = gast::Name::ident("enabled");
         let shared = gast::Name::ident("shared");
@@ -1211,692 +1583,4 @@ fn lazy_tensor_selection_guards_hoisted_calls_and_indexed_contractions() {
     });
 }
 
-/// Two scalar calls to the same function on opposite branches of one
-/// conditional, used to check the branches do not share a materialized call.
-fn scalar_conditional_branches_fixture() -> dae::Dae {
-    let mut sources = SourceMap::new();
-    let text = "function f input Real u; output Real y; algorithm y := u; end f; if true then f(1.0) else f(1.0)";
-    let source = sources.add("conditional-scalar-call.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
-        })?;
-        let (function, ()) = dae.function(
-            dae::FunctionSignature::new(VarName::new("f"), [real], [real], provenance),
-            |dae, reservation| {
-                let input = dae.functions(|functions| {
-                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
-                })?;
-                let output = dae.functions(|functions| {
-                    functions.output(&reservation, VarName::new("y"), 0, provenance)
-                })?;
-                let mut body =
-                    dae.functions(|functions| functions.begin(reservation, provenance))?;
-                let value = dae.expressions(|expressions| {
-                    expressions.at(provenance).function_parameter(input)
-                })?;
-                dae.functions(|functions| functions.assign(&mut body, output, value, provenance))?;
-                dae.functions(|functions| functions.define(body, provenance))
-            },
-        )?;
-        let (condition, argument) = dae.expressions(|expressions| {
-            Ok((
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Boolean(true))?,
-                expressions
-                    .at(provenance)
-                    .literal(dae::DaeLiteral::Real(1.0))?,
-            ))
-        })?;
-        let call = dae
-            .expressions(|expressions| expressions.at(provenance).call(function, 0, [argument]))?;
-        dae.expressions(|expressions| expressions.at(provenance).call(function, 0, [argument]))?;
-        dae.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .conditional([(condition, call)], call)
-        })?;
-        Ok(())
-    })
-    .unwrap()
-}
-
-#[test]
-fn scalar_conditional_branches_do_not_share_materialized_calls() {
-    let model = scalar_conditional_branches_fixture();
-
-    model.inspect(|view| {
-        let calls = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .filter(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Call { owner, .. } if owner == *id
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(calls.len(), 2);
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut distinct =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        for call in calls {
-            distinct.lower(call).unwrap();
-        }
-        assert_eq!(
-            count_named_multi_calls(&distinct.take_prefix_statements(), "f"),
-            2
-        );
-
-        let conditional = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Conditional(_)
-                )
-            })
-            .unwrap();
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        lowerer.lower(conditional).unwrap();
-        let prefix = lowerer.take_prefix_statements();
-        let gast::Statement::If(selection) = &prefix[0].node else {
-            panic!("the conditional must dominate both function calls")
-        };
-        let gast::Statement::MultiAssignment {
-            targets: branch_targets,
-            ..
-        } = &selection.branches[0].body[0].node
-        else {
-            panic!("the selected branch must materialize its call")
-        };
-        let gast::Statement::MultiAssignment {
-            targets: fallback_targets,
-            ..
-        } = &selection.else_body.as_ref().unwrap()[0].node
-        else {
-            panic!("the fallback branch must materialize its call")
-        };
-        assert_ne!(branch_targets, fallback_targets);
-    });
-}
-
-#[test]
-fn atomic_multi_output_call_dominates_consumers_with_additional_guards() {
-    let mut sources = SourceMap::new();
-    let text = "function pair input Real u; output Real a; output Real b; algorithm a := u; b := u; end pair; function caller input Boolean sourceGuard; input Boolean consumerGuard; output Real x; output Real y; algorithm (x, y) := pair(1.0); end caller";
-    let source = sources.add("atomic-multi-output.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
-        })?;
-        let boolean = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Boolean), provenance)
-        })?;
-        let pair = define_real_pair_function(dae, real, provenance)?;
-        dae.function(
-            dae::FunctionSignature::new(
-                VarName::new("caller"),
-                [boolean, boolean],
-                [real, real],
-                provenance,
-            ),
-            |dae, reservation| {
-                let source_guard = dae.functions(|functions| {
-                    functions.parameter(&reservation, VarName::new("sourceGuard"), 0, provenance)
-                })?;
-                let consumer_guard = dae.functions(|functions| {
-                    functions.parameter(&reservation, VarName::new("consumerGuard"), 1, provenance)
-                })?;
-                let first = dae.functions(|functions| {
-                    functions.output(&reservation, VarName::new("x"), 0, provenance)
-                })?;
-                let second = dae.functions(|functions| {
-                    functions.output(&reservation, VarName::new("y"), 1, provenance)
-                })?;
-                let mut body =
-                    dae.functions(|functions| functions.begin(reservation, provenance))?;
-                let (source_guard, consumer_guard, argument, zero) =
-                    dae.expressions(|expressions| {
-                        Ok((
-                            expressions
-                                .at(provenance)
-                                .function_parameter(source_guard)?,
-                            expressions
-                                .at(provenance)
-                                .function_parameter(consumer_guard)?,
-                            expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Real(1.0))?,
-                            expressions
-                                .at(provenance)
-                                .literal(dae::DaeLiteral::Real(0.0))?,
-                        ))
-                    })?;
-                let calls = dae.expressions(|expressions| {
-                    expressions
-                        .at(provenance)
-                        .call_results(pair, [0, 1], [argument])
-                })?;
-                let first_value = dae.expressions(|expressions| {
-                    expressions
-                        .at(provenance)
-                        .conditional([(source_guard, calls[0])], zero)
-                })?;
-                let guarded_second = dae.expressions(|expressions| {
-                    expressions
-                        .at(provenance)
-                        .conditional([(source_guard, calls[1])], zero)
-                })?;
-                let consumed_second = dae.expressions(|expressions| {
-                    expressions.at(provenance).binary(
-                        dae::BinaryOperator::Add,
-                        guarded_second,
-                        zero,
-                    )
-                })?;
-                let second_value = dae.expressions(|expressions| {
-                    expressions
-                        .at(provenance)
-                        .conditional([(consumer_guard, consumed_second)], zero)
-                })?;
-                dae.functions(|functions| {
-                    functions.assign_all(
-                        &mut body,
-                        &[(first, first_value), (second, second_value)],
-                        provenance,
-                    )
-                })?;
-                dae.functions(|functions| functions.define(body, provenance))
-            },
-        )?;
-        Ok(())
-    })
-    .unwrap();
-
-    assert_atomic_multi_output_group(&model);
-}
-
-fn define_real_pair_function<'dae>(
-    dae: &mut dae::DaeConstruction<'dae>,
-    real: dae::ValueTypeId<'dae>,
-    provenance: dae::DaeProvenance,
-) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
-    let (function, ()) = dae.function(
-        dae::FunctionSignature::new(VarName::new("pair"), [real], [real, real], provenance),
-        |dae, reservation| {
-            let input = dae.functions(|functions| {
-                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
-            })?;
-            let first = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("a"), 0, provenance)
-            })?;
-            let second = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("b"), 1, provenance)
-            })?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            let value = dae
-                .expressions(|expressions| expressions.at(provenance).function_parameter(input))?;
-            dae.functions(|functions| functions.assign(&mut body, first, value, provenance))?;
-            dae.functions(|functions| functions.assign(&mut body, second, value, provenance))?;
-            dae.functions(|functions| functions.define(body, provenance))
-        },
-    )?;
-    Ok(function)
-}
-
-#[test]
-fn record_field_of_checked_function_call_is_projected_before_scalar_lowering() {
-    let mut sources = SourceMap::new();
-    let text = "record Pair Real left; Real right; end Pair; function makePair input Real u; output Pair p; algorithm p := Pair(u, u); end makePair; makePair(2.0).right";
-    let source = sources.add("record-call.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
-        })?;
-        let pair = dae.types(|types| {
-            types.record(
-                VarName::new("Pair"),
-                [(VarName::new("left"), real), (VarName::new("right"), real)],
-                provenance,
-            )
-        })?;
-        let signature =
-            dae::FunctionSignature::new(VarName::new("makePair"), [real], [pair], provenance);
-        let (function, ()) = dae.function(signature, |dae, reservation| {
-            let parameter = dae.functions(|functions| {
-                functions.parameter(&reservation, VarName::new("u"), 0, provenance)
-            })?;
-            let output = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("p"), 0, provenance)
-            })?;
-            dae.functions(|functions| {
-                functions.local(&reservation, VarName::new("p.left"), real, provenance)
-            })?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            let fields = dae.expressions(|expressions| {
-                Ok([
-                    expressions.at(provenance).function_parameter(parameter)?,
-                    expressions.at(provenance).function_parameter(parameter)?,
-                ])
-            })?;
-            let value =
-                dae.expressions(|expressions| expressions.at(provenance).record(pair, fields))?;
-            dae.functions(|functions| functions.assign(&mut body, output, value, provenance))?;
-            dae.functions(|functions| functions.define(body, provenance))
-        })?;
-        let argument = dae.expressions(|expressions| {
-            expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(2.0))
-        })?;
-        let call = dae
-            .expressions(|expressions| expressions.at(provenance).call(function, 0, [argument]))?;
-        dae.expressions(|expressions| expressions.at(provenance).field(call, 1))?;
-        Ok(())
-    })
-    .unwrap();
-
-    model.inspect(|view| {
-        let function = view.function_id(0).unwrap();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered_functions = user_functions::lower_reachable(
-            view,
-            &definitions,
-            HashSet::from([function.index()]),
-            EmissionFacts::structured(),
-        )
-        .unwrap();
-        assert_eq!(lowered_functions.len(), 1);
-        let field = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Field { field: 1, .. }
-                )
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let lowered = ExpressionLowerer::new(view, &definitions, &variables, &previous)
-            .lower(field)
-            .unwrap();
-        assert_eq!(lowered.scalar_type, gast::ScalarType::Real);
-        assert_eq!(lowered.expression, gast::Expression::Real(2.0));
-
-        let mut materialized =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        let selected = materialized.lower(field).unwrap().expression;
-        let prefix = materialized.take_prefix_statements();
-        assert_eq!(prefix.len(), 1);
-        let gast::Statement::MultiAssignment { targets, .. } = &prefix[0].node else {
-            panic!("one record call must become one multi-output assignment")
-        };
-        assert_eq!(targets.len(), 2);
-        assert!(matches!(
-            selected,
-            gast::Expression::Ref(gast::Reference::Local(ref selected))
-                if matches!(&targets[1], gast::Reference::Local(target)
-                    if target.name.lexeme() == selected.name.lexeme())
-        ));
-    });
-}
-
-#[test]
-fn function_identity_assignments_are_not_emitted() {
-    let mut sources = SourceMap::new();
-    let source = sources.add("identity-assignment.mo", "function makePair");
-    let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 17)).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        let real = dae.types(|types| {
-            types.derived(dae::ValueType::scalar(dae::ScalarType::Real), provenance)
-        })?;
-        let pair = dae.types(|types| {
-            types.record(
-                VarName::new("Pair"),
-                [(VarName::new("left"), real), (VarName::new("right"), real)],
-                provenance,
-            )
-        })?;
-        let signature = dae::FunctionSignature::new(
-            VarName::new("makePair"),
-            std::iter::empty(),
-            [pair],
-            provenance,
-        );
-        dae.function(signature, |dae, reservation| {
-            let output = dae.functions(|functions| {
-                functions.output(&reservation, VarName::new("result"), 0, provenance)
-            })?;
-            let left = dae.functions(|functions| {
-                functions.local(&reservation, VarName::new("result.left"), real, provenance)
-            })?;
-            let right = dae.functions(|functions| {
-                functions.local(&reservation, VarName::new("result.right"), real, provenance)
-            })?;
-            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
-            let values = dae.expressions(|expressions| {
-                Ok([
-                    expressions
-                        .at(provenance)
-                        .literal(dae::DaeLiteral::Real(1.0))?,
-                    expressions
-                        .at(provenance)
-                        .literal(dae::DaeLiteral::Real(2.0))?,
-                ])
-            })?;
-            dae.functions(|functions| functions.assign(&mut body, left, values[0], provenance))?;
-            dae.functions(|functions| functions.assign(&mut body, right, values[1], provenance))?;
-            let fields = dae.functions(|functions| {
-                Ok([
-                    functions.read(&body, left, provenance)?,
-                    functions.read(&body, right, provenance)?,
-                ])
-            })?;
-            let fields =
-                dae.expressions(|expressions| expressions.at(provenance).record(pair, fields))?;
-            dae.functions(|functions| functions.assign(&mut body, output, fields, provenance))?;
-            dae.functions(|functions| functions.define(body, provenance))
-        })?;
-        Ok(())
-    })
-    .unwrap();
-
-    model.inspect(|view| {
-        let function = view.function_id(0).unwrap();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered = user_functions::lower_reachable(
-            view,
-            &definitions,
-            HashSet::from([function.index()]),
-            EmissionFacts::structured(),
-        )
-        .expect("identity assignment lowers");
-        assert_eq!(lowered.len(), 1);
-        assert_eq!(lowered[0].statements.len(), 2);
-        assert!(lowered[0].statements.iter().all(|statement| {
-            !matches!(
-                &statement.node,
-                gast::Statement::Assignment {
-                    target: gast::Reference::Local(target),
-                    value: gast::Expression::Ref(gast::Reference::Local(value)),
-                } if target == value
-            )
-        }));
-    });
-}
-
-#[test]
-fn sum_reduction_projects_the_tensor_in_row_major_order() {
-    let mut sources = SourceMap::new();
-    let text = "sum({1.0, 2.0, 3.0})";
-    let source = sources.add("sum.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        dae.expressions(|expressions| {
-            let values = [1.0, 2.0, 3.0]
-                .into_iter()
-                .map(|value| {
-                    expressions
-                        .at(provenance)
-                        .literal(dae::DaeLiteral::Real(value))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let array = expressions.at(provenance).array(values)?;
-            expressions
-                .at(provenance)
-                .builtin(dae::PureBuiltin::Sum, [array])?;
-            Ok(())
-        })
-    })
-    .unwrap();
-    model.inspect(|view| {
-        let sum = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Builtin {
-                        builtin: dae::PureBuiltin::Sum,
-                        ..
-                    }
-                )
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
-        let expected = gast::Expression::binary(
-            gast::BinaryOp::Add,
-            gast::Expression::binary(
-                gast::BinaryOp::Add,
-                gast::Expression::Real(1.0),
-                gast::Expression::Real(2.0),
-            ),
-            gast::Expression::Real(3.0),
-        );
-        assert_eq!(lowerer.lower(sum).unwrap().expression, expected);
-    });
-}
-
-#[test]
-fn array_update_projects_updated_and_historical_elements() {
-    let mut sources = SourceMap::new();
-    let source = sources.add("array-update.mo", "x[2] := 9.0");
-    let span = Span::from_offsets(source, 0, 11);
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        dae.expressions(|expressions| {
-            let one = expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(1.0))?;
-            let two = expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(2.0))?;
-            let three = expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(3.0))?;
-            let values = [one, two, three];
-            let base = expressions.at(provenance).array(values)?;
-            let index = expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Integer(2))?;
-            let value = expressions
-                .at(provenance)
-                .literal(dae::DaeLiteral::Real(9.0))?;
-            expressions.at(provenance).array_update(
-                base,
-                value,
-                [dae::Subscript::Index {
-                    expression: index,
-                    provenance,
-                }],
-            )?;
-            Ok(())
-        })
-    })
-    .unwrap();
-    model.inspect(|view| {
-        let update = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::ArrayUpdate { .. }
-                )
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
-        assert_eq!(
-            lowerer.lower_element(update, &[1]).unwrap().expression,
-            gast::Expression::Real(1.0)
-        );
-        assert_eq!(
-            lowerer.lower_element(update, &[2]).unwrap().expression,
-            gast::Expression::Real(9.0)
-        );
-        assert_eq!(
-            lowerer.lower_element(update, &[3]).unwrap().expression,
-            gast::Expression::Real(3.0)
-        );
-    });
-}
-
-#[test]
-fn comprehension_projects_checked_binder_values() {
-    let mut sources = SourceMap::new();
-    let text = "{i for i in -1:2:3}";
-    let source = sources.add("comprehension.mo", text);
-    let span = Span::from_offsets(source, 0, text.len());
-    let provenance = dae::DaeProvenance::source(span).unwrap();
-    let model = dae::Dae::construct(sources, |dae| {
-        let domain = dae.domains(|domains| {
-            domains.structured(
-                rumoca_core::StructuredIndexDomain {
-                    binders: vec![rumoca_core::StructuredIndexBinder {
-                        id: 0,
-                        display_name: "i".to_owned(),
-                        lower: -1,
-                        upper: 3,
-                        step: 2,
-                    }],
-                },
-                provenance,
-            )
-        })?;
-        let binder = dae.domains(|domains| domains.binder(domain, 0, provenance))?;
-        let body = dae.expressions(|expressions| expressions.at(provenance).binder(binder))?;
-        dae.expressions(|expressions| {
-            expressions.at(provenance).comprehension(domain, body)?;
-            Ok(())
-        })
-    })
-    .unwrap();
-    model.inspect(|view| {
-        let comprehension = (0..view.expression_count())
-            .filter_map(|index| view.expression_id(index))
-            .find(|id| {
-                matches!(
-                    view.expression(*id).unwrap().operation(),
-                    dae::ExpressionOperation::Comprehension { .. }
-                )
-            })
-            .unwrap();
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let mut lowerer = ExpressionLowerer::new(view, &definitions, &variables, &previous);
-        for (ordinal, expected) in [(1, -1), (2, 1), (3, 3)] {
-            assert_eq!(
-                lowerer
-                    .lower_element(comprehension, &[ordinal])
-                    .unwrap()
-                    .expression,
-                gast::Expression::Integer(expected)
-            );
-        }
-    });
-}
-
-/// The whole-array-move decision needs BOTH conjuncts: subscript identity
-/// alone must never flatten a projection whose source is declared with
-/// different extents than the target.
-///
-/// This constructs the situation the front end cannot yet spell — a
-/// subscript-identity projection over a shape-mismatched source — directly
-/// against `provable_whole_array_move`, because today every reachable
-/// identity projection reads an object declared from the target's own type
-/// (the would-be offenders, `y := s[1:2]` and leading sub-range
-/// comprehensions, arrive with their range arithmetic unfolded and fail the
-/// subscript check first). One index-folding improvement changes that, and
-/// this test is what bites: delete or weaken the shape conjunct and the
-/// mismatched case below collapses into a whole-array assignment between
-/// differently-shaped objects.
-#[test]
-fn whole_array_move_needs_shape_equality_not_just_subscript_identity() {
-    let model = dae::Dae::construct(SourceMap::new(), |_| Ok(())).unwrap();
-    model.inspect(|view| {
-        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let variables = HashMap::new();
-        let previous = HashMap::new();
-        let mut lowerer =
-            ExpressionLowerer::with_do_step_effects(view, &definitions, &variables, &previous);
-        for (name, extent) in [("wide", 5), ("exact", 2)] {
-            lowerer.temporary_locals.push(gast::VariableDeclaration {
-                ty: gast::TypeRef::Primitive(gast::ScalarType::Real),
-                name: gast::Name::ident(name),
-                dimensions: vec![gast::Dimension::Expr(gast::Expression::Integer(extent))],
-                range: gast::RangeAttributes::default(),
-                span: Span::DUMMY,
-            });
-        }
-        let index = gast::Expression::Ref(gast::Reference::local(gast::Name::ident("i0")));
-        let projection = |source: &str| {
-            gast::Expression::Ref(gast::Reference::Local(gast::RefPart {
-                name: gast::Name::ident(source),
-                subscripts: vec![index.clone()],
-                span: Span::DUMMY,
-            }))
-        };
-
-        // Identity subscripts, equal declared shapes: the move is provable.
-        let proven = whole_array_move::provable_whole_array_move(
-            &mut lowerer,
-            &projection("exact"),
-            std::slice::from_ref(&index),
-            &[2],
-            gast::ScalarType::Real,
-        );
-        assert!(
-            matches!(
-                proven,
-                Some(gast::Reference::Local(ref part))
-                    if part.name.lexeme() == "exact" && part.subscripts.is_empty()
-            ),
-            "a shape-equal identity projection must flatten, got {proven:?}"
-        );
-
-        // The same identity subscripts over a WIDER source: flattening would
-        // write a whole-array assignment between differently-shaped objects,
-        // so the loop must stay.
-        assert_eq!(
-            whole_array_move::provable_whole_array_move(
-                &mut lowerer,
-                &projection("wide"),
-                std::slice::from_ref(&index),
-                &[2],
-                gast::ScalarType::Real,
-            ),
-            None,
-            "subscript identity without shape equality must keep its loop"
-        );
-
-        // Element type is part of the shape: same extents, different scalar.
-        assert_eq!(
-            whole_array_move::provable_whole_array_move(
-                &mut lowerer,
-                &projection("exact"),
-                std::slice::from_ref(&index),
-                &[2],
-                gast::ScalarType::Integer,
-            ),
-            None,
-            "an element-type mismatch must keep its loop"
-        );
-    });
-}
+mod retained_conditionals;

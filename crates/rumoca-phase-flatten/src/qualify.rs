@@ -26,71 +26,6 @@ pub(crate) struct MemberDefIdCache<'tree> {
     maps: FxHashMap<rumoca_core::DefId, MemberDefIdMap<'tree>>,
 }
 
-/// Add imports visible from a lexical class scope.
-///
-/// The scope is structured, so callers do not recover hierarchy by splitting a
-/// flattened variable name. Ancestor imports are added first and the current
-/// class imports last, matching normal lexical shadowing.
-pub(crate) fn collect_imports_for_source_scope(
-    class_index: &ast::ClassDefIndex<'_>,
-    source_scope: &QualifiedName,
-    imports: &mut ImportMap,
-) {
-    let Some(source_def_id) = class_index.def_id_by_qualified_name(&source_scope.to_flat_string())
-    else {
-        return;
-    };
-    let mut chain = Vec::new();
-    let mut current = Some(source_def_id);
-    while let Some(def_id) = current {
-        chain.push(def_id);
-        current = class_index.parent_def_id(def_id);
-    }
-    for def_id in chain.into_iter().rev() {
-        if let Some(class_def) = class_index.get(def_id) {
-            resolve_import_pairs(&class_def.imports, class_index, imports);
-        }
-    }
-}
-
-fn resolve_import_pairs(
-    imports: &[ast::Import],
-    class_index: &ast::ClassDefIndex<'_>,
-    map: &mut ImportMap,
-) {
-    for import in imports {
-        match import {
-            ast::Import::Qualified { path, .. } => {
-                let Some(alias) = path.name.last() else {
-                    continue;
-                };
-                map.insert(alias.text.to_string(), path.to_string());
-            }
-            ast::Import::Renamed { alias, path, .. } => {
-                map.insert(alias.text.to_string(), path.to_string());
-            }
-            ast::Import::Unqualified { path, .. } => {
-                let pkg_name = path.to_string();
-                let Some(class_def) = class_index.get_by_qualified_name(&pkg_name) else {
-                    continue;
-                };
-                for name in class_def.components.keys() {
-                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
-                }
-                for name in class_def.classes.keys() {
-                    map.insert(name.clone(), format!("{pkg_name}.{name}"));
-                }
-            }
-            ast::Import::Selective { path, names, .. } => {
-                let pkg_name = path.to_string();
-                for name in names {
-                    map.insert(name.text.to_string(), format!("{pkg_name}.{}", name.text));
-                }
-            }
-        }
-    }
-}
-
 /// Add lexical package aliases visible from `class_name` into the import map.
 ///
 /// Modelica class/package names are visible through lexical scope nesting.
@@ -232,7 +167,8 @@ pub(crate) fn collect_lexical_class_aliases_for_def_id_with_member_cache<'tree>(
             if member_map_declares_different_def_id(&source_member_def_ids, alias_name, *def_id) {
                 continue;
             }
-            if let Some(visible_def_id) = tree.scope_tree.lookup(original_lookup_scope, alias)
+            if let ast::LookupOutcome::Found(visible_def_id) =
+                tree.scope_tree.lookup(original_lookup_scope, alias)
                 && visible_def_id != *def_id
             {
                 continue;
@@ -428,7 +364,7 @@ fn insert_visible_lexical_package_alias(
         return;
     }
     if let Some(scope_id) = lookup_scope
-        && let Some(visible_def_id) = tree
+        && let ast::LookupOutcome::Found(visible_def_id) = tree
             .scope_tree
             .lookup(scope_id, &rumoca_core::ComponentPath::from_flat_path(alias))
         && visible_def_id != def_id
@@ -620,39 +556,6 @@ fn is_local_root_ref(cr: &ComponentReference, locals: &HashSet<String>) -> bool 
         .is_some_and(|part| locals.contains(part.ident.text.as_ref()))
 }
 
-/// Check if a component reference appears to be already fully-qualified.
-///
-/// A reference is considered fully-qualified if:
-/// - The first part is a known package name like "Modelica"
-///
-/// This prevents instance prefixes from being added to global references like
-/// `Modelica.Constants.eps` which would incorrectly become `instance.Modelica.Constants.eps`.
-///
-/// Note: We only check for known packages, not uppercase heuristics. References like
-/// `ICP.di` (where ICP is a sub-component) must still get prefixed to become `L1.ICP.di`.
-fn is_likely_fully_qualified(cr: &ComponentReference) -> bool {
-    if cr.parts.is_empty() {
-        return false;
-    }
-
-    let first_part = cr.parts[0].ident.text.as_ref();
-
-    let known_packages = [
-        "Modelica",
-        "ModelicaTest",
-        "ModelicaTestOverdetermined",
-        "Complex",
-        "ModelicaServices",
-        "Modelica_DeviceDrivers",
-        "Buildings",
-        "OpenIPSL",
-        "PowerSystems",
-        "ThermoPower",
-    ];
-
-    known_packages.contains(&first_part)
-}
-
 /// Built-in enumeration literals are globally visible and must not be
 /// qualified with instance prefixes (MLS §4.4.4.2, §8.3.7).
 fn is_builtin_enum_literal_ref(cr: &ComponentReference) -> bool {
@@ -760,13 +663,6 @@ fn qualify_cr_inner(
     // Skip if local and option is set
     if opts.skip_local && cr.local {
         return cr.clone();
-    }
-
-    // Skip qualification if reference appears to be already fully-qualified
-    if is_likely_fully_qualified(cr) {
-        let mut qualified = cr.clone();
-        qualified.parts = cr.parts.iter().map(qualify_part_subs).collect();
-        return qualified;
     }
 
     if is_builtin_enum_literal_ref(cr) {
@@ -985,6 +881,10 @@ fn qualify_expr_inner(
             is_partial_application: *is_partial_application,
             span: *span,
         },
+        Expression::DerivativeCall { args, span } => Expression::DerivativeCall {
+            args: qualify_vec_inner(args, prefix, opts, locals, imports),
+            span: *span,
+        },
         Expression::If {
             branches,
             else_branch,
@@ -1054,7 +954,9 @@ fn qualify_expr_inner_tail(
             span,
         } => Expression::Modification {
             target: target.clone(),
-            value: Arc::new(qualify_expr_inner(value, prefix, opts, locals, imports)),
+            value: value
+                .as_ref()
+                .map(|value| Arc::new(qualify_expr_inner(value, prefix, opts, locals, imports))),
             span: *span,
         },
         Expression::ArrayComprehension {

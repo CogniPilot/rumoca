@@ -258,7 +258,7 @@ fn when_chain_activates_each_branch_by_its_own_condition_in_source_order() {
     let model = source_priority_when_model(&source);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.event_action_count(), 0);
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
@@ -365,7 +365,7 @@ fn when_discrete_real_lowers_to_condition_owned_b1b_residual() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.event_action_count(), 0);
         assert_eq!(view.discrete_real_equation_count(), 1);
         let equation = view.discrete_real_equation(0).unwrap();
@@ -447,7 +447,7 @@ fn discrete_real_connection_keeps_continuous_pass_through_equation() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_real_equation_count(), 1);
         assert_eq!(view.continuous_owner_count(), 1);
         let owner = view.continuous_owner(0).unwrap();
@@ -489,7 +489,7 @@ fn array_discrete_real_binding_keeps_one_target_shaped_b1b_owner() {
     variable.source_span = declaration_span;
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_real_equation_count(), 1);
         let equation = view.discrete_real_equation(0).unwrap();
         assert!(matches!(
@@ -540,7 +540,7 @@ fn b1c_topology_orders_producers_before_declaration_order_consumers() {
     });
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_value_owner_count(), 2);
         let producer = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -602,7 +602,7 @@ fn b1c_connection_assigns_the_exact_input_from_its_output_owner() {
         Expression::Binary {
             op: OpBinary::Sub,
             lhs: Box::new(Expression::VarRef {
-                name: Reference::new("source"),
+                name: test_reference("source"),
                 subscripts: Vec::new(),
                 span: source.span("source", 1),
             }),
@@ -627,7 +627,7 @@ fn b1c_connection_assigns_the_exact_input_from_its_output_owner() {
                 span: source.span("source", 2),
             }),
             rhs: Box::new(Expression::VarRef {
-                name: Reference::new("sink"),
+                name: test_reference("sink"),
                 subscripts: Vec::new(),
                 span: source.span("sink", 1),
             }),
@@ -641,7 +641,7 @@ fn b1c_connection_assigns_the_exact_input_from_its_output_owner() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_value_owner_count(), 2);
         let source_owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -697,7 +697,7 @@ fn assert_indexed_output_connection_value(output_first: bool) {
     });
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let owner = (0..view.discrete_value_owner_count())
             .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
             .find(|owner| owner.provenance().span() == connection_span)
@@ -786,7 +786,7 @@ fn b1c_connections_coalesce_complete_element_coverage_into_one_array_owner() {
     let model = complete_array_connection_model(&source, false);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let owner = (0..view.discrete_value_owner_count())
             .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
             .find(|owner| {
@@ -832,7 +832,7 @@ fn b1c_element_assignments_construct_one_ordered_array_owner() {
     let dae = construct(&model, source.map)
         .expect("exact element coverage with a strictly backward recurrence constructs one owner");
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -1029,7 +1029,7 @@ fn b1c_classification_keeps_discrete_controlled_real_equations_continuous() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.continuous_equation_count(), 1);
         assert_eq!(view.discrete_value_owner_count(), 1);
         let dae::ContinuousOwnerView::Residual { equation, .. } =
@@ -1105,7 +1105,8 @@ fn b1c_classification_ignores_discrete_guards_inside_a_continuous_value() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| assert_eq!(view.continuous_equation_count(), 1));
+    dae.dae()
+        .inspect(|view| assert_eq!(view.continuous_equation_count(), 1));
 }
 
 #[test]
@@ -1186,7 +1187,7 @@ fn b1c_connection_orients_output_forwarders_from_the_exact_source_owner() {
         output_forwarder_connection_model(&source);
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_value_owner_count(), 4);
         let aggregate_owner = (0..view.discrete_value_owner_count())
             .filter_map(|index| view.discrete_value_owner(view.discrete_value_owner_id(index)?))
@@ -1453,6 +1454,24 @@ fn add_connection_endpoint(
 }
 
 fn connection_equation(lhs: Expression, rhs: Expression, span: Span) -> flat::Equation {
+    let endpoint = |expression: &Expression| {
+        let Expression::VarRef {
+            name, subscripts, ..
+        } = expression
+        else {
+            panic!("connection fixture endpoints must be direct references");
+        };
+        let mut rendered = name.var_name().as_str().to_string();
+        for subscript in subscripts {
+            let Subscript::Index { value, .. } = subscript else {
+                panic!("connection fixture selections must be exact literal indices");
+            };
+            rendered.push_str(&format!("[{value}]"));
+        }
+        rendered
+    };
+    let lhs_endpoint = endpoint(&lhs);
+    let rhs_endpoint = endpoint(&rhs);
     flat::Equation::new(
         Expression::Binary {
             op: OpBinary::Sub,
@@ -1462,8 +1481,8 @@ fn connection_equation(lhs: Expression, rhs: Expression, span: Span) -> flat::Eq
         },
         span,
         flat::EquationOrigin::Connection {
-            lhs: String::new(),
-            rhs: String::new(),
+            lhs: lhs_endpoint,
+            rhs: rhs_endpoint,
         },
     )
 }
@@ -1477,7 +1496,7 @@ fn b1c_topology_orders_targets_inside_one_atomic_owner() {
     let model = atomic_when_dependency_model(&source, false);
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.discrete_value_owner_count(), 1);
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
@@ -1557,7 +1576,7 @@ fn unassigned_discrete_value_has_explicit_generated_hold_owner() {
     );
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let owner = view
             .discrete_value_owner(view.discrete_value_owner_id(0).unwrap())
             .unwrap();
@@ -1614,7 +1633,7 @@ fn initial_pre_equation_uses_checked_discrete_initial_value_owner() {
     ));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.initialization_owner_count(), 0);
         assert_eq!(view.initial_discrete_value_count(), 1);
         let definition = view.initial_discrete_value(0).unwrap();
@@ -1636,6 +1655,10 @@ fn coupled_initial_discrete_real_definition_remains_a_numeric_initialization_row
     let mut target = flat::Variable::empty_with_span(source.span("discrete Real d", 0));
     target.name = VarName::new("d");
     target.instance_id = test_instance_id("d");
+    target.component_ref = Some(test_component_reference(
+        "d",
+        source.span("discrete Real d", 0),
+    ));
     target.type_id = rumoca_core::TypeId::new(8);
     target.variability = Variability::Discrete(Default::default());
     target.is_primitive = true;
@@ -1691,7 +1714,7 @@ fn coupled_initial_discrete_real_definition_remains_a_numeric_initialization_row
     model.equations.push(equation(1));
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.initial_discrete_value_count(), 0);
         assert_eq!(view.initialization_owner_count(), 1);
     });
@@ -1924,7 +1947,7 @@ fn when_assert_level_reaches_checked_event_action_with_exact_provenance() {
     model.when_chains.push(chain);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.event_action_count(), 1);
         let action = view.event_action(view.event_action_id(0).unwrap()).unwrap();
         assert_eq!(action.provenance().span(), assertion_span);

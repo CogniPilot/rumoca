@@ -64,7 +64,7 @@ fn production_range_lowering_retains_each_bound_occurrence() {
     );
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let omitted = view
             .expression(
                 view.variable(view.variable_id(0).unwrap())
@@ -115,6 +115,7 @@ fn add_range_parameter(
     let mut variable = flat::Variable::empty_with_span(declaration);
     variable.name = VarName::new(name);
     variable.instance_id = test_instance_id(name);
+    variable.component_ref = Some(test_component_reference(name, declaration));
     variable.type_id = type_id;
     variable.dims = vec![3];
     variable.variability = Variability::Parameter(Default::default());
@@ -202,7 +203,7 @@ fn top_level_connector_fields_retain_external_causality() {
     }
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let causalities = view
             .variables()
             .map(|(_, variable)| (variable.name().to_string(), variable.causality()))
@@ -238,11 +239,11 @@ fn unused_expandable_member_is_not_a_runtime_coordinate() {
         .get_mut(&VarName::new("bus.unused"))
         .unwrap();
     unused.from_expandable_connector = true;
-    unused.connected = false;
+    unused.connected = rumoca_ir_flat::ConnectedDomain::unconnected();
     assert!(unused.binding.is_none());
 
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.variable_count(), 1);
         assert_eq!(
             view.variable(view.variable_id(0).unwrap()).unwrap().name(),
@@ -258,7 +259,7 @@ fn zero_extent_parameter_binding_takes_its_element_type_from_the_declaration() {
     add_empty_array_parameter(&mut model, &source, vec![0]);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let parameter = view.variable(view.variable_id(1).unwrap()).unwrap();
         assert_eq!(parameter.role(), dae::VariableRole::Parameter);
         assert_eq!(parameter.scalar_count(), 0);
@@ -308,7 +309,7 @@ fn primitive_arrays_parameters_and_discrete_values_keep_checked_owners() {
     let model = array_and_discrete_model(&source);
     let dae = construct(&model, source.map).unwrap();
 
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         assert_eq!(view.variable_count(), 4);
         assert_eq!(
             view.variable(view.variable_id(0).unwrap())
@@ -421,7 +422,7 @@ fn variable_identity_pass_preserves_order_forward_and_function_attributes() {
     let forward_use = source.span("B", 0);
     let function_call = source.span("f()", 0);
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let names = view
             .variables()
             .map(|(_, variable)| variable.name().to_string())
@@ -481,7 +482,7 @@ fn ordinary_forward_attribute_cycle_retains_both_use_occurrences() {
     let a_start = source.span("B", 0);
     let b_start = source.span("A", 1);
     let dae = construct(&model, source.map).unwrap();
-    dae.inspect(|view| {
+    dae.dae().inspect(|view| {
         let a = view.variable(view.variable_id(0).unwrap()).unwrap();
         let b = view.variable(view.variable_id(1).unwrap()).unwrap();
         assert_eq!(
@@ -616,6 +617,7 @@ fn add_scalar_integer_parameter(
     let mut variable = flat::Variable::empty_with_span(source.span(declaration, 0));
     variable.name = VarName::new(name);
     variable.instance_id = test_instance_id(name);
+    variable.component_ref = Some(test_component_reference(name, source.span(declaration, 0)));
     variable.type_id = TypeId::new(type_id);
     variable.variability = Variability::Parameter(Default::default());
     variable.is_primitive = true;
@@ -678,6 +680,10 @@ fn a_parameter_binding_left_to_initialization_keeps_the_model_constructible() {
     let mut unbound = flat::Variable::empty_with_span(source.span("parameter Integer m", 0));
     unbound.name = VarName::new("m");
     unbound.instance_id = test_instance_id("m");
+    unbound.component_ref = Some(test_component_reference(
+        "m",
+        source.span("parameter Integer m", 0),
+    ));
     unbound.type_id = TypeId::new(41);
     unbound.variability = Variability::Parameter(Default::default());
     unbound.is_primitive = true;
@@ -699,6 +705,6 @@ fn a_parameter_binding_left_to_initialization_keeps_the_model_constructible() {
         },
     );
 
-    construct(&model, source.map)
+    let _product = construct(&model, source.map)
         .expect("an unsettled parameter value is established during initialization");
 }

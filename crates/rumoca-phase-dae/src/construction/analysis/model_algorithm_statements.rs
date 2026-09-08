@@ -1,9 +1,9 @@
 use super::*;
 
 pub(super) fn validate_model_algorithm(
+    flat: &flat::Model,
     algorithm: &flat::Algorithm,
     roles: &HashMap<VarName, PlannedRole>,
-    states: &HashSet<VarName>,
     model_values: &ShapeEnvironment,
     constants: &EvalContext,
     sample_lattices: &mut Vec<(Span, PeriodicClockSchedule)>,
@@ -12,8 +12,8 @@ pub(super) fn validate_model_algorithm(
     validate_algorithm_statements(
         &algorithm.statements,
         ModelAlgorithmScope {
+            flat,
             roles,
-            states,
             model_values,
             constants,
         },
@@ -248,16 +248,16 @@ fn reject_reads_of_written(
 }
 
 /// The facts a model algorithm statement is validated against: the planned
-/// role of every model coordinate, the state set, the shape environment, and
-/// the constant evaluation context.
+/// role of every model coordinate, the shape environment, and the constant
+/// evaluation context.
 ///
 /// A `for` statement validates its body under an extended role map, so the
 /// scope is a copyable view that can be rebound for one nested body rather
 /// than four arguments threaded through every statement form.
 #[derive(Clone, Copy)]
 struct ModelAlgorithmScope<'a> {
+    flat: &'a flat::Model,
     roles: &'a HashMap<VarName, PlannedRole>,
-    states: &'a HashSet<VarName>,
     model_values: &'a ShapeEnvironment,
     constants: &'a EvalContext,
 }
@@ -349,7 +349,7 @@ fn validate_algorithm_assignment(
         .clone();
     let target_role = scope.roles.get(&target);
     for part in comp.parts() {
-        validate_subscripts_scoped(&part.subs, scope.roles, scope.states, &HashSet::new())?;
+        validate_subscripts_scoped(&part.subs, scope.roles, &HashSet::new())?;
     }
     if matches!(
         target_role,
@@ -362,8 +362,11 @@ fn validate_algorithm_assignment(
     ) || (matches!(target_role, Some(PlannedRole::Aggregate))
         && is_direct_record_call_assignment(comp, value))
     {
-        validate_expression(value, scope.roles, scope.states)?;
-    } else if structured_assignment_pairs(&target, value, scope.roles).is_none() {
+        validate_expression(value, scope.roles)?;
+    } else if structured_assignment_plan(scope.flat, comp, value)
+        .as_ref()
+        .is_none_or(|plan| !structured_assignment_targets_are_writable(plan, scope.roles))
+    {
         return Err(ToDaeError::unsupported_algorithm(
             "model",
             format!(
@@ -385,13 +388,7 @@ fn validate_algorithm_if(
 ) -> Result<(), ToDaeError> {
     require_span(span, "algorithm if statement")?;
     for block in cond_blocks {
-        validate_algorithm_condition(
-            &block.cond,
-            scope.roles,
-            scope.states,
-            scope.constants,
-            sample_lattices,
-        )?;
+        validate_algorithm_condition(&block.cond, scope.roles, scope.constants, sample_lattices)?;
         validate_algorithm_statements(&block.stmts, scope, sample_lattices)?;
     }
     if let Some(statements) = else_block {
@@ -419,12 +416,7 @@ fn validate_algorithm_for(
     }
     let mut loop_roles = scope.roles.clone();
     for index in indices {
-        validate_model_algorithm_range(
-            &index.range,
-            &loop_roles,
-            scope.states,
-            scope.model_values,
-        )?;
+        validate_model_algorithm_range(&index.range, &loop_roles, scope.model_values)?;
         loop_roles.insert(VarName::new(&index.ident), PlannedRole::Parameter);
     }
     let loop_scope = ModelAlgorithmScope {
@@ -449,13 +441,7 @@ fn validate_algorithm_when(
         ));
     }
     for block in blocks {
-        validate_algorithm_condition(
-            &block.cond,
-            scope.roles,
-            scope.states,
-            scope.constants,
-            sample_lattices,
-        )?;
+        validate_algorithm_condition(&block.cond, scope.roles, scope.constants, sample_lattices)?;
         validate_algorithm_statements(&block.stmts, scope, sample_lattices)?;
     }
     Ok(())
@@ -484,7 +470,7 @@ fn validate_algorithm_function_call(
         ));
     }
     for argument in args {
-        validate_expression(argument, scope.roles, scope.states)?;
+        validate_expression(argument, scope.roles)?;
     }
     for output in outputs.iter().flatten() {
         validate_function_call_output(output, scope.roles)?;
@@ -500,10 +486,10 @@ fn validate_algorithm_assert(
     scope: ModelAlgorithmScope<'_>,
 ) -> Result<(), ToDaeError> {
     require_span(span, "algorithm assertion")?;
-    validate_expression(condition, scope.roles, scope.states)?;
-    validate_expression(message, scope.roles, scope.states)?;
+    validate_expression(condition, scope.roles)?;
+    validate_expression(message, scope.roles)?;
     if let Some(level) = level {
-        validate_expression(level, scope.roles, scope.states)?;
+        validate_expression(level, scope.roles)?;
     }
     Ok(())
 }
@@ -544,23 +530,14 @@ fn validate_function_call_output(
     ))
 }
 
-fn structured_assignment_pairs(
-    target: &VarName,
-    value: &Expression,
+fn structured_assignment_targets_are_writable(
+    plan: &StructuredAssignmentPlan,
     roles: &HashMap<VarName, PlannedRole>,
-) -> Option<Vec<VarName>> {
-    let pairs = structured_assignment_names(target, value, roles.keys())?;
-    let pairs = pairs
-        .into_iter()
-        .map(|(target_leaf, _)| target_leaf)
-        .collect::<Vec<_>>();
-    pairs
-        .iter()
-        .all(|target_leaf| {
-            matches!(
-                roles.get(target_leaf),
-                Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
-            )
-        })
-        .then_some(pairs)
+) -> bool {
+    plan.pairs.iter().all(|(target_leaf, _)| {
+        matches!(
+            roles.get(&target_leaf.name),
+            Some(PlannedRole::DiscreteReal | PlannedRole::DiscreteValue)
+        )
+    })
 }

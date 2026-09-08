@@ -2,19 +2,18 @@
 //!
 //! These tests pin every arm of the acceptance contract stated in the module
 //! docs — a subscripted endpoint that names a declared occurrence, one whose
-//! base has no declaration in view, one whose declaration has any dimension
-//! (including the over-subscripted case this check does not judge), one whose
-//! declaration still carries dimension expressions, and one whose visible rank
-//! is not authoritative because a redeclaration was consumed for it or for an
-//! enclosing declaration — plus the single provable violation, which is
-//! reported against both the connect endpoint and the declaration site and
-//! never silently dropped onto the whole component.
+//! base has no declaration in view, one whose declaration has retained or
+//! symbolic dimensions, one whose visible rank is not authoritative because a
+//! redeclaration was consumed, and the provable dimensionless and
+//! over-subscripted violations. Refusals occur before connection-set mutation
+//! and never drop the selector onto the whole component.
 
 use super::*;
 
 /// Lexical scope of the class that declares the components and writes the
 /// connection.
 const OWNING_SCOPE: &str = "Root";
+const CONNECTOR_TYPE: rumoca_core::TypeId = rumoca_core::TypeId(0x53_0001);
 
 fn test_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
@@ -22,6 +21,18 @@ fn test_span() -> rumoca_core::Span {
         40,
         56,
     )
+}
+
+fn process_test_connections(
+    flat: &mut flat::Model,
+    overlay: &ast::InstanceOverlay,
+    forest: &mut crate::vcg::OverconstrainedEquationForest,
+) -> Result<(), FlattenError> {
+    finalize_connection_test_flat(flat);
+    let overconstrained = overlay
+        .finalized_overconstrained()
+        .expect("endpoint fixture must construct finalized occurrence proofs");
+    equation_generation::process_connections_for_test(flat, &overconstrained, forest)
 }
 
 fn declaration_location() -> rumoca_core::Location {
@@ -41,7 +52,7 @@ fn declaration_location() -> rumoca_core::Location {
 /// Flat model for two scalar connectors `a` and `b`, each with one potential
 /// and one flow member.
 fn two_scalar_connectors() -> flat::Model {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     for (name, flow) in [("a.e", false), ("a.f", true), ("b.e", false), ("b.f", true)] {
         flat.add_variable(
             rumoca_core::VarName::new(name),
@@ -50,7 +61,7 @@ fn two_scalar_connectors() -> flat::Model {
                 flow,
                 is_primitive: true,
                 source_span: test_span(),
-                ..flat::Variable::empty_with_span(test_span())
+                ..connection_test_variable(test_span())
             },
         );
     }
@@ -63,18 +74,20 @@ fn two_scalar_connectors() -> flat::Model {
 /// passing [`OWNING_SCOPE`] models a component declared by the same class that
 /// instantiated it, which is what makes its rank authoritative.
 fn declared_connector(
-    instance_id: u32,
+    instance_id: rumoca_core::InstanceId,
+    owner_class_id: rumoca_core::InstanceId,
     name: &str,
     dims: Vec<i64>,
     dims_expr: Vec<ast::Subscript>,
     declaration_scope: &str,
 ) -> ast::InstanceData {
     ast::InstanceData {
-        instance_id: rumoca_core::InstanceId(instance_id),
+        instance_id,
         qualified_name: ast::QualifiedName::from_dotted(name),
-        owner_class_id: Some(rumoca_core::InstanceId(0)),
+        owner_class_id: Some(owner_class_id),
         declaration_source_scope: Some(ast::QualifiedName::from_ident(declaration_scope)),
         source_location: declaration_location(),
+        type_id: CONNECTOR_TYPE,
         dims,
         dims_expr,
         is_connector_type: true,
@@ -83,9 +96,12 @@ fn declared_connector(
 }
 
 /// Root class instance owning `connections`, declared in [`OWNING_SCOPE`].
-fn root_class(connections: Vec<ast::InstanceConnection>) -> ast::ClassInstanceData {
+fn root_class(
+    instance_id: rumoca_core::InstanceId,
+    connections: Vec<ast::InstanceConnection>,
+) -> ast::ClassInstanceData {
     ast::ClassInstanceData {
-        instance_id: rumoca_core::InstanceId(0),
+        instance_id,
         qualified_name: ast::QualifiedName::from_ident(OWNING_SCOPE),
         source_scope: Some(ast::QualifiedName::from_ident(OWNING_SCOPE)),
         connections,
@@ -98,14 +114,14 @@ fn connect_element(endpoint: &str, subscripts: Vec<i64>) -> ast::InstanceConnect
     let mut a = ast::QualifiedName::from_dotted(endpoint);
     let last = a.parts.len() - 1;
     a.parts[last].1 = subscripts;
-    ast::InstanceConnection {
+    ast::InstanceConnection::scalar(
         a,
-        b: ast::QualifiedName::from_ident("b"),
-        connector_type: None,
-        span: test_span(),
-        scope: String::new(),
-        family: None,
-    }
+        ast::QualifiedName::from_ident("b"),
+        None,
+        test_span(),
+        String::new(),
+    )
+    .expect("test scalar connection is valid")
 }
 
 /// Overlay declaring component `a` with the given dimensions plus a connection
@@ -125,22 +141,41 @@ fn overlay_connecting(
     declaration_scope: &str,
     subscripts: Vec<i64>,
 ) -> ast::InstanceOverlay {
+    overlay_connecting_with_redeclare(dims, dims_expr, declaration_scope, subscripts, false)
+}
+
+fn overlay_connecting_with_redeclare(
+    dims: Vec<i64>,
+    dims_expr: Vec<ast::Subscript>,
+    declaration_scope: &str,
+    subscripts: Vec<i64>,
+    had_redeclare: bool,
+) -> ast::InstanceOverlay {
     let mut overlay = ast::InstanceOverlay::new();
-    overlay.add_component(declared_connector(
-        1,
-        "a",
-        dims,
-        dims_expr,
-        declaration_scope,
-    ));
-    overlay.add_component(declared_connector(
-        2,
-        "b",
-        Vec::new(),
-        Vec::new(),
-        OWNING_SCOPE,
-    ));
-    overlay.add_class(root_class(vec![connect_element("a", subscripts)]));
+    overlay.type_roots.insert(CONNECTOR_TYPE, CONNECTOR_TYPE);
+    let root_id = overlay.alloc_id();
+    let a_id = overlay.alloc_id();
+    let b_id = overlay.alloc_id();
+    overlay
+        .add_component(ast::InstanceData {
+            had_redeclare,
+            ..declared_connector(a_id, root_id, "a", dims, dims_expr, declaration_scope)
+        })
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            b_id,
+            root_id,
+            "b",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_class(root_class(root_id, vec![connect_element("a", subscripts)]))
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
@@ -150,7 +185,7 @@ fn connect_subscript_on_a_dimensionless_declaration_is_rejected() {
     let overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let error = process_connections(&mut flat, &overlay, false, &mut forest)
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
         .expect_err("a subscript on a declaration without dimensions must be rejected");
 
     assert!(
@@ -174,7 +209,7 @@ fn dimensionless_endpoint_rejection_cites_the_declaration_site() {
     let overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let error = process_connections(&mut flat, &overlay, false, &mut forest)
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
         .expect_err("a subscript on a declaration without dimensions must be rejected");
 
     let diagnostic = error.to_diagnostic();
@@ -197,7 +232,7 @@ fn dimensionless_endpoint_subscript_is_never_dropped_onto_the_whole_component() 
     let overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let _ = process_connections(&mut flat, &overlay, false, &mut forest)
+    let _ = process_test_connections(&mut flat, &overlay, &mut forest)
         .expect_err("a subscript on a declaration without dimensions must be rejected");
 
     assert!(
@@ -209,26 +244,59 @@ fn dimensionless_endpoint_subscript_is_never_dropped_onto_the_whole_component() 
             .collect::<Vec<_>>()
     );
     assert!(
-        flat.variables.values().all(|variable| !variable.connected),
+        flat.variables
+            .values()
+            .all(|variable| variable.connected.is_unconnected()),
         "the rejected connection must not have marked members connected"
     );
 }
 
+/// `connect(a[1], b)` on a declared `a[2]` whose Flat members are scalar
+/// (`a.e`, `a.f`) names an element of a connector array whose retained Flat
+/// declaration carries no rank. Nothing in view proves which element `a.e`
+/// denotes, so the selection remains a typed refusal rather than a guess that
+/// would connect the whole member.
 #[test]
-fn connect_subscript_within_the_declared_rank_is_accepted() {
-    let mut flat = two_scalar_connectors();
+fn compact_element_connection_without_a_ranked_flat_member_is_refused() {
+    let mut flat = connection_test_model();
+    for (name, flow) in [("a.e", false), ("a.f", true), ("b.e", false), ("b.f", true)] {
+        flat.add_test_variable(
+            rumoca_core::VarName::new(name),
+            flat::Variable {
+                flow,
+                is_primitive: true,
+                source_span: test_span(),
+                ..connection_test_variable(test_span())
+            },
+        );
+    }
     let overlay = overlay_connecting_element_of(vec![2], Vec::new());
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    process_connections(&mut flat, &overlay, false, &mut forest)
-        .expect("an element of a declared connector array is a legal connect argument");
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("an element selection of an unranked Flat member cannot be proven");
+
+    assert!(
+        matches!(error, FlattenError::InvalidConnectionEvidence { .. }),
+        "unexpected refusal: {error:?}"
+    );
+    assert!(
+        error.to_string().contains("no retained rank"),
+        "the refusal names the missing rank, not a fixture defect: {error}"
+    );
+    assert!(flat.equations.is_empty());
+    assert!(
+        flat.variables
+            .values()
+            .all(|variable| variable.connected.is_unconnected())
+    );
 }
 
 /// Acceptance before rejection: a declaration that still carries a dimension
 /// expression has not proven a rank of zero, so its element connections stay
 /// admissible.
 #[test]
-fn connect_subscript_on_a_symbolically_dimensioned_declaration_is_accepted() {
+fn symbolic_compact_element_connection_is_refused_without_a_proven_domain() {
     let mut flat = two_scalar_connectors();
     let overlay = overlay_connecting_element_of(
         Vec::new(),
@@ -238,29 +306,74 @@ fn connect_subscript_on_a_symbolically_dimensioned_declaration_is_accepted() {
     );
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    process_connections(&mut flat, &overlay, false, &mut forest)
-        .expect("an unevaluated dimension has not proven the declaration to be dimensionless");
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("an unresolved compact domain cannot prove safe partial connectivity");
+
+    assert!(
+        matches!(error, FlattenError::InvalidConnectionEvidence { .. }),
+        "unexpected refusal: {error:?}"
+    );
+    assert!(flat.equations.is_empty());
 }
 
 /// An endpoint that names a declared element occurrence (the scalarized
 /// representation of a connector array) carries its subscript legitimately.
 #[test]
-fn connect_subscript_naming_a_declared_element_occurrence_is_accepted() {
+fn declared_occurrence_without_matching_flat_leaf_is_refused() {
     let mut flat = two_scalar_connectors();
-    let mut overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
-    overlay.add_component(ast::InstanceData {
-        instance_id: rumoca_core::InstanceId(3),
-        qualified_name: ast::QualifiedName {
-            parts: vec![("a".to_string(), vec![1])],
-        },
-        source_location: declaration_location(),
-        is_connector_type: true,
-        ..Default::default()
-    });
+    let mut overlay = ast::InstanceOverlay::new();
+    overlay.type_roots.insert(CONNECTOR_TYPE, CONNECTOR_TYPE);
+    let root_id = overlay.alloc_id();
+    let a_id = overlay.alloc_id();
+    let b_id = overlay.alloc_id();
+    let element_id = overlay.alloc_id();
+    overlay
+        .add_component(declared_connector(
+            a_id,
+            root_id,
+            "a",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            b_id,
+            root_id,
+            "b",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(ast::InstanceData {
+            instance_id: element_id,
+            owner_class_id: Some(root_id),
+            qualified_name: ast::QualifiedName {
+                parts: vec![("a".to_string(), vec![1])],
+            },
+            source_location: declaration_location(),
+            type_id: CONNECTOR_TYPE,
+            is_connector_type: true,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_class(root_class(root_id, vec![connect_element("a", vec![1])]))
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    process_connections(&mut flat, &overlay, false, &mut forest)
-        .expect("a declared element occurrence is a legal connect argument");
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("the overlay occurrence alone cannot invent a missing scalar Flat leaf");
+
+    assert!(
+        matches!(error, FlattenError::InvalidConnectionEvidence { .. }),
+        "unexpected refusal: {error:?}"
+    );
+    assert!(flat.equations.is_empty());
 }
 
 /// MLS §7.3 lets a redeclaration add dimensions to a `replaceable C a;`.
@@ -271,14 +384,11 @@ fn connect_subscript_naming_a_declared_element_occurrence_is_accepted() {
 #[test]
 fn redeclared_component_rank_is_not_authoritative_evidence() {
     let mut flat = two_scalar_connectors();
-    let mut overlay = overlay_connecting_element_of(Vec::new(), Vec::new());
-    overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
-        ..declared_connector(1, "a", Vec::new(), Vec::new(), OWNING_SCOPE)
-    });
+    let overlay =
+        overlay_connecting_with_redeclare(Vec::new(), Vec::new(), OWNING_SCOPE, vec![1], true);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let result = process_connections(&mut flat, &overlay, false, &mut forest);
+    let result = process_test_connections(&mut flat, &overlay, &mut forest);
 
     assert!(
         !matches!(
@@ -294,7 +404,7 @@ fn redeclared_component_rank_is_not_authoritative_evidence() {
 /// instantiated beneath it, so the mark has to be honoured for ancestors too.
 #[test]
 fn redeclared_ancestor_makes_a_nested_rank_unproven() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     for (name, flow) in [
         ("h.a.e", false),
         ("h.a.f", true),
@@ -308,34 +418,57 @@ fn redeclared_ancestor_makes_a_nested_rank_unproven() {
                 flow,
                 is_primitive: true,
                 source_span: test_span(),
-                ..flat::Variable::empty_with_span(test_span())
+                ..connection_test_variable(test_span())
             },
         );
     }
     let mut overlay = ast::InstanceOverlay::new();
+    overlay.type_roots.insert(CONNECTOR_TYPE, CONNECTOR_TYPE);
+    let root_id = overlay.alloc_id();
+    let holder_id = overlay.alloc_id();
+    let nested_id = overlay.alloc_id();
+    let b_id = overlay.alloc_id();
     // Only the *enclosing* component carries the redeclare marker.
-    overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
-        ..declared_connector(1, "h", Vec::new(), Vec::new(), OWNING_SCOPE)
-    });
-    overlay.add_component(declared_connector(
-        2,
-        "h.a",
-        Vec::new(),
-        Vec::new(),
-        "Holder",
-    ));
-    overlay.add_component(declared_connector(
-        3,
-        "b",
-        Vec::new(),
-        Vec::new(),
-        OWNING_SCOPE,
-    ));
-    overlay.add_class(root_class(vec![connect_element("h.a", vec![1])]));
+    overlay
+        .add_component(ast::InstanceData {
+            had_redeclare: true,
+            ..declared_connector(
+                holder_id,
+                root_id,
+                "h",
+                Vec::new(),
+                Vec::new(),
+                OWNING_SCOPE,
+            )
+        })
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            nested_id,
+            root_id,
+            "h.a",
+            Vec::new(),
+            Vec::new(),
+            "Holder",
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            b_id,
+            root_id,
+            "b",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_class(root_class(root_id, vec![connect_element("h.a", vec![1])]))
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let result = process_connections(&mut flat, &overlay, false, &mut forest);
+    let result = process_test_connections(&mut flat, &overlay, &mut forest);
 
     assert!(
         !matches!(
@@ -354,7 +487,7 @@ fn redeclared_ancestor_makes_a_nested_rank_unproven() {
 /// would lose.
 #[test]
 fn redeclared_sibling_does_not_make_an_untouched_path_unproven() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     for (name, flow) in [
         ("h.a.e", false),
         ("h.a.f", true),
@@ -370,42 +503,72 @@ fn redeclared_sibling_does_not_make_an_untouched_path_unproven() {
                 flow,
                 is_primitive: true,
                 source_span: test_span(),
-                ..flat::Variable::empty_with_span(test_span())
+                ..connection_test_variable(test_span())
             },
         );
     }
     let mut overlay = ast::InstanceOverlay::new();
-    overlay.add_component(declared_connector(1, "h", Vec::new(), Vec::new(), "Holder"));
-    overlay.add_component(declared_connector(
-        2,
-        "h.a",
-        Vec::new(),
-        Vec::new(),
-        "Holder",
-    ));
+    overlay.type_roots.insert(CONNECTOR_TYPE, CONNECTOR_TYPE);
+    let root_id = overlay.alloc_id();
+    let h_id = overlay.alloc_id();
+    let h_a_id = overlay.alloc_id();
+    let h2_id = overlay.alloc_id();
+    let h2_a_id = overlay.alloc_id();
+    let b_id = overlay.alloc_id();
+    overlay
+        .add_component(declared_connector(
+            h_id,
+            root_id,
+            "h",
+            Vec::new(),
+            Vec::new(),
+            "Holder",
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            h_a_id,
+            root_id,
+            "h.a",
+            Vec::new(),
+            Vec::new(),
+            "Holder",
+        ))
+        .expect("fixture occurrence insertion must succeed");
     // Only the sibling `h2` carries the redeclaration.
-    overlay.add_component(ast::InstanceData {
-        had_redeclare: true,
-        ..declared_connector(3, "h2", Vec::new(), Vec::new(), OWNING_SCOPE)
-    });
-    overlay.add_component(declared_connector(
-        4,
-        "h2.a",
-        Vec::new(),
-        Vec::new(),
-        "Holder",
-    ));
-    overlay.add_component(declared_connector(
-        5,
-        "b",
-        Vec::new(),
-        Vec::new(),
-        OWNING_SCOPE,
-    ));
-    overlay.add_class(root_class(vec![connect_element("h.a", vec![1])]));
+    overlay
+        .add_component(ast::InstanceData {
+            had_redeclare: true,
+            ..declared_connector(h2_id, root_id, "h2", Vec::new(), Vec::new(), OWNING_SCOPE)
+        })
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            h2_a_id,
+            root_id,
+            "h2.a",
+            Vec::new(),
+            Vec::new(),
+            "Holder",
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_component(declared_connector(
+            b_id,
+            root_id,
+            "b",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_class(root_class(root_id, vec![connect_element("h.a", vec![1])]))
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let error = process_connections(&mut flat, &overlay, false, &mut forest)
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
         .expect_err("a redeclared sibling proves nothing about this path");
 
     assert!(
@@ -428,7 +591,7 @@ fn inherited_but_never_redeclared_rank_is_authoritative_evidence() {
     let overlay = overlay_connecting(Vec::new(), Vec::new(), "Base", vec![1]);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    let error = process_connections(&mut flat, &overlay, false, &mut forest)
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
         .expect_err("an inherited rank-zero component still proves the subscript impossible");
 
     assert!(matches!(
@@ -441,36 +604,53 @@ fn inherited_but_never_redeclared_rank_is_authoritative_evidence() {
 /// has no rank to judge against and must not invent one. Expandable-bus members
 /// arrive this way.
 #[test]
-fn connect_subscript_on_a_base_with_no_declaration_in_view_is_accepted() {
+fn subscripted_base_without_shape_evidence_is_refused_before_generation() {
     let mut flat = two_scalar_connectors();
     let mut overlay = ast::InstanceOverlay::new();
-    overlay.add_component(declared_connector(
-        2,
-        "b",
-        Vec::new(),
-        Vec::new(),
-        OWNING_SCOPE,
-    ));
-    overlay.add_class(root_class(vec![connect_element("a", vec![1])]));
+    overlay.type_roots.insert(CONNECTOR_TYPE, CONNECTOR_TYPE);
+    let root_id = overlay.alloc_id();
+    let b_id = overlay.alloc_id();
+    overlay
+        .add_component(declared_connector(
+            b_id,
+            root_id,
+            "b",
+            Vec::new(),
+            Vec::new(),
+            OWNING_SCOPE,
+        ))
+        .expect("fixture occurrence insertion must succeed");
+    overlay
+        .add_class(root_class(root_id, vec![connect_element("a", vec![1])]))
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    process_connections(&mut flat, &overlay, false, &mut forest)
-        .expect("an endpoint whose base has no declaration in view is not this check's business");
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("connection generation cannot guess the denoted shape");
+
+    assert!(
+        matches!(error, FlattenError::InvalidConnectionEvidence { .. }),
+        "unexpected refusal: {error:?}"
+    );
+    assert!(flat.equations.is_empty());
 }
 
-/// Acceptance arm the shipped predicate really has: any non-zero declared rank
-/// is accepted, including an over-subscripted endpoint. This check deliberately
-/// does not judge that shape — the flat representation of a collapsed
-/// connector-array member is indistinguishable from it — so the endpoint simply
-/// matches nothing here and the model is caught downstream as an `E011`
-/// structural singularity (task #82). Typecheck's `ET009` (MLS §10.5.1) is the
-/// natural owner once it walks connect arguments.
+/// Every supplied index must consume one retained declaration dimension. An
+/// over-subscripted endpoint is refused before connection-set mutation instead
+/// of disappearing as an unmatched connection.
 #[test]
-fn over_subscripted_endpoint_on_a_declared_array_is_not_judged_here() {
+fn over_subscripted_endpoint_is_refused_before_connection_ir() {
     let mut flat = two_scalar_connectors();
     let overlay = overlay_connecting(vec![2], Vec::new(), OWNING_SCOPE, vec![1, 2]);
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
 
-    process_connections(&mut flat, &overlay, false, &mut forest)
-        .expect("over-subscripting a declared array is not rejected by this check");
+    let error = process_test_connections(&mut flat, &overlay, &mut forest)
+        .expect_err("over-subscripting must not survive as an empty connection");
+
+    assert!(
+        matches!(error, FlattenError::InvalidConnectionEvidence { .. }),
+        "unexpected refusal: {error:?}"
+    );
+    assert!(flat.equations.is_empty());
 }

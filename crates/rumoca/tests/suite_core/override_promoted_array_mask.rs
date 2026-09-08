@@ -8,8 +8,7 @@
 use rumoca::Compiler;
 use rumoca_ir_solve::ScalarSlot;
 use rumoca_sim::{
-    SimOptions, build_simulation_with_stage_timing_and_solve_model, lower_dae_for_simulation,
-    lower_for_simulation_with_overrides,
+    SimOptions, lower_dae_for_simulation, lower_for_simulation_with_overrides, prepare_simulation,
 };
 use std::sync::Arc;
 
@@ -47,8 +46,8 @@ fn compile_mask_dae() -> Arc<rumoca_ir_dae::Dae> {
 fn mask_param_values(model: &rumoca_ir_solve::SolveModel) -> Vec<f64> {
     (1..=3)
         .map(
-            |i| match model.problem.layout().binding(&format!("m[{i}]")) {
-                Some(ScalarSlot::P { index, .. }) => model.parameters[index],
+            |i| match model.problem().layout().binding(&format!("m[{i}]")) {
+                Some(ScalarSlot::P { index, .. }) => model.parameters()[index],
                 other => panic!("m[{i}] must be a promoted parameter slot, got {other:?}"),
             },
         )
@@ -115,7 +114,7 @@ fn aoa_override_rederives_promoted_array_mask() {
     }
 
     let mut timed_mask = None;
-    let (_prepared, _timings) = build_simulation_with_stage_timing_and_solve_model(
+    let (_prepared, _timings) = prepare_simulation(
         &dae,
         &opts,
         |_| {},

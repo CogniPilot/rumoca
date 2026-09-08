@@ -11,7 +11,7 @@ fn fixture_span() -> rumoca_core::Span {
 fn test_tensor_domain(count: usize) -> StructuredIndexDomain {
     StructuredIndexDomain {
         binders: vec![StructuredIndexBinder {
-            id: 0,
+            id: rumoca_core::StructuredIndexBinderId::new(0),
             display_name: "i".to_string(),
             lower: 1,
             upper: count as i64,
@@ -402,35 +402,31 @@ fn map_scalar_view_preserves_sparse_output_indices() {
 }
 
 #[test]
-fn scalar_program_block_output_overflow_reports_span() {
+fn scalar_program_construction_output_overflow_reports_span() {
     let span = rumoca_core::Span::from_offsets(
         rumoca_core::SourceId::from_source_name("bad_scalarized_output.mo"),
         11,
         17,
     );
-    let block = ComputeBlock {
-        nodes: vec![ComputeNode::ScalarPrograms(
-            ScalarProgramBlock::with_output_indices(
-                vec![vec![
-                    LinearOp::Const { dst: 0, value: 1.0 },
-                    LinearOp::StoreOutput { src: 0 },
-                ]],
-                vec![span],
-                vec![usize::MAX],
-            )
-            .expect("overflow fixture metadata should match row count"),
-        )],
-    };
-
-    let err = to_scalar_program_block(&block)
-        .expect_err("overflowing scalar output index should fail scalarization");
+    let err = ScalarProgramBlock::with_output_indices(
+        vec![vec![
+            LinearOp::Const { dst: 0, value: 1.0 },
+            LinearOp::StoreOutput { src: 0 },
+        ]],
+        vec![span],
+        vec![usize::MAX],
+    )
+    .expect_err("overflowing logical output identity must fail block construction");
 
     assert_eq!(err.source_span(), Some(span));
-    assert!(
-        err.to_string()
-            .contains(&format!("output index {} overflows", usize::MAX)),
-        "error should explain scalar output overflow: {err}"
-    );
+    assert!(matches!(
+        err,
+        rumoca_ir_solve::SolveProblemShapeContractError::OutputIndexOverflow {
+            context,
+            node_index: 0,
+            span: Some(error_span),
+        } if context == "ScalarProgramBlock" && error_span == span
+    ));
 }
 
 #[test]
@@ -477,7 +473,7 @@ fn scalarize_vec_with_capacity_reports_span() {
         5,
         9,
     );
-    let err = scalarize_vec_with_capacity::<u8>(usize::MAX, "scalarize test", span)
+    let err = scalarize_vec_with_capacity_optional::<u8>(usize::MAX, "scalarize test", Some(span))
         .expect_err("impossible scalarize capacity should fail");
 
     assert_eq!(err.source_span(), Some(span));

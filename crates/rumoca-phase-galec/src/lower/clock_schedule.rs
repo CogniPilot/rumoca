@@ -4,13 +4,14 @@ use super::*;
 use crate::admissibility::AdmittedClock;
 
 use super::clocked_assignments::{
-    ClockedAssignment, ClockedAssignments, lower_clocked_assignments_for_domain,
+    ClockedAssignment, ClockedAssignments, ClockedCallPlan, lower_clocked_assignments_for_domain,
 };
 
 pub(super) struct ScheduledClockAssignments {
     pub(super) statements: Vec<gast::Spanned<gast::Statement>>,
     pub(super) locals: Vec<gast::VariableDeclaration>,
     pub(super) called_user_functions: HashSet<u32>,
+    pub(super) call_actions: Vec<PreparedCallActions>,
 }
 
 struct ClockDomain<'dae> {
@@ -28,37 +29,79 @@ struct ScheduledAssignment<'dae> {
     assignment: ClockedAssignment,
 }
 
+struct CallScheduleFacts {
+    dependencies: HashMap<EmissionRegion, HashSet<EmissionRegion>>,
+    argument_reads: HashMap<EmissionRegion, HashSet<u32>>,
+}
+
+impl CallScheduleFacts {
+    fn derive<'a>(actions: impl Iterator<Item = &'a PreparedCallActions>) -> Self {
+        let mut dependencies = HashMap::new();
+        let mut argument_reads = HashMap::new();
+        for action in actions {
+            dependencies
+                .entry(action.region())
+                .or_insert_with(HashSet::new)
+                .extend(action.dependencies().iter().copied());
+            argument_reads
+                .entry(action.region())
+                .or_insert_with(HashSet::new)
+                .extend(action.argument_reads());
+        }
+        Self {
+            dependencies,
+            argument_reads,
+        }
+    }
+}
+
 pub(super) fn lower_clock_schedule<'dae>(
     lowering: BlockLowering<'_, 'dae>,
     schedule: &AdmittedClock,
     classified: &[ClassifiedVariable<'dae>],
     declarations: &mut ProtectedDeclarations<'_>,
+    retained_calls: &mut RetainedCallResults,
 ) -> Result<ScheduledClockAssignments, GalecTargetError> {
     let BlockLowering {
-        by_id, pre_names, ..
+        view,
+        by_id,
+        pre_names,
+        ..
     } = lowering;
-    let mut domains = lower_clock_domains(lowering, schedule, true)?;
-    let mut ordered = order_clocked_assignments(take_pending(&mut domains), by_id);
-    // Evaluating a repeated call once at a scheduled position is an
-    // optimization, never a reason to refuse a model. If its node cannot be
-    // ordered, drop it and schedule the domains that lower without it.
-    if ordered.is_err()
-        && domains
+    let admitted_clocks = schedule
+        .domains
+        .iter()
+        .map(|domain| domain.clock_index)
+        .collect::<HashSet<_>>();
+    let unclocked_owner_index = schedule
+        .domains
+        .iter()
+        .filter(|domain| domain.divisor == 1)
+        .map(|domain| domain.clock_index)
+        .min()
+        .expect("an admitted schedule has a base-period clock");
+    let unclocked_owner = view
+        .clock_id(usize::try_from(unclocked_owner_index).expect("clock index fits usize"))
+        .expect("admitted base-period clock resolves");
+    let call_plan = ClockedCallPlan::construct(lowering, &admitted_clocks, unclocked_owner)?;
+    let mut domains = lower_clock_domains(lowering, schedule, &call_plan, retained_calls)?;
+    let call_facts = CallScheduleFacts::derive(
+        domains
             .iter()
-            .any(|domain| domain.assignments.schedules_shared_calls)
-    {
-        domains = lower_clock_domains(lowering, schedule, false)?;
-        ordered = order_clocked_assignments(take_pending(&mut domains), by_id);
-    }
+            .flat_map(|domain| domain.assignments.call_actions.iter()),
+    );
+    let ordered = order_clocked_assignments(take_pending(&mut domains), by_id, &call_facts);
     let ordered = ordered?;
     let mut locals = Vec::new();
     let mut called_user_functions = HashSet::new();
+    let mut call_actions = Vec::new();
     let mut generated_names = HashSet::new();
     for domain in &mut domains {
         locals.append(&mut domain.assignments.locals);
         called_user_functions.extend(std::mem::take(
             &mut domain.assignments.called_user_functions,
         ));
+        call_actions.append(&mut domain.assignments.call_actions);
         if domain.divisor > 1 && domain.has_assignments {
             domain.counter = Some(append_divider_state(
                 domain.clock,
@@ -100,46 +143,40 @@ pub(super) fn lower_clock_schedule<'dae>(
         statements,
         locals,
         called_user_functions,
+        call_actions,
     })
 }
 
-fn lower_clock_domains<'dae>(
-    lowering: BlockLowering<'_, 'dae>,
+fn lower_clock_domains<'refs, 'dae>(
+    lowering: BlockLowering<'refs, 'dae>,
     schedule: &AdmittedClock,
-    allow_scheduled_shared_calls: bool,
+    call_plan: &ClockedCallPlan<'refs, 'dae>,
+    retained_calls: &mut RetainedCallResults,
 ) -> Result<Vec<ClockDomain<'dae>>, GalecTargetError> {
     let view = lowering.view;
-    let unclocked_owner = schedule
-        .domains
-        .iter()
-        .filter(|domain| domain.divisor == 1)
-        .map(|domain| domain.clock_index)
-        .min()
-        .expect("an admitted schedule has a base-period clock");
-    schedule
-        .domains
-        .iter()
-        .map(|domain| {
-            let clock = view
-                .clock_id(usize::try_from(domain.clock_index).expect("clock index fits usize"))
-                .expect("admissibility retained a checked clock index");
-            let clock_view = view.clock(clock).expect("admitted clock resolves");
-            let assignments = lower_clocked_assignments_for_domain(
-                lowering,
-                clock,
-                domain.clock_index == unclocked_owner,
-                allow_scheduled_shared_calls,
-            )?;
-            Ok(ClockDomain {
-                clock,
-                divisor: domain.divisor,
-                span: clock_view.provenance().span(),
-                counter: None,
-                has_assignments: !assignments.assignments.is_empty(),
-                assignments,
-            })
-        })
-        .collect()
+    let mut domains = Vec::with_capacity(schedule.domains.len());
+    for domain in &schedule.domains {
+        let clock = view
+            .clock_id(usize::try_from(domain.clock_index).expect("clock index fits usize"))
+            .expect("admissibility retained a checked clock index");
+        let clock_view = view.clock(clock).expect("admitted clock resolves");
+        let assignments = lower_clocked_assignments_for_domain(
+            lowering,
+            clock,
+            call_plan,
+            &mut *retained_calls,
+            domain.divisor == 1,
+        )?;
+        domains.push(ClockDomain {
+            clock,
+            divisor: domain.divisor,
+            span: clock_view.provenance().span(),
+            counter: None,
+            has_assignments: !assignments.assignments.is_empty(),
+            assignments,
+        });
+    }
+    Ok(domains)
 }
 
 fn take_pending<'dae>(domains: &mut [ClockDomain<'dae>]) -> Vec<ScheduledAssignment<'dae>> {
@@ -161,6 +198,7 @@ fn take_pending<'dae>(domains: &mut [ClockDomain<'dae>]) -> Vec<ScheduledAssignm
 fn order_clocked_assignments<'dae>(
     mut source: Vec<ScheduledAssignment<'dae>>,
     by_id: &HashMap<u32, ClassifiedVariable<'dae>>,
+    call_facts: &CallScheduleFacts,
 ) -> Result<Vec<ScheduledAssignment<'dae>>, GalecTargetError> {
     source.sort_by_key(|assignment| {
         (
@@ -168,17 +206,15 @@ fn order_clocked_assignments<'dae>(
             assignment.clock.index(),
         )
     });
+    for scheduled in &mut source {
+        for region in &scheduled.assignment.regions {
+            if let Some(reads) = call_facts.argument_reads.get(region) {
+                scheduled.assignment.reads.extend(reads.iter().copied());
+            }
+        }
+    }
     let mut owners = HashMap::new();
-    let preambles = source
-        .iter()
-        .enumerate()
-        .filter_map(|(index, scheduled)| {
-            scheduled
-                .assignment
-                .is_preamble
-                .then_some((scheduled.clock.index(), index))
-        })
-        .collect::<HashMap<_, _>>();
+    let mut region_owners = HashMap::new();
     for (index, scheduled) in source.iter().enumerate() {
         for target in &scheduled.assignment.targets {
             if let Some(previous) = owners.insert(*target, index)
@@ -191,26 +227,27 @@ fn order_clocked_assignments<'dae>(
                 ));
             }
         }
+        for region in &scheduled.assignment.regions {
+            if let Some(previous) = region_owners.insert(*region, index)
+                && previous != index
+            {
+                return Err(GalecTargetError::LoweringInternal {
+                    detail: "one emission region escaped into two scheduled assignments".to_owned(),
+                });
+            }
+        }
     }
-    // Every owner target is a discrete Real or discrete-value coordinate, or
-    // one domain's synthetic scheduled shared-call index, and a clock-domain
-    // preamble is admitted only when its causally expanded reads name none of
-    // those, so a preamble never carries an incoming edge and is always
-    // emittable first. The barrier below is therefore an ordering constraint,
-    // never a cycle: only the read edges can leave work unemitted.
     let mut emitted = vec![false; source.len()];
     let mut order = Vec::with_capacity(source.len());
     while let Some(index) = source.iter().enumerate().position(|(index, scheduled)| {
-        !emitted[index]
-            && (!scheduled.assignment.requires_preamble
-                || preambles
-                    .get(&scheduled.clock.index())
-                    .is_none_or(|preamble| emitted[*preamble]))
-            && scheduled.assignment.reads.iter().all(|read| {
-                owners
-                    .get(read)
-                    .is_none_or(|dependency| *dependency == index || emitted[*dependency])
-            })
+        assignment_is_ready(
+            index,
+            scheduled,
+            &emitted,
+            &owners,
+            &region_owners,
+            call_facts,
+        )
     }) {
         emitted[index] = true;
         order.push(index);
@@ -227,6 +264,53 @@ fn order_clocked_assignments<'dae>(
                 .expect("domain is emitted exactly once")
         })
         .collect())
+}
+
+fn assignment_is_ready(
+    index: usize,
+    scheduled: &ScheduledAssignment<'_>,
+    emitted: &[bool],
+    owners: &HashMap<u32, usize>,
+    region_owners: &HashMap<EmissionRegion, usize>,
+    call_facts: &CallScheduleFacts,
+) -> bool {
+    !emitted[index]
+        && scheduled.assignment.reads.iter().all(|read| {
+            owners
+                .get(read)
+                .is_none_or(|dependency| *dependency == index || emitted[*dependency])
+        })
+        && scheduled.assignment.regions.iter().all(|region| {
+            region_dependencies_are_ready(region, index, emitted, region_owners, call_facts)
+        })
+}
+
+fn region_dependencies_are_ready(
+    region: &EmissionRegion,
+    index: usize,
+    emitted: &[bool],
+    region_owners: &HashMap<EmissionRegion, usize>,
+    call_facts: &CallScheduleFacts,
+) -> bool {
+    call_facts
+        .dependencies
+        .get(region)
+        .is_none_or(|dependencies| {
+            dependencies.iter().all(|dependency| {
+                dependency_owner_is_ready(dependency, index, emitted, region_owners)
+            })
+        })
+}
+
+fn dependency_owner_is_ready(
+    dependency: &EmissionRegion,
+    index: usize,
+    emitted: &[bool],
+    region_owners: &HashMap<EmissionRegion, usize>,
+) -> bool {
+    region_owners
+        .get(dependency)
+        .is_some_and(|owner| *owner == index || emitted[*owner])
 }
 
 /// Report the first assignment that no order can reach, naming the owners that

@@ -27,55 +27,242 @@ pub(super) fn lower_condition<'dae>(
     Ok((condition, owner_clock))
 }
 
-/// Recover the exact periodic owner already certified for an event condition.
-///
-/// Clocked algorithm targets are claimed before any algorithm body is lowered,
-/// so construction cannot depend on whether a producer or consumer appeared
-/// first in Flat order. This mirrors [`lower_condition_tree`] without minting
-/// condition nodes: sample occurrences consume their occurrence-keyed analysis
-/// certificate, and compound conditions use the same clock merge contract.
-pub(super) fn condition_owner_clock<'dae>(
+pub(super) fn algorithm_condition_owner_clock<'dae>(
     functions: &FunctionRegistry<'_, 'dae>,
-    expression: &Expression,
+    product: &AlgorithmConditionProduct<'_>,
 ) -> Result<Option<dae::PeriodicClockId<'dae>>, dae::DaeConstructionError> {
-    let span = expression
-        .span()
-        .expect("analysis proves condition provenance");
+    let span = product.span();
     let provenance = dae::DaeProvenance::source(span)?;
-    match expression {
-        Expression::BuiltinCall {
-            function: BuiltinFunction::Sample,
-            args,
+    match product {
+        AlgorithmConditionProduct::Sample { schedule, .. }
+        | AlgorithmConditionProduct::SampleAlias { schedule, .. } => {
+            functions.clocks.sample_id(*schedule, span).map(Some)
+        }
+        AlgorithmConditionProduct::Not { .. } => Ok(None),
+        AlgorithmConditionProduct::Binary {
+            lhs,
+            rhs,
+            disjunction,
             ..
-        } => lower_sample_condition(functions, args, provenance).map(|(_, _, clock)| clock),
-        Expression::VarRef {
-            name, subscripts, ..
-        } if subscripts.is_empty()
-            && functions
-                .sample_alias_schedules
-                .contains_key(name.var_name()) =>
-        {
-            lower_sample_alias_condition(functions, name.var_name(), provenance)
-                .map(|(_, _, clock)| clock)
-        }
-        Expression::Unary {
-            op: OpUnary::Not, ..
-        } => Ok(None),
-        Expression::Binary { op, lhs, rhs, .. } if matches!(op, OpBinary::And | OpBinary::Or) => {
-            let lhs = condition_owner_clock(functions, lhs)?;
-            let rhs = condition_owner_clock(functions, rhs)?;
-            merge_condition_clock(lhs, rhs, matches!(op, OpBinary::Or), provenance)
-        }
-        Expression::Array { elements, .. } => {
+        } => merge_condition_clock(
+            algorithm_condition_owner_clock(functions, lhs)?,
+            algorithm_condition_owner_clock(functions, rhs)?,
+            *disjunction,
+            provenance,
+        ),
+        AlgorithmConditionProduct::Vector { elements, .. } => {
             let mut owner = None;
             for element in elements {
-                let next = condition_owner_clock(functions, element)?;
-                owner = merge_condition_clock(owner, next, true, provenance)?;
+                owner = merge_condition_clock(
+                    owner,
+                    algorithm_condition_owner_clock(functions, element)?,
+                    true,
+                    provenance,
+                )?;
             }
             Ok(owner)
         }
         _ => Ok(None),
     }
+}
+
+pub(super) fn lower_algorithm_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    product: &AlgorithmConditionProduct<'_>,
+) -> Result<(dae::ConditionId<'dae>, Option<dae::PeriodicClockId<'dae>>), dae::DaeConstructionError>
+{
+    let (condition, relations, owner_clock) =
+        lower_algorithm_condition_tree(construction, coordinates, functions, product)?;
+    let span = product.span();
+    let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
+    for relation in relations {
+        construction.conditions(|conditions| conditions.root(relation, condition, provenance))?;
+    }
+    Ok((condition, owner_clock))
+}
+
+fn lower_algorithm_condition_tree<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    product: &AlgorithmConditionProduct<'_>,
+) -> Result<LoweredCondition<'dae>, dae::DaeConstructionError> {
+    let span = product.span();
+    let provenance = dae::DaeProvenance::source(span)?;
+    let (input, relations, owner_clock) = match product {
+        AlgorithmConditionProduct::Initial { .. } => {
+            (dae::ConditionInput::Initial, Vec::new(), None)
+        }
+        AlgorithmConditionProduct::Not { rhs, .. } => {
+            let (condition, relations, _) =
+                lower_algorithm_condition_tree(construction, coordinates, functions, rhs)?;
+            (dae::ConditionInput::Not(condition), relations, None)
+        }
+        AlgorithmConditionProduct::Binary {
+            lhs,
+            rhs,
+            disjunction,
+            ..
+        } => lower_algorithm_binary_condition(
+            construction,
+            coordinates,
+            functions,
+            lhs,
+            rhs,
+            *disjunction,
+            provenance,
+        )?,
+        AlgorithmConditionProduct::Vector { elements, .. } => {
+            return lower_algorithm_vector_condition(
+                construction,
+                coordinates,
+                functions,
+                elements,
+                span,
+            );
+        }
+        AlgorithmConditionProduct::Sample { schedule, .. }
+        | AlgorithmConditionProduct::SampleAlias { schedule, .. } => {
+            let clock = functions.clocks.sample_id(*schedule, span)?;
+            (
+                dae::ConditionInput::Clock(clock.into()),
+                Vec::new(),
+                Some(clock),
+            )
+        }
+        AlgorithmConditionProduct::Relation {
+            source,
+            span,
+            owner,
+        } => lower_algorithm_relation(construction, coordinates, functions, source, *span, *owner)?,
+        AlgorithmConditionProduct::Discrete { source, .. } => {
+            let expression = lower_expression(construction, coordinates, functions, source, None)?;
+            (dae::ConditionInput::Discrete(expression), Vec::new(), None)
+        }
+    };
+    let condition = construction.conditions(|conditions| conditions.reserve(provenance))?;
+    construction.conditions(|conditions| conditions.define(condition, input, provenance))?;
+    Ok((condition, relations, owner_clock))
+}
+
+fn lower_algorithm_relation<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    source: &Expression,
+    span: Span,
+    owner: AlgorithmRelationOwner,
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
+    let provenance = dae::DaeProvenance::source(span)?;
+    let lowered = lower_expression(construction, coordinates, functions, source, None)?;
+    let relation =
+        construction.conditions(|conditions| conditions.relation(lowered, provenance))?;
+    let roots = match owner {
+        AlgorithmRelationOwner::Root => vec![relation],
+        AlgorithmRelationOwner::Scheduled(instant) => {
+            construction.events(|events| events.time_event(instant, provenance))?;
+            Vec::new()
+        }
+        AlgorithmRelationOwner::Dynamic(operand) => {
+            let Expression::Binary { lhs, rhs, .. } = source else {
+                return Err(dae::DaeConstructionError::InvalidExpressionForm { span });
+            };
+            let deadline = match operand {
+                DynamicTimeEventOperand::Lhs => lhs,
+                DynamicTimeEventOperand::Rhs => rhs,
+            };
+            let deadline = lower_expression(construction, coordinates, functions, deadline, None)?;
+            let deadline = promote_algorithm_deadline_to_real(construction, deadline, provenance)?;
+            construction.events(|events| events.dynamic_time_event(deadline, provenance))?;
+            Vec::new()
+        }
+    };
+    Ok((dae::ConditionInput::Relation(relation), roots, None))
+}
+
+fn promote_algorithm_deadline_to_real<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    deadline: dae::ExprId<'dae>,
+    owner: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let value_type =
+        construction.expressions(|expressions| expressions.value_type(deadline, owner))?;
+    if !value_type.is_scalar() || value_type.scalar_type() != dae::ScalarType::Integer {
+        return Ok(deadline);
+    }
+    let generated =
+        dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, owner.span())?;
+    let zero = construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .literal(dae::DaeLiteral::Real(0.0))
+    })?;
+    construction.expressions(|expressions| {
+        expressions
+            .at(generated)
+            .binary(dae::BinaryOperator::Add, deadline, zero)
+    })
+}
+
+fn lower_algorithm_binary_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    lhs: &AlgorithmConditionProduct<'_>,
+    rhs: &AlgorithmConditionProduct<'_>,
+    disjunction: bool,
+    provenance: dae::DaeProvenance,
+) -> Result<LoweredConditionNode<'dae>, dae::DaeConstructionError> {
+    let (lhs, mut relations, lhs_clock) =
+        lower_algorithm_condition_tree(construction, coordinates, functions, lhs)?;
+    let (rhs, rhs_relations, rhs_clock) =
+        lower_algorithm_condition_tree(construction, coordinates, functions, rhs)?;
+    relations.extend(rhs_relations);
+    let input = if disjunction {
+        dae::ConditionInput::Or(lhs, rhs)
+    } else {
+        dae::ConditionInput::And(lhs, rhs)
+    };
+    let owner_clock = merge_condition_clock(lhs_clock, rhs_clock, disjunction, provenance)?;
+    Ok((input, relations, owner_clock))
+}
+
+fn lower_algorithm_vector_condition<'dae>(
+    construction: &mut dae::DaeConstruction<'dae>,
+    coordinates: &HashMap<VarName, Coordinate<'dae>>,
+    functions: &FunctionRegistry<'_, 'dae>,
+    elements: &[AlgorithmConditionProduct<'_>],
+    span: Span,
+) -> Result<LoweredCondition<'dae>, dae::DaeConstructionError> {
+    let generated = dae::DaeProvenance::generated(dae::DaeGeneration::ConditionLowering, span)?;
+    let Some((first, rest)) = elements.split_first() else {
+        let expression = construction.expressions(|expressions| {
+            expressions
+                .at(generated)
+                .literal(dae::DaeLiteral::Boolean(false))
+        })?;
+        let condition = construction.conditions(|conditions| conditions.reserve(generated))?;
+        construction.conditions(|conditions| {
+            conditions.define(
+                condition,
+                dae::ConditionInput::Discrete(expression),
+                generated,
+            )
+        })?;
+        return Ok((condition, Vec::new(), None));
+    };
+    let (mut condition, mut relations, mut owner_clock) =
+        lower_algorithm_condition_tree(construction, coordinates, functions, first)?;
+    for element in rest {
+        let (rhs, rhs_relations, rhs_clock) =
+            lower_algorithm_condition_tree(construction, coordinates, functions, element)?;
+        condition = combine_element_activations(construction, condition, rhs, span)?;
+        relations.extend(rhs_relations);
+        owner_clock = merge_condition_clock(owner_clock, rhs_clock, true, generated)?;
+    }
+    Ok((condition, relations, owner_clock))
 }
 
 type LoweredCondition<'dae> = (

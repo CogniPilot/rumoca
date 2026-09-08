@@ -128,19 +128,30 @@ fn flatten_model(
         .expect("isPow2ish resolves")
         .def_id
         .expect("isPow2ish has declaration identity");
-    let instanced =
-        rumoca_phase_instantiate::instantiate(resolved, model_name).expect("model instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    let warning_literal = tree
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        model_name,
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let warning_literal = resolved
+        .inner()
         .scope_tree
         .predefined_member(&rumoca_core::ComponentPath::from_parts([
             "AssertionLevel",
             "warning",
         ]))
         .expect("the predefined AssertionLevel.warning identity exists");
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model_name)
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model_name)
         .expect("model typechecks");
-    let flat = rumoca_phase_flatten::flatten_ref(&tree, &overlay, model_name);
+    let flat =
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default());
     (
         flat,
         Identities {

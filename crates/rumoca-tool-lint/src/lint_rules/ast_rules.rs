@@ -68,7 +68,7 @@ impl LintRule for NamingConventionRule {
             file_name: ctx.file_name,
             messages: Vec::new(),
         };
-        let _ = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
+        let _visit_outcome = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
         visitor.messages
     }
 }
@@ -125,7 +125,7 @@ impl LintRule for ExternalPurityRule {
             file_name: ctx.file_name,
             messages: Vec::new(),
         };
-        let _ = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
+        let _visit_outcome = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
         visitor.messages
     }
 }
@@ -172,7 +172,7 @@ impl LintRule for MissingDocumentationRule {
             file_name: ctx.file_name,
             messages: Vec::new(),
         };
-        let _ = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
+        let _visit_outcome = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
         visitor.messages
     }
 }
@@ -322,7 +322,7 @@ impl LintRule for MagicNumberRule {
             messages: Vec::new(),
             inside_named_constant: false,
         };
-        let _ = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
+        let _visit_outcome = ast::Visitor::visit_stored_definition(&mut visitor, ctx.ast);
         visitor.messages
     }
 }

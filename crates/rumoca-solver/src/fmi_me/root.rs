@@ -16,9 +16,13 @@
 //! the policy, the application, the root-search types, and the scan capability
 //! host-private with no unchecked constructor.
 
+use std::cell::RefCell;
+
 use super::{
+    MeContinuousStateDomain, MeSolverTolerances, SolveMeKernel,
     integrator::{MeAcceptedStep, MeContinuousPoint, MeStepProposal, accepted_step_roundoff},
-    session::{MeSessionError, try_copied, try_filled},
+    kernel::{RootScanIndicatorWidth, RootScanShape, RootScanStateWidth},
+    session::{MeSessionError, MeSessionOptions, try_copied, try_filled},
 };
 
 #[cfg(test)]
@@ -55,31 +59,26 @@ impl IndicatorDomain {
 pub(super) struct MeRootSearchPolicy {
     scan_resolution: f64,
     location_tolerance: f64,
-    state_abs_tolerance: f64,
-    state_rel_tolerance: f64,
-    nominals: Vec<f64>,
+    tolerances: MeSolverTolerances,
+    nominals: MeStateNominals,
+    state_domain: MeContinuousStateDomain,
 }
 
-impl MeRootSearchPolicy {
-    /// Build the policy from host options and the component's nominals.
-    ///
-    /// The nominal vector must be the component's complete continuous-state
-    /// width, and every entry finite and positive: a missing or invalid nominal
-    /// is a typed construction failure, never a substituted `1.0`
-    pub(super) fn new(
-        scan_resolution: f64,
-        location_tolerance: f64,
-        state_abs_tolerance: f64,
-        state_rel_tolerance: f64,
+#[derive(Debug, Clone)]
+struct MeStateNominals(Vec<f64>);
+
+impl MeStateNominals {
+    fn check(
         nominals: Vec<f64>,
-        state_count: usize,
+        state_domain: MeContinuousStateDomain,
     ) -> Result<Self, MeSessionError> {
-        if nominals.len() != state_count {
+        if nominals.len() != state_domain.len() {
             return Err(MeSessionError::Options {
                 reason: format!(
                     "the root-search policy needs one nominal per continuous state; got {} for a \
-                     component of width {state_count}",
-                    nominals.len()
+                     component of width {}",
+                    nominals.len(),
+                    state_domain.len()
                 ),
             });
         }
@@ -93,24 +92,32 @@ impl MeRootSearchPolicy {
                 });
             }
         }
-        for (label, value) in [
-            ("scan resolution", scan_resolution),
-            ("location tolerance", location_tolerance),
-            ("state absolute tolerance", state_abs_tolerance),
-            ("state relative tolerance", state_rel_tolerance),
-        ] {
-            if !value.is_finite() || value <= 0.0 {
-                return Err(MeSessionError::Options {
-                    reason: format!("root-search {label} must be finite and positive, got {value}"),
-                });
-            }
-        }
+        Ok(Self(nominals))
+    }
+
+    fn as_slice(&self) -> &[f64] {
+        &self.0
+    }
+}
+
+impl MeRootSearchPolicy {
+    /// Build the policy from host options and the component's nominals.
+    ///
+    /// The nominal vector must be the component's complete continuous-state
+    /// width, and every entry finite and positive: a missing or invalid nominal
+    /// is a typed construction failure, never a substituted `1.0`
+    pub(super) fn new(
+        options: &MeSessionOptions,
+        nominals: Vec<f64>,
+        state_domain: MeContinuousStateDomain,
+    ) -> Result<Self, MeSessionError> {
+        let nominals = MeStateNominals::check(nominals, state_domain)?;
         Ok(Self {
-            scan_resolution,
-            location_tolerance,
-            state_abs_tolerance,
-            state_rel_tolerance,
+            scan_resolution: options.root_scan_resolution(),
+            location_tolerance: options.root_location_tolerance(),
+            tolerances: options.tolerances(),
             nominals,
+            state_domain,
         })
     }
 
@@ -125,14 +132,14 @@ impl MeRootSearchPolicy {
     }
 
     #[must_use]
-    pub(super) fn state_count(&self) -> usize {
-        self.nominals.len()
+    pub(super) const fn state_domain(&self) -> MeContinuousStateDomain {
+        self.state_domain
     }
 
     /// The complete positive finite nominal vector the host proved.
     #[must_use]
     pub(super) fn nominals(&self) -> &[f64] {
-        &self.nominals
+        self.nominals.as_slice()
     }
 
     /// The componentwise state-consistency bound SPEC_0044 §6 fixes:
@@ -142,21 +149,9 @@ impl MeRootSearchPolicy {
     /// only compares vectors it has already width-checked.
     fn state_consistency_bound(&self, nominal: f64, x0: f64, x1: f64) -> f64 {
         let scale = nominal.max(x0.abs()).max(x1.abs());
-        self.state_abs_tolerance
-            .max(self.state_rel_tolerance * scale)
-    }
-
-    /// Replace the nominal vector after Event Mode reported changed nominals.
-    pub(super) fn with_nominals(&self, nominals: Vec<f64>) -> Result<Self, MeSessionError> {
-        let state_count = self.nominals.len();
-        Self::new(
-            self.scan_resolution,
-            self.location_tolerance,
-            self.state_abs_tolerance,
-            self.state_rel_tolerance,
-            nominals,
-            state_count,
-        )
+        self.tolerances
+            .absolute()
+            .max(self.tolerances.relative() * scale)
     }
 
     /// Require the plugin's sampler to agree with a checked endpoint.
@@ -166,21 +161,12 @@ impl MeRootSearchPolicy {
         checked: &MeContinuousPoint,
         sampled: &[f64],
     ) -> Result<(), MeSessionError> {
-        if sampled.len() != checked.width() || sampled.len() != self.nominals.len() {
-            return Err(MeSessionError::Contract {
-                reason: format!(
-                    "{label} sampler returned {} states for a component of width {}",
-                    sampled.len(),
-                    self.nominals.len()
-                ),
-            });
-        }
         for (index, ((expected, actual), nominal)) in checked
             .states()
             .iter()
             .copied()
             .zip(sampled.iter().copied())
-            .zip(self.nominals.iter().copied())
+            .zip(self.nominals.as_slice().iter().copied())
             .enumerate()
         {
             if !actual.is_finite() {
@@ -297,12 +283,15 @@ pub(super) trait RootScanTarget {
     /// `fmi3SetTime` + `fmi3SetContinuousStates` + `fmi3GetEventIndicators`.
     ///
     /// An interior component error aborts the scan with its typed status; the
-    /// host does not skip, subdivide, retry, or repair the observation.
+    /// host does not skip, subdivide, retry, or repair the observation. The
+    /// buffer is an exact-width borrow of storage [`RootScanWorkspace::new`]
+    /// sized once; a target consumes it and refuses a mismatched width, and
+    /// the slice type leaves it no way to resize the caller's storage.
     fn indicators_at(
         &mut self,
         time: f64,
         states: &[f64],
-        indicators: &mut Vec<f64>,
+        indicators: &mut [f64],
     ) -> Result<(), MeSessionError>;
 
     /// The session's wall-clock budget, consulted once per sampled coordinate.
@@ -323,12 +312,20 @@ pub(super) trait RootScanTarget {
 /// indicators at all: the sampler contract does not disappear because a model
 /// has no roots. The zero-state case is
 /// vacuous.
-pub(super) fn accept_step<T: RootScanTarget>(
+fn accept_step<T: RootScanTarget>(
     target: &mut T,
     policy: &MeRootSearchPolicy,
     proposal: MeStepProposal,
 ) -> Result<MeAcceptedStep, MeSessionError> {
-    let width = policy.state_count();
+    if proposal.previous().state_domain() != policy.state_domain()
+        || proposal.accepted().state_domain() != policy.state_domain()
+    {
+        return Err(MeSessionError::Contract {
+            reason: "accepted-step proposal belongs to a different continuous-state domain"
+                .to_owned(),
+        });
+    }
+    let width = policy.state_domain().len();
     let mut left_states = try_filled(width, 0.0, "accepted-step left sample")?;
     target.sample_states(proposal.previous().time(), &mut left_states)?;
     policy.require_endpoint_agreement(
@@ -351,28 +348,292 @@ pub(super) fn accept_step<T: RootScanTarget>(
 }
 
 /// One sampled scan coordinate.
+///
+/// Both populations are distinct role types over fixed-width `Box<[f64]>`
+/// storage. Neither role has `push`, `clear`, `extend`, `reserve`, or `resize`,
+/// so the only mutation a consumer can express is an exact-width slice write.
+/// A role swap or grow-or-shrink repair path is unrepresentable rather than
+/// merely refused.
 struct ScanSample {
     time: f64,
-    states: Vec<f64>,
-    indicators: Vec<f64>,
+    states: RootScanStateBuffer,
+    indicators: RootScanIndicatorBuffer,
 }
 
-impl Default for ScanSample {
-    fn default() -> Self {
-        Self {
+impl ScanSample {
+    fn reserved(shape: &RootScanShape) -> Result<Self, MeSessionError> {
+        Ok(Self {
             time: 0.0,
-            states: Vec::new(),
-            indicators: Vec::new(),
+            states: RootScanStateBuffer::try_for_width(
+                shape.state_width(),
+                "scan endpoint states",
+            )?,
+            indicators: RootScanIndicatorBuffer::try_for_width(
+                shape.indicator_width(),
+                "scan endpoint indicators",
+            )?,
+        })
+    }
+}
+
+mod fixed_scan_buffer {
+    use super::{MeSessionError, RootScanIndicatorWidth, RootScanStateWidth, try_filled};
+
+    pub(super) enum RootScanStateRole {}
+    pub(super) enum RootScanIndicatorRole {}
+
+    pub(super) struct FixedRootScanBuffer<Role> {
+        values: Box<[f64]>,
+        role: std::marker::PhantomData<fn() -> Role>,
+    }
+
+    impl<Role> std::ops::Deref for FixedRootScanBuffer<Role> {
+        type Target = [f64];
+
+        fn deref(&self) -> &Self::Target {
+            &self.values
+        }
+    }
+
+    impl<Role> std::ops::DerefMut for FixedRootScanBuffer<Role> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.values
+        }
+    }
+
+    pub(super) type RootScanStateBuffer = FixedRootScanBuffer<RootScanStateRole>;
+    pub(super) type RootScanIndicatorBuffer = FixedRootScanBuffer<RootScanIndicatorRole>;
+
+    impl FixedRootScanBuffer<RootScanStateRole> {
+        pub(super) fn try_for_width(
+            width: RootScanStateWidth,
+            context: &'static str,
+        ) -> Result<Self, MeSessionError> {
+            Ok(Self {
+                values: try_filled(width.len(), 0.0, context)?.into_boxed_slice(),
+                role: std::marker::PhantomData,
+            })
+        }
+    }
+
+    impl FixedRootScanBuffer<RootScanIndicatorRole> {
+        pub(super) fn try_for_width(
+            width: RootScanIndicatorWidth,
+            context: &'static str,
+        ) -> Result<Self, MeSessionError> {
+            Ok(Self {
+                values: try_filled(width.len(), 0.0, context)?.into_boxed_slice(),
+                role: std::marker::PhantomData,
+            })
         }
     }
 }
 
-#[derive(Default)]
+use fixed_scan_buffer::{RootScanIndicatorBuffer, RootScanStateBuffer};
+
+/// Every buffer one accepted-interval scan and its refinement sample into, plus
+/// the retained previous-completed-step indicator vector the scan seeds from.
+///
+/// [`RootScanWorkspace::new`] is the sole owner. It consumes one kernel-issued
+/// [`RootScanShape`], whose state and published-indicator widths have distinct
+/// roles. Every state buffer is reserved only through the state capability and
+/// every indicator buffer only through the indicator capability, so exchanging
+/// the two widths is a compiler error. The scan consumes exact-width
+/// `copy_from_slice` and the fixed slice types leave no resize path anywhere
+/// between the owner and the checked `fmi3GetEventIndicators` call.
 pub(super) struct RootScanWorkspace {
+    /// The full standard indicator vector kept from the previous completed step.
+    retained: RootScanIndicatorBuffer,
     lower: ScanSample,
     upper: ScanSample,
-    states: Vec<f64>,
-    indicators: Vec<f64>,
+    states: RootScanStateBuffer,
+    indicators: RootScanIndicatorBuffer,
+}
+
+impl RootScanWorkspace {
+    fn new(shape: RootScanShape) -> Result<Self, MeSessionError> {
+        Ok(Self {
+            retained: RootScanIndicatorBuffer::try_for_width(
+                shape.indicator_width(),
+                "retained event indicators",
+            )?,
+            lower: ScanSample::reserved(&shape)?,
+            upper: ScanSample::reserved(&shape)?,
+            states: RootScanStateBuffer::try_for_width(shape.state_width(), "scan sample")?,
+            indicators: RootScanIndicatorBuffer::try_for_width(
+                shape.indicator_width(),
+                "scan event indicators",
+            )?,
+        })
+    }
+
+    /// Refresh the retained previous-completed-step indicator vector in place.
+    ///
+    /// `read` writes exactly the shape-issued indicator width into the owner's
+    /// fixed buffer or fails; there is no allocation, replacement, or resize.
+    /// The buffer is the same one every scan seeds `lower.indicators` from, so
+    /// the refreshed value and the scanned seed are one storage.
+    pub(super) fn refresh_retained(
+        &mut self,
+        read: impl FnOnce(&mut [f64]) -> Result<(), MeSessionError>,
+    ) -> Result<(), MeSessionError> {
+        read(&mut self.retained)
+    }
+
+    /// Whether this component carries any event indicators at all.
+    #[must_use]
+    pub(super) fn has_indicators(&self) -> bool {
+        !self.retained.is_empty()
+    }
+
+    #[cfg(test)]
+    fn seed_retained(&mut self, values: &[f64]) {
+        self.retained.copy_from_slice(values);
+    }
+
+    #[cfg(test)]
+    pub(super) fn verification_buffer_identity(&self) -> RootScanBufferIdentity {
+        let id = |buffer: &[f64]| (buffer.as_ptr() as usize, buffer.len());
+        RootScanBufferIdentity {
+            retained: id(&self.retained),
+            lower_states: id(&self.lower.states),
+            lower_indicators: id(&self.lower.indicators),
+            upper_states: id(&self.upper.states),
+            upper_indicators: id(&self.upper.indicators),
+            states: id(&self.states),
+            indicators: id(&self.indicators),
+        }
+    }
+}
+
+/// The indivisible root-search owner for one initialized ME host.
+///
+/// Its sole constructor takes the host's kernel directly and derives both the
+/// continuous-state domain and scan-buffer shape from that same kernel. No
+/// sibling module can pair a workspace issued by one kernel with policy from
+/// another, and no caller supplies either width as an integer.
+pub(super) struct MeRootSearchState {
+    state_domain: MeContinuousStateDomain,
+    policy: Option<MeRootSearchPolicy>,
+    workspace: RefCell<RootScanWorkspace>,
+}
+
+impl MeRootSearchState {
+    pub(super) fn new(kernel: &SolveMeKernel) -> Result<Self, MeSessionError> {
+        let state_domain = kernel.continuous_state_domain();
+        let workspace = RootScanWorkspace::new(kernel.root_scan_shape())?;
+        Ok(Self {
+            state_domain,
+            policy: None,
+            workspace: RefCell::new(workspace),
+        })
+    }
+
+    pub(super) const fn state_domain(&self) -> MeContinuousStateDomain {
+        self.state_domain
+    }
+
+    pub(super) fn configure_active(
+        &mut self,
+        options: &MeSessionOptions,
+        nominals: Vec<f64>,
+    ) -> Result<(), MeSessionError> {
+        self.policy = Some(MeRootSearchPolicy::new(
+            options,
+            nominals,
+            self.state_domain,
+        )?);
+        Ok(())
+    }
+
+    pub(super) fn configure_terminated(&mut self) {
+        self.policy = None;
+    }
+
+    fn policy(&self) -> Result<&MeRootSearchPolicy, MeSessionError> {
+        self.policy.as_ref().ok_or_else(Self::missing_policy_error)
+    }
+
+    pub(super) fn nominals(&self) -> Result<&[f64], MeSessionError> {
+        self.policy().map(MeRootSearchPolicy::nominals)
+    }
+
+    pub(super) fn refresh_nominals(&mut self, nominals: Vec<f64>) -> Result<(), MeSessionError> {
+        let checked = MeStateNominals::check(nominals, self.state_domain)?;
+        let policy = self
+            .policy
+            .as_mut()
+            .ok_or_else(Self::missing_policy_error)?;
+        policy.nominals = checked;
+        Ok(())
+    }
+
+    fn missing_policy_error() -> MeSessionError {
+        MeSessionError::Contract {
+            reason: "a session that terminated during initialization has no root-search policy"
+                .to_owned(),
+        }
+    }
+
+    pub(super) fn accept_step<T: RootScanTarget>(
+        &self,
+        target: &mut T,
+        proposal: MeStepProposal,
+    ) -> Result<MeAcceptedStep, MeSessionError> {
+        accept_step(target, self.policy()?, proposal)
+    }
+
+    pub(super) fn scan_accepted_interval<T: RootScanTarget>(
+        &self,
+        target: &mut T,
+        accepted: &MeAcceptedStep,
+    ) -> Result<Option<MeRootApplication>, MeSessionError> {
+        scan_accepted_interval_with_workspace(
+            target,
+            self.policy()?,
+            accepted,
+            &mut self.workspace.borrow_mut(),
+        )
+    }
+
+    /// Refresh the retained previous-completed-step indicators in the exact
+    /// workspace that the next scan will consume.
+    pub(super) fn refresh_retained_indicators(
+        &self,
+        read: impl FnOnce(&mut [f64]) -> Result<(), MeSessionError>,
+    ) -> Result<(), MeSessionError> {
+        let mut workspace = self.workspace.borrow_mut();
+        if workspace.has_indicators() {
+            workspace.refresh_retained(read)?;
+        }
+        Ok(())
+    }
+}
+
+/// The `(pointer, length)` identity of every buffer the scan workspace owns.
+///
+/// A resize or a wholesale replacement of any buffer changes its pointer or its
+/// length, so an equality assertion across a whole scan-plus-refinement dies if
+/// either is reintroduced.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RootScanBufferIdentity {
+    retained: (usize, usize),
+    lower_states: (usize, usize),
+    lower_indicators: (usize, usize),
+    upper_states: (usize, usize),
+    upper_indicators: (usize, usize),
+    states: (usize, usize),
+    indicators: (usize, usize),
+}
+
+/// The workspace's sampling buffers, borrowed for one bracket refinement.
+///
+/// Refinement consumes the same owner-sized storage the coarse scan sampled
+/// into; the slice fields make a refiner-side resize unrepresentable.
+struct ScanScratch<'workspace> {
+    states: &'workspace mut [f64],
+    indicators: &'workspace mut [f64],
 }
 
 /// The checked monotone coordinate grid one accepted interval is scanned on.
@@ -460,11 +721,14 @@ impl ScanGrid {
     }
 }
 
-/// Scan `[previous, accepted]` and return the earliest domain change, if any.
-///
-/// `retained` is the full indicator vector the host kept from the previous
-/// completed step; the scan never queries before that point. The endpoint
-/// samples come from the checked step, which [`accept_step`] already validated.
+#[cfg(test)]
+fn verification_shape(policy: &MeRootSearchPolicy, indicator_values: &[f64]) -> RootScanShape {
+    RootScanShape::verification_fixture(
+        RootScanStateWidth::verification_fixture(policy.state_domain().len()),
+        RootScanIndicatorWidth::verification_fixture(indicator_values.len()),
+    )
+}
+
 #[cfg(test)]
 fn scan_accepted_interval<T: RootScanTarget>(
     target: &mut T,
@@ -472,45 +736,45 @@ fn scan_accepted_interval<T: RootScanTarget>(
     accepted: &MeAcceptedStep,
     retained: &[f64],
 ) -> Result<Option<MeRootApplication>, MeSessionError> {
-    scan_accepted_interval_with_workspace(
-        target,
-        policy,
-        accepted,
-        retained,
-        &mut RootScanWorkspace::default(),
-    )
+    let mut workspace = RootScanWorkspace::new(verification_shape(policy, retained))?;
+    workspace.seed_retained(retained);
+    scan_accepted_interval_with_workspace(target, policy, accepted, &mut workspace)
 }
 
-pub(super) fn scan_accepted_interval_with_workspace<T: RootScanTarget>(
+/// Scan `[previous, accepted]` and return the earliest domain change, if any.
+///
+/// The retained indicator vector the scan seeds from lives inside `workspace`,
+/// sized with it from the kernel-issued indicator role; the scan never queries
+/// before that point. The endpoint samples come from the checked step, which
+/// [`accept_step`] already validated.
+fn scan_accepted_interval_with_workspace<T: RootScanTarget>(
     target: &mut T,
     policy: &MeRootSearchPolicy,
     accepted: &MeAcceptedStep,
-    retained: &[f64],
     workspace: &mut RootScanWorkspace,
 ) -> Result<Option<MeRootApplication>, MeSessionError> {
-    if retained.is_empty() {
+    if !workspace.has_indicators() {
         return Ok(None);
     }
-    let width = policy.state_count();
     let RootScanWorkspace {
+        retained,
         lower,
         upper,
         states,
         indicators,
     } = workspace;
+    // Fixed-width borrows of the owner's storage. Every write below is an
+    // exact-width `copy_from_slice`; the slice types leave no resize path.
+    let states: &mut [f64] = &mut states[..];
+    let indicators: &mut [f64] = &mut indicators[..];
     lower.time = accepted.previous().time();
-    copy_scan_values(
-        &mut lower.states,
-        accepted.left_states(),
-        "scan left endpoint",
-    )?;
-    copy_scan_values(&mut lower.indicators, retained, "retained event indicators")?;
+    lower.states.copy_from_slice(accepted.left_states());
+    lower.indicators.copy_from_slice(&retained[..]);
     let grid = ScanGrid::new(
         accepted.previous().time(),
         accepted.accepted().time(),
         policy.scan_resolution(),
     )?;
-    resize_scan_values(states, width, "scan sample")?;
     for step in 1..=grid.steps {
         // A scan is host work bounded by the session's own budget, never a
         // reason to coarsen: exhausting the budget is a typed abort.
@@ -523,67 +787,31 @@ pub(super) fn scan_accepted_interval_with_workspace<T: RootScanTarget>(
             target.sample_states(coordinate, states)?;
         }
         target.indicators_at(coordinate, states, indicators)?;
-        require_indicator_width(retained.len(), indicators)?;
+        require_finite_indicators(indicators)?;
         if domains_changed(&lower.indicators, indicators) {
             upper.time = coordinate;
-            copy_scan_values(&mut upper.states, states, "scan bracket states")?;
-            copy_scan_values(&mut upper.indicators, indicators, "scan bracket indicators")?;
-            return refine_bracket(target, policy, lower, upper).map(Some);
+            upper.states.copy_from_slice(states);
+            upper.indicators.copy_from_slice(indicators);
+            let mut scratch = ScanScratch { states, indicators };
+            return refine_bracket(target, policy, lower, upper, &mut scratch).map(Some);
         }
         if is_end {
             break;
         }
         lower.time = coordinate;
-        copy_scan_values(&mut lower.states, states, "scan lower states")?;
-        copy_scan_values(&mut lower.indicators, indicators, "scan lower indicators")?;
+        lower.states.copy_from_slice(states);
+        lower.indicators.copy_from_slice(indicators);
     }
     Ok(None)
 }
 
-fn resize_scan_values<T: Clone + Default>(
-    values: &mut Vec<T>,
-    len: usize,
-    context: &'static str,
-) -> Result<(), MeSessionError> {
-    if len > values.len() {
-        values
-            .try_reserve_exact(len - values.len())
-            .map_err(|_| MeSessionError::Allocation {
-                context,
-                entries: len,
-            })?;
-    }
-    values.resize(len, T::default());
-    Ok(())
-}
-
-fn copy_scan_values<T: Copy>(
-    values: &mut Vec<T>,
-    source: &[T],
-    context: &'static str,
-) -> Result<(), MeSessionError> {
-    if source.len() > values.len() {
-        values
-            .try_reserve_exact(source.len() - values.len())
-            .map_err(|_| MeSessionError::Allocation {
-                context,
-                entries: source.len(),
-            })?;
-    }
-    values.clear();
-    values.extend_from_slice(source);
-    Ok(())
-}
-
-fn require_indicator_width(expected: usize, indicators: &[f64]) -> Result<(), MeSessionError> {
-    if indicators.len() != expected {
-        return Err(MeSessionError::Contract {
-            reason: format!(
-                "the component returned {} event indicators for an inventory of {expected}",
-                indicators.len()
-            ),
-        });
-    }
+/// The only runtime check left on a scanned indicator vector: finiteness.
+///
+/// The width is a construction-issued fact — every scan buffer is the workspace
+/// width, and the checked `fmi3GetEventIndicators` boundary refuses any other
+/// buffer — so the scan re-proves nothing about it. Whether the *values* the
+/// component just computed are finite is a genuine runtime property.
+fn require_finite_indicators(indicators: &[f64]) -> Result<(), MeSessionError> {
     if let Some(index) = indicators.iter().position(|value| !value.is_finite()) {
         return Err(MeSessionError::Contract {
             reason: format!("event indicator {index} is not finite"),
@@ -616,8 +844,9 @@ fn refine_bracket<T: RootScanTarget>(
     policy: &MeRootSearchPolicy,
     lower: &ScanSample,
     upper: &ScanSample,
+    scratch: &mut ScanScratch<'_>,
 ) -> Result<MeRootApplication, MeSessionError> {
-    let width = policy.state_count();
+    let state_domain = policy.state_domain();
     let mut winner: Option<RefinedBracket> = None;
     for index in 0..lower.indicators.len() {
         let before = IndicatorDomain::of(lower.indicators[index]);
@@ -625,7 +854,7 @@ fn refine_bracket<T: RootScanTarget>(
         if before == after {
             continue;
         }
-        let refined = refine_indicator(target, policy, lower, upper, index, before)?;
+        let refined = refine_indicator(target, policy, lower, upper, index, before, scratch)?;
         let earlier = winner
             .as_ref()
             .is_none_or(|best| refined.application_time < best.application_time);
@@ -640,39 +869,37 @@ fn refine_bracket<T: RootScanTarget>(
         });
     };
 
-    let mut states = try_filled(width, 0.0, "root refinement sample")?;
-    let mut indicators = Vec::new();
-
     let left_states = if winner.left_time.to_bits() == lower.time.to_bits() {
         try_copied(&lower.states, "refined left states")?
     } else {
-        target.sample_states(winner.left_time, &mut states)?;
-        try_copied(&states, "refined left states")?
+        target.sample_states(winner.left_time, scratch.states)?;
+        try_copied(scratch.states, "refined left states")?
     };
     let left_indicators = if winner.left_time.to_bits() == lower.time.to_bits() {
         try_copied(&lower.indicators, "refined left indicators")?
     } else {
-        target.indicators_at(winner.left_time, &left_states, &mut indicators)?;
-        require_indicator_width(lower.indicators.len(), &indicators)?;
-        try_copied(&indicators, "refined left indicators")?
+        target.indicators_at(winner.left_time, &left_states, scratch.indicators)?;
+        require_finite_indicators(scratch.indicators)?;
+        try_copied(scratch.indicators, "refined left indicators")?
     };
 
     let application_states = if winner.application_time.to_bits() == upper.time.to_bits() {
         try_copied(&upper.states, "application states")?
     } else {
-        target.sample_states(winner.application_time, &mut states)?;
-        try_copied(&states, "application states")?
+        target.sample_states(winner.application_time, scratch.states)?;
+        try_copied(scratch.states, "application states")?
     };
     target.indicators_at(
         winner.application_time,
         &application_states,
-        &mut indicators,
+        scratch.indicators,
     )?;
-    require_indicator_width(lower.indicators.len(), &indicators)?;
-    let application_indicators = try_copied(&indicators, "application indicators")?;
+    require_finite_indicators(scratch.indicators)?;
+    let application_indicators = try_copied(scratch.indicators, "application indicators")?;
 
-    let left = MeContinuousPoint::new(winner.left_time, left_states, width)?;
-    let application = MeContinuousPoint::new(winner.application_time, application_states, width)?;
+    let left = MeContinuousPoint::new(winner.left_time, left_states, state_domain)?;
+    let application =
+        MeContinuousPoint::new(winner.application_time, application_states, state_domain)?;
     MeRootApplication::new(left, application, left_indicators, application_indicators)
 }
 
@@ -688,12 +915,10 @@ fn refine_indicator<T: RootScanTarget>(
     upper: &ScanSample,
     index: usize,
     entry_domain: IndicatorDomain,
+    scratch: &mut ScanScratch<'_>,
 ) -> Result<RefinedBracket, MeSessionError> {
-    let width = policy.state_count();
     let mut low = lower.time;
     let mut high = upper.time;
-    let mut states = try_filled(width, 0.0, "root bisection sample")?;
-    let mut indicators = Vec::new();
     // A bisection to the location tolerance over a bracket that is already at
     // most one scan resolution wide terminates in a bounded, host-owned count.
     for _ in 0..MAX_REFINEMENT_ITERATIONS {
@@ -713,10 +938,10 @@ fn refine_indicator<T: RootScanTarget>(
                 application_time: high,
             });
         }
-        target.sample_states(middle, &mut states)?;
-        target.indicators_at(middle, &states, &mut indicators)?;
-        require_indicator_width(lower.indicators.len(), &indicators)?;
-        let Some(value) = indicators.get(index).copied() else {
+        target.sample_states(middle, scratch.states)?;
+        target.indicators_at(middle, scratch.states, scratch.indicators)?;
+        require_finite_indicators(scratch.indicators)?;
+        let Some(value) = scratch.indicators.get(index).copied() else {
             return Err(MeSessionError::Contract {
                 reason: format!("event indicator {index} is missing from the refined vector"),
             });
@@ -748,14 +973,38 @@ const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fmi_me::session::MeSessionOptionsInput;
+
+    fn options() -> MeSessionOptions {
+        MeSessionOptions::new(MeSessionOptionsInput {
+            stop_time: Some(1.0),
+            relative_tolerance: 1.0e-6,
+            absolute_tolerance: 1.0e-8,
+            output_interval: 0.1,
+            root_scan_resolution: 0.1,
+            root_location_tolerance: 1.0e-9,
+            max_wall_seconds: None,
+            records_trace: false,
+        })
+        .expect("fixture options are checked")
+    }
 
     fn policy() -> MeRootSearchPolicy {
-        MeRootSearchPolicy::new(0.1, 1.0e-9, 1.0e-8, 1.0e-6, vec![1.0], 1)
-            .expect("fixture policy is checked")
+        MeRootSearchPolicy::new(
+            &options(),
+            vec![1.0],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("fixture policy is checked")
     }
 
     fn point(time: f64, state: f64) -> MeContinuousPoint {
-        MeContinuousPoint::new(time, vec![state], 1).expect("fixture point is checked")
+        MeContinuousPoint::new(
+            time,
+            vec![state],
+            MeContinuousStateDomain::verification_fixture(1),
+        )
+        .expect("fixture point is checked")
     }
 
     /// `x(t) = t - 0.25`, one indicator equal to the state.
@@ -779,11 +1028,20 @@ mod tests {
             &mut self,
             _time: f64,
             states: &[f64],
-            indicators: &mut Vec<f64>,
+            indicators: &mut [f64],
         ) -> Result<(), MeSessionError> {
             self.indicator_calls += 1;
-            indicators.clear();
-            indicators.push(states[0]);
+            // The same exact-width refusal the checked component call owns:
+            // a target consumes the owner-sized buffer, it never repairs it.
+            if indicators.len() != 1 {
+                return Err(MeSessionError::Contract {
+                    reason: format!(
+                        "event-indicator buffer has {} entries for 1 indicators",
+                        indicators.len()
+                    ),
+                });
+            }
+            indicators[0] = states[0];
             Ok(())
         }
 
@@ -803,7 +1061,7 @@ mod tests {
         let policy = policy();
         let request = MeAdvanceRequest::new(previous.clone(), None, accepted.time(), None, None)?;
         let candidate = MeStepCandidate::new(accepted.time(), accepted.states().to_vec(), 3);
-        let proposal = MeStepProposal::bind(request, candidate, previous.width())?;
+        let proposal = MeStepProposal::bind(request, candidate)?;
         let step = accept_step(target, &policy, proposal)?;
         scan_accepted_interval(target, &policy, &step, retained)
     }
@@ -817,12 +1075,12 @@ mod tests {
 
     #[test]
     fn the_policy_rejects_a_non_positive_or_incomplete_nominal_vector() {
-        assert!(MeRootSearchPolicy::new(0.1, 1.0e-9, 1.0e-8, 1.0e-6, vec![0.0], 1).is_err());
-        assert!(
-            MeRootSearchPolicy::new(0.1, 1.0e-9, 1.0e-8, 1.0e-6, vec![f64::INFINITY], 1).is_err()
-        );
-        assert!(MeRootSearchPolicy::new(0.1, 1.0e-9, 1.0e-8, 1.0e-6, Vec::new(), 1).is_err());
-        assert!(MeRootSearchPolicy::new(0.1, 1.0e-9, 1.0e-8, 1.0e-6, vec![1.0, 1.0], 1).is_err());
+        let domain = MeContinuousStateDomain::verification_fixture(1);
+        let options = options();
+        assert!(MeRootSearchPolicy::new(&options, vec![0.0], domain).is_err());
+        assert!(MeRootSearchPolicy::new(&options, vec![f64::INFINITY], domain).is_err());
+        assert!(MeRootSearchPolicy::new(&options, Vec::new(), domain).is_err());
+        assert!(MeRootSearchPolicy::new(&options, vec![1.0, 1.0], domain).is_err());
     }
 
     #[test]
@@ -834,6 +1092,152 @@ mod tests {
 
         assert!((application.application().time() - 0.25).abs() <= 1.0e-8);
         assert!(target.indicator_calls > 1);
+    }
+
+    /// The four lower/upper scan buffers, the retained seed, and the two
+    /// sampling buffers keep one `(pointer, length)` identity across a whole
+    /// coarse scan **and** its bracket refinement.
+    ///
+    /// The crossing forces the refinement path, so `upper.states` and
+    /// `upper.indicators` are written, not only the lower pair. Because every
+    /// buffer is a fixed-width `Box<[f64]>` mutated only by `copy_from_slice`,
+    /// the identity holds. It dies the instant a resize/repair path (a `Vec`
+    /// grown by `try_reserve_exact` + `clear` + `extend`) or a wholesale
+    /// replacement (`self.upper.states = ...`) is reintroduced anywhere in the
+    /// scan or refinement, because either changes a pointer or a length.
+    ///
+    /// This identity is evidence, not proof: it dies on a resize or a
+    /// replacement of a persistent buffer, and on nothing else. A temporary
+    /// allocated inside a call, evaluated into, and copied back into the
+    /// persistent buffer changes no pointer and delivers correct values, so
+    /// both the identity rows and the value assertions stay green; the
+    /// companion source scan bans only resize-shaped tokens, not `vec![`,
+    /// `Vec::new(`, or `.to_vec(`. That shape is live in this very call
+    /// graph: the indicator read this workspace refreshes through
+    /// (`refresh_retained_indicators_into`, `get_event_indicators`,
+    /// `event_indicators_into`) allocates internally today on the
+    /// linearization-cache-hit and dynamic-deadline paths. That residue is
+    /// owned by adversarial review of the evaluation call chain, not by this
+    /// witness.
+    #[test]
+    fn the_scan_buffers_keep_one_identity_across_a_scan_and_its_refinement() {
+        let mut target = LinearCrossing::new();
+        let policy = policy();
+        let previous = point(0.0, -0.25);
+        let accepted = point(1.0, 0.75);
+        let request = MeAdvanceRequest::new(previous.clone(), None, accepted.time(), None, None)
+            .expect("the advance request is checked");
+        let candidate = MeStepCandidate::new(accepted.time(), accepted.states().to_vec(), 3);
+        let proposal = MeStepProposal::bind(request, candidate).expect("the proposal binds");
+        let step = accept_step(&mut target, &policy, proposal).expect("the sampler agrees");
+        let retained = [-0.25];
+        let mut workspace = RootScanWorkspace::new(verification_shape(&policy, &retained))
+            .expect("the workspace reserves");
+        workspace.seed_retained(&retained);
+
+        let before = workspace.verification_buffer_identity();
+        let application =
+            scan_accepted_interval_with_workspace(&mut target, &policy, &step, &mut workspace)
+                .expect("the scan succeeds")
+                .expect("a crossing exists inside the interval");
+        assert!((application.application().time() - 0.25).abs() <= 1.0e-8);
+        assert!(
+            target.indicator_calls > 2,
+            "the crossing must force the bracket-refinement path so the upper buffers are written"
+        );
+        let after = workspace.verification_buffer_identity();
+        assert_eq!(
+            before, after,
+            "a scan-plus-refinement resized or replaced a scan buffer: {before:?} -> {after:?}"
+        );
+
+        // The retained refresh must hand out the construction-reserved
+        // retained buffer itself and leave every buffer identity untouched. A
+        // refresh that read into a temporary would fail the in-closure
+        // identity assertion; one that assigned `self.retained` a freshly
+        // boxed slice would change the pointer captured on either side of
+        // this call.
+        workspace
+            .refresh_retained(|retained| {
+                assert_eq!(
+                    (retained.as_ptr() as usize, retained.len()),
+                    after.retained,
+                    "refresh_retained must expose the retained buffer, not a temporary"
+                );
+                retained.copy_from_slice(&[0.75]);
+                Ok(())
+            })
+            .expect("the in-place retained refresh succeeds");
+        let refreshed = workspace.verification_buffer_identity();
+        assert_eq!(
+            after, refreshed,
+            "a retained refresh resized or replaced a scan buffer: {after:?} -> {refreshed:?}"
+        );
+    }
+
+    #[test]
+    fn unequal_state_and_indicator_widths_keep_their_roles_through_a_real_scan() {
+        struct TwoStatesOneIndicator;
+
+        impl RootScanTarget for TwoStatesOneIndicator {
+            fn sample_states(
+                &mut self,
+                time: f64,
+                states: &mut [f64],
+            ) -> Result<(), MeSessionError> {
+                states.copy_from_slice(&[time - 0.25, 10.0 + time]);
+                Ok(())
+            }
+
+            fn indicators_at(
+                &mut self,
+                _time: f64,
+                states: &[f64],
+                indicators: &mut [f64],
+            ) -> Result<(), MeSessionError> {
+                indicators.copy_from_slice(&[states[0]]);
+                Ok(())
+            }
+
+            fn check_budget(&self) -> Result<(), MeSessionError> {
+                Ok(())
+            }
+        }
+
+        let domain = MeContinuousStateDomain::verification_fixture(2);
+        let policy = MeRootSearchPolicy::new(&options(), vec![1.0, 1.0], domain)
+            .expect("two-state policy is checked");
+        let previous = MeContinuousPoint::new(0.0, vec![-0.25, 10.0], domain)
+            .expect("two-state start is checked");
+        let accepted = MeContinuousPoint::new(1.0, vec![0.75, 11.0], domain)
+            .expect("two-state endpoint is checked");
+        let request = MeAdvanceRequest::new(previous, None, 1.0, None, None)
+            .expect("the advance request is checked");
+        let proposal = MeStepProposal::bind(
+            request,
+            MeStepCandidate::new(1.0, accepted.states().to_vec(), 3),
+        )
+        .expect("the proposal inherits its request's two-state domain");
+        let mut target = TwoStatesOneIndicator;
+        let step = accept_step(&mut target, &policy, proposal).expect("the sampler agrees");
+        let retained = [-0.25];
+        let mut workspace = RootScanWorkspace::new(verification_shape(&policy, &retained))
+            .expect("the unequal-width workspace reserves");
+        workspace.seed_retained(&retained);
+        let identity = workspace.verification_buffer_identity();
+        assert_eq!(identity.lower_states.1, 2);
+        assert_eq!(identity.upper_states.1, 2);
+        assert_eq!(identity.states.1, 2);
+        assert_eq!(identity.retained.1, 1);
+        assert_eq!(identity.lower_indicators.1, 1);
+        assert_eq!(identity.upper_indicators.1, 1);
+        assert_eq!(identity.indicators.1, 1);
+
+        let application =
+            scan_accepted_interval_with_workspace(&mut target, &policy, &step, &mut workspace)
+                .expect("the unequal-width scan succeeds")
+                .expect("the first state crosses its single indicator");
+        assert!((application.application().time() - 0.25).abs() <= 1.0e-8);
     }
 
     #[test]

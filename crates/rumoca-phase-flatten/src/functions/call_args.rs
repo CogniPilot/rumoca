@@ -119,11 +119,38 @@ impl CallArgumentMaterializer {
             name,
             args,
             is_constructor,
+            call_kind,
             span,
         } = expression
         else {
             return self.walk_expression(expression);
         };
+        // Function-value construction is orthogonal to the callable's
+        // constructor identity. Canonicalization may prove that the referenced
+        // callable is a record constructor while the occurrence remains a
+        // partial application. Preserve that value use before considering the
+        // executable constructor path; otherwise missing captures are silently
+        // filled as invocation slots and the call kind is laundered.
+        if *call_kind == rumoca_core::FunctionCallKind::PartialApplication {
+            let Some(signature) = self.catalog.for_reference(name)? else {
+                return Ok(rumoca_core::Expression::FunctionCall {
+                    name: name.clone(),
+                    args: self.rewrite_expressions(args)?,
+                    is_constructor: *is_constructor,
+                    call_kind: *call_kind,
+                    span: *span,
+                });
+            };
+            let args =
+                self.arguments_for_call(&signature, args, CallUse::PartialApplication, *span)?;
+            return Ok(rumoca_core::Expression::FunctionCall {
+                name: name.clone(),
+                args,
+                is_constructor: *is_constructor,
+                call_kind: *call_kind,
+                span: *span,
+            });
+        }
         // Record constructors are aggregate construction rather than runtime
         // function execution, but their certified Flat signature still owns
         // declaration-order slots and defaults. Materialize those slots before
@@ -134,6 +161,7 @@ impl CallArgumentMaterializer {
                     name: name.clone(),
                     args: self.rewrite_expressions(args)?,
                     is_constructor: true,
+                    call_kind: *call_kind,
                     span: *span,
                 });
             }
@@ -142,6 +170,7 @@ impl CallArgumentMaterializer {
                     name: name.clone(),
                     args: self.rewrite_expressions(args)?,
                     is_constructor: true,
+                    call_kind: *call_kind,
                     span: *span,
                 });
             };
@@ -150,6 +179,7 @@ impl CallArgumentMaterializer {
                 name: name.clone(),
                 args,
                 is_constructor: true,
+                call_kind: *call_kind,
                 span: *span,
             });
         }
@@ -158,6 +188,7 @@ impl CallArgumentMaterializer {
                 name: name.clone(),
                 args: self.rewrite_expressions(args)?,
                 is_constructor: *is_constructor,
+                call_kind: *call_kind,
                 span: *span,
             });
         };
@@ -166,6 +197,7 @@ impl CallArgumentMaterializer {
             name: name.clone(),
             args,
             is_constructor: *is_constructor,
+            call_kind: *call_kind,
             span: *span,
         })
     }
@@ -408,6 +440,7 @@ fn named_argument_value(
         name,
         args,
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         ..
     } = argument
     else {
@@ -432,6 +465,7 @@ fn rebuild_named_marker(
     let rumoca_core::Expression::FunctionCall {
         name,
         is_constructor,
+        call_kind,
         span,
         ..
     } = marker
@@ -442,6 +476,7 @@ fn rebuild_named_marker(
         name: name.clone(),
         args: vec![value],
         is_constructor: *is_constructor,
+        call_kind: *call_kind,
         span: *span,
     }
 }
@@ -762,6 +797,7 @@ mod tests {
             name: reference,
             args,
             is_constructor: false,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: span(),
         }
     }
@@ -781,6 +817,7 @@ mod tests {
             )),
             args: vec![value],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: span(),
         }
     }
@@ -797,7 +834,7 @@ mod tests {
 
     fn model_with_function() -> (flat::Model, rumoca_core::FunctionInstanceId) {
         let mut model = flat::Model::new();
-        let mut function = rumoca_core::Function::new("Pkg.f", span());
+        let mut function = rumoca_core::Function::new("Pkg.f", FUNCTION_DEF_ID, span());
         function.def_id = Some(FUNCTION_DEF_ID);
         function.inputs.push(
             crate::test_support::real_param("a", Vec::new(), span())
@@ -884,6 +921,7 @@ mod tests {
             ])),
             args: vec![resolved_call(instance_id, vec![literal(4.0)])],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: span(),
         };
         model.add_equation(flat::Equation::new(
@@ -927,7 +965,7 @@ mod tests {
                     .with_def_id(rumoca_core::DefId(300 + index as u32))
             })
             .collect();
-        let mut apply = rumoca_core::Function::new("Pkg.apply", span());
+        let mut apply = rumoca_core::Function::new("Pkg.apply", rumoca_core::DefId(200), span());
         apply.def_id = Some(rumoca_core::DefId(200));
         apply.inputs.push(
             crate::test_support::aggregate_param("fn", "Pkg.Partial", Vec::new(), span())

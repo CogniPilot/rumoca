@@ -166,6 +166,7 @@ fn span_of_positions_a_declaration_diagnostic() {
     let document = parse_document(&text, "dup").expect("parses");
     let dup = document
         .diagnostics()
+        .expect("document analysis succeeds")
         .iter()
         .find(|d| d.code() == "EG012")
         .cloned()
@@ -196,6 +197,7 @@ fn span_of_positions_a_statement_diagnostic() {
     let document = parse_document(&text, "ref").expect("parses");
     let unresolved = document
         .diagnostics()
+        .expect("document analysis succeeds")
         .iter()
         .find(|d| d.code() == "EG014")
         .cloned()

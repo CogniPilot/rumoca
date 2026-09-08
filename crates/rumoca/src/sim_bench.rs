@@ -72,9 +72,8 @@ pub struct SimBenchArgs {
     pub(crate) diagnostics: DiagnosticsArgs,
 }
 
-/// Solver modes offered by `sim bench`. The reusable prepared hot path measured
-/// here is BDF/diffsol-only, so `rk-like` is intentionally not selectable (it
-/// would always be rejected); see [`SimBenchArgs::solver`].
+/// Solver modes offered by `sim bench`. BDF reuses its prepared product and
+/// `rk-like` reuses its retained session across hot benchmark runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum BenchSolverMode {
     Auto,
@@ -108,13 +107,8 @@ struct HotRunSummary {
     final_time: Option<f64>,
 }
 
-enum PreparedHotBench {
-    Bdf(Box<rumoca_sim::PreparedSimulation>),
-    RkLike(Box<RkLikeHotBench>),
-}
-
-struct RkLikeHotBench {
-    session: rumoca_sim::rk45::SimulationSession,
+struct PreparedHotBench {
+    session: rumoca_sim::SimulationSession,
     sample_times: Vec<f64>,
     t_start: f64,
 }
@@ -243,63 +237,39 @@ impl PreparedHotBench {
         dae: &rumoca_compile::compile::Dae,
         opts: &SimOptions,
     ) -> Result<(Self, BuildSimulationTimings)> {
-        match opts.solver_mode {
-            SimSolverMode::RkLike => {
-                let (bench, timings) = RkLikeHotBench::build(dae, opts)?;
-                Ok((Self::RkLike(Box::new(bench)), timings))
-            }
-            SimSolverMode::Auto | SimSolverMode::Bdf => {
-                rumoca_sim::build_simulation_with_stage_timing(dae, opts, ignore_build_stage)
-                    .map(|(prepared, timings)| (Self::Bdf(Box::new(prepared)), timings))
-                    .map_err(|err| anyhow::anyhow!("failed to prepare simulation: {err}"))
-            }
-        }
-    }
-
-    fn run_hot(&mut self) -> Result<HotRunSummary> {
-        match self {
-            Self::Bdf(prepared) => {
-                let sim = prepared.run()?;
-                Ok(HotRunSummary {
-                    points: sim.times.len(),
-                    final_time: sim.times.last().copied(),
-                })
-            }
-            Self::RkLike(prepared) => prepared.run_hot(),
-        }
-    }
-}
-
-fn ignore_build_stage(_: &'static str) {}
-
-impl RkLikeHotBench {
-    fn build(
-        dae: &rumoca_compile::compile::Dae,
-        opts: &SimOptions,
-    ) -> Result<(Self, BuildSimulationTimings)> {
-        let (session, timings) =
-            rumoca_sim::rk45::SimulationSession::new_with_stage_timing(dae, opts.clone(), |_| {})
-                .map_err(|err| anyhow::anyhow!("failed to prepare rk-like simulation: {err}"))?;
+        let build_started = Instant::now();
+        let session = rumoca_sim::SimulationSession::new(dae, opts.clone())
+            .map_err(|err| anyhow::anyhow!("failed to prepare simulation: {err}"))?;
+        let output_dt = bench_output_dt(opts);
+        let sample_times = rumoca_sim::try_build_output_times(opts.t_start, opts.t_end, output_dt)
+            .with_context(|| {
+                format!(
+                    "failed to admit benchmark output grid [{}, {}] with interval {output_dt}",
+                    opts.t_start, opts.t_end
+                )
+            })?;
         Ok((
             Self {
                 session,
-                sample_times: build_output_times(opts.t_start, opts.t_end, bench_output_dt(opts)),
+                sample_times,
                 t_start: opts.t_start,
             },
-            timings,
+            BuildSimulationTimings {
+                backend_build_seconds: build_started.elapsed().as_secs_f64(),
+                ..BuildSimulationTimings::default()
+            },
         ))
     }
 
     fn run_hot(&mut self) -> Result<HotRunSummary> {
         self.session
-            .reset(self.t_start)
-            .map_err(|err| anyhow::anyhow!("failed to reset rk-like simulation: {err}"))?;
+            .retime(self.t_start)
+            .map_err(|err| anyhow::anyhow!("failed to reset simulation: {err}"))?;
         for &target in self.sample_times.iter().skip(1) {
             self.session
                 .advance_to(target)
-                .map_err(|err| anyhow::anyhow!("failed to step rk-like simulation: {err}"))?;
+                .map_err(|err| anyhow::anyhow!("failed to step simulation: {err}"))?;
         }
-        self.session.trace_eval_snapshot("rumoca sim bench");
         Ok(HotRunSummary {
             points: self.sample_times.len(),
             final_time: Some(self.session.time()),
@@ -407,47 +377,6 @@ fn bench_output_dt(opts: &SimOptions) -> f64 {
     opts.dt
         .filter(|dt| dt.is_finite() && *dt > 0.0)
         .unwrap_or_else(|| ((opts.t_end - opts.t_start).abs() / 500.0).max(1.0e-3))
-}
-
-fn build_output_times(t_start: f64, t_end: f64, dt: f64) -> Vec<f64> {
-    if !dt.is_finite() || dt <= 0.0 {
-        return if sample_time_match(t_start, t_end) {
-            vec![t_start]
-        } else {
-            vec![t_start, t_end]
-        };
-    }
-
-    let mut times = Vec::new();
-    let mut k = 0usize;
-    loop {
-        let t_raw = t_start + (k as f64) * dt;
-        if t_raw > t_end && !sample_time_match(t_raw, t_end) {
-            break;
-        }
-        times.push(if sample_time_match(t_raw, t_end) {
-            t_end
-        } else {
-            t_raw
-        });
-        if times.last().copied().is_some_and(|time| time >= t_end) {
-            return times;
-        }
-        k += 1;
-    }
-    if times
-        .last()
-        .copied()
-        .is_none_or(|last| !sample_time_match(last, t_end))
-    {
-        times.push(t_end);
-    }
-    times
-}
-
-fn sample_time_match(a: f64, b: f64) -> bool {
-    let tol = 1e-12 * (1.0 + a.abs().max(b.abs()));
-    (a - b).abs() <= tol
 }
 
 fn realtime_factor(sim_seconds: f64, wall_seconds: f64) -> f64 {

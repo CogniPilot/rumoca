@@ -76,8 +76,10 @@ pub(super) fn extend_relative_component_target(
 /// Returns None if no value can be extracted.
 pub(super) fn extract_modification_value(expr: &ast::Expression) -> Option<ast::Expression> {
     let value = match expr {
-        ast::Expression::Modification { value, .. } => Some(value),
-        ast::Expression::NamedArgument { value, .. } => Some(value),
+        ast::Expression::Modification {
+            value: Some(value), ..
+        }
+        | ast::Expression::NamedArgument { value, .. } => Some(value),
         _ => None,
     }?;
 
@@ -131,46 +133,4 @@ pub(super) fn try_extract_value_modification_any(
         return None;
     }
     Some((target_name, value, modification.final_))
-}
-
-/// Extract the new type from a redeclaration modification.
-///
-/// Redeclarations can have forms like:
-/// - `redeclare model M = NewM` -> returns "NewM"
-/// - `redeclare Real x` -> returns "Real"
-/// - `redeclare type T = Integer` -> returns "Integer"
-/// - `redeclare TransientData.CellData cellData` -> returns "TransientData.CellData"
-///
-/// Returns None if the new type cannot be determined from the expression.
-pub(super) fn extract_redeclare_type(expr: &ast::Expression) -> Option<String> {
-    match expr {
-        // Type assignment: `redeclare model M = NewM` or `redeclare type T = Integer`
-        // Also handles: `redeclare TransientData.CellData cellData` where value is ClassModification
-        ast::Expression::Modification { value, .. } => {
-            // The value might be a component reference to the new type
-            if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                return Some(comp_ref.to_string());
-            }
-            // Or it might be a class modification with the type as target
-            // This handles: `Modification { target: cellData, value: ClassModification { target: TypeName, ... } }`
-            if let ast::Expression::ClassModification { target, .. } = value.as_ref() {
-                return Some(target.to_string());
-            }
-            None
-        }
-        // Class modification with type: might have type info in the modification
-        ast::Expression::ClassModification { target, .. } => {
-            // For class modifications like `redeclare Real x(...)`, the target itself is the type
-            // This is a simplified extraction; full parsing would need access to component decl
-            Some(target.to_string())
-        }
-        // Named argument: `redeclare type T = Integer` where value is the new type
-        ast::Expression::NamedArgument { value, .. } => {
-            if let ast::Expression::ComponentReference(comp_ref) = value.as_ref() {
-                return Some(comp_ref.to_string());
-            }
-            None
-        }
-        _ => None,
-    }
 }

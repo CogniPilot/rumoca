@@ -18,11 +18,7 @@ pub(super) async fn references(
             return Ok(None);
         }
         let mut sources = SnapshotSourceTexts::new(&snapshot);
-        return Ok(Some(navigation_locations_to_lsp(
-            locations,
-            uri,
-            &mut sources,
-        )));
+        return Ok(Some(navigation_locations_to_lsp(locations, &mut sources)?));
     }
     Ok(None)
 }
@@ -68,42 +64,39 @@ pub(super) async fn rename(
         let mut sources = SnapshotSourceTexts::new(&snapshot);
         return Ok(Some(navigation_rename_edit(
             locations,
-            uri,
             new_name,
             &mut sources,
-        )));
+        )?));
     }
     Ok(None)
 }
 
 fn navigation_locations_to_lsp(
     locations: Vec<(String, rumoca_core::Location)>,
-    fallback_uri: &Url,
     sources: &mut SnapshotSourceTexts<'_>,
-) -> Vec<Location> {
+) -> Result<Vec<Location>> {
     locations
         .into_iter()
         .map(|(uri, location)| {
             let source = sources.source_for(&uri);
-            Location {
-                uri: navigation_location_uri(&uri, fallback_uri),
+            Ok(Location {
+                uri: navigation_location_uri(&uri)?,
                 range: location_to_range_in_optional_source(source.as_deref(), &location),
-            }
+            })
         })
         .collect()
 }
 
 fn navigation_rename_edit(
     locations: Vec<(String, rumoca_core::Location)>,
-    fallback_uri: &Url,
     new_name: &str,
     sources: &mut SnapshotSourceTexts<'_>,
-) -> WorkspaceEdit {
+) -> Result<WorkspaceEdit> {
     let mut changes = HashMap::new();
     for (uri, location) in locations {
         let source = sources.source_for(&uri);
         changes
-            .entry(navigation_location_uri(&uri, fallback_uri))
+            .entry(navigation_location_uri(&uri)?)
             .or_insert_with(Vec::new)
             .push(TextEdit {
                 range: location_to_range_in_optional_source(source.as_deref(), &location),
@@ -111,15 +104,34 @@ fn navigation_rename_edit(
             });
     }
 
-    WorkspaceEdit {
+    Ok(WorkspaceEdit {
         changes: Some(changes),
         document_changes: None,
         change_annotations: None,
-    }
+    })
 }
 
-fn navigation_location_uri(uri: &str, fallback_uri: &Url) -> Url {
+fn navigation_location_uri(uri: &str) -> Result<Url> {
     Url::from_file_path(uri)
         .ok()
-        .unwrap_or_else(|| fallback_uri.clone())
+        .or_else(|| Url::parse(uri).ok())
+        .ok_or_else(tower_lsp::jsonrpc::Error::internal_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::navigation_location_uri;
+
+    #[test]
+    fn invalid_navigation_uri_cannot_be_relabelled_as_the_request_document() {
+        navigation_location_uri("relative-without-an-authoritative-root.mo")
+            .expect_err("a relative target with no authority must fail closed");
+    }
+
+    #[test]
+    fn exact_navigation_uri_is_retained() {
+        let uri = navigation_location_uri("file:///workspace/Model.mo")
+            .expect("an exact file URI is authoritative");
+        assert_eq!(uri.as_str(), "file:///workspace/Model.mo");
+    }
 }

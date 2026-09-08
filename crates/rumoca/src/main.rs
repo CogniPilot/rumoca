@@ -9,7 +9,7 @@
 //! rumoca compile model.mo --model MyModel --emit solve-json
 //!
 //! # Compile and render a target.toml codegen target
-//! rumoca compile model.mo --model MyModel --target c-ode --output out
+//! rumoca compile model.mo --model MyModel --target fmi3 --output out
 //!
 //! # Verbose output
 //! rumoca compile model.mo --model MyModel --emit dae-mo --verbose
@@ -58,13 +58,14 @@ fn main() {
 fn install_cli_miette_hook() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
-        let _ = miette::set_hook(Box::new(|_| {
+        miette::set_hook(Box::new(|_| {
             let mut theme = GraphicalTheme::unicode();
             let strong_error = theme.styles.error.bold();
             theme.styles.highlights = vec![strong_error, strong_error, strong_error];
             theme.characters.error = String::new();
             Box::new(MietteHandlerOpts::new().graphical_theme(theme).build())
-        }));
+        }))
+        .expect("CLI diagnostic hook must be installed exactly once");
     });
 }
 

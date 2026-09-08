@@ -146,6 +146,7 @@ fn literal_and_slice_indices_select_exact_coordinate_scalars() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(1),
                 real_array,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -225,6 +226,7 @@ fn omitted_and_explicit_unit_ranges_project_identically() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(2),
                 real_array,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -323,6 +325,7 @@ fn vector_projects_each_result_scalar_to_the_same_compact_operand_scalar() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(3),
                 tensor,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -363,6 +366,7 @@ fn transpose_projects_rank_three_scalars_through_the_first_two_axes() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(4),
                 tensor,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -416,18 +420,21 @@ fn diagonal_and_outer_product_project_only_exact_operand_scalars() {
             Ok((
                 variables.algebraic(
                     VarName::new("d"),
+                    rumoca_core::InstanceId::new(5),
                     vector2,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("lhs"),
+                    rumoca_core::InstanceId::new(6),
                     vector2,
                     at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.algebraic(
                     VarName::new("rhs"),
+                    rumoca_core::InstanceId::new(7),
                     vector3,
                     at,
                     dae::VariableAttributes::default(),
@@ -482,6 +489,7 @@ fn skew_projects_only_off_diagonal_operand_scalars() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(8),
                 vector,
                 at,
                 dae::VariableAttributes::default(),
@@ -521,6 +529,7 @@ fn binder_substitution_uses_the_exact_domain_value() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(9),
                 real_array,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -530,7 +539,7 @@ fn binder_substitution_uses_the_exact_domain_value() {
             domains.structured(
                 StructuredIndexDomain {
                     binders: vec![StructuredIndexBinder {
-                        id: 0,
+                        id: rumoca_core::StructuredIndexBinderId::new(0),
                         display_name: "i".to_string(),
                         lower: 1,
                         upper: 3,
@@ -596,12 +605,14 @@ fn dynamic_index_reports_all_potential_values_and_its_index_dependency() {
             Ok((
                 variables.algebraic(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(10),
                     real_array,
                     x_at,
                     dae::VariableAttributes::default(),
                 )?,
                 variables.input(
                     VarName::new("i"),
+                    rumoca_core::InstanceId::new(11),
                     integer,
                     dae::InputVariability::Discrete,
                     i_at,
@@ -670,6 +681,7 @@ fn function_summary_substitutes_one_exact_argument_scalar() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(12),
                 vector,
                 at,
                 dae::VariableAttributes::default(),
@@ -732,6 +744,7 @@ fn function_index_parameter_preserves_call_site_specialization() {
         let x = model.variables(|variables| {
             variables.algebraic(
                 VarName::new("x"),
+                rumoca_core::InstanceId::new(13),
                 vector,
                 at,
                 dae::VariableAttributes::default(),

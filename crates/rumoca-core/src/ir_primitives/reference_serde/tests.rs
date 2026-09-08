@@ -2,7 +2,8 @@
 //!
 //! The positive fixture is the exact current spelling; the negative fixture is
 //! the list of payloads that must not decode — the deleted bare-name shape, a
-//! record missing any one field (including `instance_id`, which the exact
+//! record missing any one field (including `instance_id` and
+//! `structured_binder`, which the exact
 //! identity cutover added and which the old record defaulted away), an unknown
 //! field, and every identity-contract violation.
 
@@ -95,7 +96,8 @@ fn every_reference_field_is_explicit_on_the_wire() {
                 "generated",
                 "instance_id",
                 "name",
-                "resolved_function"
+                "resolved_function",
+                "structured_binder"
             ],
             "every field is written explicitly, including the absent ones"
         );
@@ -147,7 +149,7 @@ fn deleted_and_incomplete_reference_shapes_are_rejected() {
 #[test]
 fn reference_construction_rejects_identity_free_records() {
     assert_eq!(
-        Reference::construct(VarName::new(""), None, None, None, false),
+        Reference::construct(VarName::new(""), None, None, None, None, false),
         Err(ReferenceContractError::EmptyName)
     );
     assert_eq!(
@@ -156,6 +158,7 @@ fn reference_construction_rejects_identity_free_records() {
             None,
             None,
             Some(InstanceId::UNSET),
+            None,
             false
         ),
         Err(ReferenceContractError::UnsetInstanceIdentity)
@@ -166,6 +169,7 @@ fn reference_construction_rejects_identity_free_records() {
             None,
             None,
             Some(InstanceId::new(1)),
+            None,
             false
         )
         .expect("an allocated occurrence identity is admitted")

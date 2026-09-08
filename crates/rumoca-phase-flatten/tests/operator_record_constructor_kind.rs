@@ -48,13 +48,22 @@ fn typed_flat_model() -> (rumoca_ir_flat::Model, rumoca_core::SourceMap) {
     tree.source_map.add(SOURCE_NAME, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    let ast::InstancedTree { tree, mut overlay } =
-        rumoca_phase_instantiate::instantiate(resolved, "UsesC").expect("model instantiates");
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "UsesC")
+    let overlay =
+        match rumoca_phase_instantiate::instantiate_model_with_outcome(resolved.inner(), "UsesC") {
+            rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+            rumoca_phase_instantiate::InstantiationOutcome::NeedsInner {
+                missing_inners, ..
+            } => panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}"),
+            rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+                panic!("fixture instantiation failed: {error}")
+            }
+        };
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "UsesC")
         .expect("instanced model typechecks");
-    let source_map = tree.source_map.clone();
+    let source_map = resolved.inner().source_map.clone();
     let flat =
-        rumoca_phase_flatten::flatten_ref(&tree, &overlay, "UsesC").expect("typed model flattens");
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("typed model flattens");
     (flat, source_map)
 }
 
@@ -92,6 +101,6 @@ fn selected_operator_constructor_is_canonical_structural_constructor() {
     assert!(*is_constructor);
     assert!(constructor.outputs.is_empty());
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the proof-bearing structural constructor lowers without a fabricated output");
 }

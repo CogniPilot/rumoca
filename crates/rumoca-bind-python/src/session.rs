@@ -47,7 +47,7 @@ impl Session {
         // can retain it on the Model for structural recompiles.
         let source = std::fs::read_to_string(path)
             .map_err(|e| ApiError::Compile(format!("Failed to read {path}: {e}")))?;
-        let (result, name) = compile_source_in_session(
+        let result = compile_source_in_session(
             &mut self.session,
             &source,
             model,
@@ -56,7 +56,6 @@ impl Session {
         )
         .map_err(compile_err)?;
         Ok(Model::new(
-            name,
             result,
             RecompileContext {
                 source,
@@ -196,7 +195,7 @@ impl Session {
     ) -> ApiResult<Model> {
         self.sync();
         let filename = filename.unwrap_or("input.mo");
-        let (result, name) = compile_source_in_session(
+        let result = compile_source_in_session(
             &mut self.session,
             source,
             model,
@@ -205,7 +204,6 @@ impl Session {
         )
         .map_err(compile_err)?;
         Ok(Model::new(
-            name,
             result,
             RecompileContext {
                 source: source.to_string(),

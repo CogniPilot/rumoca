@@ -253,10 +253,10 @@ pub struct InterfaceVariable {
     pub kind: InterfaceKind,
     pub decl: VariableDeclaration,
     /// Manifest-bound start value mirroring the `Startup` assignment
-    /// (GAL-020). Row-major for arrays. Not part of `.alg` concrete syntax
-    /// and not read by this crate's validator; the start-mirrors-Startup
-    /// cross-check (GAL-017/GAL-020) is owned by the projection and
-    /// manifest layers (`rumoca-phase-codegen::galec`).
+    /// (GAL-020). Row-major for arrays. Not part of `.alg` concrete syntax.
+    /// Checked construction owns its exact type, shape, subject identity, and
+    /// compact literal-evaluation disposition; executable refinement owns the
+    /// bit-exact correlation to the mapped `Startup` action.
     pub start: Option<Expression>,
 }
 
@@ -540,8 +540,12 @@ impl Reference {
 }
 
 /// Binary operators with the normative precedence classes (S-3.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+///
+/// Serialization is hand-written so every rendered operator carries its
+/// [`PrecedenceClass`] and [`Associativity`] beside the `kind` tag: templates
+/// receive parenthesization facts as data and never re-derive them from
+/// operator spellings (trap T6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Pow,
     Mul,
@@ -580,7 +584,40 @@ pub enum Associativity {
     Right,
 }
 
+impl Serialize for BinaryOp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let class = self.precedence_class();
+        let mut state = serializer.serialize_struct("BinaryOp", 3)?;
+        state.serialize_field("kind", self.kind_tag())?;
+        state.serialize_field("precedence_class", &class)?;
+        state.serialize_field("associativity", &class.associativity())?;
+        state.end()
+    }
+}
+
 impl BinaryOp {
+    /// Serialized `kind` tag of the operator.
+    const fn kind_tag(self) -> &'static str {
+        match self {
+            Self::Pow => "pow",
+            Self::Mul => "mul",
+            Self::Div => "div",
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::Lt => "lt",
+            Self::Gt => "gt",
+            Self::Le => "le",
+            Self::Ge => "ge",
+            Self::Eq => "eq",
+            Self::Ne => "ne",
+            Self::And => "and",
+            Self::Or => "or",
+        }
+    }
     /// GALEC operator token.
     #[must_use]
     pub const fn token(self) -> &'static str {
@@ -622,7 +659,12 @@ impl PrecedenceClass {
     pub const fn associativity(self) -> Associativity {
         match self {
             Self::Power => Associativity::Right,
-            _ => Associativity::Left,
+            Self::Multiplicative
+            | Self::Additive
+            | Self::Relational
+            | Self::Equality
+            | Self::LogicalAnd
+            | Self::LogicalOr => Associativity::Left,
         }
     }
 }
@@ -637,7 +679,7 @@ pub struct IfExpression {
     pub else_value: Box<Expression>,
     /// Stronger target-neutral operation whose GALEC legalization is exactly
     /// `branches` plus `else_value` (SPEC_0034 GAL-033).
-    correlation: Option<Box<BoundedSelection>>,
+    pub(crate) correlation: Option<Box<BoundedSelection>>,
 }
 
 /// A checked bounded tensor selection retained beside its conforming GALEC
@@ -963,13 +1005,84 @@ pub struct ForLoop {
     /// this loop, in the shape [`IfExpression::correlation`] already uses for
     /// bounded selections. Never serialized: the checked Algorithm Code a
     /// target renders is the legalization, and a target that understands the
-    /// operation reaches it through [`ForLoop::row_contraction`] instead.
+    /// operation reaches it through
+    /// [`ForLoop::real_matrix_multiply_occurrence`] instead.
     #[serde(skip)]
-    correlation: Option<Box<RowContraction>>,
+    pub(crate) correlation: Option<Box<RealMatrixMultiplyOccurrenceContract>>,
 }
 
-/// A contraction that accumulates a whole tensor row, retained beside the
-/// loop nest that is its GALEC legalization:
+/// The exact initialization relation of a retained Real matrix product.
+///
+/// This is executable arithmetic, not an optimization hint. In particular,
+/// `FirstProduct` preserves the absence of an additive-identity operation and
+/// therefore the signed-zero behaviour selected for the package.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum RealMatrixMultiplySeed {
+    /// Initialize every output element with canonical positive zero, then
+    /// accumulate contracted coordinates beginning at one.
+    PositiveZero,
+    /// Initialize each output element with the already-instantiated product at
+    /// contracted coordinate one, then accumulate beginning at two.
+    FirstProduct { value: Expression },
+}
+
+/// Primitive rounding relation for a Real matrix-product occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyRounding {
+    RoundToNearestTiesToEven,
+}
+
+/// Primitive contraction relation for a Real matrix-product occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyContraction {
+    SeparateMultiplyAdd,
+}
+
+/// Intermediate precision relation for one Real matrix-product occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyIntermediatePrecision {
+    AccumulatorFormatOnly,
+}
+
+/// Final-rounding relation after the last primitive addition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyFinalRounding {
+    None,
+}
+
+/// Signed-zero relation for primitive results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplySignedZero {
+    IeeePrimitiveResult,
+}
+
+/// NaN equivalence relation used by observable witnesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyNan {
+    QuietPayloadAndSignQuotient,
+}
+
+/// Infinity relation for primitive results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyInfinity {
+    IeeePrimitiveResult,
+}
+
+/// Subnormal relation for primitive results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplySubnormal {
+    GradualUnderflow,
+}
+
+/// Observable floating-status relation for one occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum RealMatrixMultiplyStatus {
+    NoObservableFloatingStatus,
+}
+
+/// One exact Real matrix-product occurrence, retained beside the loop nest
+/// that is its GALEC legalization:
 ///
 /// ```text
 /// for <row> in 1:count loop
@@ -989,36 +1102,112 @@ pub struct ForLoop {
 ///   comparison, so a target may hoist it out of the row; and
 /// * the right operand addresses one run of `count` elements per `iterator`.
 ///
-/// Together they license the row-at-a-time emission: zero the whole run, then
-/// add each `iterator`'s scaled source row into it. For a fixed `row` the
-/// products are the same in the same ascending `iterator` order, so the
-/// interleaving is bit-preserving.
+/// Together they license one contiguous output-run emission. The exact seed
+/// relation is carried rather than recovered from the legalization, so a
+/// target cannot silently change value-affecting arithmetic.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RowContraction {
-    target: Name,
+pub struct RealMatrixMultiplyOccurrenceContract {
+    format: crate::package::AlgorithmCodeRealFormat,
+    target_run: Reference,
     count: u32,
     iterator: Name,
     extent: u32,
+    scale: Expression,
+    source_run: Reference,
+    seed: RealMatrixMultiplySeed,
 }
 
-impl RowContraction {
-    /// Attest a row contraction. Only the contraction node that issues the
+impl RealMatrixMultiplyOccurrenceContract {
+    /// Issue one exact Real matrix-product occurrence. Only the contraction node that issues the
     /// nest may call this: the aliasing, purity and run facts above are its
     /// construction-time knowledge, and nothing downstream re-derives them.
     #[must_use]
-    pub fn new(target: Name, count: u32, iterator: Name, extent: u32) -> Self {
+    pub fn new(
+        format: crate::package::AlgorithmCodeRealFormat,
+        target: (Reference, u32),
+        domain: (Name, u32),
+        product: (Expression, Reference),
+        seed: RealMatrixMultiplySeed,
+    ) -> Self {
+        let (target_run, count) = target;
+        let (iterator, extent) = domain;
+        let (scale, source_run) = product;
         Self {
-            target,
+            format,
+            target_run,
             count,
             iterator,
             extent,
+            scale,
+            source_run,
+            seed,
         }
+    }
+
+    /// The checked format `F` used after every primitive multiplication and addition.
+    #[must_use]
+    pub const fn format(&self) -> crate::package::AlgorithmCodeRealFormat {
+        self.format
+    }
+
+    /// The only admitted primitive rounding relation.
+    #[must_use]
+    pub const fn primitive_rounding(&self) -> RealMatrixMultiplyRounding {
+        RealMatrixMultiplyRounding::RoundToNearestTiesToEven
+    }
+
+    /// The only admitted multiplication/addition contraction relation.
+    #[must_use]
+    pub const fn contraction(&self) -> RealMatrixMultiplyContraction {
+        RealMatrixMultiplyContraction::SeparateMultiplyAdd
+    }
+
+    /// No primitive may use an extended-precision accumulator.
+    #[must_use]
+    pub const fn intermediate_precision(&self) -> RealMatrixMultiplyIntermediatePrecision {
+        RealMatrixMultiplyIntermediatePrecision::AccumulatorFormatOnly
+    }
+
+    /// The last named primitive already has format `F`; no extra rounding follows it.
+    #[must_use]
+    pub const fn final_rounding(&self) -> RealMatrixMultiplyFinalRounding {
+        RealMatrixMultiplyFinalRounding::None
+    }
+
+    /// The signed-zero relation of the selected primitive operations.
+    #[must_use]
+    pub const fn signed_zero(&self) -> RealMatrixMultiplySignedZero {
+        RealMatrixMultiplySignedZero::IeeePrimitiveResult
+    }
+
+    /// Quiet NaNs form one payload-and-sign-insensitive equivalence class.
+    #[must_use]
+    pub const fn nan(&self) -> RealMatrixMultiplyNan {
+        RealMatrixMultiplyNan::QuietPayloadAndSignQuotient
+    }
+
+    /// The infinity relation of the selected primitive operations.
+    #[must_use]
+    pub const fn infinity(&self) -> RealMatrixMultiplyInfinity {
+        RealMatrixMultiplyInfinity::IeeePrimitiveResult
+    }
+
+    /// The selected gradual-underflow relation; DAZ and FTZ are inadmissible.
+    #[must_use]
+    pub const fn subnormal(&self) -> RealMatrixMultiplySubnormal {
+        RealMatrixMultiplySubnormal::GradualUnderflow
+    }
+
+    /// Floating exception flags, traps, `fenv`, and `errno` are not observable.
+    #[must_use]
+    pub const fn status(&self) -> RealMatrixMultiplyStatus {
+        RealMatrixMultiplyStatus::NoObservableFloatingStatus
     }
 
     /// The intermediate run the nest accumulates into.
     #[must_use]
-    pub fn target(&self) -> &Name {
-        &self.target
+    pub fn target_run(&self) -> &Reference {
+        &self.target_run
     }
 
     /// Elements in that run.
@@ -1037,6 +1226,24 @@ impl RowContraction {
     #[must_use]
     pub fn extent(&self) -> u32 {
         self.extent
+    }
+
+    /// The exact row-invariant coefficient for the current contracted index.
+    #[must_use]
+    pub fn scale(&self) -> &Expression {
+        &self.scale
+    }
+
+    /// The exact contiguous source run for the current contracted index.
+    #[must_use]
+    pub fn source_run(&self) -> &Reference {
+        &self.source_run
+    }
+
+    /// The package-selected initialization relation.
+    #[must_use]
+    pub fn seed(&self) -> &RealMatrixMultiplySeed {
+        &self.seed
     }
 }
 
@@ -1068,16 +1275,19 @@ impl ForLoop {
         }
     }
 
-    /// The same loop, carrying the row contraction it legalizes.
+    /// The same loop, carrying the exact matrix-product occurrence it legalizes.
     #[must_use]
-    pub fn with_row_contraction(mut self, correlation: RowContraction) -> Self {
+    pub fn with_real_matrix_multiply_occurrence(
+        mut self,
+        correlation: RealMatrixMultiplyOccurrenceContract,
+    ) -> Self {
         self.correlation = Some(Box::new(correlation));
         self
     }
 
-    /// The row contraction this loop legalizes, if it is one.
+    /// The Real matrix-product occurrence this loop legalizes, if it is one.
     #[must_use]
-    pub fn row_contraction(&self) -> Option<&RowContraction> {
+    pub fn real_matrix_multiply_occurrence(&self) -> Option<&RealMatrixMultiplyOccurrenceContract> {
         self.correlation.as_deref()
     }
 }

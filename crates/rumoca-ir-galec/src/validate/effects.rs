@@ -17,20 +17,28 @@ use crate::diagnostic::{GalecError, PathSegment};
 
 use super::context::{
     BlockContext, Cursor, EntityKind, FunctionScope, Resolved, lexeme, reference_lexeme, resolve,
-    resolve_call,
 };
+use super::retained::{RetainedValidationBuilder, RetainedValidationError};
 
-pub(super) fn check(ctx: &BlockContext<'_>, diags: &mut Vec<GalecError>) {
+pub(super) fn check(
+    ctx: &BlockContext<'_>,
+    retained: &RetainedValidationBuilder,
+    diags: &mut Vec<GalecError>,
+) -> Result<(), RetainedValidationError> {
+    let mut index_error = None;
     for body in ctx.bodies() {
         let mut checker = EffectChecker {
             ctx,
+            retained,
             scope: FunctionScope::new(&body),
             cursor: Cursor::for_body(ctx, &body),
             stateless: body.kind == FunctionKind::Stateless,
             diags,
+            index_error: &mut index_error,
         };
         checker.statements(body.statements);
     }
+    index_error.map_or(Ok(()), Err)
 }
 
 /// What an expression subtree contains, for the sibling-isolation rule.
@@ -54,10 +62,12 @@ impl Summary {
 
 struct EffectChecker<'a, 'd> {
     ctx: &'a BlockContext<'a>,
+    retained: &'a RetainedValidationBuilder,
     scope: FunctionScope<'a>,
     cursor: Cursor,
     stateless: bool,
     diags: &'d mut Vec<GalecError>,
+    index_error: &'d mut Option<RetainedValidationError>,
 }
 
 impl<'a> EffectChecker<'a, '_> {
@@ -173,7 +183,7 @@ impl<'a> EffectChecker<'a, '_> {
                     self.read_only("input parameter", target);
                 }
             }
-            Resolved::Iterator => self.read_only("loop iterator", target),
+            Resolved::Iterator(_) => self.read_only("loop iterator", target),
             Resolved::Component { .. } | Resolved::Local(_) => {}
         }
     }
@@ -228,7 +238,7 @@ impl<'a> EffectChecker<'a, '_> {
         self.check_siblings(&summaries);
         let mut summary = merged(&summaries);
         summary.call = true;
-        let stateful = resolve_call(self.ctx, &call.function).is_some_and(|c| c.is_stateful());
+        let stateful = self.call_is_stateful(call);
         if stateful {
             summary.stateful = Some(lexeme(&call.function));
             if self.stateless {
@@ -258,7 +268,6 @@ impl<'a> EffectChecker<'a, '_> {
     }
 
     fn report_stateful_calls_in(&mut self, if_expression: &'a crate::ast::IfExpression) {
-        let ctx = self.ctx;
         let mut expressions: Vec<&'a Expression> = Vec::new();
         for (condition, value) in &if_expression.branches {
             expressions.push(condition);
@@ -267,14 +276,60 @@ impl<'a> EffectChecker<'a, '_> {
         expressions.push(&if_expression.else_value);
         for expression in expressions {
             let mut callees: Vec<String> = Vec::new();
-            for_each_stateful_call(ctx, expression, &mut |call| {
-                callees.push(lexeme(&call.function));
-            });
+            self.collect_stateful_calls(expression, &mut callees);
             for callee in callees {
                 self.diags.push(GalecError::StatefulCallInIfExpression {
                     location: self.cursor.here(),
                     callee,
                 });
+            }
+        }
+    }
+
+    fn collect_stateful_calls(&mut self, expression: &'a Expression, calls: &mut Vec<String>) {
+        match expression {
+            Expression::Bool(_)
+            | Expression::Integer(_)
+            | Expression::Real(_)
+            | Expression::Ref(_)
+            | Expression::Neg(_)
+            | Expression::Size { .. } => {}
+            Expression::Call(call) => {
+                if self.call_is_stateful(call) {
+                    calls.push(lexeme(&call.function));
+                }
+                for argument in &call.arguments {
+                    self.collect_stateful_calls(argument, calls);
+                }
+            }
+            Expression::Paren(inner) | Expression::Not(inner) => {
+                self.collect_stateful_calls(inner, calls);
+            }
+            // A nested if-expression is a reporting boundary: it is
+            // independently summarized, so descending here would duplicate
+            // its diagnostics in every enclosing if-expression.
+            Expression::If(_) => {}
+            Expression::Array(elements) => {
+                for element in elements {
+                    self.collect_stateful_calls(element, calls);
+                }
+            }
+            Expression::Binary { lhs, rhs, .. } => {
+                self.collect_stateful_calls(lhs, calls);
+                self.collect_stateful_calls(rhs, calls);
+            }
+        }
+    }
+
+    fn call_is_stateful(&mut self, call: &FunctionCall) -> bool {
+        match self.retained.call_resolution(call) {
+            Ok(Some(resolution)) => resolution.stateful,
+            Ok(None) => false,
+            Err(error) => {
+                if self.index_error.is_none() {
+                    *self.index_error = Some(error);
+                }
+                false
             }
         }
     }
@@ -306,45 +361,4 @@ fn merged(summaries: &[Summary]) -> Summary {
     summaries
         .iter()
         .fold(Summary::default(), |acc, s| acc.merge(s.clone()))
-}
-
-fn for_each_stateful_call<'a>(
-    ctx: &BlockContext<'a>,
-    expression: &'a Expression,
-    visit: &mut impl FnMut(&'a FunctionCall),
-) {
-    match expression {
-        Expression::Bool(_)
-        | Expression::Integer(_)
-        | Expression::Real(_)
-        | Expression::Ref(_)
-        | Expression::Neg(_)
-        | Expression::Size { .. } => {}
-        Expression::Call(call) => {
-            if resolve_call(ctx, &call.function).is_some_and(|c| c.is_stateful()) {
-                visit(call);
-            }
-            for argument in &call.arguments {
-                for_each_stateful_call(ctx, argument, visit);
-            }
-        }
-        Expression::Paren(inner) | Expression::Not(inner) => {
-            for_each_stateful_call(ctx, inner, visit);
-        }
-        // A nested if-expression is a reporting boundary: it is independently
-        // summarized (every if-expression flows through `if_expression_summary`
-        // via `summarize`), so it reports its OWN stateful calls. Descending
-        // here would re-report them once per enclosing if-expression level —
-        // violating "each defect diagnosed exactly once".
-        Expression::If(_) => {}
-        Expression::Array(elements) => {
-            for element in elements {
-                for_each_stateful_call(ctx, element, visit);
-            }
-        }
-        Expression::Binary { lhs, rhs, .. } => {
-            for_each_stateful_call(ctx, lhs, visit);
-            for_each_stateful_call(ctx, rhs, visit);
-        }
-    }
 }

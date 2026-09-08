@@ -1,5 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+use rumoca_core::RealMatrixMultiplySemantics;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SolveRealFormat {
@@ -19,6 +21,7 @@ impl<'de> Deserialize<'de> for SolveIntegerDomain {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             minimum: i64,
             maximum: i64,
@@ -30,6 +33,18 @@ impl<'de> Deserialize<'de> for SolveIntegerDomain {
 }
 
 impl SolveIntegerDomain {
+    /// The whole signed 8-bit range.
+    pub const I8: Self = Self {
+        minimum: i8::MIN as i64,
+        maximum: i8::MAX as i64,
+    };
+
+    /// The whole signed 16-bit range.
+    pub const I16: Self = Self {
+        minimum: i16::MIN as i64,
+        maximum: i16::MAX as i64,
+    };
+
     /// The whole `i64` range.
     ///
     /// [`SolveIntegerDomain::construct`] is fallible because a caller can name
@@ -38,6 +53,12 @@ impl SolveIntegerDomain {
     pub const FULL: Self = Self {
         minimum: i64::MIN,
         maximum: i64::MAX,
+    };
+
+    /// The signed 32-bit range used by the eFMI Production C profile.
+    pub const I32: Self = Self {
+        minimum: i32::MIN as i64,
+        maximum: i32::MAX as i64,
     };
 
     pub fn construct(minimum: i64, maximum: i64) -> Result<Self, SolveTypeConstructionError> {
@@ -74,9 +95,11 @@ impl SolveIntegerDomain {
 /// and that contract arrives with the operations that can differ under it, not
 /// before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SolveArithmeticProfile {
     real_format: SolveRealFormat,
     integer_domain: SolveIntegerDomain,
+    real_matrix_multiply: RealMatrixMultiplySemantics,
 }
 
 impl SolveArithmeticProfile {
@@ -84,10 +107,12 @@ impl SolveArithmeticProfile {
     pub const fn construct(
         real_format: SolveRealFormat,
         integer_domain: SolveIntegerDomain,
+        real_matrix_multiply: RealMatrixMultiplySemantics,
     ) -> Self {
         Self {
             real_format,
             integer_domain,
+            real_matrix_multiply,
         }
     }
 
@@ -100,10 +125,20 @@ impl SolveArithmeticProfile {
     pub const fn integer_domain(self) -> SolveIntegerDomain {
         self.integer_domain
     }
+
+    #[must_use]
+    pub const fn real_matrix_multiply_semantics(self) -> RealMatrixMultiplySemantics {
+        self.real_matrix_multiply
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "profile", rename_all = "snake_case")]
+#[serde(
+    deny_unknown_fields,
+    tag = "kind",
+    content = "profile",
+    rename_all = "snake_case"
+)]
 pub enum SolveScalarType {
     Real { format: SolveRealFormat },
     Integer(SolveIntegerDomain),
@@ -154,6 +189,7 @@ impl<'de> Deserialize<'de> for SolveValueType {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             scalar: SolveScalarType,
             dimensions: Vec<u32>,
@@ -192,14 +228,15 @@ impl SolveValueType {
         if dimensions.is_empty() {
             return Err(SolveTypeConstructionError::EmptyTensorRank);
         }
-        let scalar_count = dimensions.iter().copied().try_fold(1u32, |count, extent| {
-            if extent == 0 {
-                return Err(SolveTypeConstructionError::ZeroTensorExtent);
-            }
-            count
-                .checked_mul(extent)
-                .ok_or(SolveTypeConstructionError::TensorScalarCountOverflow)
-        })?;
+        let scalar_count = if dimensions.contains(&0) {
+            0
+        } else {
+            dimensions.iter().copied().try_fold(1u32, |count, extent| {
+                count
+                    .checked_mul(extent)
+                    .ok_or(SolveTypeConstructionError::TensorScalarCountOverflow)
+            })?
+        };
         Ok(Self {
             scalar,
             dimensions: dimensions.into_boxed_slice(),
@@ -247,7 +284,12 @@ impl SolveValueType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "bits", rename_all = "snake_case")]
+#[serde(
+    deny_unknown_fields,
+    tag = "kind",
+    content = "bits",
+    rename_all = "snake_case"
+)]
 pub enum SolveValueKind {
     Real32(u32),
     Real64(u64),
@@ -267,6 +309,7 @@ impl<'de> Deserialize<'de> for SolveValue {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Wire {
             value_type: SolveValueType,
             kind: SolveValueKind,
@@ -280,15 +323,13 @@ impl<'de> Deserialize<'de> for SolveValue {
                 "typed scalar value does not match its declared type",
             ));
         }
-        if let SolveValueKind::Integer(value) = wire.kind {
-            let SolveScalarType::Integer(domain) = wire.value_type.element_type() else {
-                unreachable!("kind/type compatibility was checked above");
-            };
-            if !domain.contains(value) {
-                return Err(serde::de::Error::custom(
-                    "typed Integer value is outside its declared domain",
-                ));
-            }
+        if let (SolveValueKind::Integer(value), SolveScalarType::Integer(domain)) =
+            (wire.kind, wire.value_type.element_type())
+            && !domain.contains(value)
+        {
+            return Err(serde::de::Error::custom(
+                "typed Integer value is outside its declared domain",
+            ));
         }
         Ok(Self {
             value_type: wire.value_type,
@@ -373,7 +414,6 @@ pub enum SolveTypeConstructionError {
         maximum: i64,
     },
     EmptyTensorRank,
-    ZeroTensorExtent,
     TensorScalarCountOverflow,
     IntegerOutsideDomain {
         value: i64,
@@ -389,7 +429,6 @@ impl std::fmt::Display for SolveTypeConstructionError {
                 write!(formatter, "empty Integer domain {minimum}..{maximum}")
             }
             Self::EmptyTensorRank => write!(formatter, "tensor type has no dimensions"),
-            Self::ZeroTensorExtent => write!(formatter, "tensor type has a zero extent"),
             Self::TensorScalarCountOverflow => {
                 write!(
                     formatter,
@@ -448,5 +487,85 @@ mod tests {
         )
         .expect_err("wire cannot put Integer bits in Boolean storage");
         assert!(error.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn wire_rejects_integer_value_outside_declared_domain() {
+        let error = serde_json::from_str::<SolveValue>(
+            r#"{
+                "value_type":{
+                    "scalar":{
+                        "kind":"integer",
+                        "profile":{"minimum":0,"maximum":1}
+                    },
+                    "dimensions":[],
+                    "scalar_count":1
+                },
+                "kind":{"kind":"integer","bits":2}
+            }"#,
+        )
+        .expect_err("wire cannot forge an Integer value outside its declared domain");
+        assert!(error.to_string().contains("outside its declared domain"));
+    }
+
+    #[test]
+    fn wire_rejects_unknown_fields_at_each_type_boundary() {
+        let domain = SolveIntegerDomain::FULL;
+        let mut domain_wire = serde_json::to_value(domain).unwrap();
+        domain_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveIntegerDomain>(domain_wire).is_err());
+
+        let profile = SolveArithmeticProfile::construct(
+            SolveRealFormat::Binary64,
+            domain,
+            RealMatrixMultiplySemantics::SeparateMulAddAscendingFirstProduct,
+        );
+        let mut profile_wire = serde_json::to_value(profile).unwrap();
+        profile_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveArithmeticProfile>(profile_wire).is_err());
+
+        let value_type = SolveValueType::scalar(SolveScalarType::Boolean);
+        let mut value_type_wire = serde_json::to_value(&value_type).unwrap();
+        value_type_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveValueType>(value_type_wire).is_err());
+
+        let mut scalar_wire = serde_json::to_value(SolveScalarType::Boolean).unwrap();
+        scalar_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveScalarType>(scalar_wire).is_err());
+
+        let mut kind_wire = serde_json::to_value(SolveValueKind::Boolean(true)).unwrap();
+        kind_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveValueKind>(kind_wire).is_err());
+
+        let mut value_wire = serde_json::to_value(SolveValue::boolean(true)).unwrap();
+        value_wire["future_policy"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<SolveValue>(value_wire).is_err());
+    }
+
+    #[test]
+    fn empty_tensor_identity_is_shape_preserving_and_order_independent() {
+        let scalar = SolveScalarType::Boolean;
+        let first = SolveValueType::tensor(scalar, vec![0, 3]).unwrap();
+        let second = SolveValueType::tensor(scalar, vec![0, 4]).unwrap();
+        let late_zero = SolveValueType::tensor(scalar, vec![u32::MAX, u32::MAX, 0]).unwrap();
+
+        assert_eq!(first.scalar_count(), 0);
+        assert_eq!(second.scalar_count(), 0);
+        assert_eq!(late_zero.scalar_count(), 0);
+        assert_ne!(first, second);
+        assert_eq!(
+            serde_json::from_str::<SolveValueType>(&serde_json::to_string(&first).unwrap())
+                .unwrap(),
+            first
+        );
+        assert_eq!(
+            serde_json::from_str::<SolveValueType>(&serde_json::to_string(&second).unwrap())
+                .unwrap(),
+            second
+        );
+        assert_eq!(
+            SolveValueType::tensor(scalar, vec![u32::MAX, u32::MAX]),
+            Err(SolveTypeConstructionError::TensorScalarCountOverflow)
+        );
     }
 }

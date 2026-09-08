@@ -1,14 +1,11 @@
 //! Getting one row's C out of the compiler, and finding what to measure in it.
 //!
-//! The two emitting targets lay their files out differently: `embedded-c-galec`
-//! writes its two translation units and two headers straight into the output directory, while
-//! `galec-production` buries them in an eFMU container under
-//! `<Model>/ProductionCode/`. Neither layout is hard-coded here. The gate walks
-//! whatever the compiler wrote, takes every `.c` as a translation unit to
-//! build, and reads the state struct's name out of the emitted header rather
-//! than deriving it from the Modelica class name: a symbol-policy change that
-//! renamed the struct would otherwise turn into a confusing probe compile
-//! error instead of a clear one.
+//! Product layouts are not hard-coded here. Once an authenticated C product is
+//! active, the gate walks whatever the compiler wrote, takes every `.c` as a
+//! translation unit to build, and reads the state struct's name out of the
+//! emitted header rather than deriving it from the Modelica class name: a
+//! symbol-policy change that renamed the struct would otherwise turn into a
+//! confusing probe compile error instead of a clear one.
 
 use anyhow::{Context, Result, bail};
 use std::fs;

@@ -8,6 +8,9 @@
 use indexmap::IndexMap;
 use rumoca_ir_solve as solve;
 
+#[cfg(test)]
+use crate::test_support::empty_binary64_first_product_model;
+
 /// The largest condition count the exhaustive condition-memory test explores.
 #[cfg(test)]
 pub(super) const MAX_CONDITIONS: usize = 3;
@@ -134,73 +137,106 @@ pub(super) fn condition_memory_model(starts: &[f64]) -> solve::SolveModel {
     // the state the seed has to cope with: it must clear the flag for its own
     // evaluation without clearing it for the event that follows.
     parameters[layout.initial_flag()] = 1.0;
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                parameter_count: layout.parameter_count(),
-                compiled_parameter_len: layout.parameter_count(),
-                initial_event_parameter_index: Some(layout.initial_flag()),
-                ..Default::default()
-            },
-            events: solve::SolveEventPartition {
-                condition_memory_parameter_indices: (0..layout.count())
-                    .map(|index| layout.buffer(index))
-                    .chain(std::iter::once(layout.initial_buffer()))
-                    .collect(),
-                ..Default::default()
-            },
-            discrete: solve::DiscreteSolveSystem {
-                rhs: fixture_block(rows, "cm.mo"),
-                update_targets: targets,
-                row_roles: vec![solve::DiscreteRowRole::ConditionMemory; row_count],
-                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
-                observation_refresh: vec![false; row_count],
-                integrator_history_effects: vec![
-                    solve::IntegratorHistoryEffect::Preserve;
-                    row_count
-                ],
-                clock_owners: vec![None; row_count],
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        parameters,
+    let solve_layout = solve::SolveLayout {
+        parameter_count: layout.count(),
+        static_parameter_names: (0..layout.count())
+            .map(|index| format!("s_{index}"))
+            .collect(),
+        compiled_parameter_len: layout.parameter_count(),
+        initial_event_parameter_index: Some(layout.initial_flag()),
         ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem {
+        rhs: fixture_block(rows, "cm.mo"),
+        update_targets: targets,
+        row_roles: vec![solve::DiscreteRowRole::ConditionMemory; row_count],
+        pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent; row_count],
+        observation_refresh: vec![false; row_count],
+        integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve; row_count],
+        clock_owners: vec![None; row_count],
+        ..Default::default()
+    };
+    let events = solve::SolveEventPartition {
+        condition_memory_parameter_indices: (0..layout.count())
+            .map(|index| layout.buffer(index))
+            .chain(std::iter::once(layout.initial_buffer()))
+            .collect(),
+        ..Default::default()
+    };
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture::empty();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 0, layout.parameter_count()),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("condition-memory fixture satisfies the checked root contract"),
+        parameters: parameters,
+        ..empty_binary64_first_product_model()
     }
 }
 
 /// `dx/dt = x`, one continuous state starting at 1.
 ///
-/// The smallest model an FMI ME component can legally be instantiated from:
-/// `validate_explicit_solve_model` rejects a model with no continuous states,
-/// so the lifecycle harness needs exactly one.
+/// The smallest state-bearing model used by the lifecycle harness.
 pub(super) fn single_state_model() -> solve::SolveModel {
+    let provenance = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("ss_variables.mo"),
+        1,
+        2,
+    );
     let derivative = vec![vec![
         solve::LinearOp::LoadY { dst: 0, index: 0 },
         solve::LinearOp::StoreOutput { src: 0 },
     ]];
-    solve::SolveModel {
-        problem: solve::SolveProblem {
-            solve_layout: solve::SolveLayout {
-                solver_maps: solve::SolverNameIndexMaps {
-                    names: vec!["x".to_string()],
-                    name_to_idx: IndexMap::from([("x".to_string(), 0)]),
-                    base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
-                },
-                state_scalar_count: 1,
-                ..Default::default()
-            },
-            continuous: solve::ContinuousSolveSystem {
-                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(fixture_block(
-                    derivative, "ss.mo",
-                )),
-                ..Default::default()
-            },
-            ..Default::default()
+    let solve_layout = solve::SolveLayout {
+        solver_maps: solve::SolverNameIndexMaps {
+            names: vec!["x".to_string()],
+            name_to_idx: IndexMap::from([("x".to_string(), 0)]),
+            base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
         },
+        state_scalar_count: 1,
+        variable_storage_runs: vec![solve::SolveVariableStorageRun {
+            base: solve::SolveStorageCoordinate::Y(0),
+            scalar_count: 1,
+            role: solve::SolveVariableStorageRole::State,
+            value_kind: solve::SolveVariableValueKind::Real,
+        }],
+        variable_declarations: vec![solve::SolveVariableDeclaration::new(
+            solve::SolveVariableStorageRole::State,
+            solve::SolveVariableValueKind::Real,
+        )],
+        ..Default::default()
+    };
+    let discrete = solve::DiscreteSolveSystem::default();
+    let events = solve::SolveEventPartition::default();
+    let clocks = solve::SolveClockPartition::default();
+    let continuous = crate::test_support::ContinuousSystemFixture {
+        derivative_rhs: solve::ComputeBlock::from_scalar_program_block(fixture_block(
+            derivative, "ss.mo",
+        )),
+        ..crate::test_support::ContinuousSystemFixture::empty()
+    };
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    crate::test_support::checked_solve_model! {
+        problem: crate::test_support::checked_solve_problem!(
+            solve::VarLayout::from_parts(IndexMap::new(), 1, 0),
+            solve_layout,
+            continuous,
+            solve::InitializationSolveSystem::empty(),
+            discrete,
+            events,
+            clocks,
+        )
+        .expect("single-state fixture satisfies the checked root contract"),
         initial_y: vec![1.0],
         solver_nominals: vec![1.0],
-        visible_names: vec!["x".to_string()],
         visible_value_rows: fixture_block(
             vec![vec![
                 solve::LinearOp::LoadY { dst: 0, index: 0 },
@@ -208,7 +244,12 @@ pub(super) fn single_state_model() -> solve::SolveModel {
             ]],
             "ss.mo",
         ),
-        ..Default::default()
+        variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+            crate::test_support::RealScalarVariableFixture::state(
+                1, "x", 0, 1.0, 1.0, true, provenance,
+            ),
+        ]),
+        ..empty_binary64_first_product_model()
     }
 }
 
@@ -217,34 +258,134 @@ pub(super) fn single_state_model() -> solve::SolveModel {
 /// The ME buffer and instance-brand proofs need the smallest model that can
 /// issue a real value reference and observe an accepted parameter value.
 pub(super) fn single_state_input_model() -> solve::SolveModel {
-    let mut model = single_state_model();
-    model.problem.solve_layout.parameter_count = 0;
-    model.problem.solve_layout.compiled_parameter_len = 1;
-    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
-    model.parameters = vec![1.0];
-    model
+    let base = single_state_model();
+    let provenance = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("ssi_variables.mo"),
+        1,
+        2,
+    );
+    let mut solve_layout = solve::SolveLayout {
+        compiled_parameter_len: 1,
+        input_scalar_names: vec!["u".to_string()],
+        ..base.problem().solve_layout().clone()
+    };
+    solve_layout
+        .variable_storage_runs
+        .push(solve::SolveVariableStorageRun {
+            base: solve::SolveStorageCoordinate::P(0),
+            scalar_count: 1,
+            role: solve::SolveVariableStorageRole::ExternalInput,
+            value_kind: solve::SolveVariableValueKind::Real,
+        });
+    solve_layout
+        .variable_declarations
+        .push(solve::SolveVariableDeclaration::new(
+            solve::SolveVariableStorageRole::ExternalInput,
+            solve::SolveVariableValueKind::Real,
+        ));
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let discrete = base.problem().discrete().clone();
+    let events = base.problem().events().clone();
+    let clocks = base.problem().clocks().clone();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let problem = crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+        solve_layout,
+        continuous,
+        base.problem().initialization().clone(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("single-state input fixture satisfies the checked root contract");
+    crate::test_support::checked_solve_model! {
+        problem: problem,
+        parameters: vec![1.0],
+        visible_value_rows: fixture_block(
+            vec![
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            "ssi_visible.mo",
+        ),
+        variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+            crate::test_support::RealScalarVariableFixture::state(
+                1, "x", 0, 1.0, 1.0, true, provenance,
+            ),
+            crate::test_support::RealScalarVariableFixture::external_input(
+                2, "u", 0, 1.0, provenance,
+            ),
+        ]),
+        ..base
+    }
 }
 
 /// [`single_state_model`] plus one static component-owned time event.
 pub(super) fn single_state_time_event_model() -> solve::SolveModel {
-    let mut model = single_state_model();
-    model.problem.events.scheduled_time_events = vec![0.5];
-    model
+    let base = single_state_model();
+    let solve_layout = base.problem().solve_layout().clone();
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let discrete = base.problem().discrete().clone();
+    let events = solve::SolveEventPartition {
+        scheduled_time_events: vec![0.5],
+        ..base.problem().events().clone()
+    };
+    let clocks = base.problem().clocks().clone();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let problem = crate::test_support::checked_solve_problem!(
+        base.problem().layout().clone(),
+        solve_layout,
+        continuous,
+        base.problem().initialization().clone(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("single-state time-event fixture satisfies the checked root contract");
+    crate::test_support::checked_solve_model! { problem: problem, ..base }
 }
 
 /// [`single_state_model`] plus one scalar event-indicator surface `x`.
 pub(super) fn single_state_indicator_model() -> solve::SolveModel {
-    let mut model = single_state_model();
-    model.problem.events.root_conditions = fixture_block(
-        vec![vec![
-            solve::LinearOp::LoadY { dst: 0, index: 0 },
-            solve::LinearOp::StoreOutput { src: 0 },
-        ]],
-        "si.mo",
-    );
-    model.problem.events.root_relation_memory_targets = vec![None];
-    model.problem.events.root_zero_domains = vec![solve::RootZeroDomain::Previous];
-    model
+    let base = single_state_model();
+    let solve_layout = base.problem().solve_layout().clone();
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let discrete = base.problem().discrete().clone();
+    let events = solve::SolveEventPartition {
+        root_conditions: fixture_block(
+            vec![vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            "si.mo",
+        ),
+        root_relation_memory_targets: vec![None],
+        root_zero_domains: vec![solve::RootZeroDomain::Previous],
+        root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+        ..base.problem().events().clone()
+    };
+    let clocks = base.problem().clocks().clone();
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let problem = crate::test_support::checked_solve_problem!(
+        base.problem().layout().clone(),
+        solve_layout,
+        continuous,
+        base.problem().initialization().clone(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("single-state indicator fixture satisfies the checked root contract");
+    crate::test_support::checked_solve_model! { problem: problem, ..base }
 }
 
 /// [`single_state_model`] plus one initialization update row that can never
@@ -253,41 +394,113 @@ pub(super) fn single_state_indicator_model() -> solve::SolveModel {
 /// MLS §8.6 initialization is a fixed point, so a runtime that iterates it must
 /// bound the iteration. This model is what forces that bound to be observed.
 pub(super) fn divergent_initialization_model(increment: f64) -> solve::SolveModel {
-    let mut model = single_state_model();
-    model.problem.solve_layout.parameter_count = 1;
-    model.problem.solve_layout.compiled_parameter_len = 1;
-    model.parameters = vec![0.0];
-    model.problem.initialization.update_rhs = fixture_block(
-        vec![vec![
-            solve::LinearOp::LoadP { dst: 0, index: 0 },
-            solve::LinearOp::Const {
-                dst: 1,
-                value: increment,
-            },
-            solve::LinearOp::Binary {
-                dst: 2,
-                op: solve::BinaryOp::Add,
-                lhs: 0,
-                rhs: 1,
-            },
-            solve::LinearOp::StoreOutput { src: 2 },
-        ]],
-        "di.mo",
-    );
-    model.problem.initialization.update_targets = vec![solve::scalar_slot_p(0)];
-    model
+    let base = single_state_model();
+    let solve_layout = solve::SolveLayout {
+        compiled_parameter_len: 1,
+        ..base.problem().solve_layout().clone()
+    };
+    let initialization = solve::InitializationSolveSystem::construct(
+        solve::ComputeBlock::default(),
+        Vec::new(),
+        Vec::new(),
+        0,
+        Vec::new(),
+        solve::InitializationProjectionPlan::default(),
+        (
+            fixture_block(
+                vec![vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::Const {
+                        dst: 1,
+                        value: increment,
+                    },
+                    solve::LinearOp::Binary {
+                        dst: 2,
+                        op: solve::BinaryOp::Add,
+                        lhs: 0,
+                        rhs: 1,
+                    },
+                    solve::LinearOp::StoreOutput { src: 2 },
+                ]],
+                "di.mo",
+            ),
+            vec![solve::scalar_slot_p(0)],
+        ),
+    )
+    .expect("the divergent-update fixture initialization system is exactly correlated");
+    let discrete = base.problem().discrete().clone();
+    let events = base.problem().events().clone();
+    let clocks = base.problem().clocks().clone();
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let problem = crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+        solve_layout,
+        continuous,
+        initialization,
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("divergent initialization fixture satisfies the checked root contract");
+    crate::test_support::checked_solve_model! {
+        problem: problem,
+        parameters: vec![0.0],
+        ..base
+    }
 }
 
 /// A one-state model whose discrete equation settles during `initial()` but
 /// diverges at an ordinary runtime event: `q := if initial() then q else
 /// q + increment`.
+fn divergent_runtime_solve_layout(base: &solve::SolveModel) -> solve::SolveLayout {
+    solve::SolveLayout {
+        variable_storage_runs: vec![
+            solve::SolveVariableStorageRun {
+                base: solve::SolveStorageCoordinate::Y(0),
+                scalar_count: 1,
+                role: solve::SolveVariableStorageRole::State,
+                value_kind: solve::SolveVariableValueKind::Real,
+            },
+            solve::SolveVariableStorageRun {
+                base: solve::SolveStorageCoordinate::P(0),
+                scalar_count: 1,
+                role: solve::SolveVariableStorageRole::DiscreteReal,
+                value_kind: solve::SolveVariableValueKind::Real,
+            },
+        ],
+        variable_declarations: vec![
+            solve::SolveVariableDeclaration::new(
+                solve::SolveVariableStorageRole::State,
+                solve::SolveVariableValueKind::Real,
+            ),
+            solve::SolveVariableDeclaration::new(
+                solve::SolveVariableStorageRole::DiscreteReal,
+                solve::SolveVariableValueKind::Real,
+            ),
+        ],
+        compiled_parameter_len: 3,
+        discrete_real_scalar_names: vec!["q".to_string()],
+        initial_event_parameter_index: Some(1),
+        pre_param_bindings: vec![solve::PreParamBinding {
+            dest_p_index: 2,
+            source: solve::PreParamSource::P { index: 0 },
+            clock_schedule: None,
+        }],
+        ..base.problem().solve_layout().clone()
+    }
+}
+
 pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel {
-    let mut model = single_state_model();
-    model.problem.solve_layout.parameter_count = 2;
-    model.problem.solve_layout.compiled_parameter_len = 2;
-    model.problem.solve_layout.initial_event_parameter_index = Some(1);
-    model.parameters = vec![0.0, 1.0];
-    model.problem.discrete = solve::DiscreteSolveSystem {
+    let base = single_state_model();
+    let provenance = rumoca_core::Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("dre_variables.mo"),
+        1,
+        2,
+    );
+    let solve_layout = divergent_runtime_solve_layout(&base);
+    let discrete = solve::DiscreteSolveSystem {
         rhs: fixture_block(
             vec![vec![
                 solve::LinearOp::LoadP { dst: 0, index: 0 },
@@ -318,7 +531,54 @@ pub(super) fn divergent_runtime_event_model(increment: f64) -> solve::SolveModel
         observation_refresh: vec![false],
         integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
         clock_owners: vec![None],
+        event_iteration_plan: solve::EventIterationPlan {
+            runs: vec![solve::EventIterationRun {
+                variable: 1,
+                pre_binding_start: 0,
+                owner: solve::EventIterationOwner::ScalarRows { start_row: 0 },
+            }],
+        },
         ..Default::default()
     };
-    model
+    let events = base.problem().events().clone();
+    let clocks = base.problem().clocks().clone();
+    let continuous =
+        crate::test_support::ContinuousSystemFixture::from_system(base.problem().continuous());
+    let continuous = continuous.seal(&solve_layout, &discrete, &events, &clocks);
+    let problem = crate::test_support::checked_solve_problem!(
+        solve::VarLayout::from_parts(IndexMap::new(), 1, 3),
+        solve_layout,
+        continuous,
+        base.problem().initialization().clone(),
+        discrete,
+        events,
+        clocks,
+    )
+    .expect("divergent runtime-event fixture satisfies the checked root contract");
+    crate::test_support::checked_solve_model! {
+        problem: problem,
+        parameters: vec![0.0, 1.0, 0.0],
+        visible_value_rows: fixture_block(
+            vec![
+                vec![
+                    solve::LinearOp::LoadY { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+                vec![
+                    solve::LinearOp::LoadP { dst: 0, index: 0 },
+                    solve::LinearOp::StoreOutput { src: 0 },
+                ],
+            ],
+            "dre_visible.mo",
+        ),
+        variable_entries: crate::test_support::explicit_real_scalar_catalog_entries(vec![
+            crate::test_support::RealScalarVariableFixture::state(
+                1, "x", 0, 1.0, 1.0, true, provenance,
+            ),
+            crate::test_support::RealScalarVariableFixture::discrete_real(
+                2, "q", 0, 0.0, provenance,
+            ),
+        ]),
+        ..base
+    }
 }

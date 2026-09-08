@@ -451,3 +451,21 @@ fn baseline_header_rejects_missing_or_invalid_omc_version() {
         assert!(error.to_string().contains("omc_version"), "{error}");
     }
 }
+
+#[test]
+fn baseline_header_rejects_an_omitted_required_provenance_key() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../rumoca-test-msl/tests/msl_tests/msl_quality_baseline.json");
+    let data = fs::read(&source).expect("checked-in baseline should exist");
+    let mut wire: serde_json::Value = serde_json::from_slice(&data).expect("valid baseline");
+    wire.as_object_mut()
+        .expect("baseline is an object")
+        .remove("git_commit");
+    let temp = tempfile::tempdir().expect("temporary directory should be available");
+    let path = temp.path().join("missing-git-commit.json");
+    fs::write(&path, wire.to_string()).expect("write mutated baseline");
+    assert!(
+        load_baseline_header(&path).is_err(),
+        "missing git_commit must reject the evidence instead of inventing an empty identity"
+    );
+}

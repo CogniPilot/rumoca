@@ -83,6 +83,14 @@ pub fn sim_error_diagnostic_code(err: &SimError) -> Option<String> {
                 .unwrap_or_else(|| runtime_preparation_code().to_string()),
         ),
         SimError::RuntimeContract { .. } => Some(runtime_preparation_code().to_string()),
+        SimError::NativeExecution {
+            execution_stage: rumoca_solver::NativeExecutionStage::Compile,
+            ..
+        } => Some(runtime_preparation_code().to_string()),
+        SimError::NativeExecution {
+            execution_stage: rumoca_solver::NativeExecutionStage::Call,
+            ..
+        } => Some(solver_failure_code().to_string()),
         SimError::ModelExchangeSession(session) if session.is_timeout() => None,
         SimError::ModelExchangeSession(session) if session.is_integrator_failure() => {
             Some(solver_failure_code().to_string())

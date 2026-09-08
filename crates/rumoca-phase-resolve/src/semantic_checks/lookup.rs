@@ -192,7 +192,7 @@ mod tests {
     fn resolved_definition(source: &str) -> ast::ClassTree {
         let ast = parse_to_ast(source, "lookup_test.mo").expect("parse should succeed");
         let resolved = crate::resolve_parsed(ast).expect("resolve should succeed");
-        resolved.into_inner()
+        resolved.inner().clone()
     }
 
     #[test]

@@ -71,7 +71,7 @@ fn make_start_modification(value: ast::Expression) -> ast::Expression {
             span: rumoca_core::Span::DUMMY,
             qualified_display_name: None,
         },
-        value: std::sync::Arc::new(value),
+        value: Some(std::sync::Arc::new(value)),
         span: rumoca_core::Span::DUMMY,
     }
 }
@@ -85,11 +85,12 @@ fn process_nested_test_modifications(
 ) -> InstantiateResult<()> {
     let effective_components = IndexMap::default();
     let tree = ast::ClassTree::default();
+    let class_index = ast::ClassDefIndex::from_tree(&tree);
     let nested_ctx = NestedModificationContext {
         effective_components: &effective_components,
         tree: &tree,
         source_scope,
-        imports: &[],
+        imports: crate::dims::ImportRewrite::without_imports(&class_index),
     };
     process_nested_modifications_recursive(ctx, prefix, modifications, &nested_ctx, flags)
 }

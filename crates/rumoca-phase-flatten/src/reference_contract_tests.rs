@@ -127,6 +127,7 @@ impl ExpressionRewriter for ReferenceAudit {
         name: &rumoca_core::Reference,
         args: &[rumoca_core::Expression],
         is_constructor: bool,
+        call_kind: rumoca_core::FunctionCallKind,
         span: rumoca_core::Span,
     ) -> rumoca_core::Expression {
         self.check_reference(name, span, "function call", false);
@@ -134,6 +135,7 @@ impl ExpressionRewriter for ReferenceAudit {
             name: name.clone(),
             args: self.rewrite_expressions(args),
             is_constructor,
+            call_kind,
             span,
         }
     }
@@ -279,15 +281,23 @@ fn flatten_source() -> flat::Model {
     tree.source_map.add(file_name, SOURCE);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("fixture resolves");
-    let instanced = rumoca_phase_instantiate::instantiate(resolved, "ReferenceAudit")
-        .expect("fixture instantiates");
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "ReferenceAudit")
-        .expect("fixture typechecks");
-    crate::flatten_ref_with_options(
-        &tree,
-        &overlay,
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
         "ReferenceAudit",
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    let typed =
+        rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "ReferenceAudit")
+            .expect("fixture typechecks");
+    crate::flatten_typed(
+        typed,
         crate::FlattenOptions {
             simplify_variable_names: true,
             ..crate::FlattenOptions::default()

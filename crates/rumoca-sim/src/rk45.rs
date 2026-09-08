@@ -8,69 +8,30 @@ use crate::SimulationSessionApi;
 use crate::me_backend::BackendSimulationSession;
 use crate::simulation_session::SessionState;
 use crate::solve_lowering::{
-    SimulationDiagnosticError, apply_correlated_simulation_overrides, finish_runtime_fmi_artifact,
-    lower_correlated_for_simulation_with_stage_timing_and_param_overrides, tunable_param_overrides,
+    SimulationDiagnosticError, construction_overrides, finish_runtime_fmi_artifact,
+    lower_correlated_for_simulation_with_stage_timing_and_runtime_overrides,
 };
 use crate::{BuildSimulationTimings, SimError};
 
 const INSTANCE_NAME: &str = "rk-like";
 
-pub fn simulate(
-    dae_model: &dae::Dae,
-    opts: &rumoca_solver::SimOptions,
-) -> Result<rumoca_solver::SimResult, SimError> {
-    let (artifact, execution_backend) =
-        lower_runtime_artifact(dae_model, opts).map_err(diagnostic_sim_error)?;
-    simulate_artifact(artifact, opts, execution_backend)
-}
-
-pub use simulate as simulate_dae;
-
-pub fn simulate_with_diagnostics(
-    dae_model: &dae::Dae,
-    opts: &rumoca_solver::SimOptions,
-) -> Result<rumoca_solver::SimResult, SimulationDiagnosticError> {
-    let (artifact, execution_backend) = lower_runtime_artifact(dae_model, opts)?;
-    simulate_artifact(artifact, opts, execution_backend)
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))
-}
-
-pub(crate) fn simulate_artifact(
-    artifact: rumoca_solver::fmi_me::MeModelArtifact,
-    opts: &rumoca_solver::SimOptions,
-    execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
-) -> Result<rumoca_solver::SimResult, SimError> {
-    require_rk_mode(opts.solver_mode)?;
-    crate::me_backend::simulate_artifact(
-        artifact,
-        opts,
-        execution_backend,
-        INSTANCE_NAME,
-        rumoca_solver_rk45::model_exchange_integrator,
-    )
-}
-
-fn lower_runtime_artifact(
-    dae_model: &dae::Dae,
-    opts: &rumoca_solver::SimOptions,
-) -> Result<
-    (
-        rumoca_solver::fmi_me::MeModelArtifact,
-        Option<rumoca_solver::fmi_me::MeExecutionBackend>,
-    ),
-    SimulationDiagnosticError,
-> {
-    crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
-}
-
-pub use simulate_with_diagnostics as simulate_dae_with_diagnostics;
-
 /// Preserve the originating diagnostic code when adapting to the backend's
-/// string-carrying error.
-/// diagnostic, which also carries the runtime `EX0xx` codes (notably `EX003`
-/// for a rejected parameter/start override).
+/// string-carrying error, including runtime `EX0xx` codes such as `EX003` for
+/// a rejected parameter/start override.
 fn diagnostic_sim_error(err: SimulationDiagnosticError) -> SimError {
-    SimError::SolveIr(format!("[{}] {err}", err.diagnostic_code()))
+    let code = err.diagnostic_code();
+    match err {
+        SimulationDiagnosticError::NativeExecution {
+            stage: execution_stage,
+            owner,
+            reason,
+        } => SimError::NativeExecution {
+            execution_stage,
+            owner,
+            reason,
+        },
+        other => SimError::SolveIr(format!("[{code}] {other}")),
+    }
 }
 
 pub struct SimulationSession {
@@ -87,21 +48,18 @@ impl SimulationSession {
         opts: rumoca_solver::SimOptions,
         mut begin_stage: impl FnMut(&'static str),
     ) -> Result<(Self, BuildSimulationTimings), SimError> {
-        let param_overrides =
-            tunable_param_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
-        let (mut lowered, solve_timings) =
-            lower_correlated_for_simulation_with_stage_timing_and_param_overrides(
+        begin_stage("sim_overrides");
+        let override_apply_start = Instant::now();
+        let overrides = construction_overrides(dae_model, &opts).map_err(diagnostic_sim_error)?;
+        let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
+        let (lowered, solve_timings) =
+            lower_correlated_for_simulation_with_stage_timing_and_runtime_overrides(
                 dae_model,
                 &opts,
-                &param_overrides,
+                &overrides,
                 &mut begin_stage,
             )
             .map_err(diagnostic_sim_error)?;
-        begin_stage("sim_overrides");
-        let override_apply_start = Instant::now();
-        apply_correlated_simulation_overrides(&mut lowered, dae_model, &opts)
-            .map_err(diagnostic_sim_error)?;
-        let override_apply_seconds = override_apply_start.elapsed().as_secs_f64();
         begin_stage("sim_build");
         let backend_build_start = Instant::now();
         let (artifact, execution_backend) =
@@ -123,26 +81,17 @@ impl SimulationSession {
                 ir_solve_seconds: solve_timings.ir_solve_seconds,
                 override_apply_seconds,
                 backend_build_seconds,
+                initialization_seconds: 0.0,
             },
         ))
     }
 
-    pub fn new_with_diagnostics(
-        dae_model: &dae::Dae,
-        opts: rumoca_solver::SimOptions,
-    ) -> Result<Self, SimulationDiagnosticError> {
-        let (artifact, execution_backend) = lower_runtime_artifact(dae_model, &opts)?;
-        Self::from_artifact(artifact, opts, execution_backend)
-    }
-
     /// Build from one checked correlated FMI artifact.
-    pub(crate) fn from_artifact(
+    pub(crate) fn from_selected_artifact(
         artifact: rumoca_solver::fmi_me::MeModelArtifact,
         opts: rumoca_solver::SimOptions,
         execution_backend: Option<rumoca_solver::fmi_me::MeExecutionBackend>,
     ) -> Result<Self, SimulationDiagnosticError> {
-        require_rk_mode(opts.solver_mode)
-            .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
         let inner = BackendSimulationSession::new(
             artifact,
             &opts,
@@ -150,7 +99,21 @@ impl SimulationSession {
             INSTANCE_NAME,
             rumoca_solver_rk45::model_exchange_integrator,
         )
-        .map_err(|err| SimulationDiagnosticError::Solver(err.to_string()))?;
+        .map_err(SimulationDiagnosticError::from)?;
+        Ok(Self { inner })
+    }
+
+    #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
+    pub(crate) fn from_selected_retained(
+        retained: rumoca_solver::fmi_me::session::MeRetainedComponent,
+        opts: rumoca_solver::SimOptions,
+    ) -> Result<Self, SimulationDiagnosticError> {
+        let inner = BackendSimulationSession::from_retained(
+            retained,
+            &opts,
+            rumoca_solver_rk45::model_exchange_integrator,
+        )
+        .map_err(SimulationDiagnosticError::from)?;
         Ok(Self { inner })
     }
 
@@ -166,8 +129,6 @@ impl SimulationSession {
         tracing::debug!(label, "RK45 uses the common Model Exchange evaluation path");
     }
 
-    pub fn ensure_end_time(&mut self, _target_time: f64) {}
-
     pub fn step(&mut self, dt: f64) -> Result<(), SimError> {
         if dt > 0.0 {
             self.advance_to(self.time() + dt)?;
@@ -175,8 +136,12 @@ impl SimulationSession {
         Ok(())
     }
 
-    pub fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
-        self.inner.reset(t_start)
+    pub fn reset(&mut self) -> Result<(), SimError> {
+        self.inner.reset()
+    }
+
+    pub fn retime(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.inner.retime(t_start)
     }
 
     pub fn time(&self) -> f64 {
@@ -221,16 +186,12 @@ fn require_rk_mode(requested: rumoca_solver::SimSolverMode) -> Result<(), SimErr
 impl SimulationSessionApi for SimulationSession {
     type Error = SimError;
 
-    fn reset(&mut self, t_start: f64) -> Result<(), Self::Error> {
-        Self::reset(self, t_start)
+    fn retime(&mut self, t_start: f64) -> Result<(), Self::Error> {
+        Self::retime(self, t_start)
     }
 
     fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
         Self::set_input(self, name, value)
-    }
-
-    fn ensure_end_time(&mut self, target_time: f64) {
-        Self::ensure_end_time(self, target_time);
     }
 
     fn advance_to(&mut self, target_time: f64) -> Result<(), Self::Error> {
@@ -241,8 +202,12 @@ impl SimulationSessionApi for SimulationSession {
         Self::time(self)
     }
 
-    fn get(&self, name: &str) -> Result<Option<f64>, Self::Error> {
-        Self::get(self, name)
+    fn values_for(&self, names: &[String]) -> Result<IndexMap<String, f64>, Self::Error> {
+        Self::values_for(self, names)
+    }
+
+    fn max_schedule_advance_dt(&self) -> Option<f64> {
+        None
     }
 }
 

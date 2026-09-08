@@ -28,7 +28,7 @@ fn instanced_component_dimensions_use_exact_type_enclosing_constants() {
     "#;
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let test = tree
         .get_class_by_qualified_name("Root.Test")
         .expect("test class");
@@ -64,7 +64,7 @@ fn instanced_component_dimensions_use_exact_type_enclosing_constants() {
         true,
     );
 
-    typecheck_instanced(&tree, &mut overlay, "Root.Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Root.Test")
         .expect("each component type must resolve its own enclosing constant");
     let dimensions = overlay
         .components
@@ -105,7 +105,7 @@ fn test_typecheck_instanced_evaluates_enum_alias_dependent_dimensions() {
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let pipe = tree
         .definitions
         .classes
@@ -160,7 +160,7 @@ fn test_typecheck_instanced_evaluates_enum_alias_dependent_dimensions() {
         );
     }
 
-    typecheck_instanced(&tree, &mut overlay, "Network")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Network")
         .expect("typecheck_instanced should evaluate enum-dependent dimensions");
 
     let path_lengths = overlay
@@ -195,7 +195,7 @@ fn test_typecheck_instanced_evaluates_component_scoped_extends_modifier_dimensio
 
     let parsed = parse(source);
     let resolved = resolve(parsed).expect("resolve should succeed");
-    let tree = resolved.into_inner();
+    let tree = resolved.inner().clone();
     let base = tree
         .definitions
         .classes
@@ -233,7 +233,7 @@ fn test_typecheck_instanced_evaluates_component_scoped_extends_modifier_dimensio
         None,
     );
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("typecheck_instanced should evaluate scoped extends modifier dimensions");
 
     let y = overlay
@@ -253,7 +253,7 @@ fn test_typecheck_instanced_evaluates_table_column_range_dimensions() {
     let tree = table_column_range_tree();
     let mut overlay = table_column_range_overlay(&tree);
 
-    typecheck_instanced(&tree, &mut overlay, "Test")
+    typecheck_instanced_test_projection(&tree, &mut overlay, "Test")
         .expect("typecheck_instanced should evaluate table-driven dimensions");
 
     let u = overlay
@@ -268,7 +268,8 @@ fn table_column_range_tree() -> ClassTree {
     let parsed = parse(table_column_range_source());
     resolve(parsed)
         .expect("resolve should succeed")
-        .into_inner()
+        .inner()
+        .clone()
 }
 
 fn table_column_range_source() -> &'static str {

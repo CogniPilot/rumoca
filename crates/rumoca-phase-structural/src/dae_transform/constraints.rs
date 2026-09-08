@@ -14,7 +14,7 @@
 //! definitions are read in either orientation, so the `w - der(phi)` form MSL
 //! components use supplies `d/dt phi` exactly as `der(phi) - w` would.
 
-use rumoca_core::{Span, StateSelect};
+use rumoca_core::{Fixity, Span, StateSelect};
 use rumoca_ir_dae as dae;
 
 use crate::CausalDefinitions;
@@ -473,7 +473,7 @@ fn keeps_stated_initial_value(
     else {
         return false;
     };
-    if variable.fixed() != Some(true) {
+    if variable.fixed() != Fixity::Fixed {
         return true;
     }
     match equalities.value_anchor_of(state) {
@@ -481,7 +481,7 @@ fn keeps_stated_initial_value(
             .variable_id(anchor as usize)
             .and_then(|id| view.variable(id))
             .is_some_and(|anchor| {
-                anchor.fixed() == Some(true) && states_the_same_start(view, variable, anchor)
+                anchor.fixed() == Fixity::Fixed && states_the_same_start(view, variable, anchor)
             }),
         _ => false,
     }
@@ -841,7 +841,7 @@ fn causal_definition<'dae>(
             if variable.role() != dae::VariableRole::Algebraic
                 || variable.variability() != dae::ExpressionVariability::Continuous
                 || variable.value_type().scalar_type() != dae::ScalarType::Real
-                || variable.fixed() == Some(true)
+                || variable.fixed() == Fixity::Fixed
                 || causal.event_holds_variable(algebraic.into())
             {
                 return None;

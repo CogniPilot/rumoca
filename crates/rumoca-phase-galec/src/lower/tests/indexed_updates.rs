@@ -54,6 +54,56 @@ fn integer_literal<'dae>(
     })
 }
 
+fn real_array<'dae, const N: usize>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    values: [f64; N],
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    dae.expressions(|expressions| {
+        let values = values
+            .into_iter()
+            .map(|value| {
+                expressions
+                    .at(provenance)
+                    .literal(dae::DaeLiteral::Real(value))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        expressions.at(provenance).array(values)
+    })
+}
+
+fn define_constant_integer_function<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    integer: dae::ValueTypeId<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::FunctionId<'dae>, dae::DaeConstructionError> {
+    let (function, ()) = dae.function(
+        dae::FunctionSignature::new(VarName::new("extent"), [], [integer], provenance),
+        |dae, reservation| {
+            let output = dae.functions(|functions| {
+                functions.output(&reservation, VarName::new("n"), 0, provenance)
+            })?;
+            let mut body = dae.functions(|functions| functions.begin(reservation, provenance))?;
+            let two = integer_literal(dae, 2, provenance)?;
+            assign_function_value(dae, &mut body, output, two, provenance)?;
+            dae.functions(|functions| functions.define(body, provenance))
+        },
+    )?;
+    Ok(function)
+}
+
+fn integer_identity<'dae>(
+    dae: &mut dae::DaeConstruction<'dae>,
+    provenance: dae::DaeProvenance,
+) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
+    let two = integer_literal(dae, 2, provenance)?;
+    dae.expressions(|expressions| {
+        expressions
+            .at(provenance)
+            .builtin(dae::PureBuiltin::Identity, [two])
+    })
+}
+
 fn assign_function_value<'dae>(
     dae: &mut dae::DaeConstruction<'dae>,
     body: &mut dae::FunctionBody<'dae>,
@@ -419,10 +469,18 @@ fn function_array_updates_preserve_nested_writes_without_replaying_prior_definit
                 view,
                 &definitions,
                 HashSet::from([function.id().index()]),
-                EmissionFacts::structured(),
-            )
-            .unwrap();
+                positive_zero_arithmetic(),
+            );
             let name = function.name().as_str();
+            if name == "conditional" {
+                assert!(matches!(
+                    lowered,
+                    Err(GalecTargetError::UnsupportedFeature { feature, .. })
+                        if feature == "tensor-call-projection"
+                ));
+                continue;
+            }
+            let lowered = lowered.unwrap();
             let diverted = name == "conditional" || name == "fresh";
             let expected: &[i64] = if diverted { &[] } else { &[1, 2, 3, 4] };
             let function_statements = &lowered
@@ -492,7 +550,7 @@ fn a_write_reading_the_chain_root_diverts_instead_of_replaying_in_place() {
             view,
             &definitions,
             HashSet::from([function.id().index()]),
-            EmissionFacts::structured(),
+            positive_zero_arithmetic(),
         )
         .unwrap();
         let statements = &lowered
@@ -539,14 +597,6 @@ fn count_calls(statements: &[gast::Spanned<gast::Statement>], guarded: bool, wan
             _ => 0,
         })
         .sum()
-}
-
-fn unguarded_calls(statements: &[gast::Spanned<gast::Statement>]) -> usize {
-    count_calls(statements, false, false)
-}
-
-fn guarded_calls(statements: &[gast::Spanned<gast::Statement>]) -> usize {
-    count_calls(statements, false, true)
 }
 
 /// Project one element out of `call` at the already-lowered `expression` ordinal.
@@ -658,7 +708,7 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
             view,
             &definitions,
             HashSet::from([consumer.id().index()]),
-            EmissionFacts::structured(),
+            positive_zero_arithmetic(),
         )
         .expect("aggregate projections should lower from one materialized call");
         let statements = &lowered
@@ -678,6 +728,292 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
     });
 }
 
+#[test]
+fn straight_tensor_call_projection_keeps_the_exact_coordinate_fallback() {
+    let model = aggregate_call_fixture();
+
+    model.inspect(|view| {
+        let consumer = view.function(view.function_id(1).unwrap()).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([consumer.id().index()]),
+            positive_zero_arithmetic(),
+        )
+        .expect("a straight call projection has one exact coordinate lowering transaction");
+    });
+}
+
+#[test]
+fn straight_tensor_call_with_an_updated_argument_materializes_once() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "straight-call-updated-argument.mo",
+        "result := copy(update)",
+    );
+    let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 22)).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let vector3 = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                provenance,
+            )
+        })?;
+        let (copy, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("copy"), [vector3], [vector3], provenance),
+            |dae, reservation| {
+                let input = dae.functions(|functions| {
+                    functions.parameter(&reservation, VarName::new("u"), 0, provenance)
+                })?;
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let value = dae.expressions(|expressions| {
+                    expressions.at(provenance).function_parameter(input)
+                })?;
+                assign_function_value(dae, &mut body, output, value, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        dae.function(
+            dae::FunctionSignature::new(VarName::new("consumer"), [], [vector3], provenance),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("result"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let base = real_array(dae, [1.0, 2.0, 3.0], provenance)?;
+                let replacement = real_literal(dae, 4.0, provenance)?;
+                let updated = indexed_update_with_value(dae, base, replacement, 2, provenance)?;
+                let call = dae.expressions(|expressions| {
+                    expressions.at(provenance).call(copy, 0, [updated])
+                })?;
+                assign_function_value(dae, &mut body, output, call, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let consumer = view.function(view.function_id(1).unwrap()).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([consumer.id().index()]),
+            positive_zero_arithmetic(),
+        )
+        .expect("a straight root call owns its updated argument and result transaction");
+        let statements = &lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "consumer")
+            .unwrap()
+            .statements;
+        assert_eq!(
+            count_calls(statements, false, false),
+            1,
+            "the updated argument must not turn one root call into coordinate calls"
+        );
+    });
+}
+
+#[test]
+fn stored_aggregate_call_is_not_rediscovered_through_its_function_value() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "stored-call-result.mo",
+        "stored := make(); result := stored + {0, 0, 0}",
+    );
+    let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 46)).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let vector = dae.types(|types| {
+            types.derived(
+                dae::ValueType::array(dae::ScalarType::Real, [3]),
+                provenance,
+            )
+        })?;
+        let (make, ()) = dae.function(
+            dae::FunctionSignature::new(VarName::new("make"), [], [vector], provenance),
+            |dae, reservation| {
+                let output = dae.functions(|functions| {
+                    functions.output(&reservation, VarName::new("y"), 0, provenance)
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let value = real_array(dae, [1.0, 2.0, 3.0], provenance)?;
+                assign_function_value(dae, &mut body, output, value, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        dae.function(
+            dae::FunctionSignature::new(VarName::new("consumer"), [], [vector], provenance),
+            |dae, reservation| {
+                let (output, stored) = dae.functions(|functions| {
+                    Ok((
+                        functions.output(&reservation, VarName::new("result"), 0, provenance)?,
+                        functions.local(
+                            &reservation,
+                            VarName::new("stored"),
+                            vector,
+                            provenance,
+                        )?,
+                    ))
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let call =
+                    dae.expressions(|expressions| expressions.at(provenance).call(make, 0, []))?;
+                assign_function_value(dae, &mut body, stored, call, provenance)?;
+                let stored = read_function_value(dae, &body, stored, provenance)?;
+                let zeros = dae.expressions(|expressions| {
+                    let zero = expressions
+                        .at(provenance)
+                        .literal(dae::DaeLiteral::Real(0.0))?;
+                    expressions.at(provenance).array([zero, zero, zero])
+                })?;
+                let result = dae.expressions(|expressions| {
+                    expressions
+                        .at(provenance)
+                        .binary(dae::BinaryOperator::Add, stored, zeros)
+                })?;
+                assign_function_value(dae, &mut body, output, result, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let consumer = view.function(view.function_id(1).unwrap()).unwrap();
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let lowered = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([consumer.id().index()]),
+            positive_zero_arithmetic(),
+        )
+        .expect("a dominating stored aggregate call is a projection leaf");
+        let statements = &lowered
+            .iter()
+            .find(|function| function.name.lexeme() == "consumer")
+            .unwrap()
+            .statements;
+        assert_eq!(
+            count_calls(statements, false, false),
+            1,
+            "the stored call must execute once and later local reads must execute it zero times"
+        );
+    });
+}
+
+#[test]
+fn structurally_elided_function_value_does_not_hide_its_update_call() {
+    let mut sources = SourceMap::new();
+    let source = sources.add(
+        "elided-identity-call.mo",
+        "I := identity(2); result := update(I, extent(), 1, 1)",
+    );
+    let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 53)).unwrap();
+    let call_span = Span::from_offsets(source, 38, 46);
+    let call_provenance = dae::DaeProvenance::source(call_span).unwrap();
+    let model = dae::Dae::construct(sources, |dae| {
+        let (integer, matrix) = dae.types(|types| {
+            Ok((
+                types.derived(dae::ValueType::scalar(dae::ScalarType::Integer), provenance)?,
+                types.derived(
+                    dae::ValueType::array(dae::ScalarType::Integer, [2, 2]),
+                    provenance,
+                )?,
+            ))
+        })?;
+        let extent = define_constant_integer_function(dae, integer, provenance)?;
+        dae.function(
+            dae::FunctionSignature::new(VarName::new("consumer"), [], [matrix], provenance),
+            |dae, reservation| {
+                let (output, identity) = dae.functions(|functions| {
+                    Ok((
+                        functions.output(&reservation, VarName::new("result"), 0, provenance)?,
+                        functions.local(&reservation, VarName::new("I"), matrix, provenance)?,
+                    ))
+                })?;
+                let mut body =
+                    dae.functions(|functions| functions.begin(reservation, provenance))?;
+                let value = integer_identity(dae, provenance)?;
+                assign_function_value(dae, &mut body, identity, value, provenance)?;
+                let identity = read_function_value(dae, &body, identity, provenance)?;
+                let call = dae.expressions(|expressions| {
+                    expressions.at(call_provenance).call(extent, 0, [])
+                })?;
+                let (row, column) = dae.expressions(|expressions| {
+                    Ok((
+                        expressions
+                            .at(provenance)
+                            .literal(dae::DaeLiteral::Integer(1))?,
+                        expressions
+                            .at(provenance)
+                            .literal(dae::DaeLiteral::Integer(1))?,
+                    ))
+                })?;
+                let updated = dae.expressions(|expressions| {
+                    expressions.at(provenance).array_update(
+                        identity,
+                        call,
+                        [
+                            dae::Subscript::Index {
+                                expression: row,
+                                provenance,
+                            },
+                            dae::Subscript::Index {
+                                expression: column,
+                                provenance,
+                            },
+                        ],
+                    )
+                })?;
+                assign_function_value(dae, &mut body, output, updated, provenance)?;
+                dae.functions(|functions| functions.define(body, provenance))
+            },
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    model.inspect(|view| {
+        let consumer = view.function(view.function_id(1).unwrap()).unwrap();
+        let identity_definition = view
+            .function_definition(consumer.definition_id(0).unwrap())
+            .unwrap();
+        let structural = structural_locals::StructuralFunctionLocals::derive(view, consumer);
+        assert!(
+            structural.elides_definition(identity_definition),
+            "the fixture must exercise the structurally elided FunctionValue path"
+        );
+        let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
+        let error = user_functions::lower_reachable(
+            view,
+            &definitions,
+            HashSet::from([1]),
+            positive_zero_arithmetic(),
+        )
+        .expect_err("an elided local must not hide the call beside it in an update projection");
+        assert!(matches!(
+            error,
+            GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "tensor-call-projection" && span == call_span
+        ));
+    });
+}
+
 /// A call materialized under a runtime guard stays under it when the chain
 /// that reads it diverts to the aggregate path.
 ///
@@ -692,13 +1028,15 @@ fn aggregate_call_is_materialized_once_before_scalar_projection() {
 /// materialization is per element, so the call is emitted once per arm rather
 /// than once for the function.
 #[test]
-fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard() {
+fn a_diverted_conditional_update_with_one_call_owner_fails_at_the_call_projection() {
     let mut sources = SourceMap::new();
     let source = sources.add(
         "conditional-update-call.mo",
         "branch-local call and outer update",
     );
     let provenance = dae::DaeProvenance::source(Span::from_offsets(source, 0, 34)).unwrap();
+    let call_span = Span::from_offsets(source, 7, 15);
+    let call_provenance = dae::DaeProvenance::source(call_span).unwrap();
     let model = dae::Dae::construct(sources, |dae| {
         let (real, vector) = dae.types(|types| {
             Ok((
@@ -736,7 +1074,9 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
                 assign_function_value(dae, &mut body, output, zeros, provenance)?;
                 let base = read_function_value(dae, &body, output, provenance)?;
                 let call = dae.expressions(|expressions| {
-                    expressions.at(provenance).call(identity, 0, [argument])
+                    expressions
+                        .at(call_provenance)
+                        .call(identity, 0, [argument])
                 })?;
                 let first = indexed_update_with_value(dae, base, call, 1, provenance)?;
                 let conditional = dae.expressions(|expressions| {
@@ -755,38 +1095,20 @@ fn a_diverted_conditional_update_keeps_each_materialized_call_inside_its_guard()
 
     model.inspect(|view| {
         let definitions = rumoca_phase_structural::CausalDefinitions::derive(view);
-        let lowered = user_functions::lower_reachable(
+        let error = user_functions::lower_reachable(
             view,
             &definitions,
             HashSet::from([1]),
-            EmissionFacts::structured(),
+            positive_zero_arithmetic(),
         )
-        .unwrap();
-        let function = lowered
-            .iter()
-            .find(|function| function.name.lexeme() == "guardedUpdate")
-            .unwrap();
-        assert!(
-            function
-                .statements
-                .iter()
-                .all(|statement| matches!(statement.node, gast::Statement::For(_))),
-            "a chain rooted in a conditional join diverts, so the body is the \
-             seed loop and the aggregate loop and nothing else:\n{:#?}",
-            function.statements
-        );
-        assert_eq!(
-            unguarded_calls(&function.statements),
-            0,
-            "every materialized call must sit inside the guard that selects \
-             it: a call hoisted out of its guard would run on the path the \
-             conditional did not take:\n{:#?}",
-            function.statements
-        );
-        assert!(
-            guarded_calls(&function.statements) > 0,
-            "the guarded call must survive lowering:\n{:#?}",
-            function.statements
-        );
+        .expect_err("one call owner cannot be rematerialized by two tensor regions");
+        assert!(matches!(
+            error,
+            GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "tensor-call-projection" && span == call_span
+        ));
     });
 }

@@ -19,7 +19,38 @@ use rumoca_ir_galec::ast as gast;
 pub(super) struct ConditionalActivationKey {
     pub(super) kind: ConditionalActivationKind,
     pub(super) operands: Vec<u32>,
+    /// Exact construction point of a projection-dependent decision.
+    ///
+    /// Every activation carries this issued identity; there is no raw/absent
+    /// state from which a sibling module could fabricate operand-only proof.
+    pub(super) selection: SelectionPointId,
     pub(super) branch: u32,
+}
+
+/// Private identity issued by one expression lowerer for one exact selection.
+///
+/// The namespace prevents independently-created lowerers from accidentally
+/// assigning the same ordinal to two runtime decisions whose activation facts
+/// later meet in the root-call ledger.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct SelectionPointId {
+    namespace: SelectionPointNamespace,
+    ordinal: u32,
+}
+
+impl SelectionPointId {
+    /// Construction hook used only by the parent lowerer's semantic interner.
+    pub(super) const fn issued(namespace: SelectionPointNamespace, ordinal: u32) -> Self {
+        Self { namespace, ordinal }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SelectionPointNamespace {
+    Value,
+    Causal,
+    Clocked(u32),
+    Dependent(u32),
 }
 
 /// The projection view a guard fact was issued from. It is deliberately absent
@@ -145,9 +176,11 @@ impl AssignedPrimitives {
 /// Whether every fact in `required` is among the facts `active` holds.
 fn covers(active: &[ConditionalActivationKey], required: &[ConditionalActivationKey]) -> bool {
     required.iter().all(|required| {
-        active
-            .iter()
-            .any(|active| required.operands == active.operands && required.branch == active.branch)
+        active.iter().any(|active| {
+            required.operands == active.operands
+                && required.selection == active.selection
+                && required.branch == active.branch
+        })
     })
 }
 
@@ -157,10 +190,15 @@ fn covers(active: &[ConditionalActivationKey], required: &[ConditionalActivation
 /// condition operands with different branches describe disjoint paths. Anything
 /// else counts as reachable together, the conservative answer for the
 /// invalidation query that asks this.
-fn disjoint(left: &[ConditionalActivationKey], right: &[ConditionalActivationKey]) -> bool {
+pub(super) fn disjoint(
+    left: &[ConditionalActivationKey],
+    right: &[ConditionalActivationKey],
+) -> bool {
     left.iter().any(|left| {
-        right
-            .iter()
-            .any(|right| left.operands == right.operands && left.branch != right.branch)
+        right.iter().any(|right| {
+            left.operands == right.operands
+                && left.selection == right.selection
+                && left.branch != right.branch
+        })
     })
 }

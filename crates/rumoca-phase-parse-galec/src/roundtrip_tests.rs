@@ -33,7 +33,7 @@ use rumoca_ir_galec::ast::{
     Spanned, StateCompartment, Statement, TypeRef, UserFunction, VariableDeclaration,
 };
 use rumoca_ir_galec::package::CheckedAlgorithmBlock;
-use rumoca_phase_codegen::{render_checked_algorithm_block_template_with_artifact, templates};
+use rumoca_phase_codegen::render_checked_algorithm_block_source;
 
 use crate::GalecSyntaxError;
 use crate::parse::{parse_block as parse, parse_expression};
@@ -166,15 +166,7 @@ fn out_real(name: &str) -> Parameter {
 fn render_block(block: &Block) -> Result<String, String> {
     let checked =
         CheckedAlgorithmBlock::construct(block.clone()).map_err(|error| error.to_string())?;
-    let template = templates::builtin_template_source("galec", "model.alg.jinja")
-        .ok_or_else(|| "missing built-in GALEC template".to_owned())?;
-    render_checked_algorithm_block_template_with_artifact(
-        &checked,
-        &(),
-        template,
-        block.name.lexeme(),
-    )
-    .map_err(|error| error.to_string())
+    render_checked_algorithm_block_source(&checked).map_err(|error| error.to_string())
 }
 
 /// Primary property (§5.1): template(parse(template(b))) == template(b).

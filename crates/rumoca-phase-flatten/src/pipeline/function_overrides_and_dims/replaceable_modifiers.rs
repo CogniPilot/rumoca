@@ -128,10 +128,13 @@ fn qualify_redeclare_function_arg(
     receiver_scope: &ComponentPath,
     ctx: &FunctionOverrideRewriteContext<'_>,
 ) -> Expression {
-    let value = QualifyReplaceableFunctionModifier {
-        receiver_alias: receiver_scope,
-    }
-    .transform_expression(value.clone());
+    let mut value = value.clone();
+    rumoca_ir_ast::visitor::transform_expression_in_place(
+        &mut QualifyReplaceableFunctionModifier {
+            receiver_alias: receiver_scope,
+        },
+        &mut value,
+    );
     crate::ast_lower::expression_from_ast_with_intrinsics(
         &value,
         crate::ast_lower::PredefinedIntrinsicIds::from_tree(ctx.tree),
@@ -139,7 +142,7 @@ fn qualify_redeclare_function_arg(
     .expect("redeclare function modifier expression lowering failed")
 }
 
-fn replaceable_function_modifier_arg(
+pub(super) fn replaceable_function_modifier_arg(
     expr: &rumoca_ir_ast::Expression,
     receiver_scope: &ComponentPath,
     ctx: &FunctionOverrideRewriteContext<'_>,
@@ -148,15 +151,20 @@ fn replaceable_function_modifier_arg(
         rumoca_ir_ast::Expression::NamedArgument { name, value, .. } => {
             (name.text.to_string(), value.as_ref().clone())
         }
-        rumoca_ir_ast::Expression::Modification { target, value, .. } => {
-            (single_component_ref_name(target)?, value.as_ref().clone())
-        }
+        rumoca_ir_ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } => (single_component_ref_name(target)?, value.as_ref().clone()),
         _ => return None,
     };
-    let value = QualifyReplaceableFunctionModifier {
-        receiver_alias: receiver_scope,
-    }
-    .transform_expression(value);
+    let mut value = value;
+    rumoca_ir_ast::visitor::transform_expression_in_place(
+        &mut QualifyReplaceableFunctionModifier {
+            receiver_alias: receiver_scope,
+        },
+        &mut value,
+    );
     Some((
         name,
         crate::ast_lower::expression_from_ast_with_intrinsics(

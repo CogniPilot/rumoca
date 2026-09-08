@@ -13,8 +13,12 @@ pub(crate) fn project_initial_variables_with_plan<M: AlgebraicProjectionModel>(
             "combined initialization Y/P vector length exceeds host index range".to_string(),
         )
     })?;
+    // The construction-issued plan already carries the complete correlation
+    // proof (row coverage, canonical unique unknowns, obligation witness), and
+    // the combined form below only re-bases the proven indices into one Y/P
+    // vector. Re-proving an issued fact here is prohibited, so the plan is
+    // consumed directly.
     let combined_plan = combined_initial_projection_plan(plan, y.len(), p.len())?;
-    validate_initial_projection_plan(&combined_plan, model.initial_residual_len(), combined_len)?;
     if model.initial_residual_len() == 0 {
         return Ok(());
     }

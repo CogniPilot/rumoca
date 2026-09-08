@@ -49,14 +49,34 @@ fn projection_errors<'dae>(
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
 ) -> Vec<GalecTargetError> {
     let mut errors = Vec::new();
-    let states = view
-        .variables()
-        .filter(|(_, variable)| variable.role() == dae::VariableRole::State)
-        .map(|(_, variable)| variable.scalar_count())
-        .sum::<usize>();
+    let (states, first_state_span) = view.variables().fold(
+        (0usize, None),
+        |(scalar_count, first_span), (_, variable)| {
+            if variable.role() == dae::VariableRole::State {
+                (
+                    scalar_count + variable.scalar_count(),
+                    first_span.or_else(|| Some(variable.declaration().span())),
+                )
+            } else {
+                (scalar_count, first_span)
+            }
+        },
+    );
     let equations = continuous_scalar_rows(view, definitions);
     if states != 0 || equations != 0 {
-        errors.push(GalecTargetError::ContinuousDynamics { states, equations });
+        let span = first_state_span.or_else(|| {
+            view.continuous_equation(0)
+                .map(|equation| equation.provenance().span())
+                .or_else(|| {
+                    view.continuous_family(0)
+                        .map(|family| family.provenance().span())
+                })
+        });
+        errors.push(GalecTargetError::ContinuousDynamics {
+            states,
+            equations,
+            span,
+        });
     }
     let initial_equations = initialization_scalar_rows(view);
     if initial_equations != 0 {
@@ -74,6 +94,14 @@ fn projection_errors<'dae>(
         errors.push(GalecTargetError::RuntimeEvents {
             scheduled_time_events: view.time_event_count(),
             event_actions: 0,
+        });
+    }
+    for (_, transaction) in view.model_event_transactions() {
+        errors.push(GalecTargetError::UnsupportedFeature {
+            feature: "model-event-transaction".to_owned(),
+            detail: "GALEC transaction-owner lowering is not implemented; the derived B.1b and B.1c views cannot execute independently"
+                .to_owned(),
+            span: Some(transaction.provenance().span()),
         });
     }
     let dynamic = view
@@ -199,7 +227,7 @@ fn periodic_clocks(view: dae::DaeView<'_>) -> Vec<(u32, &rumoca_core::PeriodicCl
 
 #[cfg(test)]
 mod tests {
-    use rumoca_core::{SourceMap, Span, TypeId, VarName};
+    use rumoca_core::{ClockLattice, ClockRational, SourceMap, Span, TypeId, VarName};
 
     use super::*;
 
@@ -231,6 +259,7 @@ mod tests {
             let x = model.variables(|variables| {
                 variables.algebraic(
                     VarName::new("x"),
+                    rumoca_core::InstanceId::new(1),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
@@ -272,6 +301,7 @@ mod tests {
             let m = model.variables(|variables| {
                 variables.discrete_real(
                     VarName::new("m"),
+                    rumoca_core::InstanceId::new(2),
                     real,
                     declaration,
                     dae::VariableAttributes::default(),
@@ -295,5 +325,189 @@ mod tests {
             )),
             "an algorithm-determined discrete initial value must be reported: {errors:?}"
         );
+    }
+
+    #[derive(Clone, Copy)]
+    struct TransactionFixtureSpans {
+        z: dae::DaeProvenance,
+        valid: dae::DaeProvenance,
+        sample: dae::DaeProvenance,
+        owner: dae::DaeProvenance,
+        z_definition: dae::DaeProvenance,
+        valid_definition: dae::DaeProvenance,
+    }
+
+    struct TransactionFixtureValues<'dae> {
+        z: dae::DiscreteRealId<'dae>,
+        valid: dae::DiscreteValueId<'dae>,
+        clock: dae::ClockId<'dae>,
+        guard: dae::ConditionId<'dae>,
+        z_value: dae::ExprId<'dae>,
+        valid_value: dae::ExprId<'dae>,
+    }
+
+    fn add_transaction_views<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        spans: TransactionFixtureSpans,
+        values: TransactionFixtureValues<'dae>,
+    ) -> Result<(), dae::DaeConstructionError> {
+        model.discrete(|discrete| {
+            discrete.when_real_equation(
+                values.guard,
+                values.guard,
+                spans.z_definition,
+                |equation| equation.residual(values.z_value),
+            )
+        })?;
+        model.b1c([values.valid], |topology| {
+            topology.owner(spans.owner, [values.valid], |owner| {
+                owner.when(
+                    values.guard,
+                    values.guard,
+                    spans.sample,
+                    [(values.valid_value, spans.valid_definition)],
+                )
+            })?;
+            Ok(())
+        })?;
+        model.model_events(|events| {
+            events.transaction(
+                [
+                    dae::ModelEventTarget::DiscreteReal(values.z),
+                    dae::ModelEventTarget::DiscreteValue(values.valid),
+                ],
+                [dae::ModelEventStep::new(
+                    values.guard,
+                    values.guard,
+                    Some(values.clock),
+                    [
+                        dae::ModelEventDefinition::new(
+                            dae::ModelEventTarget::DiscreteReal(values.z),
+                            values.z_value,
+                            spans.z_definition,
+                        ),
+                        dae::ModelEventDefinition::new(
+                            dae::ModelEventTarget::DiscreteValue(values.valid),
+                            values.valid_value,
+                            spans.valid_definition,
+                        ),
+                    ],
+                    spans.owner,
+                )],
+                spans.owner,
+            )
+        })?;
+        Ok(())
+    }
+
+    fn construct_transaction_fixture<'dae>(
+        model: &mut dae::DaeConstruction<'dae>,
+        spans: TransactionFixtureSpans,
+    ) -> Result<(), dae::DaeConstructionError> {
+        let real = model.types(|types| {
+            types.intern(
+                TypeId::new(0),
+                dae::ValueType::scalar(dae::ScalarType::Real),
+                spans.z,
+            )
+        })?;
+        let boolean = model.types(|types| {
+            types.intern(
+                TypeId::new(1),
+                dae::ValueType::scalar(dae::ScalarType::Boolean),
+                spans.valid,
+            )
+        })?;
+        let (z, valid) = model.variables(|variables| {
+            Ok((
+                variables.discrete_real(
+                    VarName::new("z"),
+                    rumoca_core::InstanceId::new(3),
+                    real,
+                    spans.z,
+                    dae::VariableAttributes::default(),
+                )?,
+                variables.discrete_value(
+                    VarName::new("valid"),
+                    rumoca_core::InstanceId::new(4),
+                    boolean,
+                    spans.valid,
+                    dae::VariableAttributes::default(),
+                )?,
+            ))
+        })?;
+        let clock = model.clocks(|clocks| {
+            let clock = clocks.periodic(
+                ClockLattice::new(ClockRational::ONE, ClockRational::ZERO)
+                    .expect("fixture lattice is exact"),
+                spans.sample,
+            )?;
+            clocks.own_discrete_real(clock.into(), z, spans.z_definition)?;
+            clocks.own_discrete_value(clock.into(), valid, spans.valid_definition)?;
+            Ok(clock)
+        })?;
+        let guard = model.conditions(|conditions| conditions.reserve(spans.sample))?;
+        model.conditions(|conditions| {
+            conditions.define(
+                guard,
+                dae::ConditionInput::Clock(clock.into()),
+                spans.sample,
+            )
+        })?;
+        let (z_value, valid_value) = model.expressions(|expressions| {
+            Ok((
+                expressions
+                    .at(spans.z_definition)
+                    .literal(dae::DaeLiteral::Real(1.0))?,
+                expressions
+                    .at(spans.valid_definition)
+                    .literal(dae::DaeLiteral::Boolean(true))?,
+            ))
+        })?;
+        add_transaction_views(
+            model,
+            spans,
+            TransactionFixtureValues {
+                z,
+                valid,
+                clock: clock.into(),
+                guard,
+                z_value,
+                valid_value,
+            },
+        )
+    }
+
+    #[test]
+    fn checked_model_event_transaction_is_refused_at_its_owner() {
+        let text = "discrete Real z; discrete Boolean valid; when sample(0, 1) then z := 1; valid := true; end when;";
+        let mut sources = SourceMap::new();
+        let source = sources.add("galec-model-event-transaction.mo", text);
+        let provenance = |needle: &str| {
+            let start = text.find(needle).expect("fixture snippet exists");
+            dae::DaeProvenance::source(Span::from_offsets(source, start, start + needle.len()))
+                .expect("fixture provenance is source-backed")
+        };
+        let spans = TransactionFixtureSpans {
+            z: provenance("discrete Real z"),
+            valid: provenance("discrete Boolean valid"),
+            sample: provenance("sample(0, 1)"),
+            owner: provenance("when sample(0, 1) then z := 1; valid := true; end when"),
+            z_definition: provenance("z := 1"),
+            valid_definition: provenance("valid := true"),
+        };
+        let model =
+            dae::Dae::construct(sources, |model| construct_transaction_fixture(model, spans))
+                .expect("checked mixed-role model-event transaction constructs");
+
+        let errors = check_admissibility(&GalecInput::new(&model, "ModelEvent")).unwrap_err();
+        assert!(errors.iter().any(|error| matches!(
+            error,
+            GalecTargetError::UnsupportedFeature {
+                feature,
+                span: Some(span),
+                ..
+            } if feature == "model-event-transaction" && *span == spans.owner.span()
+        )));
     }
 }

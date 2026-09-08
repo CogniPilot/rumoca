@@ -120,7 +120,7 @@ fn test_sync_workspace_sources_writes_workspace_semantic_summary_cache_when_cach
         "workspace source cache restore should preserve NewFolder.Test resolution, got: {diagnostics:?}"
     );
 
-    let _ = std::fs::remove_dir_all(&cache_root);
+    std::fs::remove_dir_all(&cache_root).expect("workspace source cache cleanup succeeds");
 
     clear_source_root_cache().expect("clear source-root cache");
 }

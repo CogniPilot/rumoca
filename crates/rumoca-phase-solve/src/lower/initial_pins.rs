@@ -16,13 +16,19 @@
 //! initialization instant answers with numbers what this phase cannot answer
 //! with expressions. Both rows name the same state, which is what makes the
 //! residual answerable: the state holds a value from the moment it is seeded.
+//!
+//! A stated value about an algebraic/output coordinate itself, with no state
+//! to carry it, refuses Solve construction instead
+//! ([`reject_fixed_continuous_algebraics`]): the exact transitive incidence of
+//! its §8.6 equation through the simultaneous continuous system is not yet
+//! computed, and no row is admitted on an assumed incidence.
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
 use rumoca_phase_structural::{InitialValuePin, InitialValueRole};
 
 use super::initial_parameters::InitializationParameterOwnership;
-use super::initial_projection::InitialRowIncidence;
+use super::initial_projection::{InitialRow, InitialRowIncidence};
 use super::{ScalarRows, variable_scalar_slot};
 use crate::LowerError;
 use crate::layout::LoweredLayout;
@@ -37,9 +43,10 @@ pub(super) struct TransferredInitialValues<'dae> {
     pub(super) update_targets: Vec<solve::ScalarSlot>,
     /// Residuals the initialization instant has to satisfy.
     pub(super) checks: ScalarRows,
-    /// What each check row reads, positionally paired with `checks`, so the
-    /// parameter projection can plan a row that determines an unknown.
-    pub(super) check_incidence: Vec<InitialRowIncidence<'dae>>,
+    /// What each check row reads and where it came from, positionally paired
+    /// with `checks`, so the parameter projection can plan a row that determines
+    /// an unknown and refuse an overdetermining one at its own declaration.
+    pub(super) check_incidence: Vec<InitialRow<'dae>>,
 }
 
 /// Lower every transferred initial value into the row its proof allows.
@@ -108,27 +115,15 @@ pub(super) fn lower_transferred_initial_values<'dae>(
                     let program = compiler.slot_residual_program(slot, &terms, span)?;
                     let output = lowered.checks.len();
                     lowered.checks.push(program, span, output);
-                    lowered
-                        .check_incidence
-                        .push(InitialRowIncidence::CarriedValue(
+                    lowered.check_incidence.push(InitialRow {
+                        incidence: InitialRowIncidence::CarriedValue(
                             terms.iter().map(|(expression, _, _)| *expression).collect(),
-                        ));
+                        ),
+                        span,
+                    });
                 }
                 dae::VariableRole::Algebraic | dae::VariableRole::Output => {
-                    let slot =
-                        variable_scalar_slot(layout, pin.coordinate, pin.scalar as usize, span)?;
-                    let solve::ScalarSlot::Y { .. } = slot else {
-                        return Err(LowerError::contract(
-                            "a fixed algebraic/output does not occupy solver storage",
-                            span,
-                        ));
-                    };
-                    let program = compiler.slot_residual_program(slot, &terms, span)?;
-                    let output = lowered.checks.len();
-                    lowered.checks.push(program, span, output);
-                    lowered
-                        .check_incidence
-                        .push(InitialRowIncidence::ImplicitAlgebraic);
+                    return Err(fixed_algebraic_refusal(span));
                 }
                 _ => {
                     return Err(LowerError::contract(
@@ -139,26 +134,27 @@ pub(super) fn lower_transferred_initial_values<'dae>(
             },
         }
     }
-    lower_unrepresented_fixed_continuous_reals(view, layout, ownership, pins, &mut lowered)?;
+    reject_fixed_continuous_algebraics(view, pins)?;
     Ok(lowered)
 }
 
-/// Lower continuous Real `fixed = true` equations that do not participate in
-/// structural equality-class transfer.
+/// Refuse every continuous Real `fixed = true` algebraic/output that does not
+/// participate in structural equality-class transfer as a state's value.
 ///
-/// MLS 3.6 section 8.6 contributes one equation per scalar coordinate. Real's
-/// default `start` is exactly zero, so an absent attribute is not missing
-/// information. A scalar start broadcasts over an aggregate; an aggregate
-/// start retains its checked-DAE scalar order.
-fn lower_unrepresented_fixed_continuous_reals<'dae>(
-    view: dae::DaeView<'dae>,
-    layout: &LoweredLayout<'dae>,
-    ownership: &InitializationParameterOwnership<'dae>,
+/// MLS 3.6 section 8.6 contributes one equation per scalar coordinate of such
+/// a declaration, but the exact transitive incidence of that equation through
+/// the simultaneous continuous system is not yet computed. Admitting the row
+/// with an assumed universal incidence let an unrelated fixed-algebraic row
+/// match a `fixed = false` parameter, the refresh zeroed the row, and the
+/// parameter silently kept its start guess with no equation determining it. So
+/// the declaration refuses Solve construction until a transitive incidence
+/// certificate exists.
+fn reject_fixed_continuous_algebraics(
+    view: dae::DaeView<'_>,
     pins: &[InitialValuePin],
-    lowered: &mut TransferredInitialValues<'dae>,
 ) -> Result<(), LowerError> {
     for (id, variable) in view.variables() {
-        if variable.fixed() != Some(true)
+        if variable.fixed() != rumoca_core::Fixity::Fixed
             || variable.value_type().scalar_type() != dae::ScalarType::Real
             || !matches!(
                 variable.role(),
@@ -168,54 +164,20 @@ fn lower_unrepresented_fixed_continuous_reals<'dae>(
         {
             continue;
         }
-        let span = variable.declaration().span();
-        let start = variable.start();
-        let start_count = match start {
-            Some(expression) => Some(
-                view.expression(expression)
-                    .ok_or_else(|| {
-                        LowerError::contract(
-                            "a fixed continuous Real names a missing start expression",
-                            span,
-                        )
-                    })?
-                    .value_type()
-                    .scalar_count()
-                    .unwrap_or(0),
-            ),
-            None => None,
-        };
-        if matches!(start_count, Some(0)) {
-            return Err(LowerError::contract(
-                "a fixed continuous Real has a start expression with no scalar values",
-                span,
-            ));
-        }
-        for scalar in 0..variable.scalar_count() {
-            let slot = variable_scalar_slot(layout, id.index(), scalar, span)?;
-            let solve::ScalarSlot::Y { .. } = slot else {
-                return Err(LowerError::contract(
-                    "a fixed algebraic/output does not occupy solver storage",
-                    span,
-                ));
-            };
-            let start = start.map(|expression| {
-                let start_scalar = broadcast_start_scalar(start_count, scalar);
-                (expression, start_scalar)
-            });
-            let compiler = ScalarCompiler::new(view, layout, None)
-                .with_parameter_substitutions(ownership.substitutions());
-            let program = compiler.slot_start_residual_program(slot, start, span)?;
-            let output = lowered.checks.len();
-            lowered.checks.push(program, span, output);
-            lowered
-                .check_incidence
-                .push(InitialRowIncidence::ImplicitAlgebraic);
-        }
+        return Err(fixed_algebraic_refusal(variable.declaration().span()));
     }
     Ok(())
 }
 
-fn broadcast_start_scalar(start_count: Option<usize>, scalar: usize) -> usize {
-    if start_count == Some(1) { 0 } else { scalar }
+/// The refusal for a `fixed = true` algebraic/output §8.6 equation.
+fn fixed_algebraic_refusal(span: rumoca_core::Span) -> LowerError {
+    LowerError::non_computable(
+        "the MLS 3.6 §8.6 equation of a `fixed = true` continuous algebraic/output cannot issue \
+         executable Solve IR: its exact transitive incidence through the simultaneous \
+         continuous system is not yet computed, and admitting the row with an assumed \
+         incidence could let it claim an unrelated initialization unknown and silently retain \
+         a start guess; the declaration is refused until a transitive incidence certificate \
+         exists",
+        span,
+    )
 }

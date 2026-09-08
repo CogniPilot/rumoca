@@ -717,7 +717,7 @@ impl SessionSnapshot {
         if !self.needs_source_root_read_prewarm() {
             return;
         }
-        let _ = self.namespace_index_query("");
+        let _cache_warmup = self.namespace_index_query("");
     }
 
     pub fn document_symbol_query(&self, uri: &str) -> Option<Vec<DocumentSymbol>> {

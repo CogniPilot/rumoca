@@ -25,6 +25,7 @@ pub(super) fn lower_multi_output_equation<'dae>(
         name,
         args,
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span,
     } = rhs.as_ref()
     else {
@@ -33,6 +34,7 @@ pub(super) fn lower_multi_output_equation<'dae>(
     let provenance = dae::DaeProvenance::source(*span)?;
     let symbols = LoweringSymbols {
         coordinates,
+        record_staging: None,
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,

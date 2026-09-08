@@ -5,26 +5,138 @@
 //! expressions can be evaluated (MLS §10.1, §12.4).
 
 use super::*;
+use rumoca_ir_ast::{ClassDefIndex, EffectiveImport, ImportBinding};
 
 impl TypeChecker {
-    /// Collect integer/real/boolean constants from classes referenced by import aliases.
+    /// Collect integer/real/boolean constants from classes and package
+    /// constants made visible by imports.
     ///
-    /// When a class has `import generator = Modelica.Math.Random.Generators.Xorshift128plus`,
-    /// this adds `generator.nState = 4` to the eval context so that dimension expressions
-    /// like `Integer state[generator.nState]` can be evaluated.
+    /// Consumes the Resolve-issued effective-import projection for each scope,
+    /// the single authority for which names an import makes reachable
+    /// (MLS §5.3.1, §13.2). Shadowed imports are already absent from the
+    /// projection and refused (ambiguous) imports never bind, so both the
+    /// alias case (`import generator = ...Xorshift128plus`, exposing
+    /// `generator.nState`) and the package-constant case (`import P.n`, exposing
+    /// the canonical `P.n`) are driven from proven declaration identities.
     pub(crate) fn collect_import_constants(
         tree: &ClassTree,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
+        let class_index = ClassDefIndex::from_tree(tree);
         for idx in 0..tree.scope_tree.len() {
             let scope_id = ScopeId::new(idx as u32);
-            let Some(scope) = tree.scope_tree.get(scope_id) else {
-                continue;
-            };
-            for import in &scope.imports {
-                Self::collect_constants_from_import(tree, import, ctx);
+            Self::collect_scope_import_constants(tree, &class_index, scope_id, ctx);
+        }
+    }
+
+    /// Materialize constants for every bound import effective in one scope.
+    fn collect_scope_import_constants(
+        tree: &ClassTree,
+        class_index: &ClassDefIndex<'_>,
+        scope_id: ScopeId,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for (_name, verdict) in tree.effective_imports(scope_id).iter() {
+            if let EffectiveImport::Bound(binding) = verdict {
+                Self::collect_constants_from_binding(tree, class_index, binding, ctx);
             }
         }
+    }
+
+    /// Materialize constants for one effective import binding.
+    ///
+    /// A binding whose proven target identity is a class contributes that
+    /// class's constants under the target's canonical qualified name. A binding
+    /// whose target identity is a component is an imported package constant
+    /// (MLS §13.2.1: a qualified import may name an element of a package); it is
+    /// read directly off its own declaration.
+    fn collect_constants_from_binding(
+        tree: &ClassTree,
+        class_index: &ClassDefIndex<'_>,
+        binding: &ImportBinding,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        let target = binding.target();
+        let Some(class) = tree.get_class_by_def_id(target) else {
+            Self::collect_imported_constant_component(tree, class_index, binding, ctx);
+            return;
+        };
+        let Some(alias) = Self::binding_canonical_prefix(class_index, target) else {
+            return;
+        };
+        Self::extract_class_constants(alias, class, ctx);
+        Self::extract_nested_class_constants_for_import(tree, alias, class, ctx);
+        for ext in &class.extends {
+            Self::extract_extends_modification_constants(alias, ext, ctx);
+            Self::extract_import_extends_constants(tree, alias, &ext.base_name.to_string(), ctx);
+        }
+    }
+
+    /// The canonical qualified name of an imported class target.
+    ///
+    /// Dimension references resolve to a declaration's canonical name, so this
+    /// exact scope-qualified key is the only spelling a consumer reads. The
+    /// import's local alias and the target's terminal short name are deliberately
+    /// not published: nothing evaluates them, and a shared string-keyed context
+    /// would let two imports of that same short spelling collide across scopes.
+    pub(crate) fn binding_canonical_prefix<'a>(
+        class_index: &'a ClassDefIndex<'_>,
+        target: rumoca_core::DefId,
+    ) -> Option<&'a str> {
+        class_index.qualified_name(target)
+    }
+
+    /// Read one imported package constant directly off its declaration.
+    ///
+    /// The target identity names the constant component itself. Its declaration
+    /// is located by that identity through the Resolve-published owner index, so
+    /// a constant inherited into the imported package is read from the class that
+    /// actually declares it, not assumed to be a direct member. The value is keyed
+    /// by the canonical name the reference resolves to (the import path's last
+    /// package segment plus the declared member name), while the declaration's own
+    /// owner scope is used to evaluate its binding.
+    fn collect_imported_constant_component(
+        tree: &ClassTree,
+        class_index: &ClassDefIndex<'_>,
+        binding: &ImportBinding,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        let target = binding.target();
+        let Some(&container_def) = binding.prefix().last() else {
+            return;
+        };
+        let Some(container_qname) = tree.def_map.get(&container_def) else {
+            return;
+        };
+        let Some(owner_def) = class_index.parent_def_id(target) else {
+            return;
+        };
+        let Some(owner) = class_index.get(owner_def) else {
+            return;
+        };
+        let Some(owner_qname) = class_index.qualified_name(owner_def) else {
+            return;
+        };
+        let Some(comp) = owner
+            .components
+            .values()
+            .find(|comp| comp.def_id == Some(target))
+        else {
+            return;
+        };
+        if !matches!(comp.variability, rumoca_core::Variability::Constant(_)) {
+            return;
+        }
+        let Some(member_name) = class_index.local_name(target) else {
+            return;
+        };
+        let Some(expr) = comp.binding.as_ref() else {
+            return;
+        };
+        let full_name = format!("{container_qname}.{member_name}");
+        let type_name = comp.type_name.to_string();
+        Self::insert_constant_value(&full_name, &type_name, expr, owner_qname, ctx);
+        Self::insert_constant_dimensions(&full_name, &comp.shape, expr, owner_qname, ctx);
     }
 
     /// Collect constants from direct model-level `extends(... redeclare ...)` overrides.
@@ -121,7 +233,12 @@ impl TypeChecker {
             return None;
         }
 
-        let Expression::Modification { target, value, .. } = &ext_mod.expr else {
+        let Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = &ext_mod.expr
+        else {
             return None;
         };
         let alias = target.parts.first()?.ident.text.to_string();
@@ -214,85 +331,6 @@ impl TypeChecker {
                 ctx,
             );
         }
-    }
-
-    /// Extract constant values from a single import and add them to the eval context.
-    ///
-    /// Recursively extracts from nested classes and extends chains so that
-    /// deeply nested subpackage constants are available for dimension evaluation.
-    fn collect_constants_from_import(
-        tree: &ClassTree,
-        import: &ScopeImport,
-        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
-    ) {
-        let pairs: Vec<(String, rumoca_core::DefId)> = match import {
-            ScopeImport::Renamed { .. } | ScopeImport::Qualified { .. } => {
-                Self::import_constant_prefixes(import)
-            }
-            ScopeImport::Unqualified { .. } => return, // Too broad, skip
-        };
-        for (alias, def_id) in pairs {
-            let Some(class) = tree.get_class_by_def_id(def_id) else {
-                continue;
-            };
-            Self::extract_class_constants(&alias, class, ctx);
-            // Also extract from nested classes (subpackages) with qualified prefixes
-            Self::extract_nested_class_constants_for_import(tree, &alias, class, ctx);
-            // Follow extends chains to get inherited constants
-            for ext in &class.extends {
-                Self::extract_extends_modification_constants(&alias, ext, ctx);
-                Self::extract_import_extends_constants(
-                    tree,
-                    &alias,
-                    &ext.base_name.to_string(),
-                    ctx,
-                );
-            }
-        }
-    }
-
-    /// Return lookup prefixes for imported classes/packages used in constant extraction.
-    ///
-    /// Includes both short import names and full qualified paths so structural
-    /// dimension expressions can resolve either spelling without heuristic fallback.
-    pub(crate) fn import_constant_prefixes(
-        import: &ScopeImport,
-    ) -> Vec<(String, rumoca_core::DefId)> {
-        let mut out: Vec<(String, rumoca_core::DefId)> = Vec::new();
-        let mut seen: std::collections::HashSet<(String, rumoca_core::DefId)> =
-            std::collections::HashSet::new();
-        let mut push_unique = |name: String, def_id: rumoca_core::DefId| {
-            if name.is_empty() {
-                return;
-            }
-            if seen.insert((name.clone(), def_id)) {
-                out.push((name, def_id));
-            }
-        };
-
-        match import {
-            ScopeImport::Renamed {
-                alias,
-                path,
-                def_id,
-                ..
-            } => {
-                push_unique(alias.as_str().to_string(), *def_id);
-                push_unique(path.join("."), *def_id);
-                if let Some(last) = path.last() {
-                    push_unique(last.clone(), *def_id);
-                }
-            }
-            ScopeImport::Qualified { path, def_id } => {
-                if let Some(last) = path.last() {
-                    push_unique(last.clone(), *def_id);
-                }
-                push_unique(path.join("."), *def_id);
-            }
-            ScopeImport::Unqualified { .. } => {}
-        }
-
-        out
     }
 
     /// Recursively extract constants from nested classes of an imported class.
@@ -409,7 +447,12 @@ impl TypeChecker {
         expr: &Expression,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) -> bool {
-        let Expression::Modification { target, value, .. } = expr else {
+        let Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = expr
+        else {
             return false;
         };
         let Some(target_path) = Self::component_reference_path(target) else {
@@ -463,7 +506,12 @@ impl TypeChecker {
         expr: &Expression,
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
-        if let Expression::Modification { target, value, .. } = expr {
+        if let Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } = expr
+        {
             let target_name = target.to_string();
             let full_name = if alias.is_empty() {
                 target_name
@@ -863,7 +911,12 @@ impl TypeChecker {
         ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
     ) {
         for ext_mod in &ext.modifications {
-            let Expression::Modification { target, value, .. } = &ext_mod.expr else {
+            let Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } = &ext_mod.expr
+            else {
                 continue;
             };
             let looks_like_class_or_package_rebind = matches!(

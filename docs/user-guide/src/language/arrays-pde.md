@@ -132,10 +132,9 @@ longer `StopTime` in the experiment annotation.
 The same technique extends to two dimensions with matrix states and nested
 `for`-equations. This is the 2-D wave equation on a square membrane with
 clamped edges, started from a Gaussian pluck in the center. The grid
-resolution is the `N` parameter — edit it (try 8 to 20 on CPU, or larger
-with GPU enabled) and re-run:
+resolution is the `N` parameter — edit it (try 8 to 20) and re-run:
 
-```modelica,interactive,gpu
+```modelica,interactive
 model Wave2D "2-D wave equation on a square membrane, method of lines"
   parameter Integer N = 20 "Grid cells per side";
   parameter Real L = 1.0 "Side length [m]";
@@ -444,46 +443,22 @@ pure ODE — exactly what the method of lines wants:
 
 The freestream is horizontal and the *airfoil itself pitches*: each cell's
 coordinates are rotated into the airfoil frame, so the solid mask turns with
-the angle of attack the way a real wind-tunnel model would. `aoa` is the
-pre-simulation angle parameter. The model also exposes `input Real aoa_cmd`;
-an `aoa_motor` state follows that command with
-`der(aoa_motor) = (aoa_cmd - aoa_motor) / aoa_tau`. A structural
-`interactive` flag selects whether the immersed-boundary mask uses the
-pre-simulation parameter `aoa` or the lagged state `aoa_motor`. With
-**Interactive** off, the **AoA slider** is a normal parameter tuner and re-runs
-the simulation from the selected pre-simulation angle. With **Interactive** on,
-the same slider feeds `aoa_cmd` during stepping, so the physical airfoil angle
-moves through the first-order lag.
-
-This example defaults the **GPU** checkbox
-on: the compiler's experimental `wgsl-ode` backend lowers the system to
-WebGPU compute kernels and an in-page RK4 integrator runs them. Interior
-finite-volume loops are preserved as source-proven affine stencils, so the
-WebGPU path emits native row-parallel stencil kernels instead of rediscovering
-grid structure from scalarized equations. If WebGPU is unavailable the run
-fails with a clear error instead of silently falling back (uncheck GPU for the
-CPU path). GPU v1 runs in f32 with events and algebraics frozen at their
-settled initial values, which is exact for the normal batch run because
-`interactive = false` makes the mask depend only on pre-simulation parameters.
-The named-input interactive stepping path reads `aoa_cmd` before each step and
-uses `interactive = true`. The run is an impulsive wind-tunnel start:
+the angle-of-attack parameter the way a real wind-tunnel model would. Changing
+the **AoA slider** reruns the simulation from the selected angle. The run is an
+impulsive wind-tunnel start:
 the field begins at rest and the freestream sweeps in from the inlet and
 far-field boundaries. This is the heaviest example in the book
 (~6,500 integrated states on the default grid): expect the first run to take a
 while.
 
-```modelica,interactive,gpu
+```modelica,interactive
 model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penalization"
   parameter Integer NX = 30 "Cells along the channel";
   parameter Integer NY = 18 "Cells across the channel";
   parameter Real Lx = 4.0 "Domain length [chords]";
   parameter Real Ly = 1.5 "Domain height [chords]";
   parameter Real xle = 1.0 "Leading edge distance from inlet [chords]";
-  parameter Real aoa = 8.0 "Initial/pre-simulation angle of attack [deg]";
-  parameter Boolean interactive = false
-    "Use live AoA motor state for the airfoil mask" annotation(Evaluate = true);
-  input Real aoa_cmd(start = aoa) "Commanded angle of attack [deg]";
-  parameter Real aoa_tau = 1.0 "First-order AoA motor time constant [s]";
+  parameter Real aoa = 8.0 "Angle of attack [deg]";
   parameter Real U = 1.0 "Freestream speed (horizontal)";
   parameter Real nu = 0.01 "Kinematic viscosity (Re = U/nu = 100)";
   parameter Real cs = 3.0 "Artificial-compressibility wave speed";
@@ -493,20 +468,12 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   parameter Real mc0 = 0.02 "Initial/pre-simulation NACA max camber";
   parameter Real pc0 = 0.4 "Initial/pre-simulation NACA camber position";
   parameter Real tk0 = 0.12 "Initial/pre-simulation NACA thickness";
-  input Real mc(start = mc0) "Commanded NACA max camber";
-  input Real pc(start = pc0) "Commanded NACA camber position";
-  input Real tk(start = tk0) "Commanded NACA thickness";
-  parameter Real shape_tau = 1.0 "First-order airfoil shape actuator time constant [s]";
   parameter Real dx = Lx / NX;
   parameter Real dy = Ly / NY;
   parameter Real pi = 3.14159265359;
   parameter Real epsn = 0.6 * dy "Mask transition width, chord-normal [chords]";
   parameter Real epss = 0.8 * dx "Mask transition width, chordwise [chords]";
   parameter Real tmin = 0.6 * dy "Smooth half-thickness floor: keeps the coarse mask closed";
-  Real aoa_motor(start = aoa, fixed = true) "Lagged physical angle of attack [deg]";
-  Real mc_motor(start = mc0, fixed = true) "Lagged NACA max camber";
-  Real pc_motor(start = pc0, fixed = true) "Lagged NACA camber position";
-  Real tk_motor(start = tk0, fixed = true) "Lagged NACA thickness";
   Real u[NX, NY] "x-velocity";
   Real v[NX, NY] "y-velocity";
   Real q[NX, NY] "pressure / rho";
@@ -516,34 +483,13 @@ model AirfoilFlow "2-D flow over a NACA 2412: artificial compressibility + penal
   // States start at rest (default start = 0): an impulsive wind-tunnel
   // start where the freestream sweeps in through the boundary relaxation.
 equation
-  der(aoa_motor) =
-    if interactive then (aoa_cmd - aoa_motor) / aoa_tau else 0.0;
-  der(mc_motor) = if interactive then (mc - mc_motor) / shape_tau else 0.0;
-  der(pc_motor) = if interactive then (pc - pc_motor) / shape_tau else 0.0;
-  der(tk_motor) = if interactive then (tk - tk_motor) / shape_tau else 0.0;
   for i in 1:NX loop
     for j in 1:NY loop
-      if interactive then
-        sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa_motor * pi / 180.0)
-          - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa_motor * pi / 180.0);
-        nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa_motor * pi / 180.0)
-          + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa_motor * pi / 180.0);
-        sig[i, j] =
-          0.5 * (1.0 - tanh((abs(nc[i, j]
-              - (if sc[i, j] < pc_motor then mc_motor / pc_motor ^ 2 * (2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)
-                 else mc_motor / (1.0 - pc_motor) ^ 2
-                   * ((1.0 - 2.0 * pc_motor) + 2.0 * pc_motor * sc[i, j] - sc[i, j] ^ 2)))
-            - sqrt((5.0 * tk_motor * (0.2969 * sqrt(max(sc[i, j], 0.0)) - 0.1260 * sc[i, j]
-                    - 0.3516 * sc[i, j] ^ 2 + 0.2843 * sc[i, j] ^ 3
-                    - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
-          * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
-          * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)));
-      else
-        sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa * pi / 180.0)
+      sc[i, j] = ((i - 0.5) * dx - xle) * cos(aoa * pi / 180.0)
           - ((j - 0.5) * dy - Ly / 2.0) * sin(aoa * pi / 180.0);
-        nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa * pi / 180.0)
+      nc[i, j] = ((i - 0.5) * dx - xle) * sin(aoa * pi / 180.0)
           + ((j - 0.5) * dy - Ly / 2.0) * cos(aoa * pi / 180.0);
-        sig[i, j] =
+      sig[i, j] =
           0.5 * (1.0 - tanh((abs(nc[i, j]
               - (if sc[i, j] < pc0 then mc0 / pc0 ^ 2 * (2.0 * pc0 * sc[i, j] - sc[i, j] ^ 2)
                  else mc0 / (1.0 - pc0) ^ 2
@@ -553,7 +499,6 @@ equation
                     - 0.1036 * sc[i, j] ^ 4)) ^ 2 + tmin ^ 2)) / epsn))
           * (0.5 * (1.0 + tanh(sc[i, j] / epss)))
           * (0.5 * (1.0 + tanh((1.0 - sc[i, j]) / epss)));
-      end if;
     end for;
   end for;
   // Interior: momentum + artificial-compressibility continuity.
@@ -718,11 +663,9 @@ const fields = {
 let mode = 'vorticity';   // default to the field that shows stall/separation.
 let refreshColorbar = () => {};
 // Geometry for the overlay — keep in sync with the model parameters.
-// The command inputs seed the run; the lagged motor states drive the moving
-// contour and mask frame-by-frame.
-const mc0 = api.parameter('mc', api.parameter('mc0', 0.02));
-const pc0 = api.parameter('pc', api.parameter('pc0', 0.4));
-const tk0 = api.parameter('tk', api.parameter('tk0', 0.12));
+const mc0 = api.parameter('mc0', 0.02);
+const pc0 = api.parameter('pc0', 0.4);
+const tk0 = api.parameter('tk0', 0.12);
 const geo = {
   Lx: api.parameter('Lx', 4.0),
   Ly: api.parameter('Ly', 1.5),
@@ -732,20 +675,12 @@ const geo = {
   tk: tk0,
 };
 const aoa = api.parameter('aoa', 8.0);
-const aoaSeries = api.series('aoa_motor') || [aoa];
-const mcSeries = api.series('mc_motor') || [mc0];
-const pcSeries = api.series('pc_motor') || [pc0];
-const tkSeries = api.series('tk_motor') || [tk0];
-const frameSeriesValue = (series, frame, fallback) => {
-  const value = series[Math.min(frame, series.length - 1)];
-  return Number.isFinite(value) ? value : fallback;
-};
-const frameAoa = (frame) => frameSeriesValue(aoaSeries, frame, aoa);
-function refreshGeometryParameters(frame) {
+const frameAoa = () => aoa;
+function refreshGeometryParameters() {
   geo.xle = api.parameter('xle', 1.0);
-  geo.mc = frameSeriesValue(mcSeries, frame, mc0);
-  geo.pc = Math.max(1e-3, Math.min(0.999, frameSeriesValue(pcSeries, frame, pc0)));
-  geo.tk = Math.max(1e-6, frameSeriesValue(tkSeries, frame, tk0));
+  geo.mc = mc0;
+  geo.pc = Math.max(1e-3, Math.min(0.999, pc0));
+  geo.tk = Math.max(1e-6, tk0);
 };
 const camber = (sc) => sc < geo.pc
   ? geo.mc / geo.pc ** 2 * (2 * geo.pc * sc - sc ** 2)
@@ -1150,17 +1085,13 @@ streamLabel.append(streamCheck, document.createTextNode('Streamlines'));
 fieldRow.append(fieldLabel, fieldSel, dirLabel, streamLabel);
 container.appendChild(fieldRow);
 
-// Pitch the airfoil. With Interactive off this is a normal pre-run `aoa`
-// parameter override. With Interactive on, the same slider drives the named
-// model input `aoa_cmd`; the model's `aoa_motor` state follows it with a
-// first-order lag.
+// Pitch the airfoil by rerunning with a new parameter value.
 api.addTuner('aoa', {
   min: -45,
   max: 45,
   step: 1,
   value: aoa,
   label: 'AoA °',
-  interactiveInput: 'aoa_cmd',
 });
 
 api.addTuner('mc', {
@@ -1169,7 +1100,6 @@ api.addTuner('mc', {
   step: 0.005,
   value: mc0,
   label: 'Camber',
-  interactiveInput: 'mc',
 });
 
 api.addTuner('pc', {
@@ -1178,7 +1108,6 @@ api.addTuner('pc', {
   step: 0.05,
   value: pc0,
   label: 'Camber pos',
-  interactiveInput: 'pc',
 });
 
 api.addTuner('tk', {
@@ -1187,7 +1116,6 @@ api.addTuner('tk', {
   step: 0.01,
   value: tk0,
   label: 'Thickness',
-  interactiveInput: 'tk',
 });
 ```
 
@@ -1205,8 +1133,7 @@ try:
 
 - Slide **AoA** to `0` — the wake straightens and the up/down asymmetry
   mostly disappears (the residual comes from camber, the *2* in 2412).
-  This is a simulation parameter update; the GPU path refreshes the prepared
-  vectors and reruns without relowering the model.
+  This is a simulation parameter update and reruns the model.
 - Slide **AoA** negative — the airfoil visibly pitches nose-down and the
   suction side flips.
 - Slide **AoA** toward `25`–`45` in **Interactive** mode — the upper-surface

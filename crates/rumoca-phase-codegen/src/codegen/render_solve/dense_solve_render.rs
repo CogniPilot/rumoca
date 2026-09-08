@@ -589,26 +589,6 @@ fn emit_one_linear_op_mlir(
             "    %{pfx}_ip{dst} = arith.constant {idx} : index\n\
              \t%{pfx}_r{dst} = memref.load %p[%{pfx}_ip{dst}] : memref<?xf64>\n"
         ));
-    } else if let Ok(v) = get_field(op, "LoadIndexedP") {
-        let dst = solve_field_usize(&v, "dst")?;
-        let base = solve_field_usize(&v, "base")?;
-        let count = solve_field_usize(&v, "count")?;
-        let index = solve_field_usize(&v, "index")?;
-        let last = if count == 0 { 0 } else { count - 1 };
-        // round + clamp the runtime index in f64, convert to an index, add base,
-        // then load — matching `resolve_indexed_slot`.
-        out.push_str(&format!(
-            "    %{pfx}_rnd{dst} = math.round %{pfx}_r{index} : f64\n\
-             \t%{pfx}_zr{dst} = arith.constant 0.0 : f64\n\
-             \t%{pfx}_lo{dst} = arith.maxnumf %{pfx}_rnd{dst}, %{pfx}_zr{dst} : f64\n\
-             \t%{pfx}_hi{dst} = arith.constant {last}.0 : f64\n\
-             \t%{pfx}_cl{dst} = arith.minnumf %{pfx}_lo{dst}, %{pfx}_hi{dst} : f64\n\
-             \t%{pfx}_si{dst} = arith.fptosi %{pfx}_cl{dst} : f64 to i64\n\
-             \t%{pfx}_ic{dst} = arith.index_cast %{pfx}_si{dst} : i64 to index\n\
-             \t%{pfx}_bs{dst} = arith.constant {base} : index\n\
-             \t%{pfx}_ix{dst} = arith.addi %{pfx}_ic{dst}, %{pfx}_bs{dst} : index\n\
-             \t%{pfx}_r{dst} = memref.load %p[%{pfx}_ix{dst}] : memref<?xf64>\n"
-        ));
     } else if let Ok(v) = get_field(op, "Move") {
         let dst = solve_field_usize(&v, "dst")?;
         let src = solve_field_usize(&v, "src")?;
@@ -700,7 +680,6 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         solve::LinearOp::Const { .. }
         | solve::LinearOp::LoadY { .. }
         | solve::LinearOp::LoadP { .. }
-        | solve::LinearOp::LoadIndexedP { .. }
         | solve::LinearOp::Move { .. }
         | solve::LinearOp::StoreOutput { .. } => true,
         solve::LinearOp::Unary { op, .. } => matches!(
@@ -729,7 +708,6 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         ),
         solve::LinearOp::LoadTime { .. }
         | solve::LinearOp::LoadSeed { .. }
-        | solve::LinearOp::LoadIndexedSeed { .. }
         | solve::LinearOp::LoadIndexedRegister { .. }
         | solve::LinearOp::LoadIndexedFoldCarried { .. }
         | solve::LinearOp::LoadIndexedFoldCapture { .. }
@@ -757,10 +735,6 @@ fn mlir_native_linear_op_supported(op: &solve::LinearOp) -> bool {
         | solve::LinearOp::TensorFill { .. }
         | solve::LinearOp::TensorIdentity { .. }
         | solve::LinearOp::TensorLoad { .. }
-        | solve::LinearOp::TableBounds { .. }
-        | solve::LinearOp::TableLookup { .. }
-        | solve::LinearOp::TableLookupSlope { .. }
-        | solve::LinearOp::TableNextEvent { .. }
         | solve::LinearOp::RandomInitialState { .. }
         | solve::LinearOp::RandomResult { .. }
         | solve::LinearOp::RandomState { .. }
@@ -807,14 +781,6 @@ fn matmul_nnz_for_row(
         row_nzs.push(*pair);
     }
     Ok(row_nzs)
-}
-
-pub(in crate::codegen) fn render_solve_row_wgsl_function(
-    row: Value,
-    config: Value,
-) -> RenderResult {
-    let cfg = SolveRowCConfig::from_value(&config);
-    render_solve_row_for(&row, &cfg, SolveRowDialect::Wgsl)
 }
 
 pub(in crate::codegen) fn render_solve_row_output_wgsl_function(

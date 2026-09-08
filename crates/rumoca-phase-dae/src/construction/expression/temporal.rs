@@ -4,21 +4,28 @@ pub(super) fn lower_derivative<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     symbols: LoweringSymbols<'_, 'dae>,
     binders: &HashMap<VarName, dae::DomainBinderId<'dae>>,
-    arguments: &[Expression],
+    expression: &Expression,
     provenance: dae::DaeProvenance,
-    span: Span,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
-    let (name, subscripts) =
-        derivative_reference(&arguments[0]).expect("analysis proves the derivative target shape");
-    let coordinate = symbols.coordinates[name.var_name()]
-        .derivative(span)
-        .expect("analysis proves derivative role");
+    let span = provenance.span();
+    let missing = || dae::DaeConstructionError::MissingDerivativeCertificate { span };
+    let plan = symbols
+        .functions
+        .derivatives
+        .certificate(expression)
+        .ok_or_else(missing)?;
+    let state = symbols
+        .functions
+        .state_occurrences
+        .get(&plan.target())
+        .copied()
+        .ok_or_else(missing)?;
     lower_coordinate_reference(
         construction,
         symbols,
         binders,
-        coordinate,
-        subscripts,
+        dae::CoordinateInput::Derivative(state),
+        plan.subscripts(),
         provenance,
     )
 }

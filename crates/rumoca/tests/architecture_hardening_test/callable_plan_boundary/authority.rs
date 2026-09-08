@@ -377,6 +377,17 @@ impl BoundaryVisitor<'_> {
             ));
         }
     }
+
+    fn check_serde_derives(&mut self, item: &syn::Item) {
+        let Some(attributes) = item_attributes(item) else {
+            return;
+        };
+        for trait_name in SERDE_TRAITS {
+            if derives_trait(attributes, trait_name) {
+                self.record(format!("production code derives serde `{trait_name}`"));
+            }
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for BoundaryVisitor<'_> {
@@ -384,13 +395,7 @@ impl<'ast> Visit<'ast> for BoundaryVisitor<'_> {
         if item_attributes(item).is_some_and(attributes_require_test) {
             return;
         }
-        if let Some(attributes) = item_attributes(item) {
-            for trait_name in SERDE_TRAITS {
-                if derives_trait(attributes, trait_name) {
-                    self.record(format!("production code derives serde `{trait_name}`"));
-                }
-            }
-        }
+        self.check_serde_derives(item);
         visit::visit_item(self, item);
     }
 

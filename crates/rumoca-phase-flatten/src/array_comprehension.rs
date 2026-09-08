@@ -2,11 +2,12 @@
 
 use crate::equations::{expand_range_indices, substitute_index_in_expression};
 use crate::pipeline::{
-    ComponentOverrideMap, ImportCaches, OverlayScopeIndex, variable_import_context_for_instance,
+    ComponentOverrideMap, ImportCaches, OverlayScopeIndex, attach_reference_scope,
+    flat_binding_reference_scope, variable_import_context_for_instance,
 };
 use crate::qualify::{ImportMap, QualifyOptions, qualify_expression_with_imports};
-use crate::{Context, FlattenError, ast_lower, variables};
-use rumoca_eval_flat::phase_constant::infer_array_dimensions;
+use crate::{Context, Expression, FlattenError, ast_lower, variables};
+use rumoca_eval_flat::phase_constant::infer_array_dimensions_checked;
 use rumoca_ir_ast as ast;
 use rumoca_ir_flat as flat;
 
@@ -124,7 +125,10 @@ pub(crate) fn expand_array_comprehension_bindings(
         // Preserve structured comprehensions when dimensions are inferable from
         // symbolic ranges/body shape; avoid eager scalar expansion.
         if let Some(binding) = &flat_var.binding
-            && let Some(inferred_dims) = infer_array_dimensions(binding)
+            && let Some(inferred_dims) = map_comprehension_dimension_evaluation(
+                infer_array_dimensions_checked(binding),
+                binding,
+            )?
         {
             if inferred_dims.len() >= flat_var.dims.len() {
                 flat_var.dims = inferred_dims.clone();
@@ -150,17 +154,29 @@ pub(crate) fn expand_array_comprehension_bindings(
             span: *span,
         };
 
-        let flat_binding = lower_expanded_comprehension_binding(
+        let mut flat_binding = lower_expanded_comprehension_binding(
             &expanded_array,
             &prefix,
             binding_imports,
             ast_lower::PredefinedIntrinsicIds::from_tree(tree),
         )?;
+        // The expansion replaces a binding that instantiation already scoped.
+        // Lowering issues only the declaration half of each reference's
+        // identity, so the replacement takes the same class-body occurrence
+        // the original binding carried; otherwise a body reference to a
+        // sibling parameter (`phi[k]` substituted per element) would reach
+        // parameter ordering with no occurrence and be refused as malformed.
+        let binding_scope =
+            flat_binding_reference_scope(instance_data, &scope_index, flat_var.source_span)?;
+        attach_reference_scope(&mut flat_binding, binding_scope)?;
 
         flat_var.binding = Some(flat_binding.clone());
         changed_binding = true;
 
-        if let Some(inferred_dims) = infer_array_dimensions(&flat_binding) {
+        if let Some(inferred_dims) = map_comprehension_dimension_evaluation(
+            infer_array_dimensions_checked(&flat_binding),
+            &flat_binding,
+        )? {
             flat_var.dims = inferred_dims.clone();
             ctx.array_dimensions
                 .insert(var_name.to_string(), inferred_dims);
@@ -173,6 +189,20 @@ pub(crate) fn expand_array_comprehension_bindings(
         }
     }
     Ok(changed_binding)
+}
+
+fn map_comprehension_dimension_evaluation<T>(
+    result: Result<T, rumoca_eval_flat::constant::EvalError>,
+    owner: &Expression,
+) -> Result<T, FlattenError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(crate::constant_eval::map_evaluation_error(
+            error,
+            "inferring an array-comprehension binding shape",
+            owner.span(),
+        )?),
+    }
 }
 
 /// Try to evaluate all index ranges for a comprehension. Returns None if any range

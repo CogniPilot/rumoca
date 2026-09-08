@@ -9,12 +9,13 @@ use crate::sparsity::program_output_y_dependencies;
 
 use super::dependency_domain::CompactYDependencySet;
 use super::{
-    compact_dependency_error, extend_compute_node_dependencies, extend_program_dependencies,
-    extend_scalar_block_dependencies, first_block_span, output_row_positions,
+    ContinuousRefreshSource, compact_dependency_error, extend_compute_node_dependencies,
+    extend_program_dependencies, extend_scalar_block_dependencies, first_block_span,
+    output_row_positions,
 };
 
 pub(super) fn event_consumer_dependencies(
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
     clock_owner: Option<solve::PeriodicClockId>,
 ) -> Result<CompactYDependencySet, EvalSolveError> {
@@ -24,9 +25,9 @@ pub(super) fn event_consumer_dependencies(
     }
     extend_selected_scalar_output_dependencies(
         &mut dependencies,
-        &problem.discrete.rhs,
+        &problem.discrete().rhs,
         problem
-            .discrete
+            .discrete()
             .clock_owners
             .iter()
             .enumerate()
@@ -35,9 +36,9 @@ pub(super) fn event_consumer_dependencies(
     )?;
     extend_selected_scalar_output_dependencies(
         &mut dependencies,
-        &problem.events.action_conditions,
+        &problem.events().action_conditions,
         problem
-            .events
+            .events()
             .actions
             .iter()
             .enumerate()
@@ -53,13 +54,13 @@ pub(super) fn event_consumer_dependencies(
 
 fn extend_unclocked_dependencies(
     dependencies: &mut CompactYDependencySet,
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
 ) -> Result<(), EvalSolveError> {
     for block in [
-        &problem.discrete.runtime_assignment_rhs,
-        &problem.discrete.post_commit_assignment_rhs,
-        &problem.events.root_conditions,
+        &problem.discrete().runtime_assignment_rhs,
+        &problem.discrete().post_commit_assignment_rhs,
+        &problem.events().root_conditions,
     ] {
         extend_scalar_block_dependencies(dependencies, block, state_count)?;
     }
@@ -68,22 +69,22 @@ fn extend_unclocked_dependencies(
 
 fn extend_structured_update_dependencies(
     dependencies: &mut CompactYDependencySet,
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
     clock_owner: Option<solve::PeriodicClockId>,
 ) -> Result<(), EvalSolveError> {
     problem
-        .discrete
+        .discrete()
         .structured_rhs
         .validate_shape_contract("continuous clock refresh dependency certificate")?;
     for update in problem
-        .discrete
+        .discrete()
         .structured_updates
         .iter()
         .filter(|update| update.clock_owner == clock_owner)
     {
         let node = problem
-            .discrete
+            .discrete()
             .structured_rhs
             .nodes
             .get(update.node_index)
@@ -102,11 +103,11 @@ fn extend_structured_update_dependencies(
 
 fn extend_guarded_assignment_dependencies(
     dependencies: &mut CompactYDependencySet,
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
     clock_owner: Option<solve::PeriodicClockId>,
 ) -> Result<(), EvalSolveError> {
-    for program in &problem.discrete.guarded_assignments {
+    for program in &problem.discrete().guarded_assignments {
         if program.clock_owner() == clock_owner {
             extend_program_dependencies(
                 dependencies,
@@ -121,12 +122,12 @@ fn extend_guarded_assignment_dependencies(
 
 fn extend_transaction_dependencies(
     dependencies: &mut CompactYDependencySet,
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
     clock_owner: Option<solve::PeriodicClockId>,
 ) -> Result<(), EvalSolveError> {
     for transaction in problem
-        .discrete
+        .discrete()
         .event_transactions
         .iter()
         .filter(|transaction| match clock_owner {
@@ -158,12 +159,12 @@ fn extend_transaction_dependencies(
 
 fn extend_action_message_dependencies(
     dependencies: &mut CompactYDependencySet,
-    problem: &solve::SolveProblem,
+    problem: &ContinuousRefreshSource<'_>,
     state_count: usize,
     clock_owner: Option<solve::PeriodicClockId>,
 ) -> Result<(), EvalSolveError> {
     for action in problem
-        .events
+        .events()
         .actions
         .iter()
         .filter(|action| action.clock_owner == clock_owner)

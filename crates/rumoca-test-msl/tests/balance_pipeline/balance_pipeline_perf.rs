@@ -24,15 +24,15 @@ impl PerfSession {
                 Err(_) => return,
             }
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _already_exited = self.child.kill();
+        let _reap_error = self.child.wait();
     }
 }
 
 fn request_perf_stop(pid: u32) {
     #[cfg(unix)]
     {
-        let _ = Command::new("kill")
+        let _already_exited = Command::new("kill")
             .arg("-INT")
             .arg(pid.to_string())
             .stdout(std::process::Stdio::null())

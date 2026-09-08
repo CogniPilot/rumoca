@@ -7,12 +7,30 @@ use super::errors::EvalError;
 use super::value::Value;
 use super::{BuiltinFunction, eval_builtin};
 
+/// Check the shared Modelica signature before either validation or dispatch.
+pub(super) fn validate_builtin_arity(
+    func: BuiltinFunction,
+    actual: usize,
+    span: Span,
+) -> Result<(), EvalError> {
+    if func.accepts_argument_count(actual) {
+        return Ok(());
+    }
+    let (expected, _) = func.argument_count_range();
+    Err(EvalError::WrongArgCount {
+        expected,
+        actual,
+        span,
+    })
+}
+
 /// Evaluate a builtin function call.
 pub(super) fn eval_builtin_function(
     func: &BuiltinFunction,
     args: &[Value],
     span: Span,
 ) -> Result<Value, EvalError> {
+    validate_builtin_arity(*func, args.len(), span)?;
     match func {
         // Math functions
         BuiltinFunction::Abs => eval_builtin("abs", args, span),
@@ -55,19 +73,10 @@ pub(super) fn eval_builtin_function(
         BuiltinFunction::Cat => eval_builtin("cat", args, span),
 
         // Pass-through builtins
-        BuiltinFunction::NoEvent => args.first().cloned().ok_or_else(|| {
-            EvalError::not_constant("noEvent requires 1 argument".to_string(), span)
-        }),
-        BuiltinFunction::Smooth => args.get(1).cloned().ok_or_else(|| {
-            EvalError::not_constant("smooth requires 2 arguments".to_string(), span)
-        }),
-        BuiltinFunction::Homotopy => args.first().cloned().ok_or_else(|| {
-            EvalError::not_constant("homotopy requires 1 argument".to_string(), span)
-        }),
-        BuiltinFunction::Delay => args
-            .first()
-            .cloned()
-            .ok_or_else(|| EvalError::not_constant("delay requires 1 argument".to_string(), span)),
+        BuiltinFunction::NoEvent | BuiltinFunction::Homotopy | BuiltinFunction::Delay => {
+            checked_argument(func, args, 0, span)
+        }
+        BuiltinFunction::Smooth => checked_argument(func, args, 1, span),
         BuiltinFunction::Integer => eval_builtin("integer", args, span),
         BuiltinFunction::SemiLinear => eval_builtin("semiLinear", args, span),
 
@@ -108,4 +117,18 @@ pub(super) fn eval_builtin_function(
             span,
         }),
     }
+}
+
+fn checked_argument(
+    func: &BuiltinFunction,
+    args: &[Value],
+    index: usize,
+    span: Span,
+) -> Result<Value, EvalError> {
+    args.get(index).cloned().ok_or_else(|| EvalError::Internal {
+        message: format!(
+            "validated builtin signature for {} has no argument at index {index} ({span:?})",
+            func.name()
+        ),
+    })
 }

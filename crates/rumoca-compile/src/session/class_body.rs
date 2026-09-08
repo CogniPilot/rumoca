@@ -158,31 +158,32 @@ impl<'a> ClassBodyCollector<'a> {
         self.body.algorithm_section =
             collect_algorithm_section(&class.algorithms, &class.initial_algorithms);
         if let Some(constrainedby) = &class.constrainedby {
-            let _ = self.visit_type_name(
+            let _visit_outcome = self.visit_type_name(
                 constrainedby,
                 ast::visitor::TypeNameContext::ClassConstrainedBy,
             );
         }
         for extend in &class.extends {
-            let _ = self.visit_extend(extend);
+            let _visit_outcome = self.visit_extend(extend);
         }
         for component in class.components.values() {
-            let _ = self.visit_component(component);
+            let _visit_outcome = self.visit_component(component);
         }
-        let _ = self.visit_each(&class.equations, Self::visit_equation);
-        let _ = self.visit_each(&class.initial_equations, Self::visit_equation);
+        let _equation_outcome = self.visit_each(&class.equations, Self::visit_equation);
+        let _initial_equation_outcome =
+            self.visit_each(&class.initial_equations, Self::visit_equation);
         for section in &class.algorithms {
-            let _ = self.visit_each(section, Self::visit_statement);
+            let _visit_outcome = self.visit_each(section, Self::visit_statement);
         }
         for section in &class.initial_algorithms {
-            let _ = self.visit_each(section, Self::visit_statement);
+            let _visit_outcome = self.visit_each(section, Self::visit_statement);
         }
         for annotation in &class.annotation {
-            let _ = self
+            let _visit_outcome = self
                 .visit_expression_ctx(annotation, ast::visitor::ExpressionContext::ClassAnnotation);
         }
         if let Some(external) = &class.external {
-            let _ = self.visit_external_function(external);
+            let _visit_outcome = self.visit_external_function(external);
         }
         self.body
     }

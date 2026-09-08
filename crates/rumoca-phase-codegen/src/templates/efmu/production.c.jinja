@@ -1,0 +1,44 @@
+{%- macro literal(value) -%}
+{%- if value.kind == "real" -%}{{ value.token }}
+{%- elif value.kind == "integer32_minimum" -%}(-INT32_C(2147483647) - INT32_C(1))
+{%- elif value.kind == "integer32" -%}INT32_C({{ value.value }})
+{%- elif value.kind == "boolean" -%}{{ "true" if value.value else "false" }}
+{%- else -%}{{ fail("unprepared Production C literal: " ~ value.kind) }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro method(body) %}
+{%- if body.status != "infallible_returned_status_i32" -%}
+{{ fail("unprepared Production C method status: " ~ body.status) }}
+{%- endif %}
+{{ body.return_type }} {{ body.presentation.function }}({{ body.self_parameter_type }} *{{ body.presentation.self_parameter }}) {
+    {{ body.presentation.self_parameter }}->{{ body.error_status_component }} = UINT32_C(0);
+{%- for register in body.registers %}
+    {{ register.type_identifier }} {{ register.identifier }};
+{%- endfor %}
+{%- for operation in body.operations %}
+{%- if operation.kind == "initialize_scalar" %}
+    {{ body.presentation.self_parameter }}->{{ operation.declaration }} = {{ literal(operation.value) }};
+{%- elif operation.kind == "initialize_uniform_tensor" %}
+{%- for dimension in operation.dimensions %}
+    for ({{ production.presentation.unsigned_integer32_type }} {{ dimension.initialization_index }} = UINT32_C(0); {{ dimension.initialization_index }} < UINT32_C({{ dimension.size }}); ++{{ dimension.initialization_index }}) {
+{%- endfor %}
+        {{ body.presentation.self_parameter }}->{{ operation.declaration }}{%- for dimension in operation.dimensions %}[{{ dimension.initialization_index }}]{%- endfor %} = {{ literal(operation.value) }};
+{%- for dimension in operation.dimensions %}
+    }
+{%- endfor %}
+{%- elif operation.kind == "constant" %}
+    {{ operation.destination }} = {{ literal(operation.value) }};
+{%- elif operation.kind == "store" %}
+    {{ body.presentation.self_parameter }}->{{ operation.declaration }} = {{ operation.source }};
+{%- else %}
+{{ fail("unprepared Production C operation: " ~ operation.kind) }}
+{%- endif %}
+{%- endfor %}
+    return {{ production.presentation.success_status.identifier }};
+}
+{%- endmacro %}
+#include "{{ production.presentation.artifact_layout.header_include }}"
+
+{%- for method_body in production.methods %}
+{{ method(method_body) }}
+{%- endfor %}

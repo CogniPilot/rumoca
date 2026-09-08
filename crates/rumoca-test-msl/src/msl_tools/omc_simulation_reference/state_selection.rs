@@ -1,9 +1,10 @@
 use super::{MslPaths, TraceQuantification};
 use rumoca_sim::sim_trace_compare::SimTrace;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct StateSelectionMetric {
     pub rumoca_state_count: usize,
     pub omc_state_count: usize,
@@ -12,9 +13,7 @@ pub(super) struct StateSelectionMetric {
     pub omc_only_state_count: usize,
     pub state_count_match: bool,
     pub exact_state_set_match: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rumoca_only_states: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub omc_only_states: Vec<String>,
 }
 
@@ -258,24 +257,15 @@ mod tests {
     }
 
     fn minimal_metric(model_name: &str) -> rumoca_sim::sim_trace_compare::ModelDeviationMetric {
-        rumoca_sim::sim_trace_compare::ModelDeviationMetric {
-            model_name: model_name.to_string(),
-            compared_variables: 0,
-            samples_compared: 0,
-            bounded_normalized_l1_score: 0.0,
-            mean_channel_bounded_normalized_l1: 0.0,
-            max_channel_bounded_normalized_l1: 0.0,
-            channel_high_count: 0,
-            channel_minor_count: 0,
-            channel_deviation_count: 0,
-            channel_severe_count: 0,
-            channel_high_percent: 0.0,
-            channel_minor_percent: 0.0,
-            channel_deviation_percent: 0.0,
-            channel_severe_percent: 0.0,
-            channel_violation_mass: 0.0,
-            initial_condition: Default::default(),
-            worst_variables: Vec::new(),
-        }
+        let trace = SimTrace {
+            model_name: Some(model_name.to_string()),
+            times: vec![0.0, 1.0],
+            names: vec!["x".to_string()],
+            data: vec![vec![Some(0.0), Some(1.0)]],
+            variable_meta: None,
+            certification_profile: None,
+        };
+        rumoca_sim::sim_trace_compare::compare_model_traces(model_name, &trace, &trace)
+            .expect("identical test traces are comparable")
     }
 }

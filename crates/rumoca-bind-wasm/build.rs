@@ -51,9 +51,11 @@ fn write_bundled_source_root_assets(out_dir: &std::path::Path) {
     // here; write empty placeholders so the `include_*!` sites in lib.rs compile.
     // A future bundling path should pass these via a build-script input, not an
     // environment variable.
-    let _ = fs::write(
+    fs::write(
         out_dir.join("bundled_source_root_manifest.json"),
         r#"{"archives":[]}"#,
-    );
-    let _ = fs::write(out_dir.join("bundled_source_root_cache.bin"), []);
+    )
+    .expect("write bundled source-root manifest placeholder");
+    fs::write(out_dir.join("bundled_source_root_cache.bin"), [])
+        .expect("write bundled source-root cache placeholder");
 }

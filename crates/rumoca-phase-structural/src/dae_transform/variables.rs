@@ -62,50 +62,71 @@ fn reserve_variable<'target>(
     promoted: Option<u32>,
 ) -> Result<ReservedVariable<'target>, dae::DaeConstructionError> {
     let name = variable.name().clone();
+    let source_occurrence = variable.source_occurrence().instance_id();
     let declaration = variable.declaration();
     let (identity, reservation) = match variable.role() {
         dae::VariableRole::Parameter => {
-            let (id, reservation) = variables.reserve_parameter(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_parameter(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::Parameter(id), reservation)
         }
         dae::VariableRole::Constant => {
-            let (id, reservation) = variables.reserve_constant(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_constant(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::Parameter(id), reservation)
         }
         dae::VariableRole::Input => {
             let variability = input_variability(variable.variability());
-            let (id, reservation) =
-                variables.reserve_input(name, value_type, variability, declaration)?;
+            let (id, reservation) = variables.reserve_input(
+                name,
+                source_occurrence,
+                value_type,
+                variability,
+                declaration,
+            )?;
             (TargetVariable::Input(id), reservation)
         }
         dae::VariableRole::State if Some(variable.id().index()) == demoted => {
-            let (id, reservation) = variables.reserve_algebraic(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_algebraic(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
         dae::VariableRole::State => {
-            let (id, reservation) = variables.reserve_state(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_state(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::State(id), reservation)
         }
         dae::VariableRole::Algebraic if Some(variable.id().index()) == promoted => {
-            let (id, reservation) = variables.reserve_state(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_state(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::State(id), reservation)
         }
         dae::VariableRole::Algebraic => {
-            let (id, reservation) = variables.reserve_algebraic(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_algebraic(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
         dae::VariableRole::Output => {
-            let (id, reservation) = variables.reserve_output(name, value_type, declaration)?;
+            let (id, reservation) =
+                variables.reserve_output(name, source_occurrence, value_type, declaration)?;
             (TargetVariable::Algebraic(id), reservation)
         }
         dae::VariableRole::DiscreteReal => {
-            let (id, reservation) =
-                variables.reserve_discrete_real(name, value_type, declaration)?;
+            let (id, reservation) = variables.reserve_discrete_real(
+                name,
+                source_occurrence,
+                value_type,
+                declaration,
+            )?;
             (TargetVariable::DiscreteReal(id), reservation)
         }
         dae::VariableRole::DiscreteValue => {
-            let (id, reservation) =
-                variables.reserve_discrete_value(name, value_type, declaration)?;
+            let (id, reservation) = variables.reserve_discrete_value(
+                name,
+                source_occurrence,
+                value_type,
+                declaration,
+            )?;
             (TargetVariable::DiscreteValue(id), reservation)
         }
     };
@@ -189,7 +210,11 @@ fn define_variable<'target>(
         component_ref: source.component_reference().cloned(),
         binding: source.binding().map(&expression),
         start: source.start().map(&expression),
-        fixed: source.fixed(),
+        // The source variable's fixity is already total; passing it as the
+        // explicit spelling preserves the effective value verbatim across a
+        // State/Algebraic demotion or promotion, both of which stay inside
+        // the `fixed = false` default class of MLS 3.6 section 4.8.1.
+        fixed: Some(source.fixed()),
         min: source.minimum().map(&expression),
         max: source.maximum().map(&expression),
         nominal: source.nominal().map(expression),

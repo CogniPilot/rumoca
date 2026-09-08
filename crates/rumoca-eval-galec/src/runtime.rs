@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rumoca_ir_galec::ast;
+use rumoca_ir_galec::package::AlgorithmCodeIntegerFormat;
 
+use crate::Value;
 use crate::interpreter::{EvaluationError, Evaluator};
-use crate::{IntegerDomain, Value};
 
 pub(super) fn flatten_dimension(
     elements: Vec<&Value>,
@@ -239,15 +240,15 @@ pub(super) fn not_value(value: Value) -> Result<Value, EvaluationError> {
     }
 }
 
-pub(super) fn value_in_integer_domain(value: &Value, domain: IntegerDomain) -> bool {
+pub(super) fn value_in_integer_domain(value: &Value, format: AlgorithmCodeIntegerFormat) -> bool {
     match value {
-        Value::Integer(value) => domain.contains(*value),
+        Value::Integer(value) => *value >= format.minimum() && *value <= format.maximum(),
         Value::Array(values) => values
             .iter()
-            .all(|value| value_in_integer_domain(value, domain)),
+            .all(|value| value_in_integer_domain(value, format)),
         Value::Record(fields) => fields
             .values()
-            .all(|value| value_in_integer_domain(value, domain)),
+            .all(|value| value_in_integer_domain(value, format)),
         Value::Boolean(_) | Value::Real(_) => true,
         Value::Uninitialized => false,
     }
@@ -273,7 +274,7 @@ pub(super) fn compare_ordered<T: PartialOrd + PartialEq>(
     })
 }
 
-pub(super) fn size_dimension(value: &Value, dimension: i64) -> Result<Value, EvaluationError> {
+pub(super) fn size_dimension(value: &Value, dimension: i64) -> Result<i64, EvaluationError> {
     if dimension < 1 {
         return Err(EvaluationError::Bounds {
             index: dimension,
@@ -292,9 +293,9 @@ pub(super) fn size_dimension(value: &Value, dimension: i64) -> Result<Value, Eva
     let Value::Array(values) = current else {
         return Err(EvaluationError::Type("size array"));
     };
-    Ok(Value::Integer(i64::try_from(values.len()).map_err(
-        |_| EvaluationError::MalformedCheckedBlock("array length exceeds GALEC Integer".to_owned()),
-    )?))
+    i64::try_from(values.len()).map_err(|_| {
+        EvaluationError::MalformedCheckedBlock("array length exceeds host i64".to_owned())
+    })
 }
 
 pub(super) fn indices(
@@ -308,7 +309,7 @@ pub(super) fn indices(
         active_signals: evaluator.active_signals.clone(),
         signal_closures: evaluator.signal_closures.clone(),
         declaration_scopes: evaluator.declaration_scopes.clone(),
-        integer_domain: evaluator.integer_domain,
+        arithmetic_profile: evaluator.arithmetic_profile,
         lifecycle: evaluator.lifecycle,
     };
     subscripts

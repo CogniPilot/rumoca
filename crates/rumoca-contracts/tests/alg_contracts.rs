@@ -5,7 +5,8 @@
 use rumoca_compile::compile::FailedPhase;
 use rumoca_contracts::test_support::{
     expect_compile_failure, expect_failure_in_phase_with_code, expect_parse_err_with_code,
-    expect_resolve_failure_with_code, expect_success,
+    expect_parse_err_with_only_code, expect_parse_ok, expect_resolve_failure_with_code,
+    expect_success,
 };
 
 // =============================================================================
@@ -518,13 +519,278 @@ fn alg_006_event_generating_while_rejected() {
 }
 
 // =============================================================================
-// ALG-004: No assignments to entire arrays subscripted with loop variable
-// inside for
+// ALG-004: Omitted iterator ranges require checked inference from qualifying
+// subscript occurrences (MLS 3.7 §11.2.2.1). That inference does not exist, so
+// the parser refuses the omission with `EP004` in every syntax that can carry
+// an iterator. Only the omission is refused: the whole-array restriction the
+// rule states is scoped to omitted ranges, so explicit-range whole-array
+// assignment stays legal and must keep compiling.
+//
+// The registry row stays `Partial`. What these cases bound is the parse-time
+// refusal of the omission. Range inference, the identical-range agreement rule,
+// and the whole-array restriction that depends on it are all unimplemented and
+// have no owner yet.
 // =============================================================================
 
+/// Acceptance contract for `EP004` (SPEC_0008 "Acceptance Contract Before
+/// Rejection"): an explicit `in <range>` remains accepted in every syntax that
+/// admits an iterator, so the refusal cannot have widened past the omission.
+///
+/// This is asserted at the parse boundary because the parse boundary is where
+/// the single `ForIndex` issuer lives and where the refusal is decided. It
+/// fails against a converter that rejects, or mis-detects, a present range in
+/// any of the four forms.
 #[test]
-fn alg_004_whole_array_assignment_in_for_rejected() {
-    expect_resolve_failure_with_code(
+fn alg_004_explicit_ranges_are_accepted_in_every_iterator_syntax() {
+    // for-statement
+    expect_parse_ok(
+        r#"
+        function F
+            input Real u;
+            output Real y;
+        protected
+            Real a[3];
+        algorithm
+            for i in 1:3 loop
+                a[i] := u;
+            end for;
+            y := a[1];
+        end F;
+    "#,
+    );
+
+    // for-equation
+    expect_parse_ok(
+        r#"
+        model M
+            Real a[3];
+        equation
+            for i in 1:3 loop
+                a[i] = i;
+            end for;
+        end M;
+    "#,
+    );
+
+    // array comprehension
+    expect_parse_ok(
+        r#"
+        model M
+            parameter Real a[3] = {1.0*i for i in 1:3};
+        end M;
+    "#,
+    );
+
+    // reduction argument
+    expect_parse_ok(
+        r#"
+        model M
+            parameter Real a[3] = {1.0, 2.0, 3.0};
+            Real s = sum(a[i] for i in 1:3);
+        end M;
+    "#,
+    );
+
+    // several iterators in one clause, all explicit
+    expect_parse_ok(
+        r#"
+        model M
+            Real a[2,2];
+        equation
+            for i in 1:2, j in 1:2 loop
+                a[i,j] = i + j;
+            end for;
+        end M;
+    "#,
+    );
+}
+
+#[test]
+fn alg_004_implicit_statement_range_fails_closed_until_supported() {
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            protected
+                Real a[3];
+            algorithm
+                for i loop
+                    a := fill(u, 3);
+                    a[i] := u;
+                end for;
+                y := a[1];
+            end F;
+            Real z = F(1.0);
+        end M;
+    "#,
+        "EP004",
+    );
+}
+
+#[test]
+fn alg_004_implicit_equation_range_fails_closed_until_supported() {
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            Real a[3];
+        equation
+            for i loop
+                a[i] = 1.0;
+            end for;
+        end M;
+    "#,
+        "EP004",
+    );
+}
+
+#[test]
+fn alg_004_implicit_comprehension_range_fails_closed_until_supported() {
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            parameter Real a[3] = {1.0*i for i};
+        end M;
+    "#,
+        "EP004",
+    );
+}
+
+#[test]
+fn alg_004_implicit_reduction_range_fails_closed_until_supported() {
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            parameter Real a[3] = {1.0, 2.0, 3.0};
+            Real s = sum(a[i] for i);
+        end M;
+    "#,
+        "EP004",
+    );
+}
+
+/// The omission is refused wherever it sits in the clause, not only in the
+/// first iterator.
+///
+/// This is the case that observes iterator *arity*. The acceptance fixture
+/// above parses a two-iterator clause but only asserts that parsing succeeded,
+/// so it cannot see how many indices came out. Deleting the
+/// `.chain(indices.for_indices_list…)` line from the parser's single
+/// `convert_for_indices` silently drops every iterator after the first: this
+/// source would then compile as a one-iterator loop, the omitted `j` would
+/// never be visited, and no diagnostic would be issued at all. That mutant
+/// passes every other ALG-004 case and fails only here.
+#[test]
+fn alg_004_implicit_later_index_range_fails_closed_until_supported() {
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            Real a[2,2];
+        equation
+            for i in 1:2, j loop
+                a[i,j] = i + j;
+            end for;
+        end M;
+    "#,
+        "EP004",
+    );
+}
+
+/// Positive control against the defect this campaign found: the previous
+/// witness asserted `EP001`, which every syntax error in the file also
+/// produces, so it passed on any typo and proved nothing about the omission.
+///
+/// Both inputs here are rejected for reasons unrelated to iterator ranges: one
+/// through Parol's syntax path and one through the parser's semantic-conversion
+/// path, which is the same channel the omission refusal travels. Neither may
+/// report `EP004`. This fails against reusing `EP001` for the new variant and
+/// against mapping every conversion failure to `EP004`. It does *not* fail
+/// against reordering the two `convert_parol_error` downcast blocks: those test
+/// disjoint concrete types, so their order is unobservable. The mutation that
+/// makes the omission indistinguishable from these inputs is deleting the
+/// `OmittedIterationRange` arm so the refusal drops through to the generic
+/// `user_err` bucket; that one is caught by the `EP004` negatives above.
+#[test]
+fn alg_004_unrelated_rejections_cannot_satisfy_the_implicit_range_witness() {
+    // Ordinary syntax corruption: a missing statement terminator.
+    expect_parse_err_with_only_code(
+        r#"
+        model M
+            function F
+                input Real u;
+                output Real y;
+            protected
+                Real a[3];
+            algorithm
+                for i in 1:3 loop
+                    a[i] := u
+                end for;
+                y := a[1];
+            end F;
+            Real z = F(1.0);
+        end M;
+    "#,
+        "EP001",
+    );
+
+    // A parse-phase semantic refusal: redeclaring a predefined type. This is
+    // grammatically well formed and travels the same conversion-failure channel
+    // as the omitted-range refusal, so it is the input that distinguishes
+    // "EP004 is a distinct disposition" from "EP004 is what conversion failures
+    // are now called".
+    expect_parse_err_with_only_code(
+        r#"
+        model Real
+            Real x;
+        equation
+            der(x) = 1;
+        end Real;
+    "#,
+        "EP001",
+    );
+}
+
+#[test]
+fn alg_004_explicit_range_equation_loop_is_allowed() {
+    expect_success(
+        r#"
+        model M
+            Real a[3];
+        equation
+            for i in 1:3 loop
+                a[i] = i;
+            end for;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+/// The comprehension form of the `EP004` acceptance contract, carried past the
+/// parser to a full compile. The expression shape is the one already proven to
+/// compile by `arr_026_nested_member_array_under_an_element_expanded_owner_is_subscriptable`,
+/// so a failure here means the iterator converter regressed, not that
+/// comprehension support moved.
+#[test]
+fn alg_004_explicit_range_comprehension_is_allowed() {
+    expect_success(
+        r#"
+        model M
+            parameter Integer n = 3;
+            parameter Real p = 2.0;
+            Real x[n];
+        equation
+            x = {p*time for k in 1:n};
+        end M;
+    "#,
+        "M",
+    );
+}
+
+#[test]
+fn alg_004_whole_array_assignment_with_explicit_range_is_allowed() {
+    expect_success(
         r#"
         model M
             function F
@@ -535,6 +801,7 @@ fn alg_004_whole_array_assignment_in_for_rejected() {
             algorithm
                 for i in 1:3 loop
                     a := fill(u, 3);
+                    a[1:2] := fill(u, 2);
                     a[i] := u;
                 end for;
                 y := a[1];
@@ -543,7 +810,6 @@ fn alg_004_whole_array_assignment_in_for_rejected() {
         end M;
     "#,
         "M",
-        "ER121",
     );
 }
 

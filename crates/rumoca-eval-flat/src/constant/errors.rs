@@ -73,6 +73,13 @@ pub enum EvalError {
     #[error("unknown function: {name}")]
     UnknownFunction { name: String, span: Span },
 
+    /// A pre-Flat function catalog exists, but Flat has not issued callable
+    /// instance identities yet.
+    #[error(
+        "cannot evaluate user-function call `{name}` before Flat callable identity is finalized"
+    )]
+    PendingCallableIdentity { name: String, span: Span },
+
     /// Unknown variable or constant
     #[error("unknown variable: {name}")]
     UnknownVariable { name: String, span: Span },
@@ -100,6 +107,10 @@ pub enum EvalError {
     /// Unsupported expression kind for constant evaluation
     #[error("unsupported expression for constant evaluation: {kind}")]
     UnsupportedExpression { kind: String, span: Span },
+
+    /// A sentinel or malformed node violated the semantic Flat IR contract.
+    #[error("invalid semantic IR for constant evaluation: {reason}")]
+    InvalidSemanticIr { reason: String, span: Span },
 
     /// Array index out of bounds
     #[error("array index out of bounds: index {index}, size {size}")]
@@ -155,24 +166,38 @@ impl EvalError {
             // the fold undetermined rather than proving the model wrong.
             | Self::InitializationDeferred { .. } => Some(RuntimeDependentReason::UnknownValue),
             Self::NotConstant { .. } => Some(RuntimeDependentReason::NotConstant),
-            // `FunctionError` is the single channel the user-function
-            // interpreter reports both unimplemented body forms and rejected
-            // argument bindings through, so on its own it cannot prove a model
-            // wrong. It is read as "this evaluator has no rule for that call"
-            // until the two are separate variants.
-            Self::UnsupportedExpression { .. } | Self::FunctionError { .. } => {
+            Self::UnsupportedExpression { .. } => {
                 Some(RuntimeDependentReason::UnimplementedForm)
             }
             Self::TypeMismatch { .. }
             | Self::DivisionByZero { .. }
+            | Self::PendingCallableIdentity { .. }
             | Self::CircularDependency { .. }
+            | Self::InvalidSemanticIr { .. }
             | Self::IndexOutOfBounds { .. }
             | Self::WrongArgCount { .. }
+            | Self::FunctionError { .. }
             | Self::FieldNotFound { .. }
             | Self::RangeError { .. }
             | Self::MissingSourceContext { .. }
             | Self::Internal { .. } => None,
         }
+    }
+
+    /// Whether this error proves a control-independent defect that remains
+    /// erroneous even beneath runtime-dependent control flow.
+    pub fn is_control_independent_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::TypeMismatch { .. }
+                | Self::CircularDependency { .. }
+                | Self::PendingCallableIdentity { .. }
+                | Self::InvalidSemanticIr { .. }
+                | Self::WrongArgCount { .. }
+                | Self::FieldNotFound { .. }
+                | Self::MissingSourceContext { .. }
+                | Self::Internal { .. }
+        )
     }
 
     /// Get the span associated with this error, if any.
@@ -181,10 +206,12 @@ impl EvalError {
             Self::TypeMismatch { span, .. }
             | Self::DivisionByZero { span }
             | Self::UnknownFunction { span, .. }
+            | Self::PendingCallableIdentity { span, .. }
             | Self::UnknownVariable { span, .. }
             | Self::InitializationDeferred { span, .. }
             | Self::CircularDependency { span, .. }
             | Self::UnsupportedExpression { span, .. }
+            | Self::InvalidSemanticIr { span, .. }
             | Self::IndexOutOfBounds { span, .. }
             | Self::WrongArgCount { span, .. }
             | Self::FunctionError { span, .. }

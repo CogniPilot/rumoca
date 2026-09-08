@@ -2,35 +2,52 @@ mod plan;
 
 use super::*;
 
+use plan::{IssuedReservations, ReservationRequirement};
 pub(super) use plan::{VariableConstructionPlan, plan_variable_construction};
 
 pub(super) struct VariableIdentityPass<'flat, 'dae> {
     pub(super) coordinates: ModelCoordinates<'dae>,
-    pub(super) reserved: Vec<Option<ReservedVariable<'flat, 'dae>>>,
+    pub(super) reserved: IssuedReservations<ReservedVariable<'flat, 'dae>>,
 }
 
 pub(super) fn insert_variable_identities<'flat, 'dae>(
     flat: &'flat flat::Model,
-    analysis: &Analysis,
+    analysis: &Analysis<'_>,
     construction: &mut dae::DaeConstruction<'dae>,
     value_types: &HashMap<VarName, dae::ValueTypeId<'dae>>,
     functions: &FunctionRegistry<'_, 'dae>,
-    plan: &VariableConstructionPlan,
+    plan: VariableConstructionPlan,
 ) -> Result<VariableIdentityPass<'flat, 'dae>, dae::DaeConstructionError> {
     let mut coordinates = ModelCoordinates::new();
-    let mut reserved = (0..flat.variables.len()).map(|_| None).collect::<Vec<_>>();
+    let mut reservations = plan.into_reservation_issuer();
     for (source_ordinal, (name, variable)) in flat.variables.iter().enumerate() {
-        let Some(role) = analysis.roles[name].runtime() else {
+        let reservation_requirement =
+            reservations.next_source(source_ordinal, variable.source_span)?;
+        let Some(planned_role) = analysis.roles.get(name) else {
+            return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                span: variable.source_span,
+            });
+        };
+        let Some(role) = planned_role.runtime() else {
+            if reservation_requirement == ReservationRequirement::Reserve {
+                return Err(dae::DaeConstructionError::InvalidExpressionForm {
+                    span: variable.source_span,
+                });
+            }
             continue;
         };
         let provenance = dae::DaeProvenance::source(variable.source_span)?;
-        let value_type = value_types[name];
-        let scalar_type = effective_variable_scalar_type(flat, variable)
-            .expect("analysis accepts only primitive value types");
-        if !plan
-            .variable(source_ordinal)
-            .requires_reservation(source_ordinal)
-        {
+        let value_type = value_types.get(name).copied().ok_or(
+            dae::DaeConstructionError::InvalidExpressionForm {
+                span: variable.source_span,
+            },
+        )?;
+        let scalar_type = effective_variable_scalar_type(flat, variable).ok_or(
+            dae::DaeConstructionError::InvalidExpressionForm {
+                span: variable.source_span,
+            },
+        )?;
+        if reservation_requirement == ReservationRequirement::Complete {
             let coordinate = insert_complete_variable(
                 construction,
                 VariableDefinitionContext {
@@ -48,23 +65,26 @@ pub(super) fn insert_variable_identities<'flat, 'dae>(
                     value_type,
                 },
             )?;
-            coordinates.insert(variable, coordinate);
+            coordinates.insert(variable, coordinate)?;
             continue;
         }
         let (coordinate, definition) =
             reserve_variable_identity(construction, variable, role, value_type, provenance)?;
-        coordinates.insert(variable, coordinate);
-        reserved[source_ordinal] = Some(ReservedVariable {
-            flat: variable,
-            role,
-            scalar_type,
-            value_type,
-            definition,
-        });
+        coordinates.insert(variable, coordinate)?;
+        reservations.issue(
+            ReservedVariable {
+                flat: variable,
+                role,
+                scalar_type,
+                value_type,
+                definition,
+            },
+            variable.source_span,
+        )?;
     }
     Ok(VariableIdentityPass {
         coordinates,
-        reserved,
+        reserved: reservations.finish()?,
     })
 }
 
@@ -77,18 +97,27 @@ fn reserve_variable_identity<'dae>(
 ) -> Result<(Coordinate<'dae>, dae::VariableReservation<'dae>), dae::DaeConstructionError> {
     construction.variables(|variables| match role {
         RuntimeVariableRole::Parameter => {
-            let (id, definition) =
-                variables.reserve_parameter(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_parameter(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::Parameter(id), definition))
         }
         RuntimeVariableRole::Constant => {
-            let (id, definition) =
-                variables.reserve_constant(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_constant(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::Parameter(id), definition))
         }
         RuntimeVariableRole::Input => {
             let (id, definition) = variables.reserve_input(
                 variable.name.clone(),
+                variable.instance_id,
                 value_type,
                 planned_input_variability(variable),
                 provenance,
@@ -96,28 +125,48 @@ fn reserve_variable_identity<'dae>(
             Ok((Coordinate::Input(id), definition))
         }
         RuntimeVariableRole::State => {
-            let (id, definition) =
-                variables.reserve_state(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_state(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::State(id), definition))
         }
         RuntimeVariableRole::Algebraic => {
-            let (id, definition) =
-                variables.reserve_algebraic(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_algebraic(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::Algebraic(id), definition))
         }
         RuntimeVariableRole::Output => {
-            let (id, definition) =
-                variables.reserve_output(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_output(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::Algebraic(id), definition))
         }
         RuntimeVariableRole::DiscreteReal => {
-            let (id, definition) =
-                variables.reserve_discrete_real(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_discrete_real(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::DiscreteReal(id), definition))
         }
         RuntimeVariableRole::DiscreteValue => {
-            let (id, definition) =
-                variables.reserve_discrete_value(variable.name.clone(), value_type, provenance)?;
+            let (id, definition) = variables.reserve_discrete_value(
+                variable.name.clone(),
+                variable.instance_id,
+                value_type,
+                provenance,
+            )?;
             Ok((Coordinate::DiscreteValue(id), definition))
         }
     })
@@ -126,18 +175,11 @@ fn reserve_variable_identity<'dae>(
 pub(super) fn define_reserved_variables<'dae>(
     construction: &mut dae::DaeConstruction<'dae>,
     context: VariableDefinitionContext<'_, 'dae>,
-    plan: &VariableConstructionPlan,
-    mut reserved: Vec<Option<ReservedVariable<'_, 'dae>>>,
+    reserved: IssuedReservations<ReservedVariable<'_, 'dae>>,
 ) -> Result<(), dae::DaeConstructionError> {
-    for component in plan.definition_components() {
-        for &source_ordinal in &component.members {
-            let Some(reserved) = reserved[source_ordinal].take() else {
-                continue;
-            };
-            define_reserved_variable(construction, context, reserved)?;
-        }
+    for reservation in reserved.into_definitions() {
+        define_reserved_variable(construction, context, reservation)?;
     }
-    debug_assert!(reserved.iter().all(Option::is_none));
     Ok(())
 }
 
@@ -192,6 +234,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::Parameter => variables
             .parameter(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -200,6 +243,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::Constant => variables
             .constant(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -208,6 +252,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::Input => variables
             .input(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 planned_input_variability(variable.flat),
                 declaration,
@@ -217,6 +262,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::State => variables
             .state(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -225,6 +271,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::Algebraic => variables
             .algebraic(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -233,6 +280,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::Output => variables
             .output(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -241,6 +289,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::DiscreteReal => variables
             .discrete_real(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -249,6 +298,7 @@ fn insert_complete_variable<'dae>(
         RuntimeVariableRole::DiscreteValue => variables
             .discrete_value(
                 variable.flat.name.clone(),
+                variable.flat.instance_id,
                 variable.value_type,
                 declaration,
                 attributes,
@@ -306,7 +356,10 @@ fn lower_variable_attributes<'dae>(
         component_ref: variable.flat.component_ref.clone(),
         binding,
         start,
-        fixed: variable.flat.fixed,
+        // Only the explicit source spelling crosses this boundary. An
+        // omitted `fixed` stays absent here; the DAE variable definition
+        // decides the MLS 3.6 section 4.8.1 role default exactly once.
+        fixed: variable.flat.fixed.map(rumoca_core::Fixity::from),
         min,
         max,
         nominal,
@@ -433,6 +486,7 @@ fn lower_derived_parameter_binding<'dae>(
     }
     let symbols = LoweringSymbols {
         coordinates,
+        record_staging: None,
         functions,
         shapes: functions.shapes.model_values(),
         function_body: None,
@@ -471,14 +525,13 @@ fn default_start_expression<'dae>(
     owner_span: Span,
 ) -> Result<dae::ExprId<'dae>, dae::DaeConstructionError> {
     let provenance = dae::DaeProvenance::generated(dae::DaeGeneration::DefaultStart, owner_span)?;
-    if scalar_type == dae::ScalarType::Enumeration {
-        return construction
-            .expressions(|expressions| expressions.at(provenance).enumeration_literal(1));
-    }
     let literal = match scalar_type {
         dae::ScalarType::Real => dae::DaeLiteral::Real(0.0),
         dae::ScalarType::Integer => dae::DaeLiteral::Integer(0),
-        dae::ScalarType::Enumeration => unreachable!("enumeration default handled above"),
+        dae::ScalarType::Enumeration => {
+            return construction
+                .expressions(|expressions| expressions.at(provenance).enumeration_literal(1));
+        }
         dae::ScalarType::Boolean => dae::DaeLiteral::Boolean(false),
         dae::ScalarType::String => dae::DaeLiteral::String(String::new()),
         dae::ScalarType::Record => {

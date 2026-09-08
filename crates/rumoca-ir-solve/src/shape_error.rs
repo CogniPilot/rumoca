@@ -16,12 +16,25 @@ impl std::fmt::Display for AffineTensorNodeKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivativeOutputCoverageKind {
+    NonInjective,
+    Overlap,
+    Hole,
+}
+
+impl std::fmt::Display for DerivativeOutputCoverageKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonInjective => f.write_str("non-injective native output map"),
+            Self::Overlap => f.write_str("overlapping output ownership"),
+            Self::Hole => f.write_str("unowned output hole"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveProblemShapeContractError {
-    SchemaVersion {
-        actual: u16,
-        expected: u16,
-    },
     Layout(VarLayoutShapeContractError),
     ScalarProgramSpanMismatch {
         context: String,
@@ -68,6 +81,27 @@ pub enum SolveProblemShapeContractError {
         actual: usize,
         span: Option<Span>,
     },
+    /// The solver-column role inventories do not partition the solver name
+    /// inventory exactly.
+    SolveLayoutPartition {
+        context: &'static str,
+        expected: usize,
+        actual: Option<usize>,
+    },
+    /// A dense-prefix inventory claims more scalars than its backing storage
+    /// column holds.
+    SolveLayoutPrefix {
+        context: &'static str,
+        bound: usize,
+        actual: usize,
+    },
+    /// A typed storage run does not form the canonical dense role segment
+    /// promised by the Solve layout.
+    SolveLayoutStoragePartition {
+        context: &'static str,
+        variable: usize,
+        detail: &'static str,
+    },
     DiscreteCertificate {
         context: &'static str,
         row: usize,
@@ -96,6 +130,11 @@ pub enum SolveProblemShapeContractError {
         span: Option<Span>,
     },
     ContinuousRefreshOwner {
+        detail: String,
+    },
+    /// The initialization aggregate's row roles, row targets, projection
+    /// blocks, and unknown inventory do not correlate exactly.
+    InitializationCorrelation {
         detail: String,
     },
     ZeroTensorDimension {
@@ -176,6 +215,13 @@ pub enum SolveProblemShapeContractError {
         node_index: usize,
         span: Option<Span>,
     },
+    DerivativeOutputCoverage {
+        context: &'static str,
+        node_index: usize,
+        kind: DerivativeOutputCoverageKind,
+        index: usize,
+        span: Option<Span>,
+    },
     SolverIndexOutOfBounds {
         context: &'static str,
         index: usize,
@@ -188,6 +234,11 @@ pub enum SolveProblemShapeContractError {
         storage: &'static str,
         index: usize,
         extent: usize,
+        span: Option<Span>,
+    },
+    /// A primal Solve owner contains an AD seed load despite owning no seed ABI.
+    SeedAccessForbidden {
+        context: &'static str,
         span: Option<Span>,
     },
     DuplicateIndex {
@@ -223,7 +274,6 @@ pub enum SolveProblemShapeContractError {
 impl SolveProblemShapeContractError {
     pub fn source_span(&self) -> Option<Span> {
         match self {
-            Self::SchemaVersion { .. } => None,
             Self::Layout(err) => err.source_span(),
             Self::ScalarProgramSpanMismatch { span, .. }
             | Self::ScalarProgramOutputIndexMismatch { span, .. }
@@ -237,15 +287,20 @@ impl SolveProblemShapeContractError {
             | Self::EventTransactionProgram { span, .. }
             | Self::PureCallSiteMismatch { span, .. }
             | Self::OutputIndexOverflow { span, .. }
+            | Self::DerivativeOutputCoverage { span, .. }
             | Self::SolverIndexOutOfBounds { span, .. }
             | Self::VariableIndexOutOfBounds { span, .. }
+            | Self::SeedAccessForbidden { span, .. }
             | Self::DuplicateIndex { span, .. }
             | Self::ProjectionBlockShapeMismatch { span, .. }
             | Self::DuplicateProjectionUnknown { span, .. }
             | Self::InvalidProjectionUnknown { span, .. }
             | Self::InvalidScheduledRootTiming { span, .. } => *span,
-            Self::ContinuousRefreshOwner { .. } => None,
+            Self::ContinuousRefreshOwner { .. } | Self::InitializationCorrelation { .. } => None,
             Self::ScalarProgramMissingProvenance { .. } => None,
+            Self::SolveLayoutPartition { .. }
+            | Self::SolveLayoutPrefix { .. }
+            | Self::SolveLayoutStoragePartition { .. } => None,
             Self::ZeroTensorDimension { span, .. }
             | Self::StructuredIndexDomain { span, .. }
             | Self::TensorOutputMapDimension { span, .. }
@@ -262,14 +317,53 @@ impl SolveProblemShapeContractError {
 impl std::fmt::Display for SolveProblemShapeContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SchemaVersion { actual, expected } => write!(
-                f,
-                "Solve schema version {actual} does not match expected {expected}"
-            ),
             Self::Layout(err) => write!(f, "Solve layout shape contract failed: {err}"),
             Self::ContinuousRefreshOwner { detail } => {
                 write!(f, "continuous refresh owner is invalid: {detail}")
             }
+            Self::InitializationCorrelation { detail } => {
+                write!(f, "initialization system correlation failed: {detail}")
+            }
+            Self::SolveLayoutPartition {
+                context,
+                expected,
+                actual,
+            } => match actual {
+                Some(actual) => write!(
+                    f,
+                    "Solve layout role partition `{context}` covers {actual} scalars; the solver inventory holds {expected}"
+                ),
+                None => write!(
+                    f,
+                    "Solve layout role partition `{context}` overflows the host index range; the solver inventory holds {expected}"
+                ),
+            },
+            Self::SolveLayoutPrefix {
+                context,
+                bound,
+                actual,
+            } => write!(
+                f,
+                "Solve layout prefix `{context}` claims {actual} scalars; its backing storage holds {bound}"
+            ),
+            Self::SolveLayoutStoragePartition {
+                context,
+                variable,
+                detail,
+            } => write!(
+                f,
+                "Solve layout {context} storage row {variable} is invalid: {detail}"
+            ),
+            Self::DerivativeOutputCoverage {
+                context,
+                node_index,
+                kind,
+                index,
+                ..
+            } => write!(
+                f,
+                "{context} node {node_index} has {kind} at derivative output index {index}"
+            ),
             error @ (Self::ZeroTensorDimension { .. }
             | Self::StructuredIndexDomain { .. }
             | Self::TensorOutputMapDimension { .. }
@@ -575,6 +669,9 @@ fn fmt_index_shape_contract_error(
             "{context} loads {storage}[{index}], but the variable layout owns \
              {extent} {storage} scalars"
         ),
+        Error::SeedAccessForbidden { context, .. } => {
+            write!(f, "{context} contains a seed load but owns no seed domain")
+        }
         Error::DuplicateIndex { context, index, .. } => {
             write!(f, "{context} contains duplicate index {index}")
         }

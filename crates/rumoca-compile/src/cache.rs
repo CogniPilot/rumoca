@@ -327,7 +327,7 @@ pub fn prune_cache_with_options(
     }
 
     if !dry_run && root.exists() {
-        let _ = remove_empty_cache_dirs(&root, &root);
+        let _empty_directory_cleanup = remove_empty_cache_dirs(&root, &root);
     }
 
     let after = if dry_run {
@@ -401,7 +401,7 @@ fn remove_projected_cache_entry(
     *removed_files += 1;
     *removed_bytes = removed_bytes.saturating_add(entry.bytes);
     if !dry_run {
-        let _ = remove_cache_file_and_metadata(&entry.path);
+        let _cache_entry_cleanup = remove_cache_file_and_metadata(&entry.path);
     }
 }
 
@@ -432,7 +432,7 @@ struct CachePruneLock {
 impl Drop for CachePruneLock {
     fn drop(&mut self) {
         if lock_file_matches_token(&self.path, &self.token) {
-            let _ = fs::remove_file(&self.path);
+            let _lock_cleanup = fs::remove_file(&self.path);
         }
     }
 }
@@ -476,7 +476,7 @@ fn remove_stale_cache_prune_lock(path: &Path) {
         .is_some_and(|current_age| current_age > CACHE_PRUNE_LOCK_STALE_AFTER)
         && lock_file_matches_token(path, observed.trim_end())
     {
-        let _ = fs::remove_file(path);
+        let _stale_lock_cleanup = fs::remove_file(path);
     }
 }
 
@@ -643,7 +643,7 @@ fn is_cache_access_metadata_file(path: &Path) -> bool {
 
 fn remove_cache_file_and_metadata(path: &Path) -> std::io::Result<()> {
     let remove_result = fs::remove_file(path);
-    let _ = fs::remove_file(cache_access_metadata_path(path));
+    let _metadata_cleanup = fs::remove_file(cache_access_metadata_path(path));
     remove_result
 }
 
@@ -667,7 +667,7 @@ fn remove_empty_cache_dirs(root: &Path, path: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(path)? {
         let child = entry?.path();
         if child.is_dir() {
-            let _ = remove_empty_cache_dirs(root, &child);
+            let _child_cleanup = remove_empty_cache_dirs(root, &child);
         }
     }
     if path != root && fs::read_dir(path)?.next().is_none() {

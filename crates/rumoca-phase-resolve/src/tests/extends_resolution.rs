@@ -19,7 +19,7 @@ end Derived;
     let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
-    let tree = result.unwrap().into_inner();
+    let tree = result.unwrap().inner().clone();
 
     // Verify base class exists and has a DefId
     let base = tree
@@ -66,7 +66,7 @@ end Derived;
     let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
-    let tree = result.unwrap().into_inner();
+    let tree = result.unwrap().inner().clone();
 
     // Get the base class's DefId
     let pkg = tree
@@ -166,7 +166,7 @@ end Derived;
     let result = resolve_parsed_tree_source(source);
     assert!(result.is_ok(), "resolution should succeed");
 
-    let tree = result.unwrap().into_inner();
+    let tree = result.unwrap().inner().clone();
     let derived = tree
         .definitions
         .classes
@@ -265,7 +265,7 @@ parameter Mode mode = Mode.Fast;
 replaceable function g = f(mode = mode);
 end Holder;
 "#;
-    let tree = resolve_tree_source(source).into_inner();
+    let tree = resolve_tree_source(source).inner().clone();
 
     let holder = tree
         .definitions
@@ -288,8 +288,11 @@ end Holder;
         1,
         "g should desugar to one extends"
     );
-    let ast::Expression::Modification { target, value, .. } =
-        &short_def.extends[0].modifications[0].expr
+    let ast::Expression::Modification {
+        target,
+        value: Some(value),
+        ..
+    } = &short_def.extends[0].modifications[0].expr
     else {
         panic!("modifier should be a simple value modification");
     };

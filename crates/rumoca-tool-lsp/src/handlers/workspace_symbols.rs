@@ -88,7 +88,7 @@ fn match_symbol_kind(kind: &WorkspaceSymbolKind) -> SymbolKind {
 
 #[expect(
     deprecated,
-    reason = "lsp-types still requires deprecated field; remove once lsp-types drops it"
+    reason = "current upstream lsp-types 0.97.0 still requires this LSP wire field; remove once upstream drops it (verified 2026-08-30)"
 )]
 fn new_symbol_information(
     name: String,

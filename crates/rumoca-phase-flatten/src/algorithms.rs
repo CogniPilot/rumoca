@@ -659,7 +659,12 @@ mod tests {
                     text: std::sync::Arc::from("i"),
                     ..Default::default()
                 },
-                range: ast::Expression::Empty { span: test_span() },
+                range: ast::Expression::Range {
+                    start: Arc::new(int_expr(1)),
+                    step: None,
+                    end: Arc::new(int_expr(10)),
+                    span: test_span(),
+                },
             }],
             equations: vec![ast::Statement::Assignment {
                 comp: make_comp_ref(&["y"]),

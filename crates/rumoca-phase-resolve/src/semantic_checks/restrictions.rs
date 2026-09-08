@@ -33,7 +33,6 @@ pub(super) const ER107_ENUM_CONVERSION_RANGE: &str = "ER107";
 pub(super) const ER108_WHEN_TARGET_IN_SUBCOMPONENT: &str = "ER108";
 pub(super) const ER110_OPERATOR_FUNCTION_DEFAULTS: &str = "ER110";
 pub(super) const ER111_ASSIGN_TO_CLASS_INSTANCE: &str = "ER111";
-pub(super) const ER112_AMBIGUOUS_UNQUALIFIED_IMPORT: &str = "ER112";
 pub(super) const ER113_CONNECT_PROTECTED_CONNECTOR: &str = "ER113";
 pub(super) const ER114_EVENT_IN_WHILE: &str = "ER114";
 pub(super) const ER115_EVENT_FOR_INDEX_EVALUABLE: &str = "ER115";
@@ -153,7 +152,6 @@ fn check_class_restrictions(
         check_enum_conversion_ranges(class, def, diags);
         check_event_generating_iterators(class, def, diags);
     }
-    check_ambiguous_unqualified_imports(class, def, diags);
     check_annotation_advisories(class, def, diags);
     check_ambiguous_operator_overloads(class, diags);
     check_evaluate_annotations(class, diags);
@@ -1118,11 +1116,11 @@ impl AstScalarContext for ResolveAttributeContext<'_> {
 
 fn evaluate_annotation_expression(component: &ast::Component) -> Option<&Expression> {
     component.annotation.iter().find_map(|entry| match entry {
-        Expression::Modification { target, value, .. }
-            if reference_is_single_name(target, "Evaluate") =>
-        {
-            Some(value.as_ref())
-        }
+        Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } if reference_is_single_name(target, "Evaluate") => Some(value.as_ref()),
         Expression::NamedArgument { name, value, .. } if name.text.as_ref() == "Evaluate" => {
             Some(value.as_ref())
         }

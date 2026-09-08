@@ -7,7 +7,7 @@
 //! the eFMI checksum web is defined over written bytes, never re-serialized
 //! documents.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -273,6 +273,111 @@ pub(super) fn sole_attribute_value(xml_path: &Path, name: &str) -> String {
         xml_path.display()
     );
     values.into_iter().next().expect("length checked")
+}
+
+/// Attribute maps for every element with the exact local name.
+pub(super) fn element_attribute_maps(
+    xml_path: &Path,
+    element_name: &str,
+) -> Vec<BTreeMap<String, String>> {
+    let bytes = fs::read(xml_path).expect("read XML file");
+    element_attribute_maps_bytes(&bytes, element_name)
+}
+
+/// Attribute maps for every element with the exact local name in immutable
+/// XML bytes. This is the archive-member counterpart of
+/// [`element_attribute_maps`]: callers can verify the checksum web inside a
+/// zip without trusting or reserializing an extracted document.
+pub(super) fn element_attribute_maps_bytes(
+    bytes: &[u8],
+    element_name: &str,
+) -> Vec<BTreeMap<String, String>> {
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    let mut maps = Vec::new();
+    let mut buffer = Vec::new();
+    loop {
+        use quick_xml::events::Event;
+        match reader
+            .read_event_into(&mut buffer)
+            .expect("well-formed XML")
+        {
+            Event::Eof => break,
+            Event::Start(element) | Event::Empty(element)
+                if element.name().as_ref() == element_name.as_bytes() =>
+            {
+                maps.push(all_attributes(&element));
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    maps
+}
+
+/// The attributes of the sole element with the exact local name.
+pub(super) fn sole_element_attributes(
+    xml_path: &Path,
+    element_name: &str,
+) -> BTreeMap<String, String> {
+    let mut maps = element_attribute_maps(xml_path, element_name);
+    assert_eq!(
+        maps.len(),
+        1,
+        "expected one `{element_name}` in {}",
+        xml_path.display()
+    );
+    maps.pop().expect("length checked")
+}
+
+/// `id` values of every element nested in one wrapper.
+pub(super) fn ids_inside_wrapper(xml_path: &Path, wrapper: &str) -> Vec<String> {
+    let bytes = fs::read(xml_path).expect("read XML file");
+    let mut reader = quick_xml::Reader::from_reader(bytes.as_slice());
+    let mut ids = Vec::new();
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    loop {
+        use quick_xml::events::Event;
+        match reader
+            .read_event_into(&mut buffer)
+            .expect("well-formed XML")
+        {
+            Event::Eof => break,
+            Event::Start(element) if element.name().as_ref() == wrapper.as_bytes() => depth += 1,
+            Event::Start(element) | Event::Empty(element) if depth > 0 => {
+                ids.extend(all_attributes(&element).remove("id"));
+            }
+            Event::End(element) if element.name().as_ref() == wrapper.as_bytes() => {
+                depth = depth.checked_sub(1).expect("well-nested wrapper")
+            }
+            _ => {}
+        }
+        buffer.clear();
+    }
+    ids
+}
+
+/// Root-element manifest identity.
+pub(super) fn root_id(xml_path: &Path) -> String {
+    attribute_values(xml_path, "id")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no root id in {}", xml_path.display()))
+}
+
+fn all_attributes(element: &quick_xml::events::BytesStart<'_>) -> BTreeMap<String, String> {
+    element
+        .attributes()
+        .map(|attribute| attribute.expect("well-formed attribute"))
+        .map(|attribute| {
+            let key = String::from_utf8(attribute.key.as_ref().to_vec()).expect("UTF-8 key");
+            let value = attribute
+                .unescape_value()
+                .expect("unescapable attribute")
+                .into_owned();
+            (key, value)
+        })
+        .collect()
 }
 
 /// Replace every brace-wrapped UUID with `{UUID}` — the documented

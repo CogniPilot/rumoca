@@ -39,7 +39,7 @@ impl EnumLiteralIdentity {
     }
 
     /// Enumeration type path; empty when the literal carried no type prefix.
-    fn type_name(&self) -> &str {
+    pub(crate) fn type_name(&self) -> &str {
         self.type_path.as_str()
     }
 
@@ -118,7 +118,7 @@ impl EnumCanonicalizer {
             }
         }
 
-        EnumLiteralIdentity::from_segments(&segments)
+        None
     }
 }
 

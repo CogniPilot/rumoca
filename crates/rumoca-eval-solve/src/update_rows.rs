@@ -78,7 +78,12 @@ pub fn apply_scalar_slot_value(
     match target {
         ScalarSlot::Y { index, .. } => update_indexed_slot("y", y, index, value, tol),
         ScalarSlot::P { index, .. } => update_indexed_slot("p", p, index, value, tol),
-        ScalarSlot::Time | ScalarSlot::Constant(_) => Ok(false),
+        // Construction refuses unwritable targets; a decoded or hand-built
+        // product that carries one is refused here rather than silently
+        // skipped, so the construction gap stays observable.
+        ScalarSlot::Time | ScalarSlot::Constant(_) => {
+            Err(EvalSolveError::UnwritableUpdateTarget { target })
+        }
     }
 }
 
@@ -115,7 +120,12 @@ pub fn apply_scalar_slot_value_exact(
     match target {
         ScalarSlot::Y { index, .. } => update_indexed_slot_exact("y", y, index, value),
         ScalarSlot::P { index, .. } => update_indexed_slot_exact("p", p, index, value),
-        ScalarSlot::Time | ScalarSlot::Constant(_) => Ok(false),
+        // Construction refuses unwritable targets; a decoded or hand-built
+        // product that carries one is refused here rather than silently
+        // skipped, so the construction gap stays observable.
+        ScalarSlot::Time | ScalarSlot::Constant(_) => {
+            Err(EvalSolveError::UnwritableUpdateTarget { target })
+        }
     }
 }
 

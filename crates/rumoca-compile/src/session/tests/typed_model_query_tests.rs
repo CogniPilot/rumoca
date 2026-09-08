@@ -38,10 +38,10 @@ fn typed_model_query_cache_is_reused_by_compile_and_diagnostics() {
         .artifacts
         .get(&cache_key)
         .expect("typed query should be cached")
-        .outcome
+        .record
         .clone()
     {
-        TypedModelOutcome::TypecheckError(diags) => {
+        TypedModelRecord::TypecheckError(diags) => {
             assert!(
                 diags
                     .iter()
@@ -59,7 +59,7 @@ fn typed_model_query_cache_is_reused_by_compile_and_diagnostics() {
         .artifacts
         .get_mut(&cache_key)
         .expect("typed query should be cached")
-        .outcome = TypedModelOutcome::TypecheckError(vec![CommonDiagnostic::error(
+        .record = TypedModelRecord::TypecheckError(vec![CommonDiagnostic::error(
         "TTEST",
         "typed cache sentinel",
         PrimaryLabel::new(Span::DUMMY).with_message("cache sentinel"),

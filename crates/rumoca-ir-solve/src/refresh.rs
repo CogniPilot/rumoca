@@ -9,6 +9,7 @@ mod dependency;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::ops::Index;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -24,7 +25,7 @@ use dependency::{assignment_y_dependencies_for_shapes, shape_value_registers};
 
 use crate::{
     AlgebraicProjectionPlan, BinaryOp, ComputeBlock, ComputeNode, LinearOp, ScalarProgramBlock,
-    TargetAssignmentShape, UnaryOp,
+    StructuralPattern, TargetAssignmentShape, UnaryOp, deserialize_required_option,
 };
 
 /// Exact canonical scalar program inside one tensor-aware [`crate::ComputeBlock`].
@@ -58,9 +59,13 @@ impl RefreshScalarProgramSource {
 }
 
 /// Construction-issued identity of one canonical implicit row/output owner.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize,
-)]
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RefreshRowOwnerId;
+///
+/// let _ = RefreshRowOwnerId::default();
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct RefreshRowOwnerId(u32);
 
@@ -74,11 +79,23 @@ impl RefreshRowOwnerId {
 ///
 /// The selection stores only canonical catalog positions. It never clones row
 /// metadata and cannot name a row owned by another plan after checked replay.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RefreshRowSelection;
+///
+/// let _ = RefreshRowSelection::default();
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct RefreshRowSelection(Box<[u32]>);
 
 impl RefreshRowSelection {
+    /// Intentional selection containing no canonical rows.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(Box::new([]))
+    }
+
     pub fn checked(
         row_count: usize,
         indices: impl IntoIterator<Item = usize>,
@@ -151,10 +168,9 @@ impl<'a> RefreshRows<'a> {
     pub fn iter(
         self,
     ) -> impl ExactSizeIterator<Item = &'a AlgebraicRefreshRow> + DoubleEndedIterator {
-        self.indices.iter().map(|index| {
-            &self.catalog
-                [usize::try_from(*index).expect("checked continuous refresh row index fits usize")]
-        })
+        self.indices
+            .iter()
+            .map(|index| &self.catalog[*index as usize])
     }
 }
 
@@ -162,29 +178,25 @@ impl Index<usize> for RefreshRows<'_> {
     type Output = AlgebraicRefreshRow;
 
     fn index(&self, position: usize) -> &Self::Output {
-        self.get(position)
-            .expect("checked continuous refresh selection index is in bounds")
+        &self.catalog[self.indices[position] as usize]
     }
 }
 
 /// Opaque construction-issued identity of one exact ordered row selection.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RefreshSequenceId(u64);
-
-impl RefreshSequenceId {
-    fn issued(owner: usize, sequence: usize) -> Result<Self, ContinuousRefreshConstructionError> {
-        let owner = u32::try_from(owner).map_err(|_| ContinuousRefreshConstructionError {
-            reason: "continuous refresh owner count exceeds u32".to_string(),
-        })?;
-        let sequence = u32::try_from(sequence)
-            .ok()
-            .and_then(|sequence| sequence.checked_add(1))
-            .ok_or_else(|| ContinuousRefreshConstructionError {
-                reason: "continuous refresh sequence count exceeds u32".to_string(),
-            })?;
-        Ok(Self((u64::from(owner) << 32) | u64::from(sequence)))
-    }
-}
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RefreshSequenceId;
+///
+/// let _ = RefreshSequenceId::default();
+/// ```
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RefreshSequenceId;
+///
+/// let _ = RefreshSequenceId(1);
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefreshSequenceId(NonZeroU64);
 
 /// One exact scalar projection of a canonical continuous output owner.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -212,7 +224,7 @@ pub struct AlgebraicRefreshRowDraft {
     pub exact_assignment_certified: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AlgebraicRefreshRowWire {
     owner_id: RefreshRowOwnerId,
@@ -220,7 +232,9 @@ struct AlgebraicRefreshRowWire {
     equation_index: usize,
     output_offset: usize,
     target_index: usize,
+    #[serde(deserialize_with = "deserialize_required_option")]
     assignment_target: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
     assignment_shape: Option<TargetAssignmentShape>,
     direct_assignment_certified: bool,
     exact_assignment_certified: bool,
@@ -239,6 +253,7 @@ pub struct ExactRefreshAssignmentProgram {
     target_indices: Box<[usize]>,
     assignment_shapes: Box<[TargetAssignmentShape]>,
     assignment_y_dependencies: Box<[Box<[usize]>]>,
+    final_program: ScalarProgramBlock,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -293,15 +308,10 @@ impl ExactRefreshAssignmentProgram {
             .map(Box::as_ref)
     }
 
-    /// Materialize the scalar execution view at a final backend boundary.
-    ///
-    /// The checked owner stores only canonical source identity and isolator
-    /// shapes. It never retains an expanded assignment operation graph.
-    pub fn final_scalar_program(
-        &self,
-        source: &ComputeBlock,
-    ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
-        materialize_exact_assignment_program(source, self)
+    /// Exact final scalar program issued with this owner at construction.
+    #[must_use]
+    pub const fn final_program(&self) -> &ScalarProgramBlock {
+        &self.final_program
     }
 }
 
@@ -309,24 +319,14 @@ impl ExactRefreshAssignmentProgram {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub enum RefreshStage {
     CausalSeedSweep {
-        #[serde(skip)]
-        static_sequence: RefreshSequenceId,
-        #[serde(skip)]
-        dynamic_sequence: RefreshSequenceId,
         static_rows: RefreshRowSelection,
         dynamic_rows: RefreshRowSelection,
     },
     ExactAssignments {
-        #[serde(skip)]
-        static_sequence: RefreshSequenceId,
-        #[serde(skip)]
-        dynamic_sequence: RefreshSequenceId,
         static_rows: RefreshRowSelection,
         dynamic_rows: RefreshRowSelection,
     },
     ProjectionBlock {
-        #[serde(skip)]
-        seed_sequence: RefreshSequenceId,
         block_index: usize,
         plan: AlgebraicProjectionPlan,
         seed_rows: RefreshRowSelection,
@@ -334,12 +334,18 @@ pub enum RefreshStage {
 }
 
 /// Exact compiler-issued continuous refresh schedule.
-#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+///
+/// Intentional absence is named [`RefreshPlan::empty`]; generic construction
+/// cannot silently mint an executable-looking draft:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::RefreshPlan;
+///
+/// let _ = RefreshPlan::default();
+/// ```
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RefreshPlan {
-    #[serde(skip)]
-    pub static_causal_sequence: RefreshSequenceId,
-    #[serde(skip)]
-    pub dynamic_causal_sequence: RefreshSequenceId,
     pub simultaneous_plan: AlgebraicProjectionPlan,
     pub simultaneous_block_indices: Vec<usize>,
     pub value_projection_plan: AlgebraicProjectionPlan,
@@ -348,47 +354,204 @@ pub struct RefreshPlan {
     pub static_causal_seed_rows: RefreshRowSelection,
     pub dynamic_causal_seed_rows: RefreshRowSelection,
     pub value_stages: Vec<RefreshStage>,
-    pub causal_solution_certified: bool,
 }
 
 impl RefreshPlan {
-    /// Whether value refresh still needs a simultaneous residual projection.
-    ///
-    /// Exact-assignment and causal-seed stages are executable schedules, not
-    /// residual systems. A final backend needs a nonlinear/algebraic solver
-    /// only when construction retained an explicit projection stage.
-    fn requires_projection(&self) -> bool {
-        self.value_stages
-            .iter()
-            .any(|stage| matches!(stage, RefreshStage::ProjectionBlock { .. }))
+    /// Intentional semantic draft with no refresh work.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            simultaneous_plan: AlgebraicProjectionPlan { blocks: Vec::new() },
+            simultaneous_block_indices: Vec::new(),
+            value_projection_plan: AlgebraicProjectionPlan { blocks: Vec::new() },
+            rows: Vec::new(),
+            causal_seed_rows: RefreshRowSelection::empty(),
+            static_causal_seed_rows: RefreshRowSelection::empty(),
+            dynamic_causal_seed_rows: RefreshRowSelection::empty(),
+            value_stages: Vec::new(),
+        }
     }
+}
+
+/// Construction-issued stage whose execution identities cannot be supplied by
+/// a semantic refresh-plan producer or by wire replay.
+#[derive(Clone, Debug, PartialEq)]
+pub enum IssuedRefreshStage {
+    CausalSeedSweep {
+        static_sequence: RefreshSequenceId,
+        dynamic_sequence: RefreshSequenceId,
+        static_rows: RefreshRowSelection,
+        dynamic_rows: RefreshRowSelection,
+    },
+    ExactAssignments {
+        static_sequence: RefreshSequenceId,
+        dynamic_sequence: RefreshSequenceId,
+        static_rows: RefreshRowSelection,
+        dynamic_rows: RefreshRowSelection,
+    },
+    ProjectionBlock {
+        seed_sequence: RefreshSequenceId,
+        block_index: usize,
+        plan: AlgebraicProjectionPlan,
+        seed_rows: RefreshRowSelection,
+    },
+}
+
+/// Opaque executable refresh plan issued from one semantic [`RefreshPlan`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct IssuedRefreshPlan {
+    plan: PendingRefreshPlan,
+    causal_solution_certified: bool,
+}
+
+/// Fully validated plan with construction-owned sequence identities, retained
+/// only inside the sole issuer until its causal certificate has been derived.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingRefreshPlan {
+    static_causal_sequence: RefreshSequenceId,
+    dynamic_causal_sequence: RefreshSequenceId,
+    simultaneous_plan: AlgebraicProjectionPlan,
+    simultaneous_block_indices: Vec<usize>,
+    value_projection_plan: AlgebraicProjectionPlan,
+    rows: Vec<AlgebraicRefreshRow>,
+    causal_seed_rows: RefreshRowSelection,
+    static_causal_seed_rows: RefreshRowSelection,
+    dynamic_causal_seed_rows: RefreshRowSelection,
+    value_stages: Vec<IssuedRefreshStage>,
 }
 
 /// Construction-issued proof that `remainder` is the exact ordered portion of
 /// a required refresh not settled by another owner at the same coordinate.
 #[derive(Clone, Debug)]
 pub struct RefreshRemainderRelation {
-    remainder: RefreshPlan,
+    remainder: IssuedRefreshPlan,
 }
 
 /// Complete construction-issued continuous refresh inventory for one model.
-#[derive(Clone, Debug, Default, Serialize)]
+///
+/// Generic construction cannot issue the required canonical-row and ordered
+/// remainder relations:
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::ContinuousRefreshOwners;
+///
+/// let _ = ContinuousRefreshOwners::default();
+/// ```
+#[derive(Clone, Debug)]
 pub struct ContinuousRefreshOwners {
-    algebraic: RefreshPlan,
-    derivative: RefreshPlan,
-    root: RefreshPlan,
-    event: RefreshPlan,
-    clock_events: Vec<RefreshPlan>,
-    #[serde(skip)]
+    algebraic: IssuedRefreshPlan,
+    derivative: IssuedRefreshPlan,
+    root: IssuedRefreshPlan,
+    event: IssuedRefreshPlan,
+    clock_events: Vec<IssuedRefreshPlan>,
+    static_parameter_indices: Box<[usize]>,
     exact_assignment_programs: Vec<ExactRefreshAssignmentProgram>,
-    #[serde(skip)]
     exact_assignment_schedules: Vec<ExactRefreshAssignmentSchedule>,
-    #[serde(skip)]
-    root_after_derivative: Option<RefreshRemainderRelation>,
-    #[serde(skip)]
-    algebraic_after_derivative: Option<RefreshRemainderRelation>,
-    #[serde(skip)]
+    root_after_derivative: RefreshRemainderRelation,
+    algebraic_after_derivative: RefreshRemainderRelation,
     clock_events_after_event: Vec<RefreshRemainderRelation>,
+}
+
+#[derive(Serialize)]
+enum RefreshStageWireRef<'a> {
+    CausalSeedSweep {
+        static_rows: &'a RefreshRowSelection,
+        dynamic_rows: &'a RefreshRowSelection,
+    },
+    ExactAssignments {
+        static_rows: &'a RefreshRowSelection,
+        dynamic_rows: &'a RefreshRowSelection,
+    },
+    ProjectionBlock {
+        block_index: usize,
+        plan: &'a AlgebraicProjectionPlan,
+        seed_rows: &'a RefreshRowSelection,
+    },
+}
+
+#[derive(Serialize)]
+struct RefreshPlanWireRef<'a> {
+    simultaneous_plan: &'a AlgebraicProjectionPlan,
+    simultaneous_block_indices: &'a [usize],
+    value_projection_plan: &'a AlgebraicProjectionPlan,
+    rows: &'a [AlgebraicRefreshRow],
+    causal_seed_rows: &'a RefreshRowSelection,
+    static_causal_seed_rows: &'a RefreshRowSelection,
+    dynamic_causal_seed_rows: &'a RefreshRowSelection,
+    value_stages: Vec<RefreshStageWireRef<'a>>,
+}
+
+impl<'a> From<&'a IssuedRefreshPlan> for RefreshPlanWireRef<'a> {
+    fn from(plan: &'a IssuedRefreshPlan) -> Self {
+        let plan = &plan.plan;
+        let value_stages = plan
+            .value_stages
+            .iter()
+            .map(|stage| match stage {
+                IssuedRefreshStage::CausalSeedSweep {
+                    static_rows,
+                    dynamic_rows,
+                    ..
+                } => RefreshStageWireRef::CausalSeedSweep {
+                    static_rows,
+                    dynamic_rows,
+                },
+                IssuedRefreshStage::ExactAssignments {
+                    static_rows,
+                    dynamic_rows,
+                    ..
+                } => RefreshStageWireRef::ExactAssignments {
+                    static_rows,
+                    dynamic_rows,
+                },
+                IssuedRefreshStage::ProjectionBlock {
+                    block_index,
+                    plan,
+                    seed_rows,
+                    ..
+                } => RefreshStageWireRef::ProjectionBlock {
+                    block_index: *block_index,
+                    plan,
+                    seed_rows,
+                },
+            })
+            .collect();
+        Self {
+            simultaneous_plan: &plan.simultaneous_plan,
+            simultaneous_block_indices: &plan.simultaneous_block_indices,
+            value_projection_plan: &plan.value_projection_plan,
+            rows: &plan.rows,
+            causal_seed_rows: &plan.causal_seed_rows,
+            static_causal_seed_rows: &plan.static_causal_seed_rows,
+            dynamic_causal_seed_rows: &plan.dynamic_causal_seed_rows,
+            value_stages,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ContinuousRefreshOwnersWireRef<'a> {
+    algebraic: RefreshPlanWireRef<'a>,
+    derivative: RefreshPlanWireRef<'a>,
+    root: RefreshPlanWireRef<'a>,
+    event: RefreshPlanWireRef<'a>,
+    clock_events: Vec<RefreshPlanWireRef<'a>>,
+}
+
+impl Serialize for ContinuousRefreshOwners {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        ContinuousRefreshOwnersWireRef {
+            algebraic: (&self.algebraic).into(),
+            derivative: (&self.derivative).into(),
+            root: (&self.root).into(),
+            event: (&self.event).into(),
+            clock_events: self.clock_events.iter().map(Into::into).collect(),
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -403,6 +566,94 @@ impl fmt::Display for ContinuousRefreshConstructionError {
 }
 
 impl std::error::Error for ContinuousRefreshConstructionError {}
+
+/// Sole authority for sequence identities within one refresh-plan owner.
+#[derive(Debug)]
+struct RefreshSequenceAllocator {
+    owner: u32,
+    next: u32,
+}
+
+impl RefreshSequenceAllocator {
+    fn for_owner(owner: usize) -> Result<Self, ContinuousRefreshConstructionError> {
+        Ok(Self {
+            owner: u32::try_from(owner).map_err(|_| ContinuousRefreshConstructionError {
+                reason: "continuous refresh owner count exceeds u32".to_string(),
+            })?,
+            next: 0,
+        })
+    }
+
+    fn allocate(&mut self) -> Result<RefreshSequenceId, ContinuousRefreshConstructionError> {
+        let ordinal =
+            self.next
+                .checked_add(1)
+                .ok_or_else(|| ContinuousRefreshConstructionError {
+                    reason: "continuous refresh sequence count exceeds u32".to_string(),
+                })?;
+        let encoded = (u64::from(self.owner) << 32) | u64::from(ordinal);
+        let identity =
+            NonZeroU64::new(encoded).ok_or_else(|| ContinuousRefreshConstructionError {
+                reason: "continuous refresh sequence identity is zero".to_string(),
+            })?;
+        self.next = ordinal;
+        Ok(RefreshSequenceId(identity))
+    }
+
+    fn issue_plan(
+        mut self,
+        draft: RefreshPlan,
+    ) -> Result<PendingRefreshPlan, ContinuousRefreshConstructionError> {
+        let static_causal_sequence = self.allocate()?;
+        let dynamic_causal_sequence = self.allocate()?;
+        let mut value_stages = Vec::with_capacity(draft.value_stages.len());
+        for stage in draft.value_stages {
+            let issued = match stage {
+                RefreshStage::CausalSeedSweep {
+                    static_rows,
+                    dynamic_rows,
+                } => IssuedRefreshStage::CausalSeedSweep {
+                    static_sequence: self.allocate()?,
+                    dynamic_sequence: self.allocate()?,
+                    static_rows,
+                    dynamic_rows,
+                },
+                RefreshStage::ExactAssignments {
+                    static_rows,
+                    dynamic_rows,
+                } => IssuedRefreshStage::ExactAssignments {
+                    static_sequence: self.allocate()?,
+                    dynamic_sequence: self.allocate()?,
+                    static_rows,
+                    dynamic_rows,
+                },
+                RefreshStage::ProjectionBlock {
+                    block_index,
+                    plan,
+                    seed_rows,
+                } => IssuedRefreshStage::ProjectionBlock {
+                    seed_sequence: self.allocate()?,
+                    block_index,
+                    plan,
+                    seed_rows,
+                },
+            };
+            value_stages.push(issued);
+        }
+        Ok(PendingRefreshPlan {
+            static_causal_sequence,
+            dynamic_causal_sequence,
+            simultaneous_plan: draft.simultaneous_plan,
+            simultaneous_block_indices: draft.simultaneous_block_indices,
+            value_projection_plan: draft.value_projection_plan,
+            rows: draft.rows,
+            causal_seed_rows: draft.causal_seed_rows,
+            static_causal_seed_rows: draft.static_causal_seed_rows,
+            dynamic_causal_seed_rows: draft.dynamic_causal_seed_rows,
+            value_stages,
+        })
+    }
+}
 
 impl AlgebraicRefreshRow {
     pub fn checked(
@@ -523,9 +774,9 @@ impl<'de> Deserialize<'de> for AlgebraicRefreshRow {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ContinuousRefreshOwnersWire {
+pub(crate) struct ContinuousRefreshOwnersWire {
     algebraic: RefreshPlan,
     derivative: RefreshPlan,
     root: RefreshPlan,
@@ -533,186 +784,415 @@ struct ContinuousRefreshOwnersWire {
     clock_events: Vec<RefreshPlan>,
 }
 
-impl<'de> Deserialize<'de> for ContinuousRefreshOwners {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = ContinuousRefreshOwnersWire::deserialize(deserializer)?;
-        Self::checked(
-            wire.algebraic,
-            wire.derivative,
-            wire.root,
-            wire.event,
-            wire.clock_events,
+impl ContinuousRefreshOwnersWire {
+    pub(crate) fn into_inputs(self) -> ContinuousRefreshPlanInputs {
+        ContinuousRefreshPlanInputs::new(
+            self.algebraic,
+            self.derivative,
+            self.root,
+            self.event,
+            self.clock_events,
         )
-        .map_err(serde::de::Error::custom)
     }
 }
 
-impl ContinuousRefreshOwners {
+/// Unissued continuous refresh plans consumed atomically with their exact
+/// canonical continuous programs.
+///
+/// This bundle contains no executable owner identity. Only
+/// [`ContinuousSolveSystem::construct`](crate::ContinuousSolveSystem::construct)
+/// can correlate and issue it.
+///
+/// ```compile_fail
+/// use rumoca_ir_solve::ContinuousRefreshPlanInputs;
+///
+/// let _ = ContinuousRefreshPlanInputs::default();
+/// ```
+#[derive(Clone, Debug)]
+pub struct ContinuousRefreshPlanInputs {
+    algebraic: RefreshPlan,
+    derivative: RefreshPlan,
+    root: RefreshPlan,
+    event: RefreshPlan,
+    clock_events: Vec<RefreshPlan>,
+}
+
+impl ContinuousRefreshPlanInputs {
     #[must_use]
-    pub const fn is_issued(&self) -> bool {
-        self.root_after_derivative.is_some()
-            && self.algebraic_after_derivative.is_some()
-            && self.clock_events_after_event.len() == self.clock_events.len()
-    }
-
-    fn checked(
-        mut algebraic: RefreshPlan,
-        mut derivative: RefreshPlan,
-        mut root: RefreshPlan,
-        mut event: RefreshPlan,
-        mut clock_events: Vec<RefreshPlan>,
-    ) -> Result<Self, ContinuousRefreshConstructionError> {
-        issue_refresh_sequence_ids(&mut algebraic, 0)?;
-        issue_refresh_sequence_ids(&mut derivative, 1)?;
-        issue_refresh_sequence_ids(&mut root, 2)?;
-        issue_refresh_sequence_ids(&mut event, 3)?;
-        for (clock, plan) in clock_events.iter_mut().enumerate() {
-            issue_refresh_sequence_ids(plan, clock.saturating_add(5))?;
-        }
-        validate_refresh_plan("algebraic", &algebraic)?;
-        validate_refresh_plan("derivative", &derivative)?;
-        validate_refresh_plan("root", &root)?;
-        validate_refresh_plan("event", &event)?;
-        for (clock, plan) in clock_events.iter().enumerate() {
-            validate_refresh_plan(&format!("clock event {clock}"), plan)?;
-        }
-        let mut root_after_derivative = root.issue_value_remainder_after(&derivative);
-        issue_refresh_sequence_ids(&mut root_after_derivative.remainder, 4)?;
-        let mut algebraic_after_derivative = algebraic.issue_value_remainder_after(&derivative);
-        let relation_owner_start = 5usize.checked_add(clock_events.len()).ok_or_else(|| {
-            ContinuousRefreshConstructionError {
-                reason: "continuous refresh relation owner count overflows".to_string(),
-            }
-        })?;
-        let mut clock_events_after_event = Vec::with_capacity(clock_events.len());
-        for (clock, plan) in clock_events.iter().enumerate() {
-            let mut relation = plan.issue_value_remainder_after(&event);
-            let owner = relation_owner_start.checked_add(clock).ok_or_else(|| {
-                ContinuousRefreshConstructionError {
-                    reason: "continuous refresh relation owner count overflows".to_string(),
-                }
-            })?;
-            issue_refresh_sequence_ids(&mut relation.remainder, owner)?;
-            clock_events_after_event.push(relation);
-        }
-        let algebraic_remainder_owner = relation_owner_start
-            .checked_add(clock_events.len())
-            .ok_or_else(|| ContinuousRefreshConstructionError {
-                reason: "continuous refresh relation owner count overflows".to_string(),
-            })?;
-        issue_refresh_sequence_ids(
-            &mut algebraic_after_derivative.remainder,
-            algebraic_remainder_owner,
-        )?;
-        Ok(Self {
-            algebraic,
-            derivative,
-            root,
-            event,
-            clock_events,
-            exact_assignment_programs: Vec::new(),
-            exact_assignment_schedules: Vec::new(),
-            root_after_derivative: Some(root_after_derivative),
-            algebraic_after_derivative: Some(algebraic_after_derivative),
-            clock_events_after_event,
-        })
-    }
-
-    pub fn checked_for_source(
-        implicit_rhs: &ComputeBlock,
+    pub fn new(
         algebraic: RefreshPlan,
         derivative: RefreshPlan,
         root: RefreshPlan,
         event: RefreshPlan,
         clock_events: Vec<RefreshPlan>,
-    ) -> Result<Self, ContinuousRefreshConstructionError> {
-        let mut owners = Self::checked(algebraic, derivative, root, event, clock_events)?;
-        owners.validate_sources_against(implicit_rhs)?;
-        owners.rebuild_exact_assignment_programs(implicit_rhs)?;
-        owners.validate_against(implicit_rhs)?;
-        Ok(owners)
+    ) -> Self {
+        Self {
+            algebraic,
+            derivative,
+            root,
+            event,
+            clock_events,
+        }
     }
 
-    fn validate_sources_against(
-        &self,
+    /// Explicit absence of continuous refresh work for checked fixtures and
+    /// genuinely empty continuous systems.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::new(
+            RefreshPlan::empty(),
+            RefreshPlan::empty(),
+            RefreshPlan::empty(),
+            RefreshPlan::empty(),
+            Vec::new(),
+        )
+    }
+}
+
+fn validate_canonical_row_owners<'a>(
+    plans: impl Iterator<Item = &'a RefreshPlan>,
+) -> Result<(), ContinuousRefreshConstructionError> {
+    let mut rows = BTreeMap::new();
+    for row in plans.flat_map(|plan| plan.rows.iter()) {
+        if let Some(existing) = rows.insert(row.owner_id, row)
+            && existing != row
+        {
+            return refresh_error(
+                "continuous refresh plans disagree on a canonical row owner".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_row_assignment_program(
+    row: &AlgebraicRefreshRow,
+    programs: &[ExactRefreshAssignmentProgram],
+) -> Result<(), ContinuousRefreshConstructionError> {
+    let program = programs
+        .iter()
+        .find(|program| program.row_owners.contains(&row.owner_id));
+    if !row.exact_assignment_certified {
+        if program.is_some() {
+            return refresh_error(
+                "non-exact continuous refresh row owns an exact assignment program".to_string(),
+            );
+        }
+        return Ok(());
+    }
+    let Some(program) = program else {
+        return refresh_error(
+            "exact continuous refresh row has no constructed assignment program".to_string(),
+        );
+    };
+    let Some(position) = program
+        .row_owners
+        .iter()
+        .position(|owner| *owner == row.owner_id)
+    else {
+        return refresh_error("exact continuous refresh program lost its row owner".to_string());
+    };
+    if program.source != row.source
+        || program.target_indices.get(position) != Some(&row.target_index)
+    {
+        return refresh_error(
+            "exact continuous refresh program does not replay its row owner".to_string(),
+        );
+    }
+    Ok(())
+}
+
+struct ContinuousRefreshDrafts {
+    algebraic: RefreshPlan,
+    derivative: RefreshPlan,
+    root: RefreshPlan,
+    event: RefreshPlan,
+    clock_events: Vec<RefreshPlan>,
+}
+
+struct PreparedContinuousRefreshDrafts {
+    drafts: ContinuousRefreshDrafts,
+    static_parameter_indices: Box<[usize]>,
+}
+
+impl ContinuousRefreshDrafts {
+    fn prepare(
+        mut self,
         implicit_rhs: &ComputeBlock,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
+        implicit_row_targets: &[Option<crate::ScalarSlot>],
+        algebraic_projection_plan: &crate::AlgebraicProjectionPlan,
+        solve_layout: &crate::SolveLayout,
+    ) -> Result<PreparedContinuousRefreshDrafts, ContinuousRefreshConstructionError> {
         for (label, plan) in [
             ("algebraic", &self.algebraic),
             ("derivative", &self.derivative),
             ("root", &self.root),
             ("event", &self.event),
         ] {
-            validate_refresh_sources(label, plan, implicit_rhs)?;
+            validate_refresh_plan(label, plan)?;
+            validate_refresh_sources(
+                label,
+                plan,
+                implicit_rhs,
+                implicit_row_targets,
+                algebraic_projection_plan,
+                solve_layout,
+            )?;
         }
         for (clock, plan) in self.clock_events.iter().enumerate() {
-            validate_refresh_sources(&format!("clock event {clock}"), plan, implicit_rhs)?;
+            let label = format!("clock event {clock}");
+            validate_refresh_plan(&label, plan)?;
+            validate_refresh_sources(
+                &label,
+                plan,
+                implicit_rhs,
+                implicit_row_targets,
+                algebraic_projection_plan,
+                solve_layout,
+            )?;
         }
-        Ok(())
+        for plan in [
+            &mut self.algebraic,
+            &mut self.derivative,
+            &mut self.root,
+            &mut self.event,
+        ] {
+            derive_static_refresh_partitions(plan, implicit_rhs, solve_layout)?;
+        }
+        for plan in &mut self.clock_events {
+            derive_static_refresh_partitions(plan, implicit_rhs, solve_layout)?;
+        }
+        let plans = [&self.algebraic, &self.derivative, &self.root, &self.event]
+            .into_iter()
+            .chain(self.clock_events.iter());
+        let static_parameter_indices =
+            collect_static_refresh_parameter_indices(plans.clone(), implicit_rhs)?;
+        validate_canonical_row_owners(plans)?;
+        Ok(PreparedContinuousRefreshDrafts {
+            drafts: self,
+            static_parameter_indices,
+        })
+    }
+}
+
+#[derive(Default)]
+struct ExactAssignmentEvidence {
+    programs: Vec<ExactRefreshAssignmentProgram>,
+    schedules: Vec<ExactRefreshAssignmentSchedule>,
+    inventory: BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
+}
+
+impl ExactAssignmentEvidence {
+    fn append(
+        &mut self,
+        implicit_rhs: &ComputeBlock,
+        plan: &PendingRefreshPlan,
+    ) -> Result<(), ContinuousRefreshConstructionError> {
+        append_plan_assignment_schedules(
+            implicit_rhs,
+            &mut self.programs,
+            &mut self.schedules,
+            &mut self.inventory,
+            plan,
+        )
     }
 
-    pub(crate) fn validate_against(
-        &self,
+    fn certify(&self, plan: &PendingRefreshPlan) -> bool {
+        causal_assignment_plan_is_certified(plan, &self.programs, &self.schedules)
+    }
+}
+
+struct IssuedContinuousRefreshBase {
+    algebraic: IssuedRefreshPlan,
+    derivative: IssuedRefreshPlan,
+    root: IssuedRefreshPlan,
+    event: IssuedRefreshPlan,
+    clock_events: Vec<IssuedRefreshPlan>,
+    static_parameter_indices: Box<[usize]>,
+    evidence: ExactAssignmentEvidence,
+}
+
+impl PreparedContinuousRefreshDrafts {
+    fn issue(
+        self,
         implicit_rhs: &ComputeBlock,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        if !self.is_issued() {
-            return Ok(());
+    ) -> Result<IssuedContinuousRefreshBase, ContinuousRefreshConstructionError> {
+        let clock_count = self.drafts.clock_events.len();
+        let algebraic =
+            RefreshSequenceAllocator::for_owner(0)?.issue_plan(self.drafts.algebraic)?;
+        let derivative =
+            RefreshSequenceAllocator::for_owner(1)?.issue_plan(self.drafts.derivative)?;
+        let root = RefreshSequenceAllocator::for_owner(2)?.issue_plan(self.drafts.root)?;
+        let event = RefreshSequenceAllocator::for_owner(3)?.issue_plan(self.drafts.event)?;
+        let mut clocks = Vec::with_capacity(clock_count);
+        for (clock, plan) in self.drafts.clock_events.into_iter().enumerate() {
+            let owner = clock.checked_add(5).ok_or_else(relation_owner_overflow)?;
+            clocks.push(RefreshSequenceAllocator::for_owner(owner)?.issue_plan(plan)?);
         }
-        self.validate_sources_against(implicit_rhs)?;
+        let mut evidence = ExactAssignmentEvidence::default();
+        for plan in [&algebraic, &derivative, &root, &event]
+            .into_iter()
+            .chain(clocks.iter())
+        {
+            evidence.append(implicit_rhs, plan)?;
+        }
+        if !exact_assignment_stages_are_causal(&algebraic, &evidence.programs, &evidence.schedules)
+        {
+            return refresh_error("algebraic exact-assignment stages are non-causal".to_string());
+        }
+        let algebraic = seal_with_evidence(algebraic, &evidence);
+        let derivative = seal_with_evidence(derivative, &evidence);
+        let root = seal_with_evidence(root, &evidence);
+        let event = seal_with_evidence(event, &evidence);
+        let clock_events = clocks
+            .into_iter()
+            .map(|plan| seal_with_evidence(plan, &evidence))
+            .collect();
+        Ok(IssuedContinuousRefreshBase {
+            algebraic,
+            derivative,
+            root,
+            event,
+            clock_events,
+            static_parameter_indices: self.static_parameter_indices,
+            evidence,
+        })
+    }
+}
+
+fn seal_with_evidence(
+    plan: PendingRefreshPlan,
+    evidence: &ExactAssignmentEvidence,
+) -> IssuedRefreshPlan {
+    let certified = evidence.certify(&plan);
+    plan.seal(certified)
+}
+
+struct IssuedRefreshRemainders {
+    root_after_derivative: RefreshRemainderRelation,
+    algebraic_after_derivative: RefreshRemainderRelation,
+    clock_events_after_event: Vec<RefreshRemainderRelation>,
+}
+
+impl IssuedContinuousRefreshBase {
+    fn issue_remainders(
+        &mut self,
+        implicit_rhs: &ComputeBlock,
+    ) -> Result<IssuedRefreshRemainders, ContinuousRefreshConstructionError> {
+        let clock_count = self.clock_events.len();
+        let relation_owner_start = 5usize
+            .checked_add(clock_count)
+            .ok_or_else(relation_owner_overflow)?;
+        let root_after_derivative = RefreshSequenceAllocator::for_owner(4)?
+            .issue_plan(self.root.value_remainder_after(&self.derivative))?;
+        let mut clock_events_after_event = Vec::with_capacity(clock_count);
+        for (clock, plan) in self.clock_events.iter().enumerate() {
+            let owner = relation_owner_start
+                .checked_add(clock)
+                .ok_or_else(relation_owner_overflow)?;
+            clock_events_after_event.push(
+                RefreshSequenceAllocator::for_owner(owner)?
+                    .issue_plan(plan.value_remainder_after(&self.event))?,
+            );
+        }
+        let algebraic_owner = relation_owner_start
+            .checked_add(clock_count)
+            .ok_or_else(relation_owner_overflow)?;
+        let algebraic_after_derivative = RefreshSequenceAllocator::for_owner(algebraic_owner)?
+            .issue_plan(self.algebraic.value_remainder_after(&self.derivative))?;
+        for plan in [&root_after_derivative, &algebraic_after_derivative]
+            .into_iter()
+            .chain(clock_events_after_event.iter())
+        {
+            self.evidence.append(implicit_rhs, plan)?;
+        }
+        Ok(IssuedRefreshRemainders {
+            root_after_derivative: seal_remainder(root_after_derivative, &self.evidence),
+            algebraic_after_derivative: seal_remainder(algebraic_after_derivative, &self.evidence),
+            clock_events_after_event: clock_events_after_event
+                .into_iter()
+                .map(|plan| seal_remainder(plan, &self.evidence))
+                .collect(),
+        })
+    }
+
+    fn validate_assignment_programs(&self) -> Result<(), ContinuousRefreshConstructionError> {
         for plan in [&self.algebraic, &self.derivative, &self.root, &self.event]
             .into_iter()
             .chain(self.clock_events.iter())
         {
-            for row in &plan.rows {
-                self.validate_row_assignment_program(row)?;
+            for row in plan.rows() {
+                validate_row_assignment_program(row, &self.evidence.programs)?;
             }
         }
         Ok(())
     }
+}
 
-    /// Checks that one refresh row and the exact assignment program inventory
-    /// agree on whether the row replays as an exact assignment.
-    fn validate_row_assignment_program(
-        &self,
-        row: &AlgebraicRefreshRow,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        let program = self
-            .exact_assignment_programs
-            .iter()
-            .find(|program| program.row_owners.contains(&row.owner_id));
-        if !row.exact_assignment_certified {
-            if program.is_some() {
-                return refresh_error(
-                    "non-exact continuous refresh row owns an exact assignment program".to_string(),
-                );
-            }
-            return Ok(());
-        }
-        let Some(program) = program else {
-            return refresh_error(
-                "exact continuous refresh row has no constructed assignment program".to_string(),
-            );
+fn relation_owner_overflow() -> ContinuousRefreshConstructionError {
+    ContinuousRefreshConstructionError {
+        reason: "continuous refresh relation owner count overflows".to_string(),
+    }
+}
+
+fn seal_remainder(
+    plan: PendingRefreshPlan,
+    evidence: &ExactAssignmentEvidence,
+) -> RefreshRemainderRelation {
+    RefreshRemainderRelation {
+        remainder: seal_with_evidence(plan, evidence),
+    }
+}
+
+impl ContinuousRefreshOwners {
+    pub(crate) fn exact_assignment_programs(&self) -> &[ExactRefreshAssignmentProgram] {
+        &self.exact_assignment_programs
+    }
+
+    pub(crate) fn checked_for_source(
+        implicit_rhs: &ComputeBlock,
+        implicit_row_targets: &[Option<crate::ScalarSlot>],
+        algebraic_projection_plan: &crate::AlgebraicProjectionPlan,
+        solve_layout: &crate::SolveLayout,
+        inputs: ContinuousRefreshPlanInputs,
+    ) -> Result<Self, ContinuousRefreshConstructionError> {
+        let ContinuousRefreshPlanInputs {
+            algebraic,
+            derivative,
+            root,
+            event,
+            clock_events,
+        } = inputs;
+        let drafts = ContinuousRefreshDrafts {
+            algebraic,
+            derivative,
+            root,
+            event,
+            clock_events,
         };
-        let Some(position) = program
-            .row_owners
-            .iter()
-            .position(|owner| *owner == row.owner_id)
-        else {
-            return refresh_error(
-                "exact continuous refresh program lost its row owner".to_string(),
-            );
-        };
-        if program.source != row.source
-            || program.target_indices.get(position) != Some(&row.target_index)
-        {
-            return refresh_error(
-                "exact continuous refresh program does not replay its row owner".to_string(),
-            );
-        }
-        Ok(())
+        let mut base = drafts
+            .prepare(
+                implicit_rhs,
+                implicit_row_targets,
+                algebraic_projection_plan,
+                solve_layout,
+            )?
+            .issue(implicit_rhs)?;
+        let remainders = base.issue_remainders(implicit_rhs)?;
+        base.validate_assignment_programs()?;
+        Ok(Self {
+            algebraic: base.algebraic,
+            derivative: base.derivative,
+            root: base.root,
+            event: base.event,
+            clock_events: base.clock_events,
+            static_parameter_indices: base.static_parameter_indices,
+            exact_assignment_programs: base.evidence.programs,
+            exact_assignment_schedules: base.evidence.schedules,
+            root_after_derivative: remainders.root_after_derivative,
+            algebraic_after_derivative: remainders.algebraic_after_derivative,
+            clock_events_after_event: remainders.clock_events_after_event,
+        })
     }
 
     pub fn exact_assignment_program(
@@ -733,85 +1213,8 @@ impl ContinuousRefreshOwners {
             .find(|schedule| schedule.sequence_id == sequence)
     }
 
-    /// Checks that every plan carrying a given row owner id carries the exact
-    /// same canonical row.
-    fn validate_canonical_row_owners(&self) -> Result<(), ContinuousRefreshConstructionError> {
-        let mut rows = BTreeMap::new();
-        for row in [&self.algebraic, &self.derivative, &self.root, &self.event]
-            .into_iter()
-            .chain(self.clock_events.iter())
-            .flat_map(|plan| plan.rows.iter())
-        {
-            if let Some(existing) = rows.insert(row.owner_id, row)
-                && existing != row
-            {
-                return refresh_error(
-                    "continuous refresh plans disagree on a canonical row owner".to_string(),
-                );
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn rebuild_exact_assignment_programs(
-        &mut self,
-        implicit_rhs: &ComputeBlock,
-    ) -> Result<(), ContinuousRefreshConstructionError> {
-        self.validate_canonical_row_owners()?;
-        let Self {
-            algebraic,
-            derivative,
-            root,
-            event,
-            clock_events,
-            exact_assignment_programs,
-            exact_assignment_schedules,
-            root_after_derivative,
-            algebraic_after_derivative,
-            clock_events_after_event,
-        } = self;
-        exact_assignment_programs.clear();
-        exact_assignment_schedules.clear();
-        let mut inventory = BTreeMap::new();
-        for plan in [&*algebraic, &*derivative, &*root, &*event]
-            .into_iter()
-            .chain(clock_events.iter())
-            .chain(
-                root_after_derivative
-                    .iter()
-                    .map(|relation| relation.remainder()),
-            )
-            .chain(
-                algebraic_after_derivative
-                    .iter()
-                    .map(|relation| relation.remainder()),
-            )
-            .chain(
-                clock_events_after_event
-                    .iter()
-                    .map(|relation| relation.remainder()),
-            )
-        {
-            append_plan_assignment_schedules(
-                implicit_rhs,
-                exact_assignment_programs,
-                exact_assignment_schedules,
-                &mut inventory,
-                plan,
-            )?;
-        }
-        if !exact_assignment_stages_are_causal(
-            algebraic,
-            exact_assignment_programs,
-            exact_assignment_schedules,
-        ) {
-            return refresh_error("algebraic exact-assignment stages are non-causal".to_string());
-        }
-        Ok(())
-    }
-
     #[must_use]
-    pub const fn algebraic(&self) -> &RefreshPlan {
+    pub const fn algebraic(&self) -> &IssuedRefreshPlan {
         &self.algebraic
     }
 
@@ -824,40 +1227,46 @@ impl ContinuousRefreshOwners {
     #[must_use]
     pub fn algebraic_exact_assignment_stages_cover(&self) -> bool {
         exact_assignment_stages_cover(
-            &self.algebraic,
+            &self.algebraic.plan,
             &self.exact_assignment_programs,
             &self.exact_assignment_schedules,
         )
     }
 
     #[must_use]
-    pub const fn derivative(&self) -> &RefreshPlan {
+    pub const fn derivative(&self) -> &IssuedRefreshPlan {
         &self.derivative
     }
 
     #[must_use]
-    pub const fn root(&self) -> &RefreshPlan {
+    pub const fn root(&self) -> &IssuedRefreshPlan {
         &self.root
     }
 
     #[must_use]
-    pub const fn event(&self) -> &RefreshPlan {
+    pub const fn event(&self) -> &IssuedRefreshPlan {
         &self.event
     }
 
     #[must_use]
-    pub fn clock_events(&self) -> &[RefreshPlan] {
+    pub fn clock_events(&self) -> &[IssuedRefreshPlan] {
         &self.clock_events
     }
 
+    /// Exact P slots read by every construction-certified static refresh row.
     #[must_use]
-    pub const fn root_after_derivative(&self) -> Option<&RefreshRemainderRelation> {
-        self.root_after_derivative.as_ref()
+    pub fn static_parameter_indices(&self) -> &[usize] {
+        &self.static_parameter_indices
     }
 
     #[must_use]
-    pub const fn algebraic_after_derivative(&self) -> Option<&RefreshRemainderRelation> {
-        self.algebraic_after_derivative.as_ref()
+    pub const fn root_after_derivative(&self) -> &RefreshRemainderRelation {
+        &self.root_after_derivative
+    }
+
+    #[must_use]
+    pub const fn algebraic_after_derivative(&self) -> &RefreshRemainderRelation {
+        &self.algebraic_after_derivative
     }
 
     #[must_use]
@@ -870,6 +1279,9 @@ fn validate_refresh_sources(
     label: &str,
     plan: &RefreshPlan,
     implicit_rhs: &ComputeBlock,
+    implicit_row_targets: &[Option<crate::ScalarSlot>],
+    algebraic_projection_plan: &crate::AlgebraicProjectionPlan,
+    solve_layout: &crate::SolveLayout,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     for row in &plan.rows {
         let Some(equation) =
@@ -885,9 +1297,237 @@ fn validate_refresh_sources(
                 row.equation_index
             ));
         }
+        let Some(Some(crate::ScalarSlot::Y {
+            index: canonical_target,
+            ..
+        })) = implicit_row_targets.get(equation)
+        else {
+            return refresh_error(format!(
+                "{label} refresh row has no canonical implicit Y target"
+            ));
+        };
+        if *canonical_target < solve_layout.state_scalar_count()
+            || *canonical_target >= solve_layout.solver_scalar_count()
+        {
+            return refresh_error(format!(
+                "{label} refresh row canonical target {canonical_target} leaves algebraic solver Y range {}..{}",
+                solve_layout.state_scalar_count(),
+                solve_layout.solver_scalar_count()
+            ));
+        }
+        if row.target_index != *canonical_target {
+            return refresh_error(format!(
+                "{label} refresh row target {} disagrees with canonical implicit target {canonical_target}",
+                row.target_index
+            ));
+        }
+        let projection_owns_pair = algebraic_projection_plan.blocks.iter().any(|block| {
+            block.rows.contains(&equation) && block.y_indices.contains(canonical_target)
+        });
+        if !projection_owns_pair {
+            return refresh_error(format!(
+                "{label} refresh row target is not owned by its canonical algebraic projection"
+            ));
+        }
         validate_refresh_assignment_certificate(label, row, implicit_rhs)?;
     }
     Ok(())
+}
+
+struct ParameterStaticDependencies {
+    y: Vec<std::collections::BTreeSet<usize>>,
+    parameters: Vec<std::collections::BTreeSet<usize>>,
+    time: Vec<bool>,
+    seed: Vec<bool>,
+    effect: Vec<bool>,
+}
+
+impl ParameterStaticDependencies {
+    fn derive(program: &[LinearOp]) -> Option<Self> {
+        Some(Self {
+            y: StructuralPattern::derive_output_y_dependencies(program, None).ok()?,
+            parameters: StructuralPattern::derive_output_p_dependencies(program, None).ok()?,
+            time: StructuralPattern::derive_output_time_dependencies(program, None).ok()?,
+            seed: StructuralPattern::derive_output_seed_dependencies(program, None).ok()?,
+            effect: StructuralPattern::derive_output_effect_dependencies(program, None).ok()?,
+        })
+    }
+
+    fn is_static(
+        &self,
+        output_offset: usize,
+        target: usize,
+        state_count: usize,
+        static_targets: &std::collections::BTreeSet<usize>,
+        static_parameter_prefix: usize,
+        homotopy_endpoint: Option<usize>,
+    ) -> bool {
+        let Some(parameters) = self.parameters.get(output_offset) else {
+            return false;
+        };
+        let parameters_are_static = parameters
+            .iter()
+            .all(|index| *index < static_parameter_prefix || homotopy_endpoint == Some(*index));
+        let Some(solver_values) = self.y.get(output_offset) else {
+            return false;
+        };
+        let solver_values_are_static = solver_values.iter().all(|index| {
+            *index == target || (*index >= state_count && static_targets.contains(index))
+        });
+        parameters_are_static
+            && solver_values_are_static
+            && self.time.get(output_offset) == Some(&false)
+            && self.seed.get(output_offset) == Some(&false)
+            && self.effect.get(output_offset) == Some(&false)
+    }
+}
+
+fn parameter_static_refresh_targets(
+    plan: &RefreshPlan,
+    block: &ComputeBlock,
+    solve_layout: &crate::SolveLayout,
+) -> Result<std::collections::BTreeSet<usize>, ContinuousRefreshConstructionError> {
+    // The causal row order is the only authority that can make a preceding
+    // algebraic value available to a later row. Start with no certified
+    // targets and grow the set in that exact order. A mutually dependent pair
+    // therefore cannot certify itself through a greatest fixed point.
+    let mut static_targets = std::collections::BTreeSet::new();
+    for row in plan.causal_rows().iter() {
+        let dependencies = scalar_source_program(block, row.source)?
+            .and_then(|(program, _)| ParameterStaticDependencies::derive(program));
+        if dependencies.as_ref().is_some_and(|dependencies| {
+            dependencies.is_static(
+                row.output_offset,
+                row.target_index,
+                solve_layout.state_scalar_count,
+                &static_targets,
+                solve_layout.parameter_count,
+                solve_layout.initial_homotopy_parameter_index,
+            )
+        }) {
+            static_targets.insert(row.target_index);
+        }
+    }
+    Ok(static_targets)
+}
+
+fn ordered_stage_rows(
+    row_count: usize,
+    static_rows: &RefreshRowSelection,
+    dynamic_rows: &RefreshRowSelection,
+) -> Result<RefreshRowSelection, ContinuousRefreshConstructionError> {
+    RefreshRowSelection::checked(
+        row_count,
+        static_rows
+            .indices()
+            .iter()
+            .chain(dynamic_rows.indices())
+            .map(|index| *index as usize),
+    )
+}
+
+fn partition_refresh_rows(
+    row_targets: &[usize],
+    rows: &RefreshRowSelection,
+    static_targets: &std::collections::BTreeSet<usize>,
+) -> Result<(RefreshRowSelection, RefreshRowSelection), ContinuousRefreshConstructionError> {
+    let static_rows = RefreshRowSelection::checked(
+        row_targets.len(),
+        rows.indices()
+            .iter()
+            .map(|index| *index as usize)
+            .filter(|index| static_targets.contains(&row_targets[*index])),
+    )?;
+    let dynamic_rows = RefreshRowSelection::checked(
+        row_targets.len(),
+        rows.indices()
+            .iter()
+            .map(|index| *index as usize)
+            .filter(|index| !static_targets.contains(&row_targets[*index])),
+    )?;
+    Ok((static_rows, dynamic_rows))
+}
+
+fn derive_static_refresh_partitions(
+    plan: &mut RefreshPlan,
+    block: &ComputeBlock,
+    solve_layout: &crate::SolveLayout,
+) -> Result<(), ContinuousRefreshConstructionError> {
+    let static_targets = parameter_static_refresh_targets(plan, block, solve_layout)?;
+    let row_targets = plan
+        .rows
+        .iter()
+        .map(AlgebraicRefreshRow::target_index)
+        .collect::<Vec<_>>();
+    (plan.static_causal_seed_rows, plan.dynamic_causal_seed_rows) =
+        partition_refresh_rows(&row_targets, &plan.causal_seed_rows, &static_targets)?;
+    for stage in &mut plan.value_stages {
+        let (static_rows, dynamic_rows) = match stage {
+            RefreshStage::CausalSeedSweep {
+                static_rows,
+                dynamic_rows,
+            }
+            | RefreshStage::ExactAssignments {
+                static_rows,
+                dynamic_rows,
+            } => (static_rows, dynamic_rows),
+            RefreshStage::ProjectionBlock { .. } => continue,
+        };
+        let ordered = ordered_stage_rows(row_targets.len(), static_rows, dynamic_rows)?;
+        (*static_rows, *dynamic_rows) =
+            partition_refresh_rows(&row_targets, &ordered, &static_targets)?;
+    }
+    Ok(())
+}
+
+fn collect_static_refresh_parameter_indices<'a>(
+    plans: impl Iterator<Item = &'a RefreshPlan>,
+    block: &ComputeBlock,
+) -> Result<Box<[usize]>, ContinuousRefreshConstructionError> {
+    let mut outputs = std::collections::BTreeSet::new();
+    for plan in plans {
+        for row in plan.static_causal_rows().iter() {
+            outputs.insert((row.source(), row.output_offset()));
+        }
+        for stage in &plan.value_stages {
+            let static_rows = match stage {
+                RefreshStage::CausalSeedSweep { static_rows, .. }
+                | RefreshStage::ExactAssignments { static_rows, .. } => static_rows,
+                RefreshStage::ProjectionBlock { .. } => continue,
+            };
+            outputs.extend(
+                plan.selected_rows(static_rows)
+                    .iter()
+                    .map(|row| (row.source(), row.output_offset())),
+            );
+        }
+    }
+    let mut parameters = std::collections::BTreeSet::new();
+    for (source, output_offset) in outputs {
+        let Some((program, _)) = scalar_source_program(block, source)? else {
+            return refresh_error(
+                "static continuous refresh row lost its canonical source".to_string(),
+            );
+        };
+        let dependencies =
+            StructuralPattern::derive_output_p_dependencies(program, None).map_err(|error| {
+                ContinuousRefreshConstructionError {
+                    reason: format!(
+                        "static continuous refresh parameter dependency proof failed: {error}"
+                    ),
+                }
+            })?;
+        let Some(output_dependencies) = dependencies.get(output_offset) else {
+            return refresh_error(
+                "static continuous refresh row lost its canonical output dependency".to_string(),
+            );
+        };
+        parameters.extend(output_dependencies.iter().copied());
+    }
+    Ok(parameters
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_boxed_slice())
 }
 
 fn validate_refresh_assignment_certificate(
@@ -931,18 +1571,20 @@ fn scalar_source_output_index(
             let ComputeNode::ScalarPrograms(programs) = node else {
                 return Ok(None);
             };
-            let Some(program) = programs.programs().get(source_program) else {
+            let Some(_program) = programs.programs().get(source_program) else {
                 return Ok(None);
             };
-            if output_offset >= crate::ScalarProgramBlock::program_output_count(program) {
+            let Some(source_output_count) =
+                programs.stored_output_count_for_program(source_program)
+            else {
+                return Ok(None);
+            };
+            if output_offset >= source_output_count {
                 return Ok(None);
             }
-            let preceding_outputs = programs
-                .programs()
-                .iter()
-                .take(source_program)
-                .try_fold(0usize, |count, program| {
-                    count.checked_add(crate::ScalarProgramBlock::program_output_count(program))
+            let preceding_outputs = (0..source_program)
+                .try_fold(0usize, |count, program_index| {
+                    count.checked_add(programs.stored_output_count_for_program(program_index)?)
                 })
                 .ok_or_else(|| refresh_source_overflow("output ordinal"))?;
             let ordinal = preceding_outputs
@@ -977,7 +1619,7 @@ fn construct_exact_assignment_program(
             "exact continuous refresh assignment group has multiple canonical sources".to_string(),
         );
     }
-    let (source_program, _) = scalar_source_program(block, first.source)?.ok_or_else(|| {
+    let (source_program, span) = scalar_source_program(block, first.source)?.ok_or_else(|| {
         ContinuousRefreshConstructionError {
             reason: "exact continuous refresh source program is missing".to_string(),
         }
@@ -1003,11 +1645,23 @@ fn construct_exact_assignment_program(
                 .to_string(),
         })?;
     let assignment_y_dependencies = assignment_y_dependencies_for_shapes(source_program, &shapes);
+    let final_program = materialize_exact_assignment_program(source_program, span, &shapes)?;
     let target_indices = rows
         .iter()
         .map(|row| row.target_index)
         .collect::<Vec<_>>()
         .into_boxed_slice();
+    let final_execution = final_program.sole_execution_program().ok_or_else(|| {
+        ContinuousRefreshConstructionError {
+            reason: "exact continuous refresh assignment must issue one final program".to_string(),
+        }
+    })?;
+    if final_execution.output_sources().len() != target_indices.len() {
+        return refresh_error(
+            "exact continuous refresh assignment output projection does not cover its targets"
+                .to_string(),
+        );
+    }
     Ok(ExactRefreshAssignmentProgram {
         id,
         row_owners: rows
@@ -1019,20 +1673,16 @@ fn construct_exact_assignment_program(
         target_indices,
         assignment_shapes: shapes.into_boxed_slice(),
         assignment_y_dependencies,
+        final_program,
     })
 }
 
 fn materialize_exact_assignment_program(
-    block: &ComputeBlock,
-    owner: &ExactRefreshAssignmentProgram,
+    source_program: &[LinearOp],
+    span: rumoca_core::Span,
+    assignment_shapes: &[TargetAssignmentShape],
 ) -> Result<ScalarProgramBlock, ContinuousRefreshConstructionError> {
-    let (source_program, span) = scalar_source_program(block, owner.source)?.ok_or_else(|| {
-        ContinuousRefreshConstructionError {
-            reason: "exact continuous refresh source program is missing".to_string(),
-        }
-    })?;
-    let prefix_len = owner
-        .assignment_shapes
+    let prefix_len = assignment_shapes
         .iter()
         .map(|shape| shape.expr_eval_len())
         .max()
@@ -1059,7 +1709,7 @@ fn materialize_exact_assignment_program(
             reason: "exact continuous refresh assignment program overflows registers".to_string(),
         }
     })?;
-    for shape in owner.assignment_shapes.iter().copied() {
+    for shape in assignment_shapes.iter().copied() {
         let result =
             builder
                 .materialize(shape)
@@ -1306,7 +1956,7 @@ fn append_plan_assignment_schedules(
     programs: &mut Vec<ExactRefreshAssignmentProgram>,
     schedules: &mut Vec<ExactRefreshAssignmentSchedule>,
     inventory: &mut BTreeMap<Vec<RefreshRowOwnerId>, ExactRefreshAssignmentProgramId>,
-    plan: &RefreshPlan,
+    plan: &PendingRefreshPlan,
 ) -> Result<(), ContinuousRefreshConstructionError> {
     append_exact_assignment_schedule(
         block,
@@ -1326,13 +1976,13 @@ fn append_plan_assignment_schedules(
     )?;
     for stage in &plan.value_stages {
         match stage {
-            RefreshStage::CausalSeedSweep {
+            IssuedRefreshStage::CausalSeedSweep {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
                 dynamic_rows,
             }
-            | RefreshStage::ExactAssignments {
+            | IssuedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
@@ -1355,7 +2005,7 @@ fn append_plan_assignment_schedules(
                     plan.selected_rows(dynamic_rows),
                 )?;
             }
-            RefreshStage::ProjectionBlock {
+            IssuedRefreshStage::ProjectionBlock {
                 seed_sequence,
                 seed_rows,
                 ..
@@ -1373,7 +2023,7 @@ fn append_plan_assignment_schedules(
 }
 
 fn exact_assignment_stages_cover(
-    plan: &RefreshPlan,
+    plan: &PendingRefreshPlan,
     programs: &[ExactRefreshAssignmentProgram],
     schedules: &[ExactRefreshAssignmentSchedule],
 ) -> bool {
@@ -1387,8 +2037,25 @@ fn exact_assignment_stages_cover(
         .is_some_and(|covered| covered == expected)
 }
 
+fn causal_assignment_plan_is_certified(
+    plan: &PendingRefreshPlan,
+    programs: &[ExactRefreshAssignmentProgram],
+    schedules: &[ExactRefreshAssignmentSchedule],
+) -> bool {
+    if plan.rows.is_empty() {
+        return false;
+    }
+    let Some(expected) = exact_singleton_row_owners(plan) else {
+        return false;
+    };
+    let mut coverage = ExactAssignmentCoverage::new(plan, programs, schedules);
+    coverage.mark_selection(plan.static_causal_sequence, &plan.static_causal_seed_rows)
+        && coverage.mark_selection(plan.dynamic_causal_sequence, &plan.dynamic_causal_seed_rows)
+        && coverage.covered == expected
+}
+
 fn exact_assignment_stages_are_causal(
-    plan: &RefreshPlan,
+    plan: &PendingRefreshPlan,
     programs: &[ExactRefreshAssignmentProgram],
     schedules: &[ExactRefreshAssignmentSchedule],
 ) -> bool {
@@ -1396,7 +2063,7 @@ fn exact_assignment_stages_are_causal(
 }
 
 fn exact_assignment_stage_coverage(
-    plan: &RefreshPlan,
+    plan: &PendingRefreshPlan,
     programs: &[ExactRefreshAssignmentProgram],
     schedules: &[ExactRefreshAssignmentSchedule],
 ) -> Option<std::collections::BTreeSet<RefreshRowOwnerId>> {
@@ -1410,7 +2077,7 @@ fn exact_assignment_stage_coverage(
 }
 
 fn exact_singleton_row_owners(
-    plan: &RefreshPlan,
+    plan: &PendingRefreshPlan,
 ) -> Option<std::collections::BTreeSet<RefreshRowOwnerId>> {
     let mut owners = std::collections::BTreeSet::new();
     for block in &plan.simultaneous_plan.blocks {
@@ -1430,7 +2097,7 @@ fn exact_singleton_row_owners(
 }
 
 struct ExactAssignmentCoverage<'a> {
-    plan: &'a RefreshPlan,
+    plan: &'a PendingRefreshPlan,
     programs: &'a [ExactRefreshAssignmentProgram],
     schedules: &'a [ExactRefreshAssignmentSchedule],
     target_inventory: std::collections::BTreeSet<usize>,
@@ -1440,7 +2107,7 @@ struct ExactAssignmentCoverage<'a> {
 
 impl<'a> ExactAssignmentCoverage<'a> {
     fn new(
-        plan: &'a RefreshPlan,
+        plan: &'a PendingRefreshPlan,
         programs: &'a [ExactRefreshAssignmentProgram],
         schedules: &'a [ExactRefreshAssignmentSchedule],
     ) -> Self {
@@ -1460,10 +2127,10 @@ impl<'a> ExactAssignmentCoverage<'a> {
         }
     }
 
-    fn mark_stage(&mut self, stage: &RefreshStage) -> bool {
+    fn mark_stage(&mut self, stage: &IssuedRefreshStage) -> bool {
         match stage {
-            RefreshStage::CausalSeedSweep { .. } => true,
-            RefreshStage::ExactAssignments {
+            IssuedRefreshStage::CausalSeedSweep { .. } => true,
+            IssuedRefreshStage::ExactAssignments {
                 static_sequence,
                 dynamic_sequence,
                 static_rows,
@@ -1474,7 +2141,7 @@ impl<'a> ExactAssignmentCoverage<'a> {
             ]
             .into_iter()
             .all(|(sequence, selection)| self.mark_selection(sequence, selection)),
-            RefreshStage::ProjectionBlock { plan, .. } => plan
+            IssuedRefreshStage::ProjectionBlock { plan, .. } => plan
                 .blocks
                 .iter()
                 .flat_map(|block| block.y_indices.iter().copied())
@@ -1640,41 +2307,6 @@ fn append_exact_assignment_program(
     Ok(())
 }
 
-fn issue_refresh_sequence_ids(
-    plan: &mut RefreshPlan,
-    owner: usize,
-) -> Result<(), ContinuousRefreshConstructionError> {
-    let mut next = 0usize;
-    plan.static_causal_sequence = RefreshSequenceId::issued(owner, next)?;
-    next += 1;
-    plan.dynamic_causal_sequence = RefreshSequenceId::issued(owner, next)?;
-    next += 1;
-    for stage in &mut plan.value_stages {
-        match stage {
-            RefreshStage::CausalSeedSweep {
-                static_sequence,
-                dynamic_sequence,
-                ..
-            }
-            | RefreshStage::ExactAssignments {
-                static_sequence,
-                dynamic_sequence,
-                ..
-            } => {
-                *static_sequence = RefreshSequenceId::issued(owner, next)?;
-                next += 1;
-                *dynamic_sequence = RefreshSequenceId::issued(owner, next)?;
-                next += 1;
-            }
-            RefreshStage::ProjectionBlock { seed_sequence, .. } => {
-                *seed_sequence = RefreshSequenceId::issued(owner, next)?;
-                next += 1;
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_refresh_plan(
     label: &str,
     plan: &RefreshPlan,
@@ -1817,7 +2449,7 @@ fn refresh_error<T>(reason: String) -> Result<T, ContinuousRefreshConstructionEr
 
 impl RefreshRemainderRelation {
     #[must_use]
-    pub const fn remainder(&self) -> &RefreshPlan {
+    pub const fn remainder(&self) -> &IssuedRefreshPlan {
         &self.remainder
     }
 }
@@ -1845,16 +2477,140 @@ impl RefreshPlan {
     pub fn dynamic_causal_rows(&self) -> RefreshRows<'_> {
         self.selected_rows(&self.dynamic_causal_seed_rows)
     }
+}
 
-    fn issue_value_remainder_after(&self, settled: &Self) -> RefreshRemainderRelation {
+impl PendingRefreshPlan {
+    fn seal(self, causal_solution_certified: bool) -> IssuedRefreshPlan {
+        IssuedRefreshPlan {
+            plan: self,
+            causal_solution_certified,
+        }
+    }
+
+    fn requires_projection(&self) -> bool {
+        self.value_stages
+            .iter()
+            .any(|stage| matches!(stage, IssuedRefreshStage::ProjectionBlock { .. }))
+    }
+
+    fn selected_rows<'a>(&'a self, selection: &'a RefreshRowSelection) -> RefreshRows<'a> {
+        RefreshRows {
+            catalog: &self.rows,
+            indices: selection.indices(),
+        }
+    }
+
+    fn static_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.static_causal_seed_rows)
+    }
+
+    fn dynamic_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.dynamic_causal_seed_rows)
+    }
+}
+
+impl IssuedRefreshPlan {
+    #[cfg(test)]
+    fn requires_projection(&self) -> bool {
+        self.plan.requires_projection()
+    }
+
+    #[must_use]
+    pub const fn static_causal_sequence(&self) -> RefreshSequenceId {
+        self.plan.static_causal_sequence
+    }
+
+    #[must_use]
+    pub const fn dynamic_causal_sequence(&self) -> RefreshSequenceId {
+        self.plan.dynamic_causal_sequence
+    }
+
+    #[must_use]
+    pub const fn simultaneous_plan(&self) -> &AlgebraicProjectionPlan {
+        &self.plan.simultaneous_plan
+    }
+
+    #[must_use]
+    pub fn simultaneous_block_indices(&self) -> &[usize] {
+        &self.plan.simultaneous_block_indices
+    }
+
+    #[must_use]
+    pub const fn value_projection_plan(&self) -> &AlgebraicProjectionPlan {
+        &self.plan.value_projection_plan
+    }
+
+    #[must_use]
+    pub fn rows(&self) -> &[AlgebraicRefreshRow] {
+        &self.plan.rows
+    }
+
+    #[must_use]
+    pub const fn causal_seed_rows(&self) -> &RefreshRowSelection {
+        &self.plan.causal_seed_rows
+    }
+
+    #[must_use]
+    pub const fn static_causal_seed_rows(&self) -> &RefreshRowSelection {
+        &self.plan.static_causal_seed_rows
+    }
+
+    #[must_use]
+    pub const fn dynamic_causal_seed_rows(&self) -> &RefreshRowSelection {
+        &self.plan.dynamic_causal_seed_rows
+    }
+
+    #[must_use]
+    pub fn value_stages(&self) -> &[IssuedRefreshStage] {
+        &self.plan.value_stages
+    }
+
+    #[must_use]
+    pub const fn causal_solution_certified(&self) -> bool {
+        self.causal_solution_certified
+    }
+
+    #[must_use]
+    pub fn selected_rows<'a>(&'a self, selection: &'a RefreshRowSelection) -> RefreshRows<'a> {
+        RefreshRows {
+            catalog: &self.plan.rows,
+            indices: selection.indices(),
+        }
+    }
+
+    #[must_use]
+    pub fn causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.plan.causal_seed_rows)
+    }
+
+    #[must_use]
+    pub fn static_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.plan.static_causal_seed_rows)
+    }
+
+    #[must_use]
+    pub fn dynamic_causal_rows(&self) -> RefreshRows<'_> {
+        self.selected_rows(&self.plan.dynamic_causal_seed_rows)
+    }
+
+    fn value_remainder_after(&self, settled: &Self) -> RefreshPlan {
         let settled_stages = refresh_stage_coverage(settled);
         let value_stages = self
+            .plan
             .value_stages
             .iter()
             .filter_map(|stage| uncovered_refresh_stage(self, stage, &settled_stages))
             .collect();
-        let mut remainder = self.clone();
-        remainder.value_stages = value_stages;
+        let mut remainder = RefreshPlan {
+            simultaneous_plan: self.plan.simultaneous_plan.clone(),
+            simultaneous_block_indices: self.plan.simultaneous_block_indices.clone(),
+            value_projection_plan: self.plan.value_projection_plan.clone(),
+            rows: self.plan.rows.clone(),
+            causal_seed_rows: self.plan.causal_seed_rows.clone(),
+            static_causal_seed_rows: self.plan.static_causal_seed_rows.clone(),
+            dynamic_causal_seed_rows: self.plan.dynamic_causal_seed_rows.clone(),
+            value_stages,
+        };
         if self.causal_solution_certified && settled.causal_solution_certified {
             let settled_rows = settled
                 .causal_rows()
@@ -1862,18 +2618,13 @@ impl RefreshPlan {
                 .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id))
                 .collect::<Vec<_>>();
             remainder.causal_seed_rows =
-                uncovered_refresh_rows(self, &self.causal_seed_rows, &settled_rows);
+                uncovered_refresh_rows(self, &self.plan.causal_seed_rows, &settled_rows);
             remainder.static_causal_seed_rows =
-                uncovered_refresh_rows(self, &self.static_causal_seed_rows, &settled_rows);
+                uncovered_refresh_rows(self, &self.plan.static_causal_seed_rows, &settled_rows);
             remainder.dynamic_causal_seed_rows =
-                uncovered_refresh_rows(self, &self.dynamic_causal_seed_rows, &settled_rows);
-        } else {
-            // A staged remainder cannot inherit the complete plan's causal
-            // certificate. Doing so would select an unfiltered causal schedule
-            // and discard the construction-issued uncovered stages.
-            remainder.causal_solution_certified = false;
+                uncovered_refresh_rows(self, &self.plan.dynamic_causal_seed_rows, &settled_rows);
         }
-        RefreshRemainderRelation { remainder }
+        remainder
     }
 }
 
@@ -1883,16 +2634,16 @@ enum RefreshStageIdentity {
     ProjectionBlock(usize),
 }
 
-fn refresh_stage_coverage(plan: &RefreshPlan) -> Vec<RefreshStageIdentity> {
+fn refresh_stage_coverage(plan: &IssuedRefreshPlan) -> Vec<RefreshStageIdentity> {
     let mut identities = Vec::new();
-    for stage in &plan.value_stages {
+    for stage in &plan.plan.value_stages {
         match stage {
-            RefreshStage::CausalSeedSweep {
+            IssuedRefreshStage::CausalSeedSweep {
                 static_rows,
                 dynamic_rows,
                 ..
             }
-            | RefreshStage::ExactAssignments {
+            | IssuedRefreshStage::ExactAssignments {
                 static_rows,
                 dynamic_rows,
                 ..
@@ -1902,7 +2653,7 @@ fn refresh_stage_coverage(plan: &RefreshPlan) -> Vec<RefreshStageIdentity> {
                     .chain(plan.selected_rows(dynamic_rows).iter())
                     .map(|row| RefreshStageIdentity::ExactAssignment(row.owner_id)),
             ),
-            RefreshStage::ProjectionBlock { block_index, .. } => {
+            IssuedRefreshStage::ProjectionBlock { block_index, .. } => {
                 identities.push(RefreshStageIdentity::ProjectionBlock(*block_index));
             }
         }
@@ -1911,7 +2662,7 @@ fn refresh_stage_coverage(plan: &RefreshPlan) -> Vec<RefreshStageIdentity> {
 }
 
 fn uncovered_refresh_rows(
-    plan: &RefreshPlan,
+    plan: &IssuedRefreshPlan,
     rows: &RefreshRowSelection,
     settled: &[RefreshStageIdentity],
 ) -> RefreshRowSelection {
@@ -1920,8 +2671,7 @@ fn uncovered_refresh_rows(
             .iter()
             .copied()
             .filter(|index| {
-                let row = &plan.rows[usize::try_from(*index)
-                    .expect("checked continuous refresh row index fits usize")];
+                let row = &plan.plan.rows[*index as usize];
                 !settled.contains(&RefreshStageIdentity::ExactAssignment(row.owner_id))
             })
             .collect(),
@@ -1929,29 +2679,38 @@ fn uncovered_refresh_rows(
 }
 
 fn uncovered_refresh_stage(
-    plan: &RefreshPlan,
-    stage: &RefreshStage,
+    plan: &IssuedRefreshPlan,
+    stage: &IssuedRefreshStage,
     settled: &[RefreshStageIdentity],
 ) -> Option<RefreshStage> {
     match stage {
-        RefreshStage::CausalSeedSweep {
+        IssuedRefreshStage::CausalSeedSweep {
             static_rows,
             dynamic_rows,
             ..
         } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, true),
-        RefreshStage::ExactAssignments {
+        IssuedRefreshStage::ExactAssignments {
             static_rows,
             dynamic_rows,
             ..
         } => uncovered_row_stage(plan, static_rows, dynamic_rows, settled, false),
-        RefreshStage::ProjectionBlock { block_index, .. } => (!settled
-            .contains(&RefreshStageIdentity::ProjectionBlock(*block_index)))
-        .then(|| stage.clone()),
+        IssuedRefreshStage::ProjectionBlock {
+            block_index,
+            plan: projection,
+            seed_rows,
+            ..
+        } => (!settled.contains(&RefreshStageIdentity::ProjectionBlock(*block_index))).then(|| {
+            RefreshStage::ProjectionBlock {
+                block_index: *block_index,
+                plan: projection.clone(),
+                seed_rows: seed_rows.clone(),
+            }
+        }),
     }
 }
 
 fn uncovered_row_stage(
-    plan: &RefreshPlan,
+    plan: &IssuedRefreshPlan,
     static_rows: &RefreshRowSelection,
     dynamic_rows: &RefreshRowSelection,
     settled: &[RefreshStageIdentity],
@@ -1964,15 +2723,11 @@ fn uncovered_row_stage(
     }
     Some(if causal {
         RefreshStage::CausalSeedSweep {
-            static_sequence: RefreshSequenceId::default(),
-            dynamic_sequence: RefreshSequenceId::default(),
             static_rows,
             dynamic_rows,
         }
     } else {
         RefreshStage::ExactAssignments {
-            static_sequence: RefreshSequenceId::default(),
-            dynamic_sequence: RefreshSequenceId::default(),
             static_rows,
             dynamic_rows,
         }

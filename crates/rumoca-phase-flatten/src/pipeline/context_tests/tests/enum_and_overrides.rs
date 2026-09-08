@@ -2,102 +2,111 @@ use super::*;
 use rumoca_core::EvalLookup;
 use rumoca_ir_ast::Component;
 
+fn add_conditional_enum_root(flat: &mut rumoca_ir_flat::Model) -> rumoca_core::InstanceId {
+    let condition_instance = rumoca_core::InstanceId::new(501);
+    add_boolean_parameter(
+        flat,
+        "Medium.singleState",
+        &[
+            ("Medium", DefId::new(401)),
+            ("singleState", DefId::new(402)),
+        ],
+        condition_instance,
+        true,
+    );
+    let selected_instance = rumoca_core::InstanceId::new(502);
+    add_enum_parameter(
+        flat,
+        "systemMassDynamics",
+        &[("systemMassDynamics", DefId::new(403))],
+        selected_instance,
+        Expression::If {
+            branches: vec![(
+                parameter_reference_expr(
+                    &[
+                        ("Medium", DefId::new(401)),
+                        ("singleState", DefId::new(402)),
+                    ],
+                    condition_instance,
+                ),
+                enum_literal_expr("SteadyState", DefId::new(602)),
+            )],
+            else_branch: Box::new(enum_literal_expr("SteadyStateInitial", DefId::new(603))),
+            span: test_span(),
+        },
+    );
+    selected_instance
+}
+
 #[test]
 fn test_eval_enum_params_resolves_conditional_enum_binding_from_known_boolean() {
-    let mut ctx = Context::new();
-    ctx.record_aliases.insert(
-        rumoca_core::ComponentPath::from_flat_path("pipe1.system"),
-        rumoca_core::ComponentPath::from_flat_path("system"),
+    let mut flat = typed_flat_model();
+    let selected_instance = add_conditional_enum_root(&mut flat);
+    let system_instance = rumoca_core::InstanceId::new(503);
+    add_enum_parameter(
+        &mut flat,
+        "system.massDynamics",
+        &[
+            ("system", DefId::new(404)),
+            ("massDynamics", DefId::new(405)),
+        ],
+        system_instance,
+        parameter_reference_expr(
+            &[("systemMassDynamics", DefId::new(403))],
+            selected_instance,
+        ),
     );
-    ctx.boolean_parameter_values
-        .insert("Medium.singleState".to_string(), true);
-
-    let params = vec![
-        (
-            "systemMassDynamics".to_string(),
-            Expression::If {
-                branches: vec![(
-                    Expression::VarRef {
-                        name: rumoca_core::Reference::new("Medium.singleState"),
-                        subscripts: vec![],
-                        span: test_span(),
-                    },
-                    Expression::VarRef {
-                        name: rumoca_core::Reference::new("Dynamics.SteadyState"),
-                        subscripts: vec![],
-                        span: test_span(),
-                    },
-                )],
-                else_branch: Box::new(Expression::VarRef {
-                    name: rumoca_core::Reference::new("Dynamics.SteadyStateInitial"),
-                    subscripts: vec![],
-                    span: test_span(),
-                }),
-                span: test_span(),
-            },
+    let pipe_instance = rumoca_core::InstanceId::new(504);
+    add_enum_parameter(
+        &mut flat,
+        "pipe1.massDynamics",
+        &[
+            ("pipe1", DefId::new(406)),
+            ("massDynamics", DefId::new(407)),
+        ],
+        pipe_instance,
+        parameter_reference_expr(
+            &[
+                ("system", DefId::new(404)),
+                ("massDynamics", DefId::new(405)),
+            ],
+            system_instance,
         ),
-        (
-            "system.massDynamics".to_string(),
-            Expression::VarRef {
-                name: rumoca_core::Reference::new("systemMassDynamics"),
-                subscripts: vec![],
-                span: test_span(),
-            },
-        ),
-        (
-            "pipe1.massDynamics".to_string(),
-            Expression::VarRef {
-                name: rumoca_core::Reference::new("pipe1.system.massDynamics"),
-                subscripts: vec![],
-                span: test_span(),
-            },
-        ),
-        (
-            "pipe1.traceDynamics".to_string(),
-            Expression::VarRef {
-                name: rumoca_core::Reference::new("pipe1.massDynamics"),
-                subscripts: vec![],
-                span: test_span(),
-            },
-        ),
-    ];
-
-    let progress = ctx.eval_enum_params(&params);
-    assert!(
-        progress,
-        "expected enum parameter pass to resolve enum-if binding"
     );
+    add_enum_parameter(
+        &mut flat,
+        "pipe1.traceDynamics",
+        &[
+            ("pipe1", DefId::new(406)),
+            ("traceDynamics", DefId::new(408)),
+        ],
+        rumoca_core::InstanceId::new(505),
+        parameter_reference_expr(
+            &[
+                ("pipe1", DefId::new(406)),
+                ("massDynamics", DefId::new(407)),
+            ],
+            pipe_instance,
+        ),
+    );
+
+    let ctx = build_test_parameter_context(&flat);
     assert_eq!(
-        ctx.get_enum_param("pipe1.traceDynamics"),
+        enum_display(&ctx, "pipe1.traceDynamics"),
         Some("Dynamics.SteadyState".to_string())
     );
 }
 
 #[test]
-fn test_try_eval_const_enum_with_scope_rejects_dotted_parameter_like_ref() {
-    let ctx = Context::new();
-    let expr = component_ref_expr("pipe1.system.energyDynamics");
-
-    assert_eq!(try_eval_const_enum_with_scope(&expr, &ctx, ""), None);
-}
-
-#[test]
-fn test_try_eval_const_enum_with_scope_accepts_scoped_enum_literal_ref() {
-    let ctx = Context::new();
-    let expr = component_ref_expr("pipe.Types.ModelStructure.a_v_b");
-
-    assert_eq!(
-        try_eval_const_enum_with_scope(&expr, &ctx, ""),
-        Some("pipe.Types.ModelStructure.a_v_b".to_string())
-    );
-}
-
-#[test]
-fn test_try_eval_const_flat_expr_with_scope_resolves_enum_alias_component_ref() {
+fn test_typed_enum_lookup_preserves_alias_owner_and_ordinal() {
     let mut ctx = Context::new();
     ctx.enum_parameter_values.insert(
         "Modelica.Electrical.Digital.Tables.L.'U'".to_string(),
-        "Modelica.Electrical.Digital.Interfaces.Logic.'U'".to_string(),
+        resolved_enum_value(
+            rumoca_core::DefId::new(154),
+            "Modelica.Electrical.Digital.Interfaces.Logic",
+            "'U'",
+        ),
     );
     let enum_type = rumoca_core::DefId::new(154);
     let mut expr = component_ref_expr("L.'U'");
@@ -107,24 +116,11 @@ fn test_try_eval_const_flat_expr_with_scope_resolves_enum_alias_component_ref() 
     for part in &mut source_reference.parts {
         part.def_id = Some(enum_type);
     }
-    let rumoca_ir_ast::Expression::ComponentReference(source_reference) = &expr else {
-        panic!("fixture is an enum component reference");
-    };
-    let expected_type = source_reference
-        .target_def_id()
-        .expect("resolved fixture carries its enum declaration identity");
-
     let got =
-        try_eval_const_flat_expr_with_scope(&expr, &ctx, "Modelica.Electrical.Digital.Tables");
-    let Some(Expression::VarRef { name, .. }) = got else {
-        panic!("enum alias settles to a Flat reference");
-    };
-    assert_eq!(
-        name.as_str(),
-        "Modelica.Electrical.Digital.Interfaces.Logic.'U'"
-    );
-    assert!(!name.is_generated());
-    assert_eq!(name.target_def_id(), Some(expected_type));
+        try_eval_const_enum_identity_with_scope(&expr, &ctx, "Modelica.Electrical.Digital.Tables")
+            .expect("enum alias settles to one resolved value");
+    assert_eq!(got.declaration(), enum_type);
+    assert_eq!(got.ordinal(), 1);
 }
 
 #[test]
@@ -161,8 +157,6 @@ fn test_eval_lookup_trait_resolves_scoped_values() {
         .insert("sys.inner.r".to_string(), 2.5);
     ctx.boolean_parameter_values
         .insert("sys.flag".to_string(), true);
-    ctx.enum_parameter_values
-        .insert("sys.mode".to_string(), "Pkg.Mode.Fast".to_string());
     ctx.parameter_values
         .insert("source.medium.nXi".to_string(), 3);
     ctx.record_aliases.insert(
@@ -174,10 +168,6 @@ fn test_eval_lookup_trait_resolves_scoped_values() {
     assert_eq!(ctx.lookup_integer("n", "sys.alias.inner"), Some(4));
     assert_eq!(ctx.lookup_real("r", "sys.inner"), Some(2.5));
     assert_eq!(ctx.lookup_boolean("flag", "sys.inner"), Some(true));
-    assert_eq!(
-        ctx.lookup_enum("mode", "sys.inner").as_deref(),
-        Some("Pkg.Mode.Fast")
-    );
     assert_eq!(ctx.lookup_integer("medium.nXi", ""), None);
 }
 
@@ -280,7 +270,7 @@ fn test_infer_expr_dims_handles_array_comprehension() {
     };
 
     assert_eq!(
-        infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()),
+        infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()).unwrap(),
         Some(vec![3, 2])
     );
 }
@@ -315,7 +305,10 @@ fn test_infer_expr_dims_array_comprehension_with_filter_returns_none() {
         span: test_span(),
     };
 
-    assert_eq!(infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()), None);
+    assert_eq!(
+        infer_expr_dims(&expr, &DimMap::new(), &DimMap::new()).unwrap(),
+        None
+    );
 }
 
 fn seed_class(tree: &mut ClassTree, name: &str, def_id: DefId, class_type: ClassType) {
@@ -335,6 +328,7 @@ fn test_component_overrides_include_replaceable_component_defaults() {
     let mut tree = ClassTree::new();
     let host_def_id = DefId::new(10);
     let default_noise_def_id = DefId::new(11);
+    let noise_component_def_id = DefId::new(12);
 
     seed_class(
         &mut tree,
@@ -352,6 +346,7 @@ fn test_component_overrides_include_replaceable_component_defaults() {
         "noise".to_string(),
         Component {
             name: "noise".to_string(),
+            def_id: Some(noise_component_def_id),
             is_replaceable: true,
             type_def_id: Some(default_noise_def_id),
             ..Component::empty_with_span(test_span())
@@ -367,9 +362,12 @@ fn test_component_overrides_include_replaceable_component_defaults() {
     };
 
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let overrides = component_overrides(&instance, &tree, &class_index);
+    let overrides =
+        component_overrides(&instance, &tree, &class_index).expect("component override table");
     assert_eq!(
-        overrides.get("noise").map(|target| target.name.as_str()),
+        overrides
+            .get(&noise_component_def_id)
+            .map(|target| target.name.as_str()),
         Some("DefaultNoise"),
         "replaceable component defaults should seed constructor/function override aliases"
     );
@@ -380,6 +378,7 @@ fn test_component_overrides_include_non_replaceable_constructor_aliases() {
     let mut tree = ClassTree::new();
     let host_def_id = DefId::new(15);
     let friction_def_id = DefId::new(16);
+    let friction_component_def_id = DefId::new(17);
 
     seed_class(
         &mut tree,
@@ -397,6 +396,7 @@ fn test_component_overrides_include_non_replaceable_constructor_aliases() {
         "frictionParameters".to_string(),
         Component {
             name: "frictionParameters".to_string(),
+            def_id: Some(friction_component_def_id),
             is_replaceable: false,
             type_def_id: Some(friction_def_id),
             ..Component::empty_with_span(test_span())
@@ -412,10 +412,11 @@ fn test_component_overrides_include_non_replaceable_constructor_aliases() {
     };
 
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let overrides = component_overrides(&instance, &tree, &class_index);
+    let overrides =
+        component_overrides(&instance, &tree, &class_index).expect("component override table");
     assert_eq!(
         overrides
-            .get("frictionParameters")
+            .get(&friction_component_def_id)
             .map(|target| target.name.as_str()),
         Some("FrictionParameters"),
         "non-replaceable component constructor aliases should be available for rewrite"
@@ -428,6 +429,7 @@ fn test_component_overrides_prefers_explicit_redeclare_over_default() {
     let host_def_id = DefId::new(20);
     let default_noise_def_id = DefId::new(21);
     let redeclared_noise_def_id = DefId::new(22);
+    let noise_component_def_id = DefId::new(23);
 
     seed_class(
         &mut tree,
@@ -452,6 +454,7 @@ fn test_component_overrides_prefers_explicit_redeclare_over_default() {
         "noise".to_string(),
         Component {
             name: "noise".to_string(),
+            def_id: Some(noise_component_def_id),
             is_replaceable: true,
             type_def_id: Some(default_noise_def_id),
             ..Component::empty_with_span(test_span())
@@ -476,9 +479,12 @@ fn test_component_overrides_prefers_explicit_redeclare_over_default() {
     );
 
     let class_index = rumoca_ir_ast::ClassDefIndex::from_tree(&tree);
-    let overrides = component_overrides(&instance, &tree, &class_index);
+    let overrides =
+        component_overrides(&instance, &tree, &class_index).expect("component override table");
     assert_eq!(
-        overrides.get("noise").map(|target| target.name.as_str()),
+        overrides
+            .get(&default_noise_def_id)
+            .map(|target| target.name.as_str()),
         Some("RedeclaredNoise"),
         "explicit class redeclare must override default replaceable binding"
     );

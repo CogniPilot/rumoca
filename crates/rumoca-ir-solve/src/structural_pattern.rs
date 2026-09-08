@@ -1658,9 +1658,7 @@ fn apply_dependency_op(
             walk.tensor_identity(*dst_start, *size, *lanes),
         LinearOp::TensorLoad { dst_start, input, input_start, count, seed_start, lanes } =>
             walk.tensor_load(*dst_start, *input, *input_start, *count, *seed_start, *lanes),
-        op @ (LinearOp::TableBounds { .. } | LinearOp::TableLookup { .. }
-        | LinearOp::TableLookupSlope { .. } | LinearOp::TableNextEvent { .. }
-        | LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
+        op @ (LinearOp::RandomInitialState { .. } | LinearOp::RandomResult { .. }
         | LinearOp::RandomState { .. } | LinearOp::ImpureRandomInit { .. }
         | LinearOp::ImpureRandom { .. } | LinearOp::ImpureRandomInteger { .. }) =>
             walk.runtime(op)?,
@@ -2696,26 +2694,6 @@ fn apply_runtime_dependency(
     span: Option<Span>,
 ) -> Result<(), StructuralPatternError> {
     match operation {
-        LinearOp::TableBounds { dst, table_id, .. } => {
-            copy_dependency(registers, *dst, *table_id, span)
-        }
-        LinearOp::TableLookup {
-            dst,
-            table_id,
-            column,
-            input,
-        }
-        | LinearOp::TableLookupSlope {
-            dst,
-            table_id,
-            column,
-            input,
-        } => set_union_dependency(registers, *dst, [*table_id, *column, *input], span),
-        LinearOp::TableNextEvent {
-            dst,
-            table_id,
-            time,
-        } => set_union_dependency(registers, *dst, [*table_id, *time], span),
         LinearOp::RandomInitialState {
             dst,
             local_seed,

@@ -63,57 +63,14 @@ fn test_extract_array_index() {
 }
 
 #[test]
-fn test_parse_array_element_ref_simple_and_indexed_prefix() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("x"),
-        flat::Variable {
-            dims: vec![3],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-    flat.add_variable(
-        rumoca_core::VarName::new("cell[2].v"),
-        flat::Variable {
-            dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    assert_eq!(
-        parse_array_element_ref("x[1]", &flat),
-        Some((rumoca_core::VarName::new("x"), 1))
-    );
-    assert_eq!(
-        parse_array_element_ref("cell[2].v[3]", &flat),
-        Some((rumoca_core::VarName::new("cell[2].v"), 3))
-    );
-}
-
-#[test]
-fn test_parse_array_element_ref_rejects_non_scalar_or_non_terminal_subscripts() {
-    let mut flat = flat::Model::new();
-    flat.add_variable(
-        rumoca_core::VarName::new("x"),
-        flat::Variable {
-            dims: vec![2, 2],
-            ..flat::Variable::empty_with_span(test_span())
-        },
-    );
-
-    assert_eq!(parse_array_element_ref("x[1,2]", &flat), None);
-    assert_eq!(parse_array_element_ref("x[1].y", &flat), None);
-}
-
-#[test]
 fn test_scalarize_collapsed_connector_element() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("s[1].inductance.n.i"),
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -130,14 +87,14 @@ fn test_scalarize_collapsed_connector_element() {
 
 #[test]
 fn test_scalarize_collapsed_connector_element_without_dims_still_scalarizes() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("cell.cell.resistor.p.i"),
         flat::Variable {
             flow: true,
             // Collapsed connector-array fields can reach flatten with dims=[].
             dims: vec![],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -153,22 +110,22 @@ fn test_scalarize_collapsed_connector_element_without_dims_still_scalarizes() {
 }
 
 #[test]
-fn test_is_flow_variable_subscripted_with_unknown_dims() {
-    let mut flat = flat::Model::new();
+fn test_is_flow_variable_subscripted_with_unknown_dims_is_not_proven() {
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("arr.n.i"),
         flat::Variable {
             flow: true,
-            // Unknown dims in flat::Variable must still allow element flow handling.
+            // No retained rank means the subscript cannot be proven to select
+            // this flow declaration.
             dims: vec![],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
-    assert!(is_flow_variable(
-        &flat,
-        &rumoca_core::VarName::new("arr.n.i[2]")
-    ));
+    assert!(
+        is_flow_variable(&flat, &rumoca_core::VarName::new("arr.n.i[2]"), test_span(),).is_err()
+    );
 }
 
 #[test]
@@ -426,12 +383,12 @@ fn test_find_matching_var_b_keeps_trailing_connector_index_with_explicit_prefix(
 
 #[test]
 fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("plug_p.pin[2].i"),
         flat::Variable {
             flow: true,
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
     flat.add_variable(
@@ -439,7 +396,7 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
         flat::Variable {
             flow: true,
             dims: vec![3],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -452,6 +409,7 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: test_span(),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -478,19 +436,19 @@ fn test_connect_sub_variable_indexes_collapsed_b_array_member() {
 
 #[test]
 fn test_connect_sub_variable_does_not_index_scalar_b_member() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("resistor[1].p.i"),
         flat::Variable {
             flow: true,
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("r0.n.i"),
         flat::Variable {
             flow: true,
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -503,6 +461,7 @@ fn test_connect_sub_variable_does_not_index_scalar_b_member() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: test_span(),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -522,13 +481,13 @@ fn test_connect_sub_variable_does_not_index_scalar_b_member() {
 }
 
 #[test]
-fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
-    let mut flat = flat::Model::new();
+fn test_connect_sub_variable_projects_single_element_b_array_member_exactly() {
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("plug_p.pin[1].i"),
         flat::Variable {
             flow: true,
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
     flat.add_variable(
@@ -536,7 +495,7 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
         flat::Variable {
             flow: true,
             dims: vec![1],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -549,6 +508,7 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
     let mut ctx = ConnectionBuildCtx {
         flat: &flat,
         var_index: &var_index,
+        span: test_span(),
         flow_pairs: &mut flow_pairs,
         potential_uf: &mut potential_uf,
         stream_uf: &mut stream_uf,
@@ -568,26 +528,26 @@ fn test_connect_sub_variable_does_not_index_single_element_b_array_member() {
         flow_pairs,
         vec![(
             rumoca_core::VarName::new("plug_p.pin[1].i"),
-            rumoca_core::VarName::new("starpoints.pin.i")
+            rumoca_core::VarName::new("starpoints.pin.i[1]")
         )]
     );
 }
 
 #[test]
 fn test_find_sub_variables_with_array_expansion() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
 
     // Add variables for resistor[1-3].p.v and resistor[1-3].p.i
     for i in 1..=3 {
         flat.add_variable(
             rumoca_core::VarName::new(format!("resistor[{}].p.v", i)),
-            flat::Variable::empty_with_span(test_span()),
+            connection_test_variable(test_span()),
         );
         flat.add_variable(
             rumoca_core::VarName::new(format!("resistor[{}].p.i", i)),
             flat::Variable {
                 flow: true,
-                ..flat::Variable::empty_with_span(test_span())
+                ..connection_test_variable(test_span())
             },
         );
     }
@@ -607,20 +567,20 @@ fn test_find_sub_variables_with_array_expansion() {
 
 #[test]
 fn test_find_sub_variables_indexed_prefix_matches_collapsed_connector_array_fields() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     flat.add_variable(
         rumoca_core::VarName::new("s[1].inductance.n.i"),
         flat::Variable {
             flow: true,
             dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
     flat.add_variable(
         rumoca_core::VarName::new("s[1].inductance.n.v"),
         flat::Variable {
             dims: vec![4],
-            ..flat::Variable::empty_with_span(test_span())
+            ..connection_test_variable(test_span())
         },
     );
 
@@ -634,24 +594,24 @@ fn test_find_sub_variables_indexed_prefix_matches_collapsed_connector_array_fiel
 
 #[test]
 fn test_find_sub_variables_exact_match_preferred() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
 
     // Add both exact and indexed variables
     flat.add_variable(
         rumoca_core::VarName::new("r1.n.v"),
-        flat::Variable::empty_with_span(test_span()),
+        connection_test_variable(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1.n.i"),
-        flat::Variable::empty_with_span(test_span()),
+        connection_test_variable(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1[1].n.v"),
-        flat::Variable::empty_with_span(test_span()),
+        connection_test_variable(test_span()),
     );
     flat.add_variable(
         rumoca_core::VarName::new("r1[1].n.i"),
-        flat::Variable::empty_with_span(test_span()),
+        connection_test_variable(test_span()),
     );
 
     // Searching for "r1.n" should find exact matches
@@ -665,7 +625,7 @@ fn test_find_sub_variables_exact_match_preferred() {
 
 #[test]
 fn test_find_sub_variables_indexed_prefix_does_not_cross_match_connector_members() {
-    let mut flat = flat::Model::new();
+    let mut flat = connection_test_model();
     // Collapsed connector-array fields commonly appear as indexless members with
     // array dims kept on the primitive variable itself.
     for name in [
@@ -679,7 +639,7 @@ fn test_find_sub_variables_indexed_prefix_does_not_cross_match_connector_members
             flat::Variable {
                 dims: vec![1],
                 flow: name.ends_with(".i"),
-                ..flat::Variable::empty_with_span(test_span())
+                ..connection_test_variable(test_span())
             },
         );
     }

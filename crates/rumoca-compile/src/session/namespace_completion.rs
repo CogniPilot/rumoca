@@ -20,7 +20,7 @@ impl Clone for NamespaceCompletionCache {
     fn clone(&self) -> Self {
         let namespace_fingerprints = OnceLock::new();
         if let Some(fingerprints) = self.namespace_fingerprints.get() {
-            let _ = namespace_fingerprints.set(fingerprints.clone());
+            let _already_initialized = namespace_fingerprints.set(fingerprints.clone());
         }
         Self {
             class_names: self.class_names.clone(),

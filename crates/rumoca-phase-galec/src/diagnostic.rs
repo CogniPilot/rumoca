@@ -11,7 +11,42 @@
 //! say "not yet supported by the Rumoca GALEC projection" — never
 //! "unsupported by eFMI", because eFMI itself expects discretized models.
 
+use std::fmt;
+
 use rumoca_core::{Diagnostic, PhaseError, PrimaryLabel, Span};
+
+/// Complete ordered refusal set produced by one GALEC target projection.
+///
+/// Target orchestration carries this aggregate as an error source so adapters
+/// can recover every phase-local diagnostic without parsing display text.
+#[derive(Debug)]
+pub struct GalecTargetErrors(Box<[GalecTargetError]>);
+
+impl GalecTargetErrors {
+    pub fn iter(&self) -> std::slice::Iter<'_, GalecTargetError> {
+        self.0.iter()
+    }
+}
+
+impl From<Vec<GalecTargetError>> for GalecTargetErrors {
+    fn from(errors: Vec<GalecTargetError>) -> Self {
+        Self(errors.into_boxed_slice())
+    }
+}
+
+impl fmt::Display for GalecTargetErrors {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (ordinal, error) in self.0.iter().enumerate() {
+            if ordinal != 0 {
+                formatter.write_str("; ")?;
+            }
+            write!(formatter, "{error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for GalecTargetErrors {}
 
 /// Errors produced by the DAE → GALEC projection, with stable `EGT0xx` codes.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -20,9 +55,14 @@ pub enum GalecTargetError {
     #[error(
         "model has continuous dynamics ({states} continuous state(s), \
          {equations} continuous equation(s)); continuous states are not yet \
-         supported by the Rumoca GALEC projection"
+         supported by the Rumoca GALEC projection \
+         [unsupported-feature:continuous-dynamics]"
     )]
-    ContinuousDynamics { states: usize, equations: usize },
+    ContinuousDynamics {
+        states: usize,
+        equations: usize,
+        span: Option<Span>,
+    },
 
     /// GAL-025: external functions are a projection-scope rejection.
     #[error(
@@ -250,6 +290,38 @@ pub enum GalecTargetError {
         "model determines {definitions} discrete initial value(s) in an initial section; algorithm-determined initial values are not yet supported by the Rumoca GALEC projection (Startup initializes from `start` values only)"
     )]
     InitialDiscreteValues { definitions: usize },
+
+    /// A current-tick dependency named a variable identity outside the exact
+    /// checked DAE view being projected. Continuing would silently delete the
+    /// dependency edge and could invent an executable order.
+    #[error(
+        "internal GALEC projection error: current-tick dependency references foreign DAE variable #{variable_index}"
+    )]
+    ForeignCausalRead { variable_index: u32, span: Span },
+
+    /// A complete scalar-definition family cannot be addressed by the DAE's
+    /// u32 scalar identity domain. The family is refused before traversal.
+    #[error(
+        "internal GALEC projection error: causal definition family for `{variable}` has {scalar_count} scalars, exceeding the u32 identity domain"
+    )]
+    CausalScalarDefinitionOverflow {
+        variable: String,
+        scalar_count: usize,
+        span: Span,
+    },
+
+    /// Structural analysis claimed a complete scalar-definition family but
+    /// supplied no definition for one scalar. No partial family may authorize
+    /// a same-tick schedule.
+    #[error(
+        "internal GALEC projection error: causal definition family for `{variable}` is missing scalar {missing_scalar} of {scalar_count}"
+    )]
+    IncompleteCausalScalarDefinitions {
+        variable: String,
+        missing_scalar: u32,
+        scalar_count: u32,
+        span: Span,
+    },
 }
 
 impl GalecTargetError {
@@ -279,6 +351,9 @@ impl GalecTargetError {
             Self::InitialEquations { .. } => "EGT021",
             Self::InitialDiscreteValues { .. } => "EGT022",
             Self::DependentParameterNotFoldable { .. } => "EGT023",
+            Self::ForeignCausalRead { .. } => "EGT024",
+            Self::CausalScalarDefinitionOverflow { .. } => "EGT025",
+            Self::IncompleteCausalScalarDefinitions { .. } => "EGT026",
         }
     }
 
@@ -291,14 +366,19 @@ impl GalecTargetError {
             | Self::NonPositiveDimension { span, .. }
             | Self::UnclassifiableVariable { span, .. }
             | Self::UnresolvedScalarType { span, .. } => (!span.is_dummy()).then_some(*span),
-            Self::AttributeNotEvaluable { span, .. }
+            Self::ForeignCausalRead { span, .. }
+            | Self::CausalScalarDefinitionOverflow { span, .. }
+            | Self::IncompleteCausalScalarDefinitions { span, .. } => {
+                (!span.is_dummy()).then_some(*span)
+            }
+            Self::ContinuousDynamics { span, .. }
+            | Self::AttributeNotEvaluable { span, .. }
             | Self::AttributeTypeMismatch { span, .. }
             | Self::UnsupportedFeature { span, .. }
             | Self::UnknownVariableReference { span, .. }
             | Self::DependentParameterNotFoldable { span, .. }
             | Self::LoweringTypeMismatch { span, .. } => span.filter(|span| !span.is_dummy()),
-            Self::ContinuousDynamics { .. }
-            | Self::RuntimeEvents { .. }
+            Self::RuntimeEvents { .. }
             | Self::DynamicClock { .. }
             | Self::NoPeriodicClock
             | Self::PartialModel
@@ -315,6 +395,9 @@ impl GalecTargetError {
         let message = match self {
             Self::UnsupportedFeature { feature, .. } => {
                 format!("unsupported GALEC projection feature `{feature}`")
+            }
+            Self::ContinuousDynamics { .. } => {
+                "unsupported GALEC projection feature `continuous-dynamics`".to_owned()
             }
             _ => "GALEC projection rejected this construct".to_owned(),
         };
@@ -364,6 +447,7 @@ mod tests {
         let diagnostic = GalecTargetError::ContinuousDynamics {
             states: 1,
             equations: 1,
+            span: None,
         }
         .to_diagnostic();
         assert_eq!(diagnostic.code.as_deref(), Some("EGT001"));

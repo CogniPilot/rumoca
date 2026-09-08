@@ -21,6 +21,7 @@ fn discrete_valued_input_is_external_and_excluded_from_event_iteration() {
         model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(1),
                 integer,
                 declaration,
                 dae::VariableAttributes {
@@ -59,6 +60,7 @@ fn unconditional_discrete_real_definition_does_not_require_a_clock() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("d"),
+                rumoca_core::InstanceId::new(2),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -114,6 +116,7 @@ fn discrete_real_pair_model(
         let first = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("a"),
+                rumoca_core::InstanceId::new(3),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -122,6 +125,7 @@ fn discrete_real_pair_model(
         let second = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("b"),
+                rumoca_core::InstanceId::new(4),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -225,6 +229,7 @@ fn nonlinear_conditional_discrete_residual_fails_before_runtime() {
         let variable = model.variables(|variables| {
             variables.discrete_real(
                 VarName::new("z"),
+                rumoca_core::InstanceId::new(5),
                 real,
                 declaration,
                 dae::VariableAttributes::default(),
@@ -297,6 +302,7 @@ fn structured_b1c_owner_lowers_to_one_compact_map_without_scalar_rows() {
         let target = model.variables(|variables| {
             variables.discrete_value(
                 VarName::new("m"),
+                rumoca_core::InstanceId::new(6),
                 boolean_array,
                 declaration,
                 dae::VariableAttributes::default(),

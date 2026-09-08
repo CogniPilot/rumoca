@@ -129,7 +129,7 @@ impl std::fmt::Display for TypeMismatchDetail {
 /// GALEC language errors with stable `EG0xx` codes.
 ///
 /// Structural closure emits EG001–EG009 before the six semantic analyses add
-/// EG010–EG040. Every finding reuses [`Location`].
+/// EG010–EG043. Every finding reuses [`Location`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GalecError {
     /// GAL-019 / trap T7: only finite Real literals have a conformant
@@ -226,6 +226,15 @@ pub enum GalecError {
         location: Location,
         detail: Box<TypeMismatchDetail>,
     },
+
+    /// GAL-020: every manifest-visible/block variable carries one start.
+    #[error("{location}: block variable `{name}` has no start expression [EG042]")]
+    MissingVariableStart { location: Location, name: String },
+
+    /// GAL-041: declarations outside the GALEC-mandated start classes may
+    /// not fabricate an initialization subject.
+    #[error("{location}: declaration `{name}` may not carry a start expression [EG043]")]
+    UnexpectedVariableStart { location: Location, name: String },
 
     /// A call passes the wrong number of arguments.
     #[error(
@@ -417,6 +426,8 @@ impl GalecError {
             Self::UnknownFunction { .. } => "EG015",
             Self::BinaryOperandTypes { .. } => "EG016",
             Self::TypeMismatch { .. } => "EG017",
+            Self::MissingVariableStart { .. } => "EG042",
+            Self::UnexpectedVariableStart { .. } => "EG043",
             Self::CallInputArity { .. } => "EG018",
             Self::CallOutputArity { .. } => "EG019",
             Self::ComponentTypedDeclaration { .. } => "EG020",
@@ -465,6 +476,8 @@ impl GalecError {
             | Self::UnknownFunction { location, .. }
             | Self::BinaryOperandTypes { location, .. }
             | Self::TypeMismatch { location, .. }
+            | Self::MissingVariableStart { location, .. }
+            | Self::UnexpectedVariableStart { location, .. }
             | Self::CallInputArity { location, .. }
             | Self::CallOutputArity { location, .. }
             | Self::ComponentTypedDeclaration { location, .. }

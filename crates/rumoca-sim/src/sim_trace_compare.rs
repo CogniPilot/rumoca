@@ -1,13 +1,16 @@
+mod metric_validation;
 mod normalization;
 #[cfg(test)]
 mod tests;
+
+use metric_validation::validate_model_metric;
 
 use normalization::{
     ReferenceScale, array_element_base, range_is_degenerate, reference_scale,
     robust_reference_percentiles, sample_range,
 };
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 const GRID_DEDUP_EPS: f64 = 1.0e-12;
@@ -45,19 +48,20 @@ pub const BAD_CHANNEL_MAX_THRESHOLD: f64 = 0.20;
 pub const SEVERE_CHANNEL_MAX_THRESHOLD: f64 = 0.80;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimTrace {
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub model_name: Option<String>,
     pub times: Vec<f64>,
     pub names: Vec<String>,
     pub data: Vec<Vec<Option<f64>>>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub variable_meta: Option<Vec<SimTraceVariableMeta>>,
     /// Typed evidence that pointwise comparison cannot certify this trace.
     ///
     /// Absence means the trace remains a normal pointwise-comparison candidate;
     /// it does not mean the trace has been certified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub certification_profile: Option<TraceCertificationProfile>,
 }
 
@@ -93,6 +97,7 @@ pub enum TraceRandomOpKind {
 
 /// Machine-readable evidence for a non-identifiability classification.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum TraceNonidentifiabilityEvidence {
     Stochastic {
@@ -110,6 +115,7 @@ pub enum TraceNonidentifiabilityEvidence {
 
 /// A non-identifiable trace is explicitly uncertified until its obligations exist.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TraceCertificationProfile {
     pub evidence: TraceNonidentifiabilityEvidence,
     pub outstanding_proof_obligations: Vec<TraceProofObligation>,
@@ -218,22 +224,23 @@ fn require_obligations(
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimTraceVariableMeta {
     pub name: String,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub role: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub value_type: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub variability: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub time_domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelDeviationMetric {
     pub name: String,
-    #[serde(default)]
     pub shape: TraceDeviationShape,
     pub samples: usize,
     pub integral_duration: f64,
@@ -241,28 +248,28 @@ pub struct ChannelDeviationMetric {
     pub mean_abs_error: f64,
     pub normalization_scale: f64,
     /// Robust (p95 - p05) spread of the reference channel before flooring.
-    #[serde(default)]
     pub reference_range: f64,
     /// Robust `max(|p05|, |p95|)` magnitude of the reference channel.
-    #[serde(default)]
     pub reference_magnitude: f64,
     /// Sibling-derived scale of the array this channel belongs to, recorded
     /// whenever one was available so triage can see why an information-free
     /// channel was normalized the way it was.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub reference_array_group_floor: Option<f64>,
     pub normalized_l1_error: f64,
     pub bounded_normalized_l1_error: f64,
     pub normalized_max_abs_error: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_abs_error: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub initial_bounded_normalized_error: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct InitialConditionStats {
     pub channels_compared: usize,
+    pub channels_unmeasured: usize,
     pub high_count: usize,
     pub minor_count: usize,
     pub deviation_count: usize,
@@ -275,6 +282,27 @@ pub struct InitialConditionStats {
     pub violation_mass_mean_per_channel: f64,
     pub mean_channel_bounded_normalized_error: f64,
     pub max_channel_bounded_normalized_error: f64,
+}
+
+impl InitialConditionStats {
+    fn no_channels_compared() -> Self {
+        Self {
+            channels_compared: 0,
+            channels_unmeasured: 0,
+            high_count: 0,
+            minor_count: 0,
+            deviation_count: 0,
+            severe_count: 0,
+            high_percent: 0.0,
+            minor_percent: 0.0,
+            deviation_percent: 0.0,
+            severe_percent: 0.0,
+            violation_mass_total: 0.0,
+            violation_mass_mean_per_channel: 0.0,
+            mean_channel_bounded_normalized_error: 0.0,
+            max_channel_bounded_normalized_error: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -314,35 +342,287 @@ impl TraceDeviationShape {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelDeviationMetric {
-    pub model_name: String,
-    pub compared_variables: usize,
-    pub samples_compared: usize,
-    pub bounded_normalized_l1_score: f64,
-    pub mean_channel_bounded_normalized_l1: f64,
-    pub max_channel_bounded_normalized_l1: f64,
-    #[serde(default)]
-    pub channel_high_count: usize,
-    #[serde(default)]
-    pub channel_minor_count: usize,
-    #[serde(default)]
-    pub channel_deviation_count: usize,
-    #[serde(default)]
-    pub channel_severe_count: usize,
-    #[serde(default)]
-    pub channel_high_percent: f64,
-    #[serde(default)]
-    pub channel_minor_percent: f64,
-    #[serde(default)]
-    pub channel_deviation_percent: f64,
-    #[serde(default)]
-    pub channel_severe_percent: f64,
-    #[serde(default)]
-    pub channel_violation_mass: f64,
-    #[serde(default)]
-    pub initial_condition: InitialConditionStats,
-    pub worst_variables: Vec<ChannelDeviationMetric>,
+    model_name: String,
+    channel_partition: TraceChannelPartition,
+    samples_compared: usize,
+    bounded_normalized_l1_score: f64,
+    mean_channel_bounded_normalized_l1: f64,
+    max_channel_bounded_normalized_l1: f64,
+    channel_high_count: usize,
+    channel_minor_count: usize,
+    channel_deviation_count: usize,
+    channel_severe_count: usize,
+    channel_high_percent: f64,
+    channel_minor_percent: f64,
+    channel_deviation_percent: f64,
+    channel_severe_percent: f64,
+    channel_violation_mass: f64,
+    initial_condition: InitialConditionStats,
+    worst_variables: Vec<ChannelDeviationMetric>,
+}
+
+impl ModelDeviationMetric {
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    pub fn channel_partition(&self) -> &TraceChannelPartition {
+        &self.channel_partition
+    }
+
+    pub fn compared_variables(&self) -> usize {
+        self.channel_partition.compared().len()
+    }
+
+    pub fn has_complete_channel_coverage(&self) -> bool {
+        self.channel_partition.non_compared_count() == 0
+    }
+
+    pub fn has_complete_initial_condition_coverage(&self) -> bool {
+        self.initial_condition.channels_unmeasured == 0
+    }
+
+    pub fn samples_compared(&self) -> usize {
+        self.samples_compared
+    }
+
+    pub fn bounded_normalized_l1_score(&self) -> f64 {
+        self.bounded_normalized_l1_score
+    }
+
+    pub fn mean_channel_bounded_normalized_l1(&self) -> f64 {
+        self.mean_channel_bounded_normalized_l1
+    }
+
+    pub fn max_channel_bounded_normalized_l1(&self) -> f64 {
+        self.max_channel_bounded_normalized_l1
+    }
+
+    pub fn channel_high_count(&self) -> usize {
+        self.channel_high_count
+    }
+
+    pub fn channel_minor_count(&self) -> usize {
+        self.channel_minor_count
+    }
+
+    pub fn channel_deviation_count(&self) -> usize {
+        self.channel_deviation_count
+    }
+
+    pub fn channel_severe_count(&self) -> usize {
+        self.channel_severe_count
+    }
+
+    pub fn channel_deviation_percent(&self) -> f64 {
+        self.channel_deviation_percent
+    }
+
+    pub fn channel_violation_mass(&self) -> f64 {
+        self.channel_violation_mass
+    }
+
+    pub fn initial_condition(&self) -> &InitialConditionStats {
+        &self.initial_condition
+    }
+
+    pub fn worst_variables(&self) -> &[ChannelDeviationMetric] {
+        &self.worst_variables
+    }
+
+    /// Re-derive the channel universe from the source traces before treating a
+    /// deserialized metric as evidence. Local wire validation cannot prove that
+    /// a producer did not omit a source channel.
+    pub fn verify_channel_partition(
+        &self,
+        rumoca: &SimTrace,
+        reference: &SimTrace,
+    ) -> Result<(), TraceCompareError> {
+        self.channel_partition
+            .verify_against_traces(rumoca, reference)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelDeviationMetricWire {
+    model_name: String,
+    channel_partition: TraceChannelPartition,
+    samples_compared: usize,
+    bounded_normalized_l1_score: f64,
+    mean_channel_bounded_normalized_l1: f64,
+    max_channel_bounded_normalized_l1: f64,
+    channel_high_count: usize,
+    channel_minor_count: usize,
+    channel_deviation_count: usize,
+    channel_severe_count: usize,
+    channel_high_percent: f64,
+    channel_minor_percent: f64,
+    channel_deviation_percent: f64,
+    channel_severe_percent: f64,
+    channel_violation_mass: f64,
+    initial_condition: InitialConditionStats,
+    worst_variables: Vec<ChannelDeviationMetric>,
+}
+
+/// Complete, deterministic accounting of the names carried by two traces.
+///
+/// The four populations are disjoint, strictly sorted, and duplicate-free.
+/// Private immutable storage prevents consumers from manufacturing a partial
+/// view by deleting names after construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TraceChannelPartition {
+    compared: Box<[String]>,
+    shared_unmeasured: Box<[String]>,
+    rumoca_only: Box<[String]>,
+    reference_only: Box<[String]>,
+}
+
+impl TraceChannelPartition {
+    fn checked(
+        compared: Vec<String>,
+        shared_unmeasured: Vec<String>,
+        rumoca_only: Vec<String>,
+        reference_only: Vec<String>,
+    ) -> Result<Self, TraceChannelPartitionError> {
+        for (population, names) in [
+            ("compared", compared.as_slice()),
+            ("shared_unmeasured", shared_unmeasured.as_slice()),
+            ("rumoca_only", rumoca_only.as_slice()),
+            ("reference_only", reference_only.as_slice()),
+        ] {
+            if names.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(TraceChannelPartitionError::NonCanonical { population });
+            }
+        }
+
+        let mut seen = HashSet::new();
+        for name in compared
+            .iter()
+            .chain(&shared_unmeasured)
+            .chain(&rumoca_only)
+            .chain(&reference_only)
+        {
+            if !seen.insert(name.as_str()) {
+                return Err(TraceChannelPartitionError::OverlappingName { name: name.clone() });
+            }
+        }
+
+        Ok(Self {
+            compared: compared.into_boxed_slice(),
+            shared_unmeasured: shared_unmeasured.into_boxed_slice(),
+            rumoca_only: rumoca_only.into_boxed_slice(),
+            reference_only: reference_only.into_boxed_slice(),
+        })
+    }
+
+    pub fn compared(&self) -> &[String] {
+        &self.compared
+    }
+
+    pub fn shared_unmeasured(&self) -> &[String] {
+        &self.shared_unmeasured
+    }
+
+    pub fn rumoca_only(&self) -> &[String] {
+        &self.rumoca_only
+    }
+
+    pub fn reference_only(&self) -> &[String] {
+        &self.reference_only
+    }
+
+    pub fn non_compared_count(&self) -> usize {
+        self.shared_unmeasured.len() + self.rumoca_only.len() + self.reference_only.len()
+    }
+
+    /// Check completeness against the raw traces at the evidence-consumption
+    /// boundary. Construction from the comparator is already complete and does
+    /// not call this checker a second time.
+    pub fn verify_against_traces(
+        &self,
+        rumoca: &SimTrace,
+        reference: &SimTrace,
+    ) -> Result<(), TraceCompareError> {
+        validate_trace("Rumoca", rumoca)?;
+        validate_trace("reference", reference)?;
+        let derived = match compare_common_channels(rumoca, reference) {
+            Ok(comparison) => comparison.channel_partition,
+            Err(TraceCompareError::NoCommonVariables { channel_partition })
+            | Err(TraceCompareError::NoComparableSamples { channel_partition }) => {
+                channel_partition
+            }
+            Err(error) => return Err(error),
+        };
+        if *self != derived {
+            return Err(TraceCompareError::ChannelAccountingMismatch);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum TraceChannelPartitionError {
+    #[error("trace channel population `{population}` is not strictly sorted and unique")]
+    NonCanonical { population: &'static str },
+    #[error("trace channel `{name}` occurs in more than one accounting population")]
+    OverlappingName { name: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TraceChannelPartitionWire {
+    compared: Vec<String>,
+    shared_unmeasured: Vec<String>,
+    rumoca_only: Vec<String>,
+    reference_only: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for TraceChannelPartition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = TraceChannelPartitionWire::deserialize(deserializer)?;
+        Self::checked(
+            wire.compared,
+            wire.shared_unmeasured,
+            wire.rumoca_only,
+            wire.reference_only,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelDeviationMetric {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = ModelDeviationMetricWire::deserialize(deserializer)?;
+        validate_model_metric(&wire).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            model_name: wire.model_name,
+            channel_partition: wire.channel_partition,
+            samples_compared: wire.samples_compared,
+            bounded_normalized_l1_score: wire.bounded_normalized_l1_score,
+            mean_channel_bounded_normalized_l1: wire.mean_channel_bounded_normalized_l1,
+            max_channel_bounded_normalized_l1: wire.max_channel_bounded_normalized_l1,
+            channel_high_count: wire.channel_high_count,
+            channel_minor_count: wire.channel_minor_count,
+            channel_deviation_count: wire.channel_deviation_count,
+            channel_severe_count: wire.channel_severe_count,
+            channel_high_percent: wire.channel_high_percent,
+            channel_minor_percent: wire.channel_minor_percent,
+            channel_deviation_percent: wire.channel_deviation_percent,
+            channel_severe_percent: wire.channel_severe_percent,
+            channel_violation_mass: wire.channel_violation_mass,
+            initial_condition: wire.initial_condition,
+            worst_variables: wire.worst_variables,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -358,6 +638,16 @@ pub struct AgreementCounts {
     pub high_agreement: usize,
     pub minor_agreement: usize,
     pub deviation: usize,
+}
+
+/// Current trace evidence must spell an optional field as either a value or
+/// explicit `null`; omission is not a compatibility path.
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -379,9 +669,20 @@ pub enum TraceCompareError {
     #[error("{trace} trace is malformed: {reason}")]
     MalformedTrace { trace: &'static str, reason: String },
     #[error("trace has no common variables")]
-    NoCommonVariables,
+    NoCommonVariables {
+        channel_partition: TraceChannelPartition,
+    },
     #[error("trace has no comparable variable samples")]
-    NoComparableSamples,
+    NoComparableSamples {
+        channel_partition: TraceChannelPartition,
+    },
+    #[error("trace channel accounting construction failed: {source}")]
+    ChannelAccounting {
+        #[source]
+        source: TraceChannelPartitionError,
+    },
+    #[error("trace channel accounting does not match the source trace universes")]
+    ChannelAccountingMismatch,
 }
 
 pub fn load_trace_json(path: &Path) -> Result<SimTrace, TraceCompareError> {
@@ -408,14 +709,15 @@ pub fn compare_model_traces(
     validate_trace("Rumoca", rumoca)?;
     validate_trace("OMC", omc)?;
 
-    let mut channels = compare_common_channels(rumoca, omc)?;
+    let comparison = compare_common_channels(rumoca, omc)?;
+    let mut channels = comparison.metrics;
     channels.sort_by(|a, b| {
         b.bounded_normalized_l1_error
             .partial_cmp(&a.bounded_normalized_l1_error)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let compared_variables = channels.len();
+    let compared_variables = comparison.channel_partition.compared().len();
     let samples_compared = channels.iter().map(|m| m.samples).sum::<usize>();
     let mean_channel_bounded_l1 = channels
         .iter()
@@ -451,7 +753,7 @@ pub fn compare_model_traces(
 
     Ok(ModelDeviationMetric {
         model_name: model_name.to_string(),
-        compared_variables,
+        channel_partition: comparison.channel_partition,
         samples_compared,
         bounded_normalized_l1_score,
         mean_channel_bounded_normalized_l1: mean_channel_bounded_l1,
@@ -470,56 +772,94 @@ pub fn compare_model_traces(
     })
 }
 
-/// Per-channel metrics for every variable the two traces have in common.
+struct CorrelatedTraceChannel<'a> {
+    name: &'a str,
+    rumoca_values: &'a [Option<f64>],
+    reference_values: &'a [Option<f64>],
+}
+
+struct ComparedTraceChannels {
+    metrics: Vec<ChannelDeviationMetric>,
+    channel_partition: TraceChannelPartition,
+}
+
+/// Per-channel metrics plus complete name accounting for the two traces.
 fn compare_common_channels(
     rumoca: &SimTrace,
     omc: &SimTrace,
-) -> Result<Vec<ChannelDeviationMetric>, TraceCompareError> {
+) -> Result<ComparedTraceChannels, TraceCompareError> {
     let rumoca_series = series_map(rumoca);
     let omc_series = series_map(omc);
     let rumoca_discrete_channels = discrete_channel_names(rumoca);
     let omc_discrete_channels = discrete_channel_names(omc);
-    let rumoca_names: HashSet<String> = rumoca_series.keys().cloned().collect();
-    let omc_names: HashSet<String> = omc_series.keys().cloned().collect();
-    let common: HashSet<String> = rumoca_names.intersection(&omc_names).cloned().collect();
-    if common.is_empty() {
-        return Err(TraceCompareError::NoCommonVariables);
+
+    let mut shared = Vec::new();
+    let mut rumoca_only = Vec::new();
+    for (&name, &rumoca_values) in &rumoca_series {
+        if let Some(&reference_values) = omc_series.get(name) {
+            shared.push(CorrelatedTraceChannel {
+                name,
+                rumoca_values,
+                reference_values,
+            });
+        } else {
+            rumoca_only.push(name.to_string());
+        }
     }
+    let reference_only = omc_series
+        .keys()
+        .filter(|name| !rumoca_series.contains_key(**name))
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
 
     let array_group_floors = reference_array_group_floors(
         &omc.times,
-        &omc_series,
-        &common,
+        &shared,
         &rumoca_discrete_channels,
         &omc_discrete_channels,
         comparison_window(&rumoca.times, &omc.times),
     );
 
-    let channels: Vec<ChannelDeviationMetric> = common
-        .into_iter()
-        .filter_map(|name| {
-            let is_discrete_channel =
-                rumoca_discrete_channels.contains(&name) || omc_discrete_channels.contains(&name);
-            let array_group_floor = if is_discrete_channel {
-                None
-            } else {
-                array_element_base(&name)
-                    .and_then(|base| array_group_floors.get(base))
-                    .copied()
-            };
-            compare_channel(
-                &name,
-                ChannelSeries::new(&rumoca.times, rumoca_series.get(&name)?),
-                ChannelSeries::new(&omc.times, omc_series.get(&name)?),
-                is_discrete_channel,
-                array_group_floor,
-            )
-        })
-        .collect();
-    if channels.is_empty() {
-        return Err(TraceCompareError::NoComparableSamples);
+    let mut channels = Vec::with_capacity(shared.len());
+    let mut compared = Vec::with_capacity(shared.len());
+    let mut shared_unmeasured = Vec::new();
+    for channel in shared {
+        let is_discrete_channel = rumoca_discrete_channels.contains(channel.name)
+            || omc_discrete_channels.contains(channel.name);
+        let array_group_floor = if is_discrete_channel {
+            None
+        } else {
+            array_element_base(channel.name)
+                .and_then(|base| array_group_floors.get(base))
+                .copied()
+        };
+        match compare_channel(
+            channel.name,
+            ChannelSeries::new(&rumoca.times, channel.rumoca_values),
+            ChannelSeries::new(&omc.times, channel.reference_values),
+            is_discrete_channel,
+            array_group_floor,
+        ) {
+            Some(metric) => {
+                compared.push(channel.name.to_string());
+                channels.push(metric);
+            }
+            None => shared_unmeasured.push(channel.name.to_string()),
+        }
     }
-    Ok(channels)
+    let channel_partition =
+        TraceChannelPartition::checked(compared, shared_unmeasured, rumoca_only, reference_only)
+            .map_err(|source| TraceCompareError::ChannelAccounting { source })?;
+    if channel_partition.compared().is_empty() && channel_partition.shared_unmeasured().is_empty() {
+        return Err(TraceCompareError::NoCommonVariables { channel_partition });
+    }
+    if channels.is_empty() {
+        return Err(TraceCompareError::NoComparableSamples { channel_partition });
+    }
+    Ok(ComparedTraceChannels {
+        metrics: channels,
+        channel_partition,
+    })
 }
 
 fn validate_trace(trace_label: &'static str, trace: &SimTrace) -> Result<(), TraceCompareError> {
@@ -597,8 +937,7 @@ fn comparison_window(rumoca_times: &[f64], omc_times: &[f64]) -> Option<(f64, f6
 /// replaces.
 fn reference_array_group_floors(
     omc_times: &[f64],
-    omc_series: &HashMap<String, Vec<Option<f64>>>,
-    names: &HashSet<String>,
+    shared_channels: &[CorrelatedTraceChannel<'_>],
     rumoca_discrete_channels: &HashSet<String>,
     omc_discrete_channels: &HashSet<String>,
     window: Option<(f64, f64)>,
@@ -607,19 +946,17 @@ fn reference_array_group_floors(
     let Some((start, end)) = window else {
         return floors;
     };
-    for name in names {
+    for channel in shared_channels {
+        let name = channel.name;
         if rumoca_discrete_channels.contains(name) || omc_discrete_channels.contains(name) {
             continue;
         }
         let Some(base) = array_element_base(name) else {
             continue;
         };
-        let Some(values) = omc_series.get(name) else {
-            continue;
-        };
         let samples = omc_times
             .iter()
-            .zip(values.iter())
+            .zip(channel.reference_values)
             .filter(|(time, _)| **time >= start && **time <= end)
             .filter_map(|(_, value)| value.filter(|value| value.is_finite()))
             .collect::<Vec<_>>();
@@ -648,8 +985,12 @@ fn initial_condition_stats(channels: &[ChannelDeviationMetric]) -> InitialCondit
         .filter(|value| value.is_finite())
         .collect::<Vec<_>>();
     let channels_compared = errors.len();
+    let channels_unmeasured = channels.len() - channels_compared;
     if channels_compared == 0 {
-        return InitialConditionStats::default();
+        return InitialConditionStats {
+            channels_unmeasured,
+            ..InitialConditionStats::no_channels_compared()
+        };
     }
 
     let counts = count_channel_agreement_bands_default(errors.iter().copied());
@@ -664,6 +1005,7 @@ fn initial_condition_stats(channels: &[ChannelDeviationMetric]) -> InitialCondit
     let total = channels_compared as f64;
     InitialConditionStats {
         channels_compared,
+        channels_unmeasured,
         high_count: counts.high_agreement,
         minor_count: counts.minor_agreement,
         deviation_count: counts.deviation,
@@ -725,30 +1067,6 @@ pub fn classify_channel_error(
     )
 }
 
-fn channel_share_triplet(metric: &ModelDeviationMetric) -> Option<(f64, f64, f64)> {
-    let counted_total =
-        metric.channel_high_count + metric.channel_minor_count + metric.channel_deviation_count;
-    if counted_total > 0 {
-        let total = counted_total as f64;
-        return Some((
-            metric.channel_high_count as f64 / total,
-            metric.channel_minor_count as f64 / total,
-            metric.channel_deviation_count as f64 / total,
-        ));
-    }
-    let sum = metric.channel_high_percent
-        + metric.channel_minor_percent
-        + metric.channel_deviation_percent;
-    if sum > 0.0 {
-        return Some((
-            metric.channel_high_percent / sum,
-            metric.channel_minor_percent / sum,
-            metric.channel_deviation_percent / sum,
-        ));
-    }
-    None
-}
-
 fn channel_count_share_at_least(count: usize, total: usize, threshold: f64) -> bool {
     (count as f64) + THRESHOLD_COMPARE_EPS >= threshold * total as f64
 }
@@ -766,49 +1084,29 @@ pub fn classify_trace_metric_channel_distribution(
 ) -> AgreementBand {
     let counted_total =
         metric.channel_high_count + metric.channel_minor_count + metric.channel_deviation_count;
-    if counted_total > 0 {
-        if channel_count_share_at_least(
-            metric.channel_high_count,
-            counted_total,
-            high_min_high_channel_share,
-        ) && channel_count_share_at_most(
-            metric.channel_deviation_count,
-            counted_total,
-            high_max_deviation_channel_share,
-        ) {
-            return AgreementBand::HighAgreement;
-        }
-        if channel_count_share_at_least(
-            metric.channel_high_count + metric.channel_minor_count,
-            counted_total,
-            minor_min_high_plus_minor_channel_share,
-        ) && channel_count_share_at_most(
-            metric.channel_deviation_count,
-            counted_total,
-            minor_max_deviation_channel_share,
-        ) {
-            return AgreementBand::MinorAgreement;
-        }
+    if counted_total == 0 {
         return AgreementBand::Deviation;
     }
-
-    let Some((high_share, minor_share, deviation_share)) = channel_share_triplet(metric) else {
-        return classify_trace_metric(
-            metric,
-            HIGH_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-            HIGH_AGREEMENT_MEAN_CHANNEL_THRESHOLD,
-            MINOR_AGREEMENT_MAX_CHANNEL_THRESHOLD,
-            MINOR_AGREEMENT_MEAN_CHANNEL_THRESHOLD,
-        );
-    };
-    if high_share >= high_min_high_channel_share
-        && deviation_share <= high_max_deviation_channel_share
-    {
+    if channel_count_share_at_least(
+        metric.channel_high_count,
+        counted_total,
+        high_min_high_channel_share,
+    ) && channel_count_share_at_most(
+        metric.channel_deviation_count,
+        counted_total,
+        high_max_deviation_channel_share,
+    ) {
         return AgreementBand::HighAgreement;
     }
-    if high_share + minor_share >= minor_min_high_plus_minor_channel_share
-        && deviation_share <= minor_max_deviation_channel_share
-    {
+    if channel_count_share_at_least(
+        metric.channel_high_count + metric.channel_minor_count,
+        counted_total,
+        minor_min_high_plus_minor_channel_share,
+    ) && channel_count_share_at_most(
+        metric.channel_deviation_count,
+        counted_total,
+        minor_max_deviation_channel_share,
+    ) {
         return AgreementBand::MinorAgreement;
     }
     AgreementBand::Deviation
@@ -864,12 +1162,12 @@ pub fn count_channel_agreement_bands_default(
     )
 }
 
-fn series_map(trace: &SimTrace) -> HashMap<String, Vec<Option<f64>>> {
+fn series_map(trace: &SimTrace) -> BTreeMap<&str, &[Option<f64>]> {
     trace
         .names
         .iter()
-        .cloned()
-        .zip(trace.data.iter().cloned())
+        .map(String::as_str)
+        .zip(trace.data.iter().map(Vec::as_slice))
         .collect()
 }
 
@@ -902,7 +1200,7 @@ struct ChannelErrorAccumulator {
 fn accumulate_channel_error(
     samples: &[(f64, Option<f64>, Option<f64>)],
     use_step_hold: bool,
-) -> ChannelErrorAccumulator {
+) -> Option<ChannelErrorAccumulator> {
     let mut acc = ChannelErrorAccumulator {
         ref_samples: Vec::with_capacity(samples.len() * 2),
         paired_samples: Vec::with_capacity(samples.len() * 2),
@@ -918,7 +1216,7 @@ fn accumulate_channel_error(
             continue;
         }
         let (Some(r0), Some(o0), Some(r1), Some(o1)) = (r0, o0, r1, o1) else {
-            continue;
+            return None;
         };
         let e0 = (r0 - o0).abs();
         let e1 = (r1 - o1).abs();
@@ -939,7 +1237,7 @@ fn accumulate_channel_error(
         acc.paired_samples.push((t0, r0, o0));
         acc.paired_samples.push((t1, r1, o1));
     }
-    acc
+    Some(acc)
 }
 
 fn compare_channel(
@@ -969,7 +1267,7 @@ fn compare_channel(
         })
         .collect::<Vec<_>>();
 
-    let acc = accumulate_channel_error(&samples, use_step_hold);
+    let acc = accumulate_channel_error(&samples, use_step_hold)?;
     if acc.ref_samples.len() < 2 || acc.integral_duration <= 0.0 {
         return None;
     }

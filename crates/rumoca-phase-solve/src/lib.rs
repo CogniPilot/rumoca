@@ -5,12 +5,15 @@
 //! DAE. A continuous system that cannot be proved computable is rejected at
 //! this boundary with the responsible source span.
 
+mod algorithm;
 mod artifacts;
 mod error;
 mod layout;
 mod lower;
 mod model_values;
 mod model_wire;
+mod scalar_constant_derivative_refinement;
+mod variable_catalog_refinement;
 
 pub mod ad;
 pub mod diagnostic_codes;
@@ -20,15 +23,23 @@ pub use ad::{
     lower_compute_block_full_jvp, lower_compute_block_jvp, lower_scalar_program_block_ad,
     lower_scalar_program_block_full_ad_with_spans,
 };
+pub use algorithm::{AlgorithmLowerError, lower_solve_algorithm_product};
 pub use error::LowerError;
 pub use layout::build_var_layout;
 pub use model_values::{
-    LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage, lower_solve_model,
+    LoweredSolveModel, SolveModelLoweringError, SolveModelLoweringStage,
+    host_driven_input_start_values, lower_solve_model,
 };
 pub use model_wire::{
     SOLVE_MODEL_SCHEMA_VERSION, SolveModelWireError, SolveModelWireRef, deserialize_solve_model,
     solve_model_wire,
 };
+pub use scalar_constant_derivative_refinement::{
+    CheckedDaeSolveScalarConstantDerivativeRefinement, DerivativePatternKind,
+    NonIdentityMassMatrixKind, NonemptyDerivativePatternKind, ScalarConstantDerivativeMismatch,
+    ScalarConstantDerivativeUnsupported, SolveExecutableOwner, SolveMetadataField,
+};
+pub use variable_catalog_refinement::VariableCatalogRefinementError;
 
 use rumoca_ir_dae as dae;
 use rumoca_ir_solve as solve;
@@ -73,6 +84,6 @@ fn lower_prepared_solve_package(
 /// Materialize optional solver artifacts from an already-lowered problem.
 pub fn lower_solve_artifacts(
     problem: &solve::SolveProblem,
-) -> Result<solve::SolveArtifacts, LowerError> {
+) -> Result<solve::SolveArtifactInputs, LowerError> {
     artifacts::lower_solve_artifacts(problem, solve::MassMatrix::Identity)
 }

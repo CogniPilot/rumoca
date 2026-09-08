@@ -95,6 +95,25 @@ fn binary(op: OpBinary, lhs: Expression, rhs: Expression) -> Expression {
     }
 }
 
+fn range_expr(start: i64, step: Option<i64>, end: i64) -> Expression {
+    Expression::Range {
+        start: Arc::new(int_expr(start)),
+        step: step.map(int_expr).map(Arc::new),
+        end: Arc::new(int_expr(end)),
+        span: rumoca_core::Span::DUMMY,
+    }
+}
+
+fn for_statement(index: &str, range: Expression, body: Vec<Statement>) -> Statement {
+    Statement::For {
+        indices: vec![ForIndex {
+            ident: token(index),
+            range,
+        }],
+        equations: body,
+    }
+}
+
 fn if_expr(
     condition: Expression,
     then_expression: Expression,
@@ -281,35 +300,35 @@ fn nfi_expr() -> Expression {
 
 #[test]
 fn eval_integer_with_scope_div_operator_requires_exact_quotient() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expr = binary(OpBinary::Div, int_expr(7), int_expr(2));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), None);
 }
 
 #[test]
 fn eval_integer_with_scope_div_builtin_remains_truncating() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expr = call("div", vec![int_expr(7), int_expr(2)]);
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(3));
 }
 
 #[test]
 fn eval_integer_with_scope_add_elem_uses_shared_binary_semantics() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expr = binary(OpBinary::AddElem, int_expr(2), int_expr(3));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(5));
 }
 
 #[test]
 fn eval_integer_with_scope_exp_elem_uses_shared_binary_semantics() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expr = binary(OpBinary::ExpElem, int_expr(2), int_expr(5));
     assert_eq!(eval_integer_with_scope(&expr, &ctx, ""), Some(32));
 }
 
 #[test]
 fn eval_integer_if_with_unknown_condition_folds_equal_outcomes() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.add_integer("left.nRC", 2);
     ctx.add_integer("right.nRC", 2);
     let expression = if_expr(
@@ -323,7 +342,7 @@ fn eval_integer_if_with_unknown_condition_folds_equal_outcomes() {
 
 #[test]
 fn eval_integer_if_with_unknown_condition_rejects_distinct_outcomes() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.add_integer("left.nRC", 1);
     ctx.add_integer("right.nRC", 2);
     let expression = if_expr(
@@ -337,7 +356,7 @@ fn eval_integer_if_with_unknown_condition_rejects_distinct_outcomes() {
 
 #[test]
 fn eval_real_if_requires_exactly_equal_unknown_outcomes() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expression = if_expr(
         cref_expr("unresolvedCondition"),
         real_expr(1.0),
@@ -349,7 +368,7 @@ fn eval_real_if_requires_exactly_equal_unknown_outcomes() {
 
 #[test]
 fn eval_real_equality_does_not_merge_adjacent_values() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let expression = binary(
         OpBinary::Eq,
         real_expr(1.0),
@@ -361,7 +380,7 @@ fn eval_real_equality_does_not_merge_adjacent_values() {
 
 #[test]
 fn typecheck_scalar_evaluation_preserves_deep_expression_support() {
-    let ctx = TypeCheckEvalContext::new();
+    let ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let mut expression = int_expr(7);
     for _ in 0..32 {
         expression = Expression::Parenthesized {
@@ -375,7 +394,7 @@ fn typecheck_scalar_evaluation_preserves_deep_expression_support() {
 
 #[test]
 fn scoped_evaluators_resolve_projected_field_paths() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.add_integer("source.nRC", 2);
     ctx.add_real("source.ratio", 0.5);
     ctx.booleans.insert("source.enabled".to_string(), true);
@@ -402,7 +421,7 @@ fn scoped_evaluators_resolve_projected_field_paths() {
 
 #[test]
 fn eval_boolean_with_scope_enum_eq_accepts_suffix_qualification() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.enums.insert(
         "controllerType".to_string(),
         "Modelica.Blocks.Types.SimpleController.PI".to_string(),
@@ -419,7 +438,7 @@ fn eval_boolean_with_scope_enum_eq_accepts_suffix_qualification() {
 
 #[test]
 fn eval_boolean_with_scope_enum_eq_accepts_shared_type_literal_tail() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.enums.insert(
         "frameResolve".to_string(),
         "sensor_frame_a2.MultiBody.Types.ResolveInFrameA.frame_resolve".to_string(),
@@ -436,7 +455,7 @@ fn eval_boolean_with_scope_enum_eq_accepts_shared_type_literal_tail() {
 
 #[test]
 fn eval_boolean_with_scope_enum_eq_rejects_different_enum_type() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.enums.insert(
         "mode".to_string(),
         "Modelica.Blocks.Types.Init.PI".to_string(),
@@ -456,7 +475,7 @@ fn eval_integer_with_scope_evaluates_while_based_function_with_real_inputs() {
     let mut functions = FxHashMap::default();
     functions.insert("samplePoints".to_string(), build_sample_points_function());
 
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     ctx.functions = Arc::new(functions);
 
     let expr = call("samplePoints", vec![real_expr(4.0), real_expr(0.2)]);
@@ -468,7 +487,7 @@ fn eval_integer_with_scope_evaluates_while_based_function_with_real_inputs() {
 
 #[test]
 fn eval_for_stmt_break_exits_only_inner_loop() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let statements = vec![Statement::For {
         indices: vec![ForIndex {
             ident: token("i"),
@@ -495,11 +514,173 @@ fn eval_for_stmt_break_exits_only_inner_loop() {
         Some(FunctionStmtFlow::Continue)
     );
     assert_eq!(ctx.integers.get("x"), Some(&1));
+    assert!(!ctx.integers.contains_key("i"));
+}
+
+#[test]
+fn eval_for_stmt_honors_positive_and_negative_steps() {
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    let assign_last = |name: &str| Statement::Assignment {
+        comp: cref(name),
+        value: cref_expr("i"),
+    };
+    let statements = vec![
+        for_statement(
+            "i",
+            range_expr(1, Some(2), 5),
+            vec![assign_last("ascending")],
+        ),
+        for_statement(
+            "i",
+            range_expr(5, Some(-2), 1),
+            vec![assign_last("descending")],
+        ),
+    ];
+
+    assert_eq!(
+        interpret_stmts(&statements, &mut ctx),
+        Some(FunctionStmtFlow::Continue),
+    );
+    assert_eq!(ctx.integers.get("ascending"), Some(&5));
+    assert_eq!(ctx.integers.get("descending"), Some(&1));
+}
+
+#[test]
+fn eval_for_stmt_rejects_zero_step_and_handles_extreme_endpoints() {
+    let body = || {
+        vec![Statement::Assignment {
+            comp: cref("ran"),
+            value: int_expr(1),
+        }]
+    };
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    assert_eq!(
+        interpret_stmts(
+            &[for_statement("i", range_expr(1, Some(0), 3), body())],
+            &mut ctx
+        ),
+        None,
+    );
+    assert!(!ctx.integers.contains_key("ran"));
+
+    for (range, expected) in [
+        (range_expr(i64::MAX - 1, Some(2), i64::MAX), i64::MAX - 1),
+        (range_expr(i64::MIN + 1, Some(-2), i64::MIN), i64::MIN + 1),
+    ] {
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+        let statement = for_statement(
+            "i",
+            range,
+            vec![Statement::Assignment {
+                comp: cref("last"),
+                value: cref_expr("i"),
+            }],
+        );
+        assert_eq!(
+            interpret_stmts(&[statement], &mut ctx),
+            Some(FunctionStmtFlow::Continue)
+        );
+        assert_eq!(ctx.integers.get("last"), Some(&expected));
+    }
+
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    assert_eq!(
+        interpret_stmts(
+            &[for_statement(
+                "i",
+                range_expr(i64::MAX - 1, Some(1), i64::MAX),
+                vec![Statement::Assignment {
+                    comp: cref("last"),
+                    value: cref_expr("i"),
+                }],
+            )],
+            &mut ctx,
+        ),
+        Some(FunctionStmtFlow::Continue),
+    );
+    assert_eq!(ctx.integers.get("last"), Some(&i64::MAX));
+}
+
+#[test]
+fn nested_same_name_loop_indices_restore_every_shadowed_lane() {
+    let inner = for_statement(
+        "i",
+        range_expr(7, None, 7),
+        vec![Statement::Assignment {
+            comp: cref("inner"),
+            value: cref_expr("i"),
+        }],
+    );
+    let outer = for_statement(
+        "i",
+        range_expr(1, None, 2),
+        vec![
+            inner,
+            Statement::Assignment {
+                comp: cref("outer"),
+                value: cref_expr("i"),
+            },
+        ],
+    );
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    ctx.integers.insert("i".to_string(), 42);
+    ctx.reals.insert("i".to_string(), 42.0);
+    ctx.booleans.insert("i".to_string(), true);
+
+    assert_eq!(
+        interpret_stmts(&[outer], &mut ctx),
+        Some(FunctionStmtFlow::Continue),
+    );
+    assert_eq!(ctx.integers.get("inner"), Some(&7));
+    assert_eq!(ctx.integers.get("outer"), Some(&2));
+    assert_eq!(ctx.integers.get("i"), Some(&42));
+    assert_eq!(ctx.reals.get("i"), Some(&42.0));
+    assert_eq!(ctx.booleans.get("i"), Some(&true));
+}
+
+#[test]
+fn assignment_to_active_loop_index_refuses_and_restores_the_shadowed_value() {
+    let statement = for_statement(
+        "i",
+        range_expr(1, None, 1),
+        vec![Statement::Assignment {
+            comp: cref("i"),
+            value: int_expr(9),
+        }],
+    );
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    ctx.integers.insert("i".to_string(), 42);
+    ctx.reals.insert("i".to_string(), 42.0);
+
+    assert_eq!(interpret_stmts(&[statement], &mut ctx), None);
+    assert_eq!(ctx.integers.get("i"), Some(&42));
+    assert_eq!(ctx.reals.get("i"), Some(&42.0));
+}
+
+#[test]
+fn return_from_for_loop_restores_the_shadowed_value() {
+    let statement = for_statement(
+        "i",
+        range_expr(1, None, 1),
+        vec![Statement::Return {
+            token: token("return"),
+        }],
+    );
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    ctx.integers.insert("i".to_string(), 42);
+    ctx.reals.insert("i".to_string(), 42.0);
+
+    assert_eq!(
+        interpret_stmts(&[statement], &mut ctx),
+        Some(FunctionStmtFlow::Return),
+    );
+    assert_eq!(ctx.integers.get("i"), Some(&42));
+    assert_eq!(ctx.reals.get("i"), Some(&42.0));
 }
 
 #[test]
 fn eval_unsupported_function_statement_fails_evaluation() {
-    let mut ctx = TypeCheckEvalContext::new();
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
     let statements = vec![Statement::Assert {
         condition: bool_expr(true),
         message: Expression::Terminal {
@@ -515,35 +696,185 @@ fn eval_unsupported_function_statement_fails_evaluation() {
 }
 
 #[test]
-fn eval_multi_index_for_stmt_fails_evaluation() {
-    let mut ctx = TypeCheckEvalContext::new();
-    let statements = vec![Statement::For {
-        indices: vec![
-            ForIndex {
-                ident: token("i"),
-                range: Expression::Range {
-                    start: Arc::new(int_expr(1)),
-                    step: None,
-                    end: Arc::new(int_expr(2)),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            },
-            ForIndex {
-                ident: token("j"),
-                range: Expression::Range {
-                    start: Arc::new(int_expr(1)),
-                    step: None,
-                    end: Arc::new(int_expr(2)),
-                    span: rumoca_core::Span::DUMMY,
-                },
-            },
-        ],
-        equations: vec![Statement::Assignment {
-            comp: cref("x"),
-            value: int_expr(1),
-        }],
-    }];
+fn eval_recovery_statement_fails_instead_of_becoming_a_no_op() {
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
 
-    assert_eq!(interpret_stmts(&statements, &mut ctx), None);
-    assert!(!ctx.integers.contains_key("x"));
+    assert_eq!(
+        interpret_stmts(
+            &[
+                Statement::Assignment {
+                    comp: cref("must_not_start"),
+                    value: int_expr(6),
+                },
+                Statement::Empty,
+                Statement::Assignment {
+                    comp: cref("must_not_run"),
+                    value: int_expr(7),
+                },
+            ],
+            &mut ctx,
+        ),
+        None
+    );
+    assert!(
+        !ctx.integers.contains_key("must_not_start"),
+        "the checked root must reject recovery before publishing a prefix"
+    );
+    assert!(
+        !ctx.integers.contains_key("must_not_run"),
+        "recovery must stop evaluation before later state is committed"
+    );
+    assert_eq!(
+        interpret_stmts(&[], &mut ctx),
+        Some(FunctionStmtFlow::Continue),
+        "a genuinely empty algorithm section remains valid"
+    );
 }
+
+#[test]
+fn recovery_after_an_assignment_cannot_publish_a_partial_function_result() {
+    let mut function = ClassDef {
+        name: token("recovered"),
+        class_type: ClassType::Function,
+        pure: true,
+        ..ClassDef::default()
+    };
+    function
+        .components
+        .insert("y".to_string(), output_parameter("y"));
+    function.algorithms.push(vec![
+        Statement::Assignment {
+            comp: cref("y"),
+            value: int_expr(7),
+        },
+        Statement::Empty,
+    ]);
+
+    let mut functions = FxHashMap::default();
+    functions.insert("recovered".to_string(), function);
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    ctx.functions = Arc::new(functions);
+
+    assert_eq!(
+        eval_integer_with_scope(&call("recovered", vec![]), &ctx, ""),
+        None
+    );
+    assert!(
+        !ctx.integers.contains_key("y"),
+        "the evaluator's local partial result must not escape into its caller"
+    );
+}
+
+#[test]
+fn recovery_expression_and_unsupported_rhs_cannot_publish_a_stale_result() {
+    let recovery = Expression::Empty { span: test_span() };
+    let equal_branch_recovery = Expression::If {
+        branches: vec![(recovery.clone(), int_expr(1))],
+        else_branch: Arc::new(int_expr(1)),
+        span: test_span(),
+    };
+    for invalid in [recovery, equal_branch_recovery, call("unknown", vec![])] {
+        let mut function = ClassDef {
+            name: token("recoveredExpression"),
+            class_type: ClassType::Function,
+            pure: true,
+            ..ClassDef::default()
+        };
+        function
+            .components
+            .insert("y".to_string(), output_parameter("y"));
+        function.algorithms.push(vec![
+            Statement::Assignment {
+                comp: cref("y"),
+                value: int_expr(7),
+            },
+            Statement::Assignment {
+                comp: cref("y"),
+                value: invalid,
+            },
+        ]);
+        let mut functions = FxHashMap::default();
+        functions.insert("recoveredExpression".to_string(), function);
+        let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+        ctx.functions = Arc::new(functions);
+
+        assert_eq!(
+            eval_integer_with_scope(&call("recoveredExpression", vec![]), &ctx, ""),
+            None,
+            "a failed required assignment must discard the local candidate result"
+        );
+    }
+}
+
+#[test]
+fn scalar_reassignment_replaces_incompatible_typed_lanes() {
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    assert_eq!(
+        interpret_stmts(
+            &[
+                Statement::Assignment {
+                    comp: cref("y"),
+                    value: int_expr(7),
+                },
+                Statement::Assignment {
+                    comp: cref("y"),
+                    value: real_expr(7.5),
+                },
+            ],
+            &mut ctx,
+        ),
+        Some(FunctionStmtFlow::Continue),
+    );
+    assert_eq!(ctx.reals.get("y"), Some(&7.5));
+    assert!(!ctx.integers.contains_key("y"));
+    assert!(!ctx.booleans.contains_key("y"));
+
+    assert_eq!(
+        interpret_stmts(
+            &[Statement::Assignment {
+                comp: cref("y"),
+                value: bool_expr(true),
+            }],
+            &mut ctx,
+        ),
+        Some(FunctionStmtFlow::Continue),
+    );
+    assert_eq!(ctx.booleans.get("y"), Some(&true));
+    assert!(!ctx.integers.contains_key("y"));
+    assert!(!ctx.reals.contains_key("y"));
+}
+
+#[test]
+fn nonintegral_reassignment_cannot_publish_an_old_integer_function_result() {
+    let mut function = ClassDef {
+        name: token("changesTypeLane"),
+        class_type: ClassType::Function,
+        pure: true,
+        ..ClassDef::default()
+    };
+    function
+        .components
+        .insert("y".to_string(), output_parameter("y"));
+    function.algorithms.push(vec![
+        Statement::Assignment {
+            comp: cref("y"),
+            value: int_expr(7),
+        },
+        Statement::Assignment {
+            comp: cref("y"),
+            value: real_expr(7.5),
+        },
+    ]);
+    let mut functions = FxHashMap::default();
+    functions.insert("changesTypeLane".to_string(), function);
+    let mut ctx = TypeCheckEvalContext::for_pre_identity_structural();
+    ctx.functions = Arc::new(functions);
+
+    assert_eq!(
+        eval_integer_with_scope(&call("changesTypeLane", vec![]), &ctx, ""),
+        None,
+    );
+}
+
+mod declaration_hardening_tests;
+mod identity_hardening_tests;

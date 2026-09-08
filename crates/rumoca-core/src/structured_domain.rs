@@ -192,9 +192,7 @@ pub fn row_major_strides(dims: &[usize]) -> Option<Vec<usize>> {
 /// Returns `None` for an out-of-range ordinal, a zero extent, or scalar-count
 /// overflow. A scalar shape (`[]`) contains exactly ordinal zero.
 pub fn row_major_coordinates(extents: &[u32], ordinal: usize) -> Option<Vec<u32>> {
-    let scalar_count = extents
-        .iter()
-        .try_fold(1usize, |count, extent| count.checked_mul(*extent as usize))?;
+    let scalar_count = checked_extent_product(extents)?;
     if ordinal >= scalar_count {
         return None;
     }
@@ -233,6 +231,22 @@ pub fn flatten_coordinates(extents: &[u32], coordinates: &[u32]) -> Option<usize
 /// Checked multiplication for tensor extents and row-major storage lengths.
 pub const fn checked_product(lhs: usize, rhs: usize) -> Option<usize> {
     lhs.checked_mul(rhs)
+}
+
+/// Left-to-right extent product; the first overflowing prefix returns `None`.
+/// An empty shape has one element, and a later zero cannot undo an overflow.
+#[must_use]
+pub fn checked_extent_product(extents: &[u32]) -> Option<usize> {
+    let mut product = 1usize;
+    let mut axis = 0usize;
+    while axis < extents.len() {
+        match checked_product(product, extents[axis] as usize) {
+            Some(next) => product = next,
+            None => return None,
+        }
+        axis += 1;
+    }
+    Some(product)
 }
 
 /// A regular elementwise `for` family: its (possibly nested) loop binders and

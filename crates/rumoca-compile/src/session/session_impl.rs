@@ -1010,7 +1010,7 @@ impl Session {
         })?;
         let tree = target.resolved.inner();
         match self.flat_model_query_impl(
-            tree,
+            &target.resolved,
             ResolveBuildMode::StrictCompileRecovery,
             model_name,
             false,
@@ -1052,7 +1052,7 @@ impl Session {
         );
         if let Some(cached) = self.cached_compile_result(model_name, fingerprint) {
             let result = self.compile_result_from_cache_hit(
-                resolved.inner(),
+                &resolved,
                 ResolveBuildMode::Standard,
                 model_name,
                 cached,
@@ -1060,11 +1060,8 @@ impl Session {
             return Ok(result);
         }
 
-        let result = self.compile_phase_result_query(
-            resolved.inner(),
-            ResolveBuildMode::Standard,
-            model_name,
-        );
+        let result =
+            self.compile_phase_result_query(&resolved, ResolveBuildMode::Standard, model_name);
         self.insert_compile_result(model_name.to_string(), fingerprint, result.clone());
         Ok(result)
     }
@@ -1077,7 +1074,7 @@ impl Session {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
         let names: Vec<String> = model_names.iter().map(|name| (*name).to_string()).collect();
-        Ok(self.compile_models_with_cache(resolved.inner(), ResolveBuildMode::Standard, &names))
+        Ok(self.compile_models_with_cache(&resolved, ResolveBuildMode::Standard, &names))
     }
 
     /// Compile all models in parallel.
@@ -1085,7 +1082,7 @@ impl Session {
         self.build_resolved()?;
         let resolved = self.ensure_resolved()?.clone();
         let names = self.query_state.resolved.model_names.clone();
-        Ok(self.compile_models_with_cache(resolved.inner(), ResolveBuildMode::Standard, &names))
+        Ok(self.compile_models_with_cache(&resolved, ResolveBuildMode::Standard, &names))
     }
 
     /// Compile the requested model using strict-reachable semantics with
@@ -1133,8 +1130,11 @@ impl Session {
         let mut failures = Vec::new();
 
         let dae_query_started = maybe_start_timer();
-        let requested_result =
-            self.dae_phase_result_query(tree, ResolveBuildMode::StrictCompileRecovery, model_name);
+        let requested_result = self.dae_phase_result_query(
+            &target.resolved,
+            ResolveBuildMode::StrictCompileRecovery,
+            model_name,
+        );
         let dae_phase_query_ms = maybe_elapsed_duration(dae_query_started)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
@@ -1209,7 +1209,7 @@ impl Session {
         let mut failures = Vec::new();
 
         let requested_result = compile_model_dae_internal_with_options(
-            tree,
+            &target.resolved,
             model_name,
             self.instantiation_options.clone(),
         );
@@ -1264,14 +1264,14 @@ impl Session {
         let failures = Vec::new();
         let report = if use_compile_cache {
             let results = self.compile_models_with_cache(
-                tree,
+                &target.resolved,
                 ResolveBuildMode::StrictCompileRecovery,
                 &target.closure.compile_targets,
             );
             finalize_strict_compile_report(tree, model_name, failures, results)
         } else {
             finalize_strict_compile_report_from_uncached_targets(
-                tree,
+                &target.resolved,
                 model_name,
                 failures,
                 &target.closure.compile_targets,
@@ -1321,19 +1321,20 @@ impl Session {
 
     fn compile_models_with_cache(
         &mut self,
-        tree: &ast::ClassTree,
+        resolved: &ResolvedTree,
         mode: ResolveBuildMode,
         model_names: &[String],
     ) -> Vec<(String, PhaseResult)> {
+        let tree = resolved.inner();
         if model_names.len() == 1 {
             let name = model_names[0].clone();
             let fingerprint = self.model_dependency_fingerprint(tree, mode, &name);
             if let Some(cached) = self.cached_compile_result(&name, fingerprint) {
-                let result = self.compile_result_from_cache_hit(tree, mode, &name, cached);
+                let result = self.compile_result_from_cache_hit(resolved, mode, &name, cached);
                 return vec![(name, result)];
             }
 
-            let result = self.compile_phase_result_query(tree, mode, &name);
+            let result = self.compile_phase_result_query(resolved, mode, &name);
             self.insert_compile_result(name.clone(), fingerprint, result.clone());
             return vec![(name, result)];
         }
@@ -1349,52 +1350,78 @@ impl Session {
             .map(|name| (name.clone(), dep_cache.model_fingerprint(name)))
             .collect();
 
-        let misses: Vec<(String, Fingerprint)> = models_with_fingerprints
-            .iter()
-            .filter_map(|(name, fingerprint)| {
-                let hit = self
-                    .query_state
-                    .dae
-                    .compile_results
-                    .get(name)
-                    .is_some_and(|entry| entry.fingerprint == *fingerprint);
-                if hit {
-                    None
+        enum BatchCompilePlan {
+            Cached {
+                name: String,
+                result: PhaseResult,
+            },
+            Compile {
+                name: String,
+                fingerprint: Fingerprint,
+            },
+        }
+
+        enum BatchCompileCompletion {
+            Cached {
+                name: String,
+                result: PhaseResult,
+            },
+            Compiled {
+                name: String,
+                fingerprint: Fingerprint,
+                result: PhaseResult,
+            },
+        }
+
+        let plan = models_with_fingerprints
+            .into_iter()
+            .map(|(name, fingerprint)| {
+                if let Some(cached) = self.cached_compile_result(&name, fingerprint) {
+                    BatchCompilePlan::Cached {
+                        result: self.compile_result_from_cache_hit(resolved, mode, &name, cached),
+                        name,
+                    }
                 } else {
-                    Some((name.clone(), *fingerprint))
+                    BatchCompilePlan::Compile { name, fingerprint }
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         let instantiation_options = self.instantiation_options.clone();
-        let compiled_misses: Vec<(String, Fingerprint, PhaseResult)> = misses
-            .par_iter()
-            .map(|(name, fingerprint)| {
-                (
-                    name.clone(),
-                    *fingerprint,
-                    compile_model_internal_with_options(tree, name, instantiation_options.clone()),
-                )
+        let completed = plan
+            .into_par_iter()
+            .map(|work| match work {
+                BatchCompilePlan::Cached { name, result } => {
+                    BatchCompileCompletion::Cached { name, result }
+                }
+                BatchCompilePlan::Compile { name, fingerprint } => {
+                    let result = compile_model_internal_with_options(
+                        resolved,
+                        &name,
+                        instantiation_options.clone(),
+                    );
+                    BatchCompileCompletion::Compiled {
+                        name,
+                        fingerprint,
+                        result,
+                    }
+                }
             })
-            .collect();
+            .collect::<Vec<_>>();
 
-        for (name, fingerprint, result) in compiled_misses {
-            self.insert_full_compile_result(name, fingerprint, result);
-        }
-
-        let mut results = Vec::with_capacity(models_with_fingerprints.len());
-        for (name, fingerprint) in models_with_fingerprints {
-            if let Some(cached) = self.cached_compile_result(&name, fingerprint) {
-                let result = self.compile_result_from_cache_hit(tree, mode, &name, cached);
-                results.push((name, result));
-                continue;
-            }
-
-            // Defensive fallback: compile directly if cache entry is absent.
-            let result = self.compile_phase_result_query(tree, mode, &name);
-            self.insert_compile_result(name.clone(), fingerprint, result.clone());
-            results.push((name, result));
-        }
-        results
+        completed
+            .into_iter()
+            .map(|completion| match completion {
+                BatchCompileCompletion::Cached { name, result } => (name, result),
+                BatchCompileCompletion::Compiled {
+                    name,
+                    fingerprint,
+                    result,
+                } => {
+                    self.insert_full_compile_result(name.clone(), fingerprint, result.clone());
+                    (name, result)
+                }
+            })
+            .collect()
     }
 }

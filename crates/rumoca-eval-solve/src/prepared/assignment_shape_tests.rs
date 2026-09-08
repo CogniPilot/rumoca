@@ -1,5 +1,5 @@
 use super::*;
-use rumoca_ir_solve::{BinaryOp, LinearOp};
+use rumoca_ir_solve::{BinaryOp, LinearOp, RefreshRowOwnerId};
 
 fn fixture_span() -> rumoca_core::Span {
     rumoca_core::Span::from_offsets(
@@ -7,6 +7,20 @@ fn fixture_span() -> rumoca_core::Span {
         0,
         1,
     )
+}
+
+fn test_program_output_count(program: &[LinearOp]) -> usize {
+    program
+        .iter()
+        .try_fold(0usize, |total, operation| {
+            let count = match operation {
+                LinearOp::StoreOutput { .. } => 1,
+                LinearOp::StoreOutputRange { count, .. } => *count,
+                _ => 0,
+            };
+            total.checked_add(count)
+        })
+        .expect("test program output count fits usize")
 }
 
 // Regression: `reg_depends_on_y_index` used to recurse over the register DAG
@@ -197,7 +211,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
         .expect("the first factor has an isolator");
     let refresh =
         rumoca_ir_solve::AlgebraicRefreshRow::checked(rumoca_ir_solve::AlgebraicRefreshRowDraft {
-            owner_id: Default::default(),
+            owner_id: RefreshRowOwnerId::checked(0).expect("test row owner fits u32"),
             source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
             equation_index: 0,
             output_offset: 0,
@@ -212,8 +226,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
 
     prepared
         .apply_target_assignment_rows_unchecked_with_context(
-            std::slice::from_ref(&refresh),
-            |_| Some(0),
+            std::iter::once((&refresh, 0)),
             &mut y,
             &[],
             0.0,
@@ -224,7 +237,7 @@ fn batched_refresh_consumes_the_selected_target_isolator_certificate() {
 
     let error =
         rumoca_ir_solve::AlgebraicRefreshRow::checked(rumoca_ir_solve::AlgebraicRefreshRowDraft {
-            owner_id: Default::default(),
+            owner_id: RefreshRowOwnerId::checked(0).expect("test row owner fits u32"),
             source: rumoca_ir_solve::RefreshScalarProgramSource::checked(0, 0).unwrap(),
             equation_index: 0,
             output_offset: 0,
@@ -314,7 +327,6 @@ fn affine_residual_shape_isolates_nested_connection_difference() {
     y[4] = 99.0;
     y[6] = 2.0;
 
-    assert!(!prepared.certifies_direct_target_assignment(0, 0, 4));
     assert!(prepared.certifies_exact_target_assignment_output(0, 0, 4));
     let value = prepared
         .eval_target_assignment_row_with_context(0, 4, &y, &[], 0.0, RowEvalContext::default())
@@ -367,10 +379,7 @@ fn tensor_load_lanes_are_isolated_without_scalar_load_reconstruction() {
     let grouped = prepared
         .exact_target_assignment_group_program(0, &[(0, 10), (1, 11)])
         .expect("one compact result range materializes two exact assignments");
-    assert_eq!(
-        rumoca_ir_solve::ScalarProgramBlock::program_output_count(&grouped),
-        2
-    );
+    assert_eq!(test_program_output_count(&grouped), 2);
     assert!(
         grouped
             .iter()

@@ -15,7 +15,6 @@
 //!
 
 use flate2::read::GzDecoder;
-use rumoca_compile::codegen::{SolveTemplateRenderer, templates};
 use rumoca_compile::compile::{CompilationResult, CompiledSourceRoot, PhaseResult};
 use rumoca_compile::parsing::parse_files_parallel_lenient;
 use rumoca_sim::sim_trace_compare::{ModelDeviationMetric, SimTrace, compare_model_traces};
@@ -188,16 +187,9 @@ fn casadi_simulate(
     t_end: f64,
     dt: f64,
 ) -> Result<SimTrace, String> {
-    let problem =
-        rumoca_sim::lower_solve_problem(dae).map_err(|error| format!("lower solve: {error}"))?;
-    let artifacts = rumoca_sim::lower_solve_artifacts(&problem)
-        .map_err(|error| format!("lower solve artifacts: {error}"))?;
-    let renderer = SolveTemplateRenderer::new_with_dae(&problem, &artifacts, dae)
-        .map_err(|error| format!("render context: {error}"))?;
-    let template = templates::builtin_template_source("casadi-ode", "casadi_ode.py.jinja")
-        .ok_or_else(|| "checked casadi-ode template is missing".to_string())?;
-    let code = renderer
-        .render_with_name(template, model_name)
+    let model = rumoca_sim::lower_dae_for_simulation(dae, &rumoca_solver::SimOptions::default())
+        .map_err(|error| format!("lower complete solve model: {error}"))?;
+    let code = rumoca_compile::codegen::render_casadi_execution_model(model, model_name)
         .map_err(|error| format!("render: {error}"))?;
 
     let dir = tempdir().map_err(|e| format!("tempdir: {e}"))?;
@@ -218,10 +210,10 @@ fn casadi_simulate(
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Save failing code for debugging
         let debug_dir = Path::new("/tmp/casadi_debug");
-        let _ = fs::create_dir_all(debug_dir);
+        let _debug_directory_error = fs::create_dir_all(debug_dir);
         let safe_name = model_name.replace('.', "_");
-        let _ = fs::write(debug_dir.join(format!("{safe_name}.py")), &code);
-        let _ = fs::write(
+        let _debug_source_write_error = fs::write(debug_dir.join(format!("{safe_name}.py")), &code);
+        let _debug_stderr_write_error = fs::write(
             debug_dir.join(format!("{safe_name}.stderr")),
             stderr.as_bytes(),
         );
@@ -358,9 +350,9 @@ impl std::fmt::Display for ModelOutcome {
                 write!(
                     f,
                     "pass (median={:.2e}, max={:.2e}, vars={})",
-                    metric.bounded_normalized_l1_score,
-                    metric.max_channel_bounded_normalized_l1,
-                    metric.compared_variables
+                    metric.bounded_normalized_l1_score(),
+                    metric.max_channel_bounded_normalized_l1(),
+                    metric.compared_variables()
                 )
             }
             ModelOutcome::NoStates => write!(f, "no_states (skipped)"),
@@ -371,7 +363,7 @@ impl std::fmt::Display for ModelOutcome {
 fn classify_tag_and_count(outcome: &ModelOutcome, counts: &mut OutcomeCounts) -> &'static str {
     match outcome {
         ModelOutcome::Pass { metric } => {
-            if metric.max_channel_bounded_normalized_l1 < 0.05 {
+            if metric.max_channel_bounded_normalized_l1() < 0.05 {
                 counts.pass_high += 1;
                 "PASS_HIGH"
             } else {
@@ -472,17 +464,17 @@ fn print_summary(
         // Show worst agreements
         let mut sorted = pass_metrics.to_vec();
         sorted.sort_by(|a, b| {
-            b.1.max_channel_bounded_normalized_l1
-                .partial_cmp(&a.1.max_channel_bounded_normalized_l1)
+            b.1.max_channel_bounded_normalized_l1()
+                .partial_cmp(&a.1.max_channel_bounded_normalized_l1())
                 .unwrap()
         });
         println!("\nWorst-agreeing models (top 10):");
         for (name, metric) in sorted.iter().take(10) {
             println!(
                 "  max={:.4e} median={:.4e} vars={:>3}  {name}",
-                metric.max_channel_bounded_normalized_l1,
-                metric.bounded_normalized_l1_score,
-                metric.compared_variables,
+                metric.max_channel_bounded_normalized_l1(),
+                metric.bounded_normalized_l1_score(),
+                metric.compared_variables(),
             );
         }
     }

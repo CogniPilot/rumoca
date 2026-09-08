@@ -3,8 +3,65 @@ use rumoca_ir_solve as solve;
 
 use crate::{SimVariableMeta, runtime::pre_params::write_pre_params_from_sources};
 
+/// The preparation or execution boundary at which selected native code failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeExecutionStage {
+    Compile,
+    Call,
+}
+
+impl std::fmt::Display for NativeExecutionStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Compile => "compile",
+            Self::Call => "call",
+        })
+    }
+}
+
+/// Construction-issued executable owner whose selected native obligation failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeExecutionOwner {
+    ImplicitResidual,
+    ImplicitProjectionJacobian,
+    ImplicitFullJacobian,
+    InitialResidual,
+    InitialResidualJacobian,
+    DerivativeRhs,
+    RootConditions,
+    EventTransaction { index: usize },
+    ExactAssignment { sequence: solve::RefreshSequenceId },
+    PureCallTable,
+}
+
+impl std::fmt::Display for NativeExecutionOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ImplicitResidual => formatter.write_str("implicit residual"),
+            Self::ImplicitProjectionJacobian => formatter.write_str("implicit projection Jacobian"),
+            Self::ImplicitFullJacobian => formatter.write_str("implicit full Jacobian"),
+            Self::InitialResidual => formatter.write_str("initial residual"),
+            Self::InitialResidualJacobian => formatter.write_str("initial residual Jacobian"),
+            Self::DerivativeRhs => formatter.write_str("derivative RHS"),
+            Self::RootConditions => formatter.write_str("root conditions"),
+            Self::EventTransaction { index } => write!(formatter, "event transaction {index}"),
+            Self::ExactAssignment { sequence } => {
+                write!(formatter, "exact assignment schedule {sequence:?}")
+            }
+            Self::PureCallTable => formatter.write_str("pure-call table"),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSolveError {
+    #[error("native {stage} failed for {owner}: {reason}")]
+    NativeExecution {
+        stage: NativeExecutionStage,
+        owner: NativeExecutionOwner,
+        reason: String,
+    },
+
     #[error(
         "solve-IR evaluation failed: {message}{}",
         span_suffix(*.span)
@@ -81,6 +138,22 @@ impl RuntimeSolveError {
             | Self::RefreshTargetSingular { span, .. }
             | Self::NonFiniteValue { span, .. } => *span,
             _ => None,
+        }
+    }
+
+    pub(crate) fn native_compile(owner: NativeExecutionOwner, reason: impl Into<String>) -> Self {
+        Self::NativeExecution {
+            stage: NativeExecutionStage::Compile,
+            owner,
+            reason: reason.into(),
+        }
+    }
+
+    pub(crate) fn native_call(owner: NativeExecutionOwner, reason: impl Into<String>) -> Self {
+        Self::NativeExecution {
+            stage: NativeExecutionStage::Call,
+            owner,
+            reason: reason.into(),
         }
     }
 }
@@ -165,8 +238,8 @@ pub fn discrete_row_pre_mode(
     row_idx: usize,
 ) -> Result<EventPreMode, RuntimeSolveError> {
     model
-        .problem
-        .discrete
+        .problem()
+        .discrete()
         .pre_modes
         .get(row_idx)
         .copied()
@@ -184,8 +257,8 @@ pub fn discrete_row_active_at(
     t: f64,
 ) -> Result<bool, RuntimeSolveError> {
     let owner = model
-        .problem
-        .discrete
+        .problem()
+        .discrete()
         .clock_owners
         .get(row_idx)
         .copied()
@@ -198,8 +271,8 @@ pub fn discrete_row_active_at(
         return Ok(true);
     };
     let schedule = model
-        .problem
-        .clocks
+        .problem()
+        .clocks()
         .periodic_schedule(owner)
         .ok_or_else(|| {
             RuntimeSolveError::solve_ir(format!(
@@ -228,9 +301,6 @@ fn op_reads_solver_or_time(op: &solve::LinearOp) -> bool {
     match op {
         solve::LinearOp::LoadY { .. }
         | solve::LinearOp::LoadTime { .. }
-        | solve::LinearOp::TableLookup { .. }
-        | solve::LinearOp::TableLookupSlope { .. }
-        | solve::LinearOp::TableNextEvent { .. }
         | solve::LinearOp::TensorLoad {
             input: solve::TensorInputKind::Y,
             ..
@@ -238,12 +308,12 @@ fn op_reads_solver_or_time(op: &solve::LinearOp) -> bool {
         solve::LinearOp::FunctionFold { program, .. }
         | solve::LinearOp::GuardedFunctionFold { program, .. }
         | solve::LinearOp::StoreOutputFunctionFold { program, .. } => {
-            row_reads_solver_or_time(&program.update)
+            row_reads_solver_or_time(program.update())
         }
         solve::LinearOp::FunctionConditional { program, .. } => {
-            program.arms.iter().any(|arm| {
-                row_reads_solver_or_time(&arm.condition) || row_reads_solver_or_time(&arm.result)
-            }) || row_reads_solver_or_time(&program.fallback)
+            program.arms().iter().any(|arm| {
+                row_reads_solver_or_time(arm.condition()) || row_reads_solver_or_time(arm.result())
+            }) || row_reads_solver_or_time(program.fallback())
         }
         _ => false,
     }
@@ -295,11 +365,11 @@ pub fn event_eval_params_for_pre_mode(
 /// projects the schedule at `t`; it does not create another timing owner.
 pub fn write_clock_activation_params(model: &solve::SolveModel, p: &mut [f64], t: f64) {
     for (schedule, &index) in model
-        .problem
-        .clocks
+        .problem()
+        .clocks()
         .periodic_event_schedules
         .iter()
-        .zip(&model.problem.clocks.activation_parameter_indices)
+        .zip(&model.problem().clocks().activation_parameter_indices)
     {
         p[index] = f64::from(crate::timeline::periodic_schedule_matches_time(schedule, t));
     }
@@ -312,7 +382,7 @@ pub fn write_clock_activation_params(model: &solve::SolveModel, p: &mut [f64], t
 /// tolerant recognition window, so public observation must not derive these
 /// lanes from floating-point time at all.
 pub fn write_observation_clock_activation_params(model: &solve::SolveModel, p: &mut [f64]) {
-    for &index in &model.problem.clocks.activation_parameter_indices {
+    for &index in &model.problem().clocks().activation_parameter_indices {
         p[index] = 0.0;
     }
 }
@@ -547,6 +617,8 @@ fn signed_root_crossing(index: usize, old: f64, new: f64, tol: f64) -> Option<Ro
 mod tests {
     use super::*;
 
+    use crate::test_support::empty_binary64_first_product_model;
+
     #[test]
     fn nested_function_conditionals_retain_time_dependency() {
         let conditional = solve::FunctionConditionalProgram::checked(
@@ -604,16 +676,49 @@ mod tests {
         let owner = clocks
             .periodic_clock_id(0)
             .expect("inserted periodic clock has a typed identity");
-        let model = solve::SolveModel {
-            problem: solve::SolveProblem {
-                clocks,
-                discrete: solve::DiscreteSolveSystem {
-                    clock_owners: vec![Some(owner)],
+        let span = rumoca_core::Span::from_offsets(
+            rumoca_core::SourceId::from_source_name("periodic_clock_owner.mo"),
+            1,
+            2,
+        );
+        let rhs = solve::ScalarProgramBlock::with_source_span(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value: 0.0 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            span.require_provenance("periodic clock owner fixture")
+                .expect("fixture span is source-backed"),
+        )
+        .expect("periodic clock owner fixture is computable");
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 2),
+                solve::SolveLayout {
+                    compiled_parameter_len: 2,
                     ..Default::default()
                 },
-                ..Default::default()
-            },
-            ..Default::default()
+                crate::test_support::ContinuousSystemFixture::empty(),
+                solve::InitializationSolveSystem::empty(),
+                solve::DiscreteSolveSystem {
+                    rhs,
+                    update_targets: vec![solve::scalar_slot_p(1)],
+                    row_roles: vec![solve::DiscreteRowRole::EventAction],
+                    pre_modes: vec![solve::DiscreteEventPreMode::EventEntry],
+                    observation_refresh: vec![false],
+                    integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+                    clock_owners: vec![Some(owner)],
+                    clock_partition_order: vec![solve::ClockPartitionStep::ScalarRows {
+                        start_row: 0,
+                        count: 1,
+                    }],
+                    ..Default::default()
+                },
+                solve::SolveEventPartition::default(),
+                clocks,
+            )
+            .expect("periodic clock fixture satisfies the checked root contract"),
+            parameters: vec![0.0; 2],
+            ..empty_binary64_first_product_model()
         };
 
         assert!(!discrete_row_active_at(&model, 0, 0.05).unwrap());
@@ -632,17 +737,27 @@ mod tests {
             rumoca_core::ClockLattice::from_seconds(0.2, 0.0).unwrap(),
         )
         .unwrap();
-        let model = solve::SolveModel {
-            problem: solve::SolveProblem {
-                clocks: solve::SolveClockPartition {
+        let model = crate::test_support::checked_solve_model! {
+            problem: crate::test_support::checked_solve_problem!(
+                solve::VarLayout::from_parts(Default::default(), 0, 3),
+                solve::SolveLayout {
+                    compiled_parameter_len: 3,
+                    ..Default::default()
+                },
+                crate::test_support::ContinuousSystemFixture::empty(),
+                solve::InitializationSolveSystem::empty(),
+                solve::DiscreteSolveSystem::default(),
+                solve::SolveEventPartition::default(),
+                solve::SolveClockPartition {
                     periodic_event_schedules: vec![tenth, fifth],
                     // Deliberately not schedule order: typed identity owns the
                     // mapping, not a row target or incidental P-slot ordinal.
                     activation_parameter_indices: vec![2, 0],
                 },
-                ..Default::default()
-            },
-            ..Default::default()
+            )
+            .expect("clock activation fixture satisfies the checked root contract"),
+            parameters: vec![0.0; 3],
+            ..empty_binary64_first_product_model()
         };
         let mut params = vec![-1.0; 3];
 

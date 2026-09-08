@@ -10,23 +10,41 @@ fn typed_flat_model(
     source: &str,
     model_name: &str,
 ) -> (rumoca_ir_flat::Model, rumoca_core::SourceMap) {
-    let instanced = instanced_tree(source, model_name);
-    let ast::InstancedTree { tree, mut overlay } = instanced;
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, model_name)
+    let (resolved, overlay) = instanced_tree(source, model_name);
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, model_name)
         .expect("instanced model typechecks");
-    let source_map = tree.source_map.clone();
-    let flat = rumoca_phase_flatten::flatten_ref(&tree, &overlay, model_name)
-        .expect("typed model flattens");
+    let source_map = resolved.inner().source_map.clone();
+    let flat =
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("typed model flattens");
     (flat, source_map)
 }
 
-fn instanced_tree(source: &str, model_name: &str) -> ast::InstancedTree {
+fn instanced_tree(
+    source: &str,
+    model_name: &str,
+) -> (
+    rumoca_phase_resolve::ResolvedTree,
+    rumoca_ir_ast::InstanceOverlay,
+) {
     let stored = rumoca_phase_parse::parse_to_ast(source, SOURCE_NAME).expect("source parses");
     let mut tree = ast::ClassTree::from_parsed(stored);
     tree.source_map.add(SOURCE_NAME, source);
     let resolved =
         rumoca_phase_resolve::resolve(ast::ParsedTree::new(tree)).expect("source resolves");
-    rumoca_phase_instantiate::instantiate(resolved, model_name).expect("model instantiates")
+    let overlay = match rumoca_phase_instantiate::instantiate_model_with_outcome(
+        resolved.inner(),
+        model_name,
+    ) {
+        rumoca_phase_instantiate::InstantiationOutcome::Success(overlay) => overlay,
+        rumoca_phase_instantiate::InstantiationOutcome::NeedsInner { missing_inners, .. } => {
+            panic!("fixture unexpectedly needs inner declarations: {missing_inners:?}")
+        }
+        rumoca_phase_instantiate::InstantiationOutcome::Error(error) => {
+            panic!("fixture instantiation failed: {error}")
+        }
+    };
+    (resolved, overlay)
 }
 
 fn sole_initial_assert(model: &rumoca_ir_flat::Model) -> (&Expression, &Expression) {
@@ -76,7 +94,7 @@ end P;
     };
     assert_eq!(Some(*declaration), flat.predefined_string_declaration);
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the inherited predefined conversion lowers to DAE");
 }
 
@@ -112,7 +130,7 @@ end P;
     };
     assert_ne!(name.target_def_id(), flat.predefined_string_declaration);
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the exact shadowing user call lowers through its function owner");
 }
 
@@ -168,7 +186,7 @@ end P;
         )
     }));
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the inherited algorithm and lexical modifier lower to DAE");
 }
 
@@ -232,7 +250,7 @@ end P;
 #[test]
 fn nested_modified_inherited_machine_keeps_internal_modifier_identities() {
     let source = nested_modified_inherited_machine_source();
-    let ast::InstancedTree { tree, mut overlay } = instanced_tree(source, "P.Example");
+    let (resolved, overlay) = instanced_tree(source, "P.Example");
     let projected_field = overlay
         .components
         .values()
@@ -271,11 +289,12 @@ fn nested_modified_inherited_machine_keeps_internal_modifier_identities() {
         }) if token.text.as_ref() == "0.2"
     ));
 
-    rumoca_phase_typecheck::typecheck_instanced(&tree, &mut overlay, "P.Example")
+    let typed = rumoca_phase_typecheck::typecheck_instanced_tree(&resolved, overlay, "P.Example")
         .expect("instanced model typechecks");
-    let source_map = tree.source_map.clone();
-    let flat = rumoca_phase_flatten::flatten_ref(&tree, &overlay, "P.Example")
-        .expect("typed model flattens");
+    let source_map = resolved.inner().source_map.clone();
+    let flat =
+        rumoca_phase_flatten::flatten_typed(typed, rumoca_phase_flatten::FlattenOptions::default())
+            .expect("typed model flattens");
 
     let record_field = flat
         .variables
@@ -321,6 +340,6 @@ fn nested_modified_inherited_machine_keeps_internal_modifier_identities() {
         )
     }));
 
-    rumoca_phase_dae::to_dae(&flat, source_map)
+    let _product = rumoca_phase_dae::construct(&flat, source_map)
         .expect("the nested inherited algorithm and modifier lower to DAE");
 }

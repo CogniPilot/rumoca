@@ -230,6 +230,37 @@ fn substitution_preserves_unknown_condition_order_and_provenance() {
     ));
 }
 
+#[test]
+fn substitution_propagates_invalid_ir_from_if_condition() {
+    let invalid_span = Span::from_offsets(
+        rumoca_core::SourceId::from_source_name("invalid_if_condition.mo"),
+        4,
+        9,
+    );
+    let expression = rumoca_core::Expression::If {
+        branches: vec![(
+            rumoca_core::Expression::Empty { span: invalid_span },
+            int_literal(1),
+        )],
+        else_branch: Box::new(int_literal(2)),
+        span: test_span(),
+    };
+
+    let error = substitute_known_constants_expr(
+        expression,
+        &Context::new(),
+        &rustc_hash::FxHashSet::default(),
+        &HashSet::new(),
+        "",
+    )
+    .expect_err("invalid semantic IR must not become an unknown condition");
+
+    assert!(matches!(
+        error,
+        FlattenError::ConstantEvaluationFailed { span, .. } if span == invalid_span
+    ));
+}
+
 fn reference_x_fill_expr() -> rumoca_core::Expression {
     rumoca_core::Expression::BuiltinCall {
         function: rumoca_core::BuiltinFunction::Fill,
@@ -388,7 +419,8 @@ fn substitutes_late_scoped_constant_inside_array_subscript() {
 #[test]
 fn substitutes_known_constants_inside_function_defaults_and_body() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(63_001), Span::DUMMY);
     function.add_input(
         crate::test_support::real_param("u", Vec::new(), test_span())
             .with_default(source_var_ref("Pkg.Constants.k")),
@@ -641,7 +673,8 @@ fn substituted_assert_condition_prefers_evaluated_scalar_over_stale_default() {
 #[test]
 fn substitutes_function_scope_constants_inside_defaults_and_body() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(63_002), Span::DUMMY);
     function.add_input(
         crate::test_support::real_param("u", Vec::new(), test_span()).with_default(
             rumoca_core::Expression::VarRef {
@@ -690,7 +723,8 @@ fn substitutes_function_scope_constants_inside_defaults_and_body() {
 #[test]
 fn substitutes_record_array_field_projection_from_flat_var_ref() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(63_003), Span::DUMMY);
     function.add_input(
         crate::test_support::real_param("u", Vec::new(), test_span())
             .with_default(generated_var_ref("ConcreteMedium.data.MM")),
@@ -700,15 +734,20 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
     let record = rumoca_core::Expression::FunctionCall {
         name: rumoca_core::Reference::new("DataRecord"),
         args: vec![rumoca_core::Expression::FunctionCall {
-            name: rumoca_core::Reference::new("__rumoca_named_arg__.MM"),
+            name: rumoca_core::Reference::new(format!(
+                "{}MM",
+                rumoca_core::NAMED_FUNCTION_ARG_PREFIX
+            )),
             args: vec![rumoca_core::Expression::Literal {
                 value: rumoca_core::Literal::Real(28.0),
                 span: rumoca_core::Span::DUMMY,
             }],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: rumoca_core::Span::DUMMY,
         }],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: rumoca_core::Span::DUMMY,
     };
     let mut ctx = Context::new();
@@ -746,7 +785,8 @@ fn substitutes_record_array_field_projection_from_flat_var_ref() {
 #[test]
 fn does_not_substitute_function_local_names() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.g", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.g", rumoca_core::DefId::new(63_004), Span::DUMMY);
     function.add_input(crate::test_support::real_param(
         "k",
         Vec::new(),
@@ -788,7 +828,11 @@ fn does_not_substitute_function_local_names() {
 #[test]
 fn does_not_substitute_indexed_function_local_names() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.g_indexed", Span::DUMMY);
+    let mut function = rumoca_core::Function::new(
+        "Pkg.g_indexed",
+        rumoca_core::DefId::new(63_005),
+        Span::DUMMY,
+    );
     function.add_input(crate::test_support::real_param(
         "table",
         vec![7, 2],
@@ -859,7 +903,8 @@ fn does_not_substitute_indexed_function_local_names() {
 #[test]
 fn substitutes_inline_multi_indexed_constant_varref_names() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.h", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.h", rumoca_core::DefId::new(63_006), Span::DUMMY);
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -927,7 +972,11 @@ fn substitutes_inline_multi_indexed_constant_varref_names() {
 #[test]
 fn rejects_unspanned_inline_indexed_constant_varref_names() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.unspanned_inline", Span::DUMMY);
+    let mut function = rumoca_core::Function::new(
+        "Pkg.unspanned_inline",
+        rumoca_core::DefId::new(63_007),
+        Span::DUMMY,
+    );
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::VarRef {
@@ -975,7 +1024,11 @@ fn inline_indexed_name_uses_structured_scalar_name_parser() {
 #[test]
 fn does_not_substitute_inline_indexed_varref_when_base_is_local() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.inline_local", Span::DUMMY);
+    let mut function = rumoca_core::Function::new(
+        "Pkg.inline_local",
+        rumoca_core::DefId::new(63_008),
+        Span::DUMMY,
+    );
     function.add_input(crate::test_support::real_param(
         "table",
         vec![7, 2],
@@ -1113,7 +1166,7 @@ fn substitutes_package_constant_in_structured_template_and_preserves_binder() {
     model.add_structured_equation(flat::StructuredEquationFamily {
         domain: rumoca_core::StructuredIndexDomain {
             binders: vec![rumoca_core::StructuredIndexBinder {
-                id: 0,
+                id: rumoca_core::StructuredIndexBinderId::new(0),
                 display_name: "i".to_string(),
                 lower: 1,
                 upper: 2,
@@ -1304,7 +1357,8 @@ fn materializes_referenced_zero_sized_array_declaration() {
 #[test]
 fn substitutes_field_access_on_zero_arg_constructor_constants() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.k", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.k", rumoca_core::DefId::new(63_009), Span::DUMMY);
     function
         .body
         .push(simple_assignment(rumoca_core::Expression::FieldAccess {
@@ -1314,6 +1368,7 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
                 ),
                 args: vec![],
                 is_constructor: true,
+                call_kind: rumoca_core::FunctionCallKind::Invocation,
                 span: rumoca_core::Span::DUMMY,
             }),
             field: "useLinearSOCDependency".to_string(),
@@ -1351,7 +1406,8 @@ fn substitutes_field_access_on_zero_arg_constructor_constants() {
 #[test]
 fn does_not_resolve_function_local_record_root_through_constant_alias() {
     let mut model = flat::Model::new();
-    let mut function = rumoca_core::Function::new("Pkg.f", Span::DUMMY);
+    let mut function =
+        rumoca_core::Function::new("Pkg.f", rumoca_core::DefId::new(63_010), Span::DUMMY);
     function.add_output(crate::test_support::aggregate_param(
         "g",
         "Common.GibbsDerivs",
@@ -1510,6 +1566,7 @@ fn keeps_expanded_record_component_reference_symbolic() {
             name: rumoca_core::Reference::new("Complex"),
             args: vec![int_literal(1), int_literal(0)],
             is_constructor: true,
+            call_kind: rumoca_core::FunctionCallKind::Invocation,
             span: rumoca_core::Span::DUMMY,
         },
     );
@@ -1532,6 +1589,7 @@ fn still_folds_record_constant_without_flat_members() {
         name: rumoca_core::Reference::new("Complex"),
         args: vec![int_literal(1), int_literal(0)],
         is_constructor: true,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: rumoca_core::Span::DUMMY,
     };
     model.add_equation(flat::Equation::new(

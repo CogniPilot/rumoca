@@ -11,9 +11,6 @@ use rumoca_solver::{
     },
 };
 
-#[cfg(feature = "solver-rk45")]
-use rumoca_solver::{SimResult, fmi_me::driver::batch_output_cursor};
-
 use crate::SimError;
 
 pub(crate) type IntegratorFactory = fn(MeNumericalSetup) -> Box<dyn MeIntegratorBackend + 'static>;
@@ -32,20 +29,25 @@ impl BackendSimulationSession {
         instance_name: &'static str,
         integrator: IntegratorFactory,
     ) -> Result<Self, SimError> {
-        let execution_backend = rumoca_solver::fmi_me::admit_execution_backend(
-            opts.execution_policy,
-            execution_backend,
-        )?;
+        let execution =
+            rumoca_solver::fmi_me::select_execution(opts.execution_policy, execution_backend)?;
         let retained = MeRetainedComponent::instantiate(
-            artifact.source(),
+            artifact.into_source(),
             &instance_config(instance_name, opts)?,
-            execution_backend,
+            execution,
         )?;
+        Self::from_retained(retained, opts, integrator)
+    }
+
+    pub(crate) fn from_retained(
+        retained: MeRetainedComponent,
+        opts: &SimOptions,
+        integrator: IntegratorFactory,
+    ) -> Result<Self, SimError> {
         let options = live_session_options(
-            opts.t_start,
             opts.rtol,
             opts.atol,
-            live_scan_scale(opts),
+            experiment_scan_scale(opts),
             opts.max_wall_seconds,
         )?;
         let host = retained.into_lease(options)?;
@@ -69,8 +71,12 @@ impl BackendSimulationSession {
         Ok(())
     }
 
-    pub(crate) fn reset(&mut self, t_start: f64) -> Result<(), SimError> {
-        self.session.reset(t_start).map_err(Into::into)
+    pub(crate) fn reset(&mut self) -> Result<(), SimError> {
+        self.session.reset().map_err(Into::into)
+    }
+
+    pub(crate) fn retime(&mut self, t_start: f64) -> Result<(), SimError> {
+        self.session.retime(t_start).map_err(Into::into)
     }
 
     pub(crate) fn time(&self) -> f64 {
@@ -106,33 +112,6 @@ impl BackendSimulationSession {
     pub(crate) fn variable_names(&self) -> &[String] {
         &self.variable_names
     }
-}
-
-#[cfg(feature = "solver-rk45")]
-pub(crate) fn simulate_artifact(
-    artifact: MeModelArtifact,
-    opts: &SimOptions,
-    execution_backend: Option<MeExecutionBackend>,
-    instance_name: &'static str,
-    integrator: IntegratorFactory,
-) -> Result<SimResult, SimError> {
-    let execution_backend =
-        rumoca_solver::fmi_me::admit_execution_backend(opts.execution_policy, execution_backend)?;
-    let options = batch_options(opts)?;
-    let mut cursor = batch_output_cursor(&options)?;
-    let retained = MeRetainedComponent::instantiate(
-        artifact.source(),
-        &instance_config(instance_name, opts)?,
-        execution_backend,
-    )?;
-    let host = retained.into_lease(options)?;
-    if host.is_terminated() {
-        return Ok(host.finish());
-    }
-    let plugin = plugin_for_host(&host, opts, integrator)?;
-    let mut session = host.into_session(plugin)?;
-    session.run_to_stop(&mut cursor)?;
-    Ok(session.finish())
 }
 
 pub(crate) fn default_step_size(opts: &SimOptions) -> f64 {
@@ -171,8 +150,8 @@ pub(crate) fn batch_options(
     opts: &SimOptions,
 ) -> Result<rumoca_solver::fmi_me::session::MeSessionOptions, SimError> {
     batch_session_options(
-        opts.t_start,
         opts.t_end,
+        experiment_scan_scale(opts),
         opts.rtol,
         opts.atol,
         default_output_dt(opts),
@@ -181,11 +160,6 @@ pub(crate) fn batch_options(
     .map_err(Into::into)
 }
 
-fn live_scan_scale(opts: &SimOptions) -> f64 {
-    let requested = (opts.t_end - opts.t_start).abs();
-    if requested.is_finite() && requested > 0.0 {
-        requested
-    } else {
-        1.0
-    }
+fn experiment_scan_scale(opts: &SimOptions) -> f64 {
+    opts.t_end - opts.t_start
 }

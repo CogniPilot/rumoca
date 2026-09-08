@@ -34,9 +34,9 @@ an artifact. Early observations do not by themselves certify that final state.
 
 ## Executable controls
 
-Build the library as documented in [README.md](README.md). Link
-`collection-driver.rs` with `--extern closure_region_facts=<output>/libclosure_region_facts.rlib`
-using the same pinned rustc-dev toolchain. It is a driver executable, not a shell
+Build the diagnostic Cargo package as documented in [README.md](README.md),
+using the same pinned rustc-dev toolchain. Its `debug/collection-driver`
+links the fact library and its dependencies. It is a driver executable, not a shell
 script. Pass ordinary rustc arguments, including an explicit crate name,
 `--edition=2021 --crate-type=rlib --emit=metadata --out-dir <output> -Zthreads=4`
 and optionally `-C incremental=<output>/incremental`.

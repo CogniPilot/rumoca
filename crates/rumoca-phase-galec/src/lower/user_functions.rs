@@ -10,23 +10,35 @@ mod tensor_loops;
 mod update_aliasing;
 
 use indexed_update::{lower_indexed_function_update, preserves_function_target};
-/// Only the retired contraction-fission recognizer still asks this, and it
-/// compiles only where its assertion does.
-#[cfg(debug_assertions)]
-pub(super) use tensor_loops::is_reorderable;
 pub(super) use tensor_loops::nest_tensor_loops;
 pub(in crate::lower) use update_aliasing::same_index;
 use update_aliasing::{GroupDefinition, UpdatedAggregate, order_by_value_dependency};
 
-pub(super) fn lower_reachable<'a, 'dae>(
+#[cfg(test)]
+pub(super) fn lower_reachable<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     roots: HashSet<u32>,
-    emission: EmissionFacts<'a>,
+    arithmetic: AlgorithmCodeArithmeticProfile,
 ) -> Result<Vec<gast::UserFunction>, GalecTargetError> {
+    lower_reachable_committed(view, definitions, roots, arithmetic).map(|lowered| lowered.functions)
+}
+
+pub(super) struct LoweredUserFunctions {
+    pub(super) functions: Vec<gast::UserFunction>,
+    pub(super) call_ledgers: Vec<CommittedFunctionCallActionLedger>,
+}
+
+pub(super) fn lower_reachable_committed<'dae>(
+    view: dae::DaeView<'dae>,
+    definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
+    roots: HashSet<u32>,
+    arithmetic: AlgorithmCodeArithmeticProfile,
+) -> Result<LoweredUserFunctions, GalecTargetError> {
     let mut pending = roots.into_iter().collect::<Vec<_>>();
     pending.sort_unstable();
     let mut lowered = HashMap::new();
+    let mut ledgers = HashMap::new();
     while let Some(raw) = pending.pop() {
         if lowered.contains_key(&raw) {
             continue;
@@ -36,8 +48,9 @@ pub(super) fn lower_reachable<'a, 'dae>(
                 .ok_or_else(|| GalecTargetError::LoweringInternal {
                     detail: format!("reachable function identity {raw} does not resolve"),
                 })?;
-        let (function, calls) = lower_function(view, definitions, id, emission)?;
+        let (function, calls, ledger) = lower_function(view, definitions, id, arithmetic)?;
         lowered.insert(raw, function);
+        ledgers.insert(raw, ledger);
         for call in calls {
             if !lowered.contains_key(&call) {
                 pending.push(call);
@@ -46,10 +59,15 @@ pub(super) fn lower_reachable<'a, 'dae>(
     }
     let mut functions = lowered.into_iter().collect::<Vec<_>>();
     functions.sort_by_key(|(id, _)| *id);
-    Ok(functions
-        .into_iter()
-        .map(|(_, function)| function)
-        .collect())
+    let mut ledgers = ledgers.into_iter().collect::<Vec<_>>();
+    ledgers.sort_by_key(|(id, _)| *id);
+    Ok(LoweredUserFunctions {
+        functions: functions
+            .into_iter()
+            .map(|(_, function)| function)
+            .collect(),
+        call_ledgers: ledgers.into_iter().map(|(_, ledger)| ledger).collect(),
+    })
 }
 
 pub(super) fn is_directly_lowerable<'dae>(
@@ -170,12 +188,19 @@ pub(super) fn dimensions(extents: &[u32]) -> Vec<gast::Dimension> {
         .collect()
 }
 
-fn lower_function<'a, 'dae>(
+fn lower_function<'dae>(
     view: dae::DaeView<'dae>,
     definitions: &rumoca_phase_structural::CausalDefinitions<'dae>,
     id: dae::FunctionId<'dae>,
-    emission: EmissionFacts<'a>,
-) -> Result<(gast::UserFunction, HashSet<u32>), GalecTargetError> {
+    arithmetic: AlgorithmCodeArithmeticProfile,
+) -> Result<
+    (
+        gast::UserFunction,
+        HashSet<u32>,
+        CommittedFunctionCallActionLedger,
+    ),
+    GalecTargetError,
+> {
     if !is_directly_lowerable(view, id) {
         return Err(unsupported(
             "galec-user-function",
@@ -193,10 +218,14 @@ fn lower_function<'a, 'dae>(
     let variables = HashMap::new();
     let previous = HashMap::new();
     let structural_locals = structural_locals::StructuralFunctionLocals::derive(view, function);
-    let mut lowerer =
-        ExpressionLowerer::with_do_step_effects(view, definitions, &variables, &previous)
-            .with_structural_function_locals(structural_locals.clone())
-            .with_emission(emission);
+    let mut lowerer = ExpressionLowerer::with_do_step_effects(
+        view,
+        definitions,
+        &variables,
+        &previous,
+        arithmetic,
+    )
+    .with_structural_function_locals(structural_locals.clone());
     lowerer.function_scope = Some(id);
     let parameters = function_parameters(view, function)?;
     let locals = function_locals(view, function, &structural_locals)?;
@@ -204,7 +233,28 @@ fn lower_function<'a, 'dae>(
     for statement in function.statements() {
         lower_function_statement(view, statement, &mut lowerer, &mut statements)?;
     }
+    // This construction transform only nests or concatenates complete branch
+    // bodies; calls are barriers to reordering and no statement is rebuilt.
+    // Close call ownership after it, so the retained receipt covers the final
+    // function statement tree handed to package construction.
     let statements = coalesce_correlated_guards(statements);
+    let expected_calls = lowerer.take_expected_function_call_actions();
+    let reused_calls = lowerer.take_reused_function_call_actions();
+    let emitted_calls = lowerer.take_evaluated_function_call_actions();
+    let call_ledger = CommittedFunctionCallActionLedger::construct(
+        view,
+        expected_calls,
+        reused_calls,
+        emitted_calls,
+    )?;
+    if !lowerer.take_evaluated_root_call_actions().is_empty()
+        || !lowerer.take_expected_root_call_actions().is_empty()
+        || !lowerer.take_reused_root_call_actions().is_empty()
+    {
+        return Err(GalecTargetError::LoweringInternal {
+            detail: "protected-function lowering committed a model-root call action".to_owned(),
+        });
+    }
     let mut locals = locals;
     locals.extend(lowerer.take_temporary_locals());
     let calls = lowerer.take_called_user_functions();
@@ -219,6 +269,7 @@ fn lower_function<'a, 'dae>(
             span: function.declaration().span(),
         },
         calls,
+        call_ledger,
     ))
 }
 
@@ -482,7 +533,7 @@ fn lower_function_statement<'a, 'dae>(
     match statement {
         dae::FunctionStatementView::Assignment { definition } => {
             lower_function_assignment(view, definition, lowerer, statements)?;
-            lowerer.finish_statement_group();
+            lowerer.finish_sequential_function_statement();
         }
         dae::FunctionStatementView::AssignmentGroup {
             definitions,
@@ -511,7 +562,7 @@ fn lower_function_statement<'a, 'dae>(
                 lowerer.carry_assigned_primitives(outer);
                 lowered?;
             }
-            lowerer.finish_statement_group();
+            lowerer.finish_sequential_function_statement();
         }
         dae::FunctionStatementView::Assertion {
             condition,
@@ -649,6 +700,7 @@ fn lower_function_conditional_group<'a, 'dae>(
         .iter()
         .map(|condition| condition.index())
         .collect::<Vec<_>>();
+    let selection = lowerer.conditional_selection_point(&activation_operands, &[])?;
     let entry_materialization = lowerer.conditional_materialization_snapshot();
     let mut reaching_bounds = ConditionalIntegerBounds::enter(lowerer);
     let mut branches = Vec::with_capacity(conditions.len());
@@ -669,6 +721,7 @@ fn lower_function_conditional_group<'a, 'dae>(
             .push(ConditionalActivationKey {
                 kind: ConditionalActivationKind::FunctionConditional,
                 operands: activation_operands.clone(),
+                selection,
                 branch: u32::try_from(ordinal).map_err(|_| GalecTargetError::LoweringInternal {
                     detail: "function conditional branch ordinal exceeds capacity".to_owned(),
                 })?,
@@ -706,6 +759,7 @@ fn lower_function_conditional_group<'a, 'dae>(
         .push(ConditionalActivationKey {
             kind: ConditionalActivationKind::FunctionConditional,
             operands: activation_operands,
+            selection,
             branch: u32::try_from(conditional.branch_count()).map_err(|_| {
                 GalecTargetError::LoweringInternal {
                     detail: "function conditional fallback ordinal exceeds capacity".to_owned(),
@@ -858,7 +912,7 @@ fn lower_shared_record_assignment<'a, 'dae>(
         || !target_type.dimensions().is_empty()
         || !lowerer
             .materialized_shared_record_fields
-            .contains_key(&(expression.index(), 0))
+            .contains_key(&lowerer.shared_record_field_key(expression.index(), 0))
     {
         return Ok(false);
     }
@@ -866,9 +920,10 @@ fn lower_shared_record_assignment<'a, 'dae>(
         let (field_name, _) = view
             .record_field(target.value_type(), ordinal)
             .expect("checked shared record target field resolves");
+        let key = lowerer.shared_record_field_key(expression.index(), ordinal);
         let value = lowerer
             .materialized_shared_record_fields
-            .get(&(expression.index(), ordinal))
+            .get(&key)
             .expect("checked shared record materializes every field")
             .clone();
         let destination = gast::Reference::local(record_value_field_name(target, field_name)?);
@@ -897,9 +952,11 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
 ) -> Result<(), GalecTargetError> {
     materialize_common_record_conditionals(view, operands, lowerer, statements)?;
     let activation_operands = conditional_activation_operands(operands);
+    let selection = lowerer.conditional_selection_point(&activation_operands, &[])?;
     let entry_materialization = lowerer.conditional_materialization_snapshot();
     let mut reaching_bounds = ConditionalIntegerBounds::enter(lowerer);
     let mut branches = Vec::with_capacity(operands.len() / 2);
+    let mut guarded_calls = Vec::new();
     for ordinal in (0..operands.len() - 1).step_by(2) {
         reaching_bounds.start_arm(lowerer);
         let condition_id = operands
@@ -915,6 +972,7 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
             .push(ConditionalActivationKey {
                 kind: ConditionalActivationKind::FunctionConditional,
                 operands: activation_operands.clone(),
+                selection,
                 branch: u32::try_from(ordinal / 2).map_err(|_| {
                     GalecTargetError::LoweringInternal {
                         detail: "nested function conditional branch exceeds capacity".to_owned(),
@@ -932,6 +990,7 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
             lowerer,
             &mut body,
         )?;
+        guarded_calls.extend(lowerer.materialized_calls_guarded_by(selection));
         lowerer.conditional_activation_path.pop();
         lowerer.restore_conditional_materialization(&condition_materialization);
         reaching_bounds.finish_arm(lowerer);
@@ -947,6 +1006,7 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
         .push(ConditionalActivationKey {
             kind: ConditionalActivationKind::FunctionConditional,
             operands: activation_operands,
+            selection,
             branch: u32::try_from(operands.len() / 2).map_err(|_| {
                 GalecTargetError::LoweringInternal {
                     detail: "nested function conditional fallback exceeds capacity".to_owned(),
@@ -965,8 +1025,15 @@ fn lower_conditional_function_value_assignment<'a, 'dae>(
         lowerer,
         &mut fallback,
     )?;
+    guarded_calls.extend(lowerer.materialized_calls_guarded_by(selection));
     lowerer.conditional_activation_path.pop();
     lowerer.restore_conditional_materialization(&entry_materialization);
+    for (key, names, sources) in guarded_calls {
+        lowerer
+            .materialized_function_calls
+            .insert(key.clone(), names);
+        lowerer.materialized_call_sources.insert(key, sources);
+    }
     reaching_bounds.finish_arm(lowerer);
     reaching_bounds.commit(lowerer);
     statements.extend(nest_function_conditional_branches(branches, fallback));
@@ -1010,7 +1077,7 @@ fn materialize_common_record_conditionals<'a, 'dae>(
             || expression_calls_asserting_function(view, expression)
             || lowerer
                 .materialized_shared_record_fields
-                .contains_key(&(raw, 0))
+                .contains_key(&lowerer.shared_record_field_key(raw, 0))
         {
             continue;
         }
@@ -1097,7 +1164,7 @@ fn materialize_shared_record<'a, 'dae>(
             ));
         }
         fields.push((
-            (expression.index(), ordinal),
+            lowerer.shared_record_field_key(expression.index(), ordinal),
             gast::Expression::Ref(gast::Reference::local(name)),
         ));
     }
@@ -1114,13 +1181,6 @@ fn lower_record_function_assignment<'a, 'dae>(
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
-    if let Some(call) =
-        lowerer.lower_direct_record_call_assignment(expression, target, target_type, span)?
-    {
-        statements.extend(lowerer.drain_prefix_statements());
-        statements.push(call);
-        return Ok(());
-    }
     let mut record_statements = Vec::new();
     for ordinal in 0..target_type.record_field_count() {
         lower_record_function_field(
@@ -1212,13 +1272,6 @@ fn lower_primitive_function_assignment<'a, 'dae>(
     statements: &mut Vec<gast::Spanned<gast::Statement>>,
 ) -> Result<(), GalecTargetError> {
     let target_name = value_name(target)?;
-    if let Some(call) =
-        lowerer.lower_direct_aggregate_call_assignment(expression, target_name.clone(), span)?
-    {
-        statements.extend(lowerer.drain_prefix_statements());
-        statements.push(call);
-        return Ok(());
-    }
     if let Some(lowered) = lower_tensor_function_assignment(
         TensorAssignment {
             target: target_name.clone(),
@@ -1284,19 +1337,23 @@ fn lower_function_for<'a, 'dae>(
             maximum: binder.lower.max(binder.upper),
         });
     }
-    lowerer.comprehension_frames.push(ComprehensionFrame {
-        domain: fold_view.domain().index(),
-        binders: names
+    lowerer.enter_iteration_point(
+        IterationOwner::FunctionFold {
+            function: fold.function().index(),
+            fold: fold.ordinal(),
+        },
+        fold_view.domain().index(),
+        names
             .iter()
             .cloned()
             .map(|name| gast::Expression::Ref(gast::Reference::local(name)))
             .collect(),
-    });
+    )?;
     let mut lowered_body = Vec::new();
     for nested in body {
         lower_function_statement(view, nested, lowerer, &mut lowered_body)?;
     }
-    lowerer.comprehension_frames.pop();
+    lowerer.leave_iteration_point();
     lowerer.loop_index_bounds.truncate(bounds_depth);
     statements.extend(wrap_function_loops(domain, names, lowered_body, span));
     Ok(())
@@ -1402,7 +1459,6 @@ fn lower_tensor_element_value<'a, 'dae>(
     assignment: &TensorAssignment<'_, 'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
 ) -> Result<TensorElementValue, GalecTargetError> {
-    materialize_eager_aggregate_calls(assignment.expression, lowerer)?;
     let scalar = scalar_type(
         assignment.target_type.scalar_type(),
         assignment.target.lexeme(),
@@ -1454,52 +1510,6 @@ fn lower_tensor_element_value<'a, 'dae>(
     })
 }
 
-/// Materialize aggregate calls before scalar projection introduces a tensor
-/// loop or index-selection branches.
-///
-/// The DAE call owner proves one source invocation. Eager traversal stops at
-/// lazy control-flow owners, so moving these calls to the assignment prefix
-/// preserves branch execution while ensuring every projection reads the same
-/// materialized result.
-pub(super) fn materialize_eager_aggregate_calls<'a, 'dae>(
-    expression: dae::ExprId<'dae>,
-    lowerer: &mut ExpressionLowerer<'a, 'dae>,
-) -> Result<(), GalecTargetError> {
-    let mut seen_expressions = HashSet::new();
-    let mut seen_owners = HashSet::new();
-    let mut calls = Vec::new();
-    expression_functions::for_each_eager_call(
-        lowerer.view,
-        expression,
-        &mut seen_expressions,
-        &|_| None,
-        &mut |site| {
-            let expression_functions::EagerSite::Call { call, owner } = site else {
-                return;
-            };
-            let node = lowerer
-                .view
-                .expression(call)
-                .expect("checked eager call resolves");
-            let dae::ExpressionOperation::Call { function, .. } = node.operation() else {
-                unreachable!("eager call traversal reports only calls")
-            };
-            let aggregate =
-                node.value_type().is_record() || !node.value_type().dimensions().is_empty();
-            if aggregate
-                && is_directly_lowerable(lowerer.view, function)
-                && seen_owners.insert(owner)
-            {
-                calls.push(call);
-            }
-        },
-    );
-    for call in calls {
-        lowerer.materialize_eager_call(call)?;
-    }
-    Ok(())
-}
-
 /// The assignment whose right-hand side is already one whole aggregate, moved
 /// without an element loop.
 ///
@@ -1548,6 +1558,22 @@ fn stored_single_coordinate_axes<'dae>(
     )
 }
 
+fn call_projection_uses_coordinate_fallback<'a, 'dae>(
+    assignment: &TensorAssignment<'_, 'dae>,
+    lowerer: &ExpressionLowerer<'a, 'dae>,
+) -> Result<bool, GalecTargetError> {
+    let projection = lowerer.tensor_call_projection(assignment.expression);
+    if let Some(call_span) = projection.refusal_span {
+        return Err(unsupported(
+            "tensor-call-projection",
+            "a call-bearing conditional, update, or comprehension tensor requires an exact projected call action"
+                .to_owned(),
+            call_span,
+        ));
+    }
+    Ok(projection.contains_call)
+}
+
 fn lower_tensor_function_assignment<'a, 'dae>(
     assignment: TensorAssignment<'_, 'dae>,
     lowerer: &mut ExpressionLowerer<'a, 'dae>,
@@ -1557,6 +1583,13 @@ fn lower_tensor_function_assignment<'a, 'dae>(
     }
     if let Some(moved) = lower_direct_aggregate_move(&assignment, lowerer)? {
         return Ok(Some(moved));
+    }
+    // Symbolic tensor projection would have to predict which call-bearing
+    // aggregate members the loop selects. Keep those roots on the exact
+    // coordinate projector used by the caller instead; one statement-group
+    // memo still materializes each issued call once.
+    if call_projection_uses_coordinate_fallback(&assignment, lowerer)? {
+        return Ok(None);
     }
     let single_coordinate = stored_single_coordinate_axes(&assignment, lowerer.view);
     let TensorElementValue {

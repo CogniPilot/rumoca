@@ -24,6 +24,7 @@ fn valid_simulation_parity_payload() -> Value {
             "missing_trace_models": 0,
             "skipped_models": 0,
             "agreement_high": 5,
+            "strict_high_models": 5,
             "agreement_minor": 1,
             "agreement_deviation": 1,
             "min_model_bounded_normalized_l1": 0.01,

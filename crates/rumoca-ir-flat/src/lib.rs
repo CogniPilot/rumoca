@@ -6,10 +6,13 @@
 //! The Flat Model is produced by the flatten phase from the Instance Tree.
 
 pub mod clocks;
+mod connected_domain;
 pub mod connections;
 pub mod name_utils;
+mod structured_equation_owners;
 pub mod visitor;
 mod when_equations;
+mod wire;
 
 use std::collections::HashMap;
 
@@ -30,6 +33,7 @@ use serde::{Deserialize, Serialize};
 pub type VarNameIndexMap<V> = IndexMap<VarName, V, rustc_hash::FxBuildHasher>;
 pub type InstanceRelationMap = IndexMap<InstanceId, InstanceRelation, rustc_hash::FxBuildHasher>;
 pub type TypeIdentityMap = IndexMap<DefId, TypeId, rustc_hash::FxBuildHasher>;
+pub type TypeRootMap = IndexMap<TypeId, TypeId, rustc_hash::FxBuildHasher>;
 
 /// Exact canonical identities of the predefined scalar types.
 ///
@@ -62,6 +66,7 @@ impl PredefinedTypeIds {
 }
 
 // Re-export connection types
+pub use connected_domain::{ConnectedCoverage, ConnectedDomain, ConnectedDomainError};
 pub use connections::{
     ConnectedVariable, ConnectionGraph, ConnectionSet, ConnectionSets, EqualityConstraint,
     GraphEdge, GraphNode, RootStatus, SpanningTree, SpanningTreeEdge,
@@ -73,6 +78,13 @@ pub use clocks::{
     ClockPartitions, SubClock, SubClockPartition,
 };
 pub use name_utils::component_base_name;
+pub use structured_equation_owners::{
+    CheckedEquationOwner, CheckedEquationPartition, CheckedRegularAccess, CheckedRegularFamily,
+    CheckedStandaloneRow, CheckedStructuredEquationOwners, CheckedTemplateFamily,
+    CheckedTemplateRows, EquationPartitionKind, StructuredEquationOwnerError,
+    StructuredOwnerErrorLocation,
+};
+pub use wire::FlatWireError;
 
 // Re-export visitor types
 pub use visitor::{
@@ -86,7 +98,7 @@ pub use when_equations::{WhenBranch, WhenChain, WhenEquation};
 ///
 /// The Flat Model is the result of flattening, containing all variables
 /// with globally unique names and all equations ready for analysis.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Model {
     /// Exact Resolve identity of the predefined `String` declaration.
     ///
@@ -99,6 +111,8 @@ pub struct Model {
     /// Resolved effective type descriptors keyed by the exact `TypeId` stored
     /// on each concrete variable or aggregate instance.
     pub effective_types: IndexMap<TypeId, EffectiveType, rustc_hash::FxBuildHasher>,
+    /// Issued nominal/effective type identities mapped to their exact canonical roots.
+    pub type_roots: TypeRootMap,
     /// Effective type identities whose exact canonical root is an enumeration.
     pub enumeration_types: IndexSet<TypeId>,
     /// Exact nominal type identity keyed by resolved declaration provenance.
@@ -220,7 +234,7 @@ pub enum InstanceKind {
     Materialized,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstanceRelation {
     pub owner: Option<InstanceId>,
     pub declaration: Option<DefId>,
@@ -229,7 +243,7 @@ pub struct InstanceRelation {
 }
 
 /// Compact resolved identity for a record container expanded into Flat fields.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordInstance {
     pub instance_id: InstanceId,
     pub component_ref: ComponentReference,
@@ -241,17 +255,19 @@ pub struct RecordInstance {
 }
 
 /// Resolved field layout of one record declaration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordType {
     pub name: String,
     pub fields: Vec<RecordField>,
 }
 
 /// One declared record field retained for exact Flat-to-DAE expansion.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordField {
     pub name: String,
     pub def_id: DefId,
+    pub type_def_id: DefId,
+    pub effective_type: EffectiveType,
     pub dims: Vec<i64>,
 }
 
@@ -443,40 +459,115 @@ impl Model {
     /// array domain, so the finalized Flat constructor interns that complete
     /// occurrence shape before exposing the model downstream.
     pub fn finalize_effective_type_shapes(&mut self) -> Result<(), ModelShapeContractError> {
-        let mut identities = self
-            .effective_types
+        self.preflight_effective_type_roots()?;
+
+        let mut effective_types = self.effective_types.clone();
+        let mut enumeration_types = self.enumeration_types.clone();
+        let mut variables = self.variables.clone();
+        let mut record_instances = self.record_instances.clone();
+        let mut type_roots = self.type_roots.clone();
+        let mut identities = effective_types
             .iter()
             .map(|(&id, effective)| (effective.clone(), id))
             .collect::<HashMap<_, _>>();
-        let mut next_id = self
-            .effective_types
+        let mut next_id = effective_types
             .keys()
             .map(TypeId::index)
             .max()
             .and_then(|index| index.checked_add(1));
-        let mut interner = EffectiveShapeInterner {
-            catalog: &mut self.effective_types,
-            enumeration_types: &mut self.enumeration_types,
-            identities: &mut identities,
-            next_id: &mut next_id,
-        };
+        {
+            let mut interner = EffectiveShapeInterner {
+                catalog: &mut effective_types,
+                enumeration_types: &mut enumeration_types,
+                identities: &mut identities,
+                next_id: &mut next_id,
+            };
 
-        for (name, variable) in &mut self.variables {
-            variable
-                .validate_shape_contract()
-                .map_err(ModelShapeContractError::Variable)?;
-            variable.type_id =
-                interner.intern(variable.type_id, &variable.dims, name, variable.source_span)?;
+            for (name, variable) in &mut variables {
+                variable
+                    .validate_shape_contract()
+                    .map_err(ModelShapeContractError::Variable)?;
+                variable.type_id = interner.intern(
+                    variable.type_id,
+                    &variable.dims,
+                    name,
+                    variable.source_span,
+                )?;
+            }
+            for (name, record) in &mut record_instances {
+                record.effective_type_id = interner.intern(
+                    record.effective_type_id,
+                    &record.dims,
+                    name,
+                    record.source_span,
+                )?;
+            }
         }
-        for (name, record) in &mut self.record_instances {
-            record.effective_type_id = interner.intern(
-                record.effective_type_id,
-                &record.dims,
-                name,
-                record.source_span,
-            )?;
+        for (&type_id, effective) in &effective_types {
+            type_roots.insert(type_id, effective.canonical_type());
+        }
+        self.effective_types = effective_types;
+        self.enumeration_types = enumeration_types;
+        self.variables = variables;
+        self.record_instances = record_instances;
+        self.type_roots = type_roots;
+        Ok(())
+    }
+
+    fn preflight_effective_type_roots(&self) -> Result<(), ModelShapeContractError> {
+        for (&effective_type_id, effective) in &self.effective_types {
+            let canonical = effective.canonical_type();
+            for root_identity in [effective_type_id, canonical] {
+                self.preflight_effective_type_root(effective_type_id, canonical, root_identity)?;
+            }
         }
         Ok(())
+    }
+
+    fn preflight_effective_type_root(
+        &self,
+        effective_type_id: TypeId,
+        canonical: TypeId,
+        root_identity: TypeId,
+    ) -> Result<(), ModelShapeContractError> {
+        if self.type_roots.get(&root_identity).copied() == Some(canonical) {
+            return Ok(());
+        }
+        let span = self.effective_type_owner_span(effective_type_id);
+        self.validate_effective_type_root(effective_type_id, canonical, root_identity, span)
+    }
+
+    fn validate_effective_type_root(
+        &self,
+        effective_type_id: TypeId,
+        canonical: TypeId,
+        root_identity: TypeId,
+        span: Option<Span>,
+    ) -> Result<(), ModelShapeContractError> {
+        let actual_root = self.type_roots.get(&root_identity).copied();
+        if actual_root == Some(canonical) {
+            return Ok(());
+        }
+        Err(ModelShapeContractError::ContradictoryEffectiveTypeRoot {
+            effective_type_id,
+            root_identity,
+            expected_root: canonical,
+            actual_root,
+            span,
+        })
+    }
+
+    fn effective_type_owner_span(&self, type_id: TypeId) -> Option<Span> {
+        self.variables
+            .values()
+            .find(|variable| variable.type_id == type_id)
+            .map(|variable| variable.source_span)
+            .or_else(|| {
+                self.record_instances
+                    .values()
+                    .find(|record| record.effective_type_id == type_id)
+                    .map(|record| record.source_span)
+            })
     }
 
     fn validate_effective_type_shape(
@@ -685,13 +776,20 @@ pub enum ModelShapeContractError {
         owner: VarName,
         span: Span,
     },
+    ContradictoryEffectiveTypeRoot {
+        effective_type_id: TypeId,
+        root_identity: TypeId,
+        expected_root: TypeId,
+        actual_root: Option<TypeId>,
+        span: Option<Span>,
+    },
 }
 
 impl ModelShapeContractError {
-    pub fn span(&self) -> Span {
+    pub fn span(&self) -> Option<Span> {
         match self {
-            Self::Variable(error) => error.span(),
-            Self::Function(error) => error.span(),
+            Self::Variable(error) => Some(error.span()),
+            Self::Function(error) => Some(error.span()),
             Self::VariableKeyNameMismatch { span, .. }
             | Self::FunctionKeyNameMismatch { span, .. }
             | Self::MissingFunctionInstanceId { span, .. }
@@ -703,13 +801,14 @@ impl ModelShapeContractError {
             | Self::MissingEffectiveType { span, .. }
             | Self::EffectiveTypeShapeMismatch { span, .. }
             | Self::InvalidEffectiveTypeShape { span, .. }
-            | Self::EffectiveTypeIdentityExhausted { span, .. } => *span,
+            | Self::EffectiveTypeIdentityExhausted { span, .. } => Some(*span),
+            Self::ContradictoryEffectiveTypeRoot { span, .. } => *span,
         }
     }
 }
 
 /// Flat variable with globally unique name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Variable {
     /// Exact runtime occurrence identity allocated by instantiation.
     pub instance_id: InstanceId,
@@ -736,8 +835,12 @@ pub struct Variable {
     pub stream: bool,
     /// Resolved array dimensions (preserved per SPEC_0007 and SPEC_0032).
     pub dims: Vec<i64>,
-    /// True if this variable is used in connection equations.
-    pub connected: bool,
+    /// Elements of this declaration that participate in connection equations.
+    ///
+    /// Connection lowering is the only writer. The domain is per element so a
+    /// partially connected compact array still receives MLS §9.2 zero-flow rows
+    /// for its untouched elements.
+    pub connected: ConnectedDomain,
 
     // Resolved attributes
     /// Start value attribute.
@@ -789,27 +892,11 @@ pub struct Variable {
     #[serde(default)]
     pub from_expandable_connector: bool,
 
-    /// True if this variable belongs to an overconstrained connector (MLS §9.4).
-    /// A connector is overconstrained if its type defines an `equalityConstraint` function.
-    #[serde(default)]
-    pub is_overconstrained: bool,
-
     /// True if this component is declared in a protected section (MLS §4.7).
     /// Protected components are not part of the public interface and their flow
     /// variables should not count as interface flows for balance checking.
     #[serde(default)]
     pub is_protected: bool,
-
-    /// The path of the enclosing overconstrained record (MLS §9.4).
-    /// E.g., "frame_a.R" for variables frame_a.R.T and frame_a.R.w.
-    /// Used to group OC variables into VCG nodes for balance correction.
-    #[serde(default)]
-    pub oc_record_path: Option<String>,
-
-    /// The output size of the enclosing record's equalityConstraint function.
-    /// E.g., 3 for Orientation (returns `Real[3]`).
-    #[serde(default)]
-    pub oc_eq_constraint_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -878,7 +965,7 @@ impl Variable {
             flow: false,
             stream: false,
             dims: Vec::new(),
-            connected: false,
+            connected: ConnectedDomain::unconnected(),
             start: None,
             fixed: None,
             min: None,
@@ -895,10 +982,7 @@ impl Variable {
             is_discrete_type: false,
             is_primitive: false,
             from_expandable_connector: false,
-            is_overconstrained: false,
             is_protected: false,
-            oc_record_path: None,
-            oc_eq_constraint_size: None,
         }
     }
 }
@@ -991,9 +1075,9 @@ mod variable_shape_contract_tests {
     #[test]
     fn add_function_assigns_stable_distinct_exposure_identities() {
         let mut model = Model::new();
-        let mut a = Function::new("Pkg.A.f", test_span());
+        let mut a = Function::new("Pkg.A.f", DefId::new(61_011), test_span());
         a.instance_id = Some(FunctionInstanceId::new(99));
-        let mut b = Function::new("Pkg.B.f", test_span());
+        let mut b = Function::new("Pkg.B.f", DefId::new(61_012), test_span());
         b.instance_id = Some(FunctionInstanceId::new(99));
         model.add_function(a);
         model.add_function(b);
@@ -1006,7 +1090,7 @@ mod variable_shape_contract_tests {
             .expect("second exposure identity");
         assert_ne!(a_id, b_id);
 
-        model.add_function(Function::new("Pkg.A.f", test_span()));
+        model.add_function(Function::new("Pkg.A.f", DefId::new(61_011), test_span()));
         assert_eq!(
             model.functions[&VarName::new("Pkg.A.f")].instance_id,
             Some(a_id),
@@ -1017,7 +1101,7 @@ mod variable_shape_contract_tests {
     #[test]
     fn flat_model_shape_contract_rejects_missing_function_instance_identity() {
         let mut model = Model::new();
-        let function = Function::new("Pkg.f", test_span());
+        let function = Function::new("Pkg.f", DefId::new(61_013), test_span());
         model.functions.insert(function.name.clone(), function);
 
         assert_eq!(
@@ -1032,8 +1116,11 @@ mod variable_shape_contract_tests {
     #[test]
     fn flat_model_shape_contract_rejects_duplicate_function_instance_identity() {
         let mut model = Model::new();
-        for name in ["Pkg.A.f", "Pkg.B.f"] {
-            let mut function = Function::new(name, test_span());
+        for (name, exposure_def_id) in [
+            ("Pkg.A.f", DefId::new(61_014)),
+            ("Pkg.B.f", DefId::new(61_015)),
+        ] {
+            let mut function = Function::new(name, exposure_def_id, test_span());
             function.instance_id = Some(FunctionInstanceId::new(7));
             model.functions.insert(function.name.clone(), function);
         }
@@ -1203,6 +1290,8 @@ mod variable_shape_contract_tests {
             scalar_type,
             EffectiveType::new(TypeId::new(3), TypeId::new(3), []).unwrap(),
         );
+        model.type_roots.insert(TypeId::new(3), TypeId::new(3));
+        model.type_roots.insert(scalar_type, TypeId::new(3));
 
         let mut scalar = Variable::empty_with_span(test_span());
         scalar.instance_id = InstanceId::new(1);
@@ -1231,9 +1320,114 @@ mod variable_shape_contract_tests {
     }
 
     #[test]
+    fn contradictory_effective_root_refuses_before_any_shape_owner_mutation() {
+        let mut model = Model::new();
+        let scalar_type = TypeId::new(10);
+        let canonical = TypeId::new(3);
+        let forged_root = TypeId::new(4);
+        model.effective_types.insert(
+            scalar_type,
+            EffectiveType::new(canonical, canonical, []).unwrap(),
+        );
+        model.type_roots.insert(canonical, canonical);
+        model.type_roots.insert(forged_root, forged_root);
+        model.type_roots.insert(scalar_type, forged_root);
+        model.enumeration_types.insert(scalar_type);
+
+        let mut array = Variable::empty_with_span(test_span());
+        array.instance_id = InstanceId::new(1);
+        array.name = VarName::new("late_array");
+        array.type_id = scalar_type;
+        array.dims = vec![2];
+        model.add_variable(array.name.clone(), array);
+
+        let mut record = record_instance("record", InstanceId::new(2));
+        record.effective_type_id = scalar_type;
+        record.dims = vec![3];
+        model
+            .record_instances
+            .insert(VarName::new("record"), record);
+
+        let effective_types = model.effective_types.clone();
+        let type_roots = model.type_roots.clone();
+        let enumeration_types = model.enumeration_types.clone();
+        let variables = model.variables.clone();
+        let record_instances = model.record_instances.clone();
+
+        assert_eq!(
+            model.finalize_effective_type_shapes(),
+            Err(ModelShapeContractError::ContradictoryEffectiveTypeRoot {
+                effective_type_id: scalar_type,
+                root_identity: scalar_type,
+                expected_root: canonical,
+                actual_root: Some(forged_root),
+                span: Some(test_span()),
+            })
+        );
+        assert_eq!(model.effective_types, effective_types);
+        assert_eq!(model.type_roots, type_roots);
+        assert_eq!(model.enumeration_types, enumeration_types);
+        assert_eq!(model.variables, variables);
+        assert_eq!(model.record_instances, record_instances);
+    }
+
+    #[test]
+    fn ownerless_contradictory_effective_root_is_a_typed_refusal() {
+        let mut model = Model::new();
+        let effective_type_id = TypeId::new(10);
+        let canonical = TypeId::new(3);
+        let forged_root = TypeId::new(4);
+        model.effective_types.insert(
+            effective_type_id,
+            EffectiveType::new(canonical, canonical, []).unwrap(),
+        );
+        model.type_roots.insert(canonical, canonical);
+        model.type_roots.insert(forged_root, forged_root);
+        model.type_roots.insert(effective_type_id, forged_root);
+
+        let later_type = TypeId::new(20);
+        let later_canonical = TypeId::new(5);
+        model.effective_types.insert(
+            later_type,
+            EffectiveType::new(later_canonical, later_canonical, []).unwrap(),
+        );
+        model.type_roots.insert(later_canonical, later_canonical);
+        model.type_roots.insert(later_type, later_canonical);
+        model.enumeration_types.insert(later_type);
+        let mut later_array = Variable::empty_with_span(test_span());
+        later_array.instance_id = InstanceId::new(1);
+        later_array.name = VarName::new("later_array");
+        later_array.type_id = later_type;
+        later_array.dims = vec![2];
+        model.add_variable(later_array.name.clone(), later_array);
+
+        let effective_types = model.effective_types.clone();
+        let type_roots = model.type_roots.clone();
+        let enumeration_types = model.enumeration_types.clone();
+        let variables = model.variables.clone();
+        let record_instances = model.record_instances.clone();
+
+        assert_eq!(
+            model.finalize_effective_type_shapes(),
+            Err(ModelShapeContractError::ContradictoryEffectiveTypeRoot {
+                effective_type_id,
+                root_identity: effective_type_id,
+                expected_root: canonical,
+                actual_root: Some(forged_root),
+                span: None,
+            })
+        );
+        assert_eq!(model.effective_types, effective_types);
+        assert_eq!(model.type_roots, type_roots);
+        assert_eq!(model.enumeration_types, enumeration_types);
+        assert_eq!(model.variables, variables);
+        assert_eq!(model.record_instances, record_instances);
+    }
+
+    #[test]
     fn flat_model_shape_contract_propagates_function_param_shape_errors() {
         let mut model = Model::new();
-        let mut function = Function::new("Pkg.f", Span::DUMMY);
+        let mut function = Function::new("Pkg.f", DefId::new(61_016), Span::DUMMY);
         let effective_type =
             rumoca_core::EffectiveType::new(TypeId::new(11), TypeId::new(1), vec![2])
                 .expect("fixture type is valid");
@@ -1256,12 +1450,25 @@ mod variable_shape_contract_tests {
 ///
 /// Each variant represents a specific equation source, enabling
 /// pattern matching instead of `starts_with()` string checks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EquationOrigin {
     /// Equation from a component instance (e.g., `equation from resistor[1]`).
     ComponentEquation { component: String },
     /// Connection equality equation: `lhs = rhs` (MLS §9.2).
     Connection { lhs: String, rhs: String },
+    /// MLS §15.2 equation for one outside stream member.
+    OutsideStream { variable: String },
+    /// MLS §9.4.1 replacement equation for one broken overconstrained edge.
+    ///
+    /// These identities are traceability only. The phase-local connection
+    /// transaction derives and checks the function call before inserting the
+    /// completed equation; Flat exposes no constructor that accepts this tuple
+    /// as semantic authority.
+    EqualityConstraint {
+        lhs_record: InstanceId,
+        rhs_record: InstanceId,
+        function: FunctionInstanceId,
+    },
     /// Flow sum equation: `sum of signed flows = 0` (MLS §9.2).
     FlowSum { description: String },
     /// Unconnected flow variable set to zero (MLS §9.2).
@@ -1274,6 +1481,15 @@ pub enum EquationOrigin {
     WhenAssignment { target: String },
     /// Binding equation from variable declaration (MLS §4.4.1).
     Binding { variable: String },
+}
+
+impl Serialize for EquationOrigin {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        wire::serialize_equation_origin(self, serializer)
+    }
 }
 
 impl std::fmt::Display for EquationOrigin {
@@ -1292,6 +1508,18 @@ impl std::fmt::Display for EquationOrigin {
             EquationOrigin::Connection { lhs, rhs } => {
                 write!(f, "connection equation: {} = {}", lhs, rhs)
             }
+            EquationOrigin::OutsideStream { variable } => {
+                write!(f, "outside stream equation for {variable}")
+            }
+            EquationOrigin::EqualityConstraint {
+                lhs_record,
+                rhs_record,
+                function,
+            } => write!(
+                f,
+                "equalityConstraint equation for record occurrences {lhs_record} and {rhs_record} through function instance {}",
+                function.index()
+            ),
             EquationOrigin::FlowSum { description } => {
                 write!(f, "flow sum equation: {}", description)
             }
@@ -1332,14 +1560,8 @@ impl EquationOrigin {
     }
 }
 
-fn default_equation_origin() -> EquationOrigin {
-    EquationOrigin::ComponentEquation {
-        component: String::new(),
-    }
-}
-
 /// Equation in residual form: 0 = residual
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Equation {
     /// The residual expression (equation is: 0 = residual).
     pub residual: Expression,
@@ -1351,7 +1573,6 @@ pub struct Equation {
     /// For array equations like `x[n] = expr`, this is n.
     /// For scalar equations, this is 1.
     /// Used for balance checking per MLS §4.7.
-    #[serde(default = "default_scalar_count")]
     pub scalar_count: usize,
 }
 
@@ -1360,12 +1581,11 @@ pub struct Equation {
 /// Current Flat lowering still materializes deterministic scalar views in
 /// `Model::equations` or `Model::initial_equations`; this family is the
 /// authoritative source grouping for later structured lowering.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StructuredEquationFamily {
     /// Compact index domain in source binder declaration order.
     pub domain: StructuredIndexDomain,
     /// First equation index in the corresponding flat equation vector.
-    #[serde(default)]
     pub first_equation_index: usize,
     /// Uniform scalar-view equation count emitted by each domain point.
     ///
@@ -1381,7 +1601,6 @@ pub struct StructuredEquationFamily {
     /// carrying the per-access stride table the Solve-IR lowering needs to build
     /// a compact `AffineStencil` without materializing one row per index tuple.
     /// `None` means the family is materialized the historical (scalar) way.
-    #[serde(default)]
     pub regular: Option<RegularForFamily>,
     /// The family's canonical comprehension body, captured by flatten before the
     /// loop is expanded. When present, downstream phases read the template directly
@@ -1389,7 +1608,6 @@ pub struct StructuredEquationFamily {
     /// kernel) instead of reconstructing it from materialized corner cells. `None`
     /// for families flattened before this representation existed. See
     /// [`rumoca_core::ComprehensionTemplate`].
-    #[serde(default)]
     pub template: Option<ComprehensionTemplate>,
     /// Whether the interior cells' scalar bodies are materialized in the equation
     /// vector. `true` (the default) is the historical behavior: every cell carries
@@ -1398,19 +1616,7 @@ pub struct StructuredEquationFamily {
     /// cells (base + one neighbor per binder) carry real bodies and this is `false`,
     /// signaling downstream phases to reconstruct interior incidence/strides from
     /// the corners instead of reading the (placeholder) interior bodies.
-    #[serde(default = "default_true")]
     pub interiors_materialized: bool,
-}
-
-/// Default scalar count for equations (1 for serde deserialization).
-fn default_scalar_count() -> usize {
-    1
-}
-
-/// Serde default for `interiors_materialized` (historical behavior: all cells
-/// carry full bodies).
-fn default_true() -> bool {
-    true
 }
 
 impl Equation {
@@ -1441,7 +1647,7 @@ impl Equation {
 }
 
 /// Runtime assertion equation preserved from `equation` / `initial equation` sections.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AssertEquation {
     /// Assertion condition expression.
     pub condition: Expression,
@@ -1452,7 +1658,6 @@ pub struct AssertEquation {
     /// Source span for diagnostics and traceability.
     pub span: Span,
     /// Typed origin for scoped parameter/constant substitution.
-    #[serde(default = "default_equation_origin")]
     pub origin: EquationOrigin,
 }
 
@@ -1476,7 +1681,7 @@ impl AssertEquation {
 }
 
 /// Algorithm section with preserved structure (SPEC_0007 / MLS §11).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Algorithm {
     /// The statements in this algorithm section.
     pub statements: Vec<Statement>,

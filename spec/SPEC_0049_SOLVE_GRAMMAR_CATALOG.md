@@ -105,12 +105,12 @@ declared end state that construction does not admit yet.
 | `Conditional` | Current | `condition: Boolean`, `captures: [reg]`, `destinations: [reg]` — a TUPLE of results — and two region bodies | two regions, both terminate | `NotApplicable` | Exactly one region evaluates; each destination takes that region's corresponding result |
 | `Map` | Current | `domain`, `captures: [reg]`, one `destination`, body region | one body region over the compact domain | `NotApplicable` at this level | Elementwise over the domain; empty domain yields empty |
 | `Fold` | Current | `domain`, `initial: [reg]` and `destinations: [reg]` — CARRIED TUPLES — `captures: [reg]`, transition region | one transition region, trip count bounded by the domain | `NotApplicable` at this level | Threads the carried tuple through the domain in the profile's declared order |
-| `Reduce` | Current | `Tensor<T> -> T` scalar. `Sum`/`Product`/`Minimum`/`Maximum` require a numeric element; `All` requires Boolean. Operand must be non-scalar | none | `Reduction` for numeric leaves, `NotApplicable` for `All` | Declared reduction with the profile's accumulator and order |
+| `Reduce` | Current for Boolean `All`; Proposed for numeric leaves | `All: Tensor<Boolean> -> Boolean` for a non-scalar operand. Numeric `Sum`/`Product`/`Minimum`/`Maximum` construction rejects before destination/operation insertion until an occurrence contract exists | none | `NotApplicable` for `All`; `Reduction` for proposed numeric leaves | `All` is conjunction in logical element order and an empty operand yields `true`; numeric rules remain proposed |
 | `Scale` | Current | `(scalar, aggregate) -> aggregate`; aggregate non-scalar, scalar rank-0, numeric element | none | per §2 `Multiply` leaf | Elementwise multiplication of the aggregate by the scalar |
 | `BroadcastBinary` | Current | `(aggregate, scalar) -> aggregate` with `scalar_on_lhs` recording operand order; operator drawn from §2 | none | per §2 leaf | Elementwise with the scalar broadcast, preserving operand order |
 | `Transpose` | Current | `Tensor<T> -> Tensor<T>` index permutation | none | `NotApplicable` | Permutes indices; no element conversion |
-| `MatrixMultiply` | Current | Checked product dimensions; result is a tensor, or a SCALAR when the product dimensions are empty | none | `Reduction` | Contraction under the profile's accumulator and order |
-| `Cross` | Current | Both operands exactly `[3]`, numeric element | none | `Reduction` | Three-element cross product |
+| `MatrixMultiply` | Current for same-format Real; implementation-refused for Integer and mixed numeric inputs | MLS §10.6.4 requires exactly vector·vector, vector×matrix, matrix×vector, and matrix×matrix over numeric elements, with the §10.6.13 common numeric result (`Integer×Integer → Integer`; either Real operand → Real). The current implementation admits compatible same-format Real operands only. One private construction-issued compact plan owns the checked operand/result type encoding, rows/inner/columns, output count, affine layouts, format `F`, seed, ascending order, round-to-nearest-ties-to-even at every primitive, separate multiply/add, accumulator-format-only intermediates, no final rounding, IEEE signed zero/infinity, quiet-NaN payload/sign quotient, gradual underflow without DAZ/FTZ, and `NoObservableFloatingStatus`. Unsupported Integer or mixed numeric multiplication rejects at the exact occurrence before destination/operation insertion; this is an implementation refusal, not language illegality. Boolean, String, and predefined enumeration multiplication remain language-illegal absent the applicable operator-record overload | none | `Reduction` | For `(r,c)`, `FirstProduct` rejects `inner == 0` before output-cardinality handling; otherwise `acc = round_F(lhs(r,0)*rhs(0,c))`, then for strictly ascending `s = 1..inner-1`, `acc = round_F(acc + round_F(lhs(r,s)*rhs(s,c)))`. `PositiveZero` seeds canonical `+0` and runs the same recurrence from `s = 0`; it alone admits an empty inner domain and yields that many `+0` results. Zero outer extent executes no arithmetic but cannot waive FirstProduct refusal. No FMA, reassociation, extended accumulator, post-primitive zero normalization, or scalar graph is admitted. Signaling NaNs quiet; quiet payload/sign is quotiented but finite/infinite substitution is forbidden; subnormals are gradual; status is unobservable |
+| `Cross` | Proposed | Numeric `[3]` cross product rejects before destination/operation insertion until its occurrence contract exists | none | `Reduction` | Proposed three-element cross-product relation |
 | `Identity` | Current | `identity(element_type, extent) -> [extent, extent]`. Real always admitted; Integer admitted only when its domain contains 0 AND 1; Boolean REJECTED; element type must belong to the root arithmetic | none | `NotApplicable` | Square identity of the declared extent |
 | `Diagonal` | Current | Rank-1 `[extent]` numeric operand to a square matrix — CONSTRUCTION only, never extraction | none | `NotApplicable` | Places the vector on the diagonal, zero elsewhere |
 | `Concatenate` | Current | Operands promoted to `max(2, ranks...)` by appending unit extents, then joined on `axis`; non-axis extents agree | none | `NotApplicable` | Shape-checked join |
@@ -125,6 +125,9 @@ declared end state that construction does not admit yet.
 | `UpdateSlice` | Current | `(aggregate, value, origin)` zero-based | none | `NotApplicable` | Functional slice update |
 | `UpdateView` | Current | `(aggregate, value, axes)` | none | `NotApplicable` | Functional update through a checked view |
 | `Call` | Current | `owner: SolvePureCallOwnerId`, `arguments: [reg]`, `destinations: [reg]`. Aggregate arguments and results each retain ONE typed register; destinations are ordered VALUE results followed by ASSERTION PREDICATES exactly as declared by the owner interface | callee body is a separate `TypedProgram` | call | Invokes one compiler-issued pure-call owner atomically; never merges with another invocation (SEV-048) |
+| `DeclarationInitialization` | Current | One exact declaration owns either an embedding-supplied external start or one package-correlated internal start value and Startup action | none | initialization | Establishes the declaration's typed logical storage exactly once before a lifecycle method may observe it |
+| `ErrorSignalReset` | Current | One lifecycle-method entry resets its owned Algorithm Code error-signal word under the checked `ResetOnly` effect receipt | method entry | error-signal store | Writes the reset value once before admitted method actions; those actions neither read nor modify it |
+| `LifecycleMethod` | Current | One source-correlated lifecycle owner binds its method kind, scoped locals, typed program, retained actions, storage bindings, error effects, and checked ABI | method body is a separate `TypedProgram` | lifecycle call | Invokes the parameter-free infallible checked method over its block-storage owner according to the retained action order |
 
 **Aspirational.** SEV-001's `InvokeOp`/`EffectOp`/`Terminator` factoring is the
 proposed end state. Today `Call` is the single pure-call owner above — there is
@@ -171,8 +174,8 @@ Element-kind columns record what the checked constructor ADMITS today.
 | `SolveConversionOperator` | `IntegerToReal` | Integer to Real | `Conversion` | Current |
 | `SolveConversionOperator` | `RealToIntegerTowardZero` | Real to Integer | `Conversion` | Current |
 | `SolveConversionOperator` | `RealToIntegerTowardNegativeInfinity` | Real to Integer | `Conversion` | Current |
-| `SolveReductionOperator` | `Sum`, `Product` | numeric | `Reduction` | Current |
-| `SolveReductionOperator` | `Minimum`, `Maximum` | numeric | `Reduction`, NaN handling per the profile | Current |
+| `SolveReductionOperator` | `Sum`, `Product` | numeric | `Reduction` | Proposed; typed construction rejects before insertion |
+| `SolveReductionOperator` | `Minimum`, `Maximum` | numeric | `Reduction`, NaN handling per the profile | Proposed; typed construction rejects before insertion |
 | `SolveReductionOperator` | `All` | Boolean only | `NotApplicable` | Current |
 
 **`Relational*` classes.** A comparison resolves no arithmetic contract, but it
@@ -205,6 +208,11 @@ mandatory.
 | A key admitted for one element type is NOT admitted for another; the value profile (§4.24) and the operation profile (§4.26) are checked together | `f32` `MatrixMultiply` proves nothing about `Binary64` |
 | Region-bearing variants are admitted only with their body's transitive closure (SEV-148) | An admitted `Fold` whose body calls a rejected op is not admissible |
 | A status-class variant requires the product's declared status transport (§4.25) | An operation that can raise needs somewhere to raise to |
+
+Membership in the closed key vocabulary is enumeration, not admission. A
+constructor, target profile, or prepared product admits a key only through its
+separate checked occurrence and capability proofs; the presence of a Current or
+Proposed name in this catalog grants no operation by itself.
 
 ## References
 

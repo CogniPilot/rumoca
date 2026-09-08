@@ -39,11 +39,11 @@ pub(super) fn simulate_dae_with_parameter_overrides(
     parameter_overrides: &[(String, f64)],
 ) -> std::result::Result<rumoca_sim::SimResult, SimulationDiagnosticError> {
     if parameter_overrides.is_empty() {
-        return simulate_dae_with_diagnostics(dae, opts);
+        return simulate_dae(dae, opts);
     }
     let mut override_opts = opts.clone();
     override_opts.param_overrides = parameter_overrides.to_vec();
-    simulate_dae_with_diagnostics(dae, &override_opts)
+    simulate_dae(dae, &override_opts)
 }
 
 fn stable_u64_from_hash(hash: blake3::Hash) -> u64 {
@@ -532,6 +532,21 @@ impl ModelicaLanguageServer {
         })
     }
 
+    pub(super) async fn compile_model_for_target(
+        &self,
+        model: &str,
+        focus_document_path: &str,
+    ) -> std::result::Result<rumoca_compile::compile::StrictCompilation, String> {
+        let context = self
+            .prepare_simulation_compile_context(focus_document_path, true)
+            .await?;
+        let snapshot = self.build_simulation_snapshot(context);
+        let model_name = model.to_string();
+        tokio::task::spawn_blocking(move || snapshot.compile_target(&model_name))
+            .await
+            .map_err(|error| format!("strict target compile worker failed: {error}"))?
+    }
+
     pub(super) async fn prepare_simulation_compile_context(
         &self,
         focus_document_path: &str,
@@ -550,7 +565,8 @@ impl ModelicaLanguageServer {
         };
         let base_session = self
             .base_session_for_simulation_compile(&local_compile_unit_sources)
-            .await;
+            .await
+            .map_err(|error| error.to_string())?;
         let local_source_fingerprint = Self::local_source_fingerprint(&local_compile_unit_sources);
         Ok(SimulationCompileContext {
             base_session,
@@ -579,9 +595,18 @@ impl ModelicaLanguageServer {
             .content
             .to_string();
         let local_compile_unit_sources = vec![(focus_document_path.to_string(), content)];
-        let base_session = self
+        let base_session = match self
             .base_session_for_simulation_compile(&local_compile_unit_sources)
-            .await;
+            .await
+        {
+            Ok(session) => session,
+            Err(error) => {
+                self.client
+                    .log_message(MessageType::ERROR, error.to_string())
+                    .await;
+                return None;
+            }
+        };
         Some(SimulationCompileContext {
             base_session,
             focus_key: canonical_path_key(focus_document_path),
@@ -593,7 +618,7 @@ impl ModelicaLanguageServer {
     async fn base_session_for_simulation_compile(
         &self,
         local_compile_unit_sources: &[(String, String)],
-    ) -> Session {
+    ) -> std::result::Result<Session, rumoca_compile::source_roots::SourceRootDiscoveryError> {
         let loaded_source_roots = self.session.read().await.loaded_source_root_path_keys();
         let requires_loaded_source_roots =
             rumoca_compile::source_roots::sources_require_loaded_source_roots(
@@ -601,16 +626,16 @@ impl ModelicaLanguageServer {
                     .iter()
                     .map(|(_, source)| source.as_str()),
                 &loaded_source_roots,
-            );
+            )?;
         let session = self.session.read().await;
         if !requires_loaded_source_roots {
             let local_compile_unit_uris = local_compile_unit_sources
                 .iter()
                 .map(|(uri, _)| uri.clone())
                 .collect::<Vec<_>>();
-            return session.clone_for_isolated_local_work(&local_compile_unit_uris);
+            return Ok(session.clone_for_isolated_local_work(&local_compile_unit_uris));
         }
-        session.clone_for_isolated_work()
+        Ok(session.clone_for_isolated_work())
     }
 
     pub(super) fn build_simulation_snapshot(
@@ -808,7 +833,7 @@ impl ModelicaLanguageServer {
             Err(error) => return (Vec::new(), Vec::new(), Some(error)),
         };
         let uri_path = session_document_uri_key(&uri);
-        let loaded_source_roots = if settings.source_root_paths.is_empty() {
+        let source_root_result = if settings.source_root_paths.is_empty() {
             let source_root_paths = self.source_root_paths.read().await.clone();
             self.ensure_source_roots_loaded_with_paths(&source, &uri_path, &source_root_paths)
                 .await
@@ -819,6 +844,10 @@ impl ModelicaLanguageServer {
                 &settings.source_root_paths,
             )
             .await
+        };
+        let loaded_source_roots = match source_root_result {
+            Ok(loaded_source_roots) => loaded_source_roots,
+            Err(error) => return (Vec::new(), Vec::new(), Some(error.to_string())),
         };
         if loaded_source_roots {
             request_token = self.refresh_analysis_request_revision(request_token).await;

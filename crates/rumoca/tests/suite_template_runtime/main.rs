@@ -6,6 +6,7 @@
 //! each member with a module-prefixed libtest filter, so the external-toolchain
 //! groups stay separable.
 
+mod artifact_session;
 mod backend_template_runtime_regression;
 #[cfg(feature = "fmu-packaging")]
 mod cli_target_fmi;

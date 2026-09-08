@@ -1,5 +1,3 @@
-// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
-#![allow(clippy::excessive_nesting, clippy::too_many_lines)]
 //! Quadrotor SIL (Software-in-the-Loop) plant simulator.
 //!
 //! Receives motor commands from Cerebri via UDP (48-byte flatbuffer),
@@ -18,7 +16,7 @@
 
 use std::env::{self, VarError};
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, UdpSocket};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -45,6 +43,15 @@ const OMEGA_MAX: f64 = 1100.0;
 
 fn hover_omega() -> f64 {
     (MASS * G / (4.0 * CT)).sqrt()
+}
+
+fn validate_motor_rpms(motor_rpms: &[f64; 4]) -> anyhow::Result<()> {
+    for (index, value) in motor_rpms.iter().enumerate() {
+        if !value.is_finite() {
+            bail!("motor angular velocity {index} must be finite, got {value}");
+        }
+    }
+    Ok(())
 }
 
 // ===========================================================================
@@ -270,7 +277,7 @@ impl QuadrotorSil {
         let compiler = rumoca::Compiler::new().model("QuadrotorSIL");
         let result = compiler.compile_str(&source, "QuadrotorSIL.mo")?;
         let session = SimulationSession::new(
-            &result.dae,
+            result.dae().as_ref(),
             SimOptions {
                 rtol: 1e-4,
                 atol: 1e-4,
@@ -289,10 +296,11 @@ impl QuadrotorSil {
         motor_rpms: [f64; 4],
         clock_sec: f64,
     ) -> anyhow::Result<SensorOutput> {
-        let _ = self.session.set_input("omega_m1", motor_rpms[0]);
-        let _ = self.session.set_input("omega_m2", motor_rpms[1]);
-        let _ = self.session.set_input("omega_m3", motor_rpms[2]);
-        let _ = self.session.set_input("omega_m4", motor_rpms[3]);
+        validate_motor_rpms(&motor_rpms)?;
+        self.session.set_input("omega_m1", motor_rpms[0])?;
+        self.session.set_input("omega_m2", motor_rpms[1])?;
+        self.session.set_input("omega_m3", motor_rpms[2])?;
+        self.session.set_input("omega_m4", motor_rpms[3])?;
 
         let current_time = self.session.time();
         let dt = clock_sec - current_time;
@@ -354,7 +362,7 @@ impl QuadrotorSil {
         let compiler = rumoca::Compiler::new().model("QuadrotorSIL");
         let result = compiler.compile_str(&self.model_source, "QuadrotorSIL.mo")?;
         self.session = SimulationSession::new(
-            &result.dae,
+            result.dae().as_ref(),
             SimOptions {
                 rtol: 1e-4,
                 atol: 1e-4,
@@ -678,12 +686,214 @@ fn f64_env_or_default(name: &str, default: f64) -> anyhow::Result<f64> {
 // Main
 // ===========================================================================
 
+fn start_viewer() -> anyhow::Result<mpsc::Sender<String>> {
+    let html = HTML_PAGE
+        .replace("__THREE_JS__", &three_js()?)
+        .replace("__WS_PORT__", &WS_PORT.to_string());
+    let http_listener = TcpListener::bind(format!("0.0.0.0:{HTTP_PORT}"))?;
+    let ws_listener = TcpListener::bind(format!("0.0.0.0:{WS_PORT}"))?;
+    eprintln!("HTTP server: http://localhost:{HTTP_PORT}");
+    thread::spawn(move || serve_http(http_listener, html));
+
+    let (state_tx, state_rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        if let Err(error) = serve_websocket(ws_listener, state_rx) {
+            eprintln!("WebSocket worker failed: {error:#}");
+        }
+    });
+    Ok(state_tx)
+}
+
+fn serve_websocket(
+    ws_listener: TcpListener,
+    state_rx: mpsc::Receiver<String>,
+) -> anyhow::Result<()> {
+    eprintln!("WebSocket: ws://localhost:{WS_PORT}");
+    eprintln!("\nOpen http://localhost:{HTTP_PORT} in your browser!\n");
+    for stream in ws_listener.incoming() {
+        let stream = stream.context("WebSocket listener failed")?;
+        eprintln!("Viewer connected");
+        let ws = match accept(stream) {
+            Ok(ws) => ws,
+            Err(error) => {
+                eprintln!("WS error: {error}");
+                continue;
+            }
+        };
+        if let Err(error) = serve_viewer(ws, &state_rx) {
+            eprintln!("WS client error: {error}");
+        }
+    }
+    Ok(())
+}
+
+fn serve_viewer(
+    mut ws: tungstenite::WebSocket<TcpStream>,
+    state_rx: &mpsc::Receiver<String>,
+) -> anyhow::Result<()> {
+    ws.get_ref().set_nonblocking(true)?;
+    loop {
+        loop {
+            match ws.read() {
+                Ok(Message::Close(_))
+                | Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed) => return Ok(()),
+                Err(tungstenite::Error::Io(ref error))
+                    if error.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error.into()),
+                _ => {}
+            }
+        }
+        if let Ok(mut latest) = state_rx.try_recv() {
+            while let Ok(newer) = state_rx.try_recv() {
+                latest = newer;
+            }
+            ws.get_ref().set_nonblocking(false)?;
+            match ws.send(Message::Text(latest.into())) {
+                Ok(()) => ws.get_ref().set_nonblocking(true)?,
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_for_frame(frame_start: Instant, dt: f64) {
+    let elapsed = frame_start.elapsed();
+    let target = Duration::from_secs_f64(dt);
+    if elapsed < target {
+        thread::sleep(target - elapsed);
+    }
+}
+
+struct UdpMode<'a> {
+    sil: &'a mut QuadrotorSil,
+    state_tx: &'a mpsc::Sender<String>,
+    socket: UdpSocket,
+    send_address: &'a str,
+    dt: f64,
+    packet_count: u64,
+}
+
+impl UdpMode<'_> {
+    fn run(&mut self) -> anyhow::Result<()> {
+        let mut recv_buf = [0u8; 256];
+        loop {
+            let frame_start = Instant::now();
+            match self.socket.recv_from(&mut recv_buf) {
+                Ok((size, _source)) => self.handle_packet(&recv_buf[..size])?,
+                Err(ref error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        || error.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(error) => eprintln!("[udp] recv error: {error}"),
+            }
+            wait_for_frame(frame_start, self.dt);
+        }
+    }
+
+    fn handle_packet(&mut self, packet: &[u8]) -> anyhow::Result<()> {
+        let Some(motor_output) = cerebri_fb::unpack_motor_output(packet) else {
+            if !packet.is_empty() {
+                eprintln!(
+                    "[udp] Invalid packet ({} bytes), expected {}",
+                    packet.len(),
+                    cerebri_fb::MOTOR_OUTPUT_SIZE
+                );
+            }
+            return Ok(());
+        };
+        self.handle_motor_output(motor_output)
+    }
+
+    fn handle_motor_output(&mut self, motor_output: cerebri_fb::MotorOutput) -> anyhow::Result<()> {
+        let motor_rpms = motor_output
+            .motors
+            .map(|motor| f64::from(motor) * OMEGA_MAX);
+        let target_clock = self.sil.time() + self.dt;
+        match self.sil.receive_motors(motor_rpms, target_clock) {
+            Ok(sensors) => {
+                let snapshot = self.sil.sensor_to_snapshot(&sensors, motor_output.armed);
+                let packet = cerebri_fb::pack_flight_snapshot(&snapshot);
+                if let Err(error) = self.socket.send_to(&packet, self.send_address) {
+                    eprintln!("[udp] send error: {error}");
+                }
+                self.packet_count += 1;
+                if self.packet_count.is_multiple_of(250) {
+                    eprintln!(
+                        "[udp] t={:.1}s alt={:.2}m motors=[{:.2},{:.2},{:.2},{:.2}] armed={}",
+                        sensors.clock_sec,
+                        -sensors.position_ned[2],
+                        motor_output.motors[0],
+                        motor_output.motors[1],
+                        motor_output.motors[2],
+                        motor_output.motors[3],
+                        motor_output.armed,
+                    );
+                }
+            }
+            Err(error) => eprintln!("[udp] Step error: {error}"),
+        }
+
+        let mode = if motor_output.armed {
+            "UDP (ARMED)"
+        } else {
+            "UDP (disarmed)"
+        };
+        let json = self.sil.state_json(mode)?;
+        self.state_tx
+            .send(json)
+            .map_err(|_| anyhow::anyhow!("viewer state channel closed"))
+    }
+}
+
+fn run_self_test(
+    sil: &mut QuadrotorSil,
+    state_tx: &mpsc::Sender<String>,
+    dt: f64,
+    omega_hover: f64,
+) -> anyhow::Result<()> {
+    eprintln!("Running self-test: hover at 1m altitude\n");
+    let hover_rpms = [omega_hover; 4];
+    let mut frame_count = 0u64;
+    loop {
+        let frame_start = Instant::now();
+        let target_clock = sil.time() + dt;
+        match sil.receive_motors(hover_rpms, target_clock) {
+            Ok(sensors) => {
+                frame_count += 1;
+                if frame_count.is_multiple_of(250) {
+                    eprintln!(
+                        "[sil] t={:.1}s alt={:.3}m accel_z={:.2} gyro=[{:.3},{:.3},{:.3}]",
+                        sensors.clock_sec,
+                        -sensors.position_ned[2],
+                        sensors.accel[2],
+                        sensors.gyro[0],
+                        sensors.gyro[1],
+                        sensors.gyro[2],
+                    );
+                }
+            }
+            Err(error) => eprintln!("[sil] Step error: {error}"),
+        }
+
+        let json = sil.state_json("Self-test (hover)")?;
+        state_tx
+            .send(json)
+            .map_err(|_| anyhow::anyhow!("viewer state channel closed"))?;
+        wait_for_frame(frame_start, dt);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
-    // Configuration from environment
     let udp_listen = optional_env_value("SIL_UDP_LISTEN")?;
     let udp_send = optional_env_value("SIL_UDP_SEND")?;
     let dt = f64_env_or_default("SIL_DT", DEFAULT_SIL_DT)?;
-
     let udp_mode = !udp_listen.is_empty() && !udp_send.is_empty();
 
     eprintln!("Compiling QuadrotorSIL model...");
@@ -707,184 +917,42 @@ fn main() -> anyhow::Result<()> {
         eprintln!("  Example: SIL_UDP_LISTEN=0.0.0.0:4243 SIL_UDP_SEND=192.0.2.1:4242");
     }
 
-    // Prepare HTML
-    let three_js = three_js()?;
-    let html = HTML_PAGE
-        .replace("__THREE_JS__", &three_js)
-        .replace("__WS_PORT__", &WS_PORT.to_string());
-
-    // Start HTTP server
-    let http_listener = TcpListener::bind(format!("0.0.0.0:{HTTP_PORT}"))?;
-    eprintln!("HTTP server: http://localhost:{HTTP_PORT}");
-    thread::spawn(move || serve_http(http_listener, html));
-
-    // WebSocket thread for viz
-    let (state_tx, state_rx) = mpsc::channel::<String>();
-    thread::spawn(move || {
-        let ws_listener = match TcpListener::bind(format!("0.0.0.0:{WS_PORT}")) {
-            Ok(listener) => listener,
-            Err(error) => {
-                eprintln!("WebSocket bind failed: {error}");
-                return;
-            }
-        };
-        eprintln!("WebSocket: ws://localhost:{WS_PORT}");
-        eprintln!("\nOpen http://localhost:{HTTP_PORT} in your browser!\n");
-        for stream in ws_listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            eprintln!("Viewer connected");
-            let mut ws = match accept(stream) {
-                Ok(ws) => ws,
-                Err(e) => {
-                    eprintln!("WS error: {e}");
-                    continue;
-                }
-            };
-            ws.get_ref().set_nonblocking(true).ok();
-            loop {
-                loop {
-                    match ws.read() {
-                        Ok(Message::Close(_)) => break,
-                        Err(tungstenite::Error::Io(ref e))
-                            if e.kind() == std::io::ErrorKind::WouldBlock =>
-                        {
-                            break;
-                        }
-                        Err(_) => break,
-                        _ => {}
-                    }
-                }
-                if let Ok(json) = state_rx.try_recv() {
-                    let mut latest = json;
-                    while let Ok(newer) = state_rx.try_recv() {
-                        latest = newer;
-                    }
-                    ws.get_ref().set_nonblocking(false).ok();
-                    if ws.send(Message::Text(latest.into())).is_err() {
-                        break;
-                    }
-                    ws.get_ref().set_nonblocking(true).ok();
-                }
-                thread::sleep(Duration::from_millis(5));
-            }
-        }
-    });
-
+    let state_tx = start_viewer()?;
     if udp_mode {
-        // ===== UDP mode: receive motor_output, step, send flight_snapshot =====
         let socket = UdpSocket::bind(&udp_listen)?;
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
         eprintln!("Listening for motor_output on {udp_listen}");
         eprintln!("Sending flight_snapshot to {udp_send}");
-
-        let mut recv_buf = [0u8; 256];
-        let mut armed;
-        let mut pkt_count = 0u64;
-
-        loop {
-            let frame_start = Instant::now();
-
-            // Try to receive a motor_output packet
-            match socket.recv_from(&mut recv_buf) {
-                Ok((n, _src)) => {
-                    if let Some(motor_out) = cerebri_fb::unpack_motor_output(&recv_buf[..n]) {
-                        armed = motor_out.armed;
-
-                        // Convert normalised motors [0..1] to rad/s
-                        let motor_rpms = [
-                            motor_out.motors[0] as f64 * OMEGA_MAX,
-                            motor_out.motors[1] as f64 * OMEGA_MAX,
-                            motor_out.motors[2] as f64 * OMEGA_MAX,
-                            motor_out.motors[3] as f64 * OMEGA_MAX,
-                        ];
-
-                        let target_clock = sil.time() + dt;
-                        match sil.receive_motors(motor_rpms, target_clock) {
-                            Ok(sensors) => {
-                                // Pack and send flight_snapshot
-                                let snap = sil.sensor_to_snapshot(&sensors, armed);
-                                let buf = cerebri_fb::pack_flight_snapshot(&snap);
-                                let _ = socket.send_to(&buf, &udp_send);
-
-                                pkt_count += 1;
-                                if pkt_count.is_multiple_of(250) {
-                                    eprintln!(
-                                        "[udp] t={:.1}s alt={:.2}m motors=[{:.2},{:.2},{:.2},{:.2}] armed={}",
-                                        sensors.clock_sec,
-                                        -sensors.position_ned[2],
-                                        motor_out.motors[0],
-                                        motor_out.motors[1],
-                                        motor_out.motors[2],
-                                        motor_out.motors[3],
-                                        armed,
-                                    );
-                                }
-                            }
-                            Err(e) => eprintln!("[udp] Step error: {e}"),
-                        }
-
-                        // Stream to viz
-                        let mode = if armed {
-                            "UDP (ARMED)"
-                        } else {
-                            "UDP (disarmed)"
-                        };
-                        let json = sil.state_json(mode)?;
-                        let _ = state_tx.send(json);
-                    } else if n > 0 {
-                        eprintln!(
-                            "[udp] Invalid packet ({n} bytes), expected {}",
-                            cerebri_fb::MOTOR_OUTPUT_SIZE
-                        );
-                    }
-                }
-                Err(ref e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(e) => eprintln!("[udp] recv error: {e}"),
-            }
-
-            let elapsed = frame_start.elapsed();
-            let target = Duration::from_secs_f64(dt);
-            if elapsed < target {
-                thread::sleep(target - elapsed);
-            }
+        UdpMode {
+            sil: &mut sil,
+            state_tx: &state_tx,
+            socket,
+            send_address: &udp_send,
+            dt,
+            packet_count: 0,
         }
+        .run()
     } else {
-        // ===== Self-test mode: hover =====
-        eprintln!("Running self-test: hover at 1m altitude\n");
-        let hover_rpms = [omega_hover; 4];
-        let mut frame_count = 0u64;
+        run_self_test(&mut sil, &state_tx, dt, omega_hover)
+    }
+}
 
-        loop {
-            let frame_start = Instant::now();
-            let target_clock = sil.time() + dt;
-            match sil.receive_motors(hover_rpms, target_clock) {
-                Ok(sensors) => {
-                    frame_count += 1;
-                    if frame_count.is_multiple_of(250) {
-                        eprintln!(
-                            "[sil] t={:.1}s alt={:.3}m accel_z={:.2} gyro=[{:.3},{:.3},{:.3}]",
-                            sensors.clock_sec,
-                            -sensors.position_ned[2],
-                            sensors.accel[2],
-                            sensors.gyro[0],
-                            sensors.gyro[1],
-                            sensors.gyro[2],
-                        );
-                    }
-                }
-                Err(e) => eprintln!("[sil] Step error: {e}"),
-            }
+#[cfg(test)]
+mod tests {
+    use super::validate_motor_rpms;
 
-            let json = sil.state_json("Self-test (hover)")?;
-            let _ = state_tx.send(json);
-
-            let elapsed = frame_start.elapsed();
-            let target = Duration::from_secs_f64(dt);
-            if elapsed < target {
-                thread::sleep(target - elapsed);
-            }
+    #[test]
+    fn motor_preflight_rejects_every_non_finite_position() {
+        assert!(validate_motor_rpms(&[0.0, 1.0, 2.0, 3.0]).is_ok());
+        let cases = [
+            [f64::NAN, 0.0, 0.0, 0.0],
+            [0.0, f64::INFINITY, 0.0, 0.0],
+            [0.0, 0.0, f64::NEG_INFINITY, 0.0],
+            [0.0, 0.0, 0.0, f64::NAN],
+        ];
+        for (index, motor_rpms) in cases.into_iter().enumerate() {
+            let error = validate_motor_rpms(&motor_rpms).unwrap_err();
+            assert!(error.to_string().contains(&format!("velocity {index}")));
         }
     }
 }

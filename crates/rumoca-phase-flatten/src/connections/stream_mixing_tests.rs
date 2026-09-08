@@ -18,27 +18,62 @@ fn fixture_def_id(name: &str) -> rumoca_core::DefId {
 
 fn add_port(model: &mut flat::Model, port: &str, nominal: f64) {
     let span = stream_test_span();
+    let connector_id = model.materialize_instance(flat::InstanceRelation {
+        owner: None,
+        declaration: None,
+        indices: Box::new([]),
+        kind: flat::InstanceKind::Materialized,
+    });
     let stream_name = rumoca_core::VarName::new(format!("{port}.h_outflow"));
+    let stream_id = model.materialize_instance(flat::InstanceRelation {
+        owner: Some(connector_id),
+        declaration: None,
+        indices: Box::new([]),
+        kind: flat::InstanceKind::Materialized,
+    });
     model.add_variable(
         stream_name.clone(),
         flat::Variable {
             name: stream_name,
+            instance_id: stream_id,
             stream: true,
             source_span: span,
-            ..flat::Variable::empty_with_span(span)
+            ..connection_test_variable(span)
         },
     );
     let flow_name = rumoca_core::VarName::new(format!("{port}.m_flow"));
+    let flow_id = model.materialize_instance(flat::InstanceRelation {
+        owner: Some(connector_id),
+        declaration: None,
+        indices: Box::new([]),
+        kind: flat::InstanceKind::Materialized,
+    });
     model.add_variable(
         flow_name.clone(),
         flat::Variable {
             name: flow_name,
+            instance_id: flow_id,
             flow: true,
             nominal: Some(real_literal(nominal)),
             source_span: span,
-            ..flat::Variable::empty_with_span(span)
+            ..connection_test_variable(span)
         },
     );
+}
+
+fn add_standalone_variable(
+    model: &mut flat::Model,
+    name: rumoca_core::VarName,
+    mut variable: flat::Variable,
+) {
+    variable.name = name.clone();
+    variable.instance_id = model.materialize_instance(flat::InstanceRelation {
+        owner: None,
+        declaration: None,
+        indices: Box::new([]),
+        kind: flat::InstanceKind::Materialized,
+    });
+    model.add_variable(name, variable);
 }
 
 fn real_literal(value: f64) -> rumoca_core::Expression {
@@ -50,16 +85,17 @@ fn real_literal(value: f64) -> rumoca_core::Expression {
 
 fn stream_call(name: &str, target: &str) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(name),
+        name: resolved_stream_operator(name),
         args: vec![variable_reference(target)],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: stream_test_span(),
     }
 }
 
 fn indexed_stream_call(name: &str, target: &str, index: i64) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(name),
+        name: resolved_stream_operator(name),
         args: vec![rumoca_core::Expression::Index {
             base: Box::new(variable_reference(target)),
             subscripts: vec![rumoca_core::Subscript::Index {
@@ -69,6 +105,7 @@ fn indexed_stream_call(name: &str, target: &str, index: i64) -> rumoca_core::Exp
             span: stream_test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: stream_test_span(),
     }
 }
@@ -80,7 +117,7 @@ fn indexed_connector_field_stream_call(
     index: i64,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(name),
+        name: resolved_stream_operator(name),
         args: vec![rumoca_core::Expression::FieldAccess {
             base: Box::new(rumoca_core::Expression::Index {
                 base: Box::new(variable_reference(connector)),
@@ -95,6 +132,7 @@ fn indexed_connector_field_stream_call(
             span: stream_test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: stream_test_span(),
     }
 }
@@ -106,7 +144,7 @@ fn symbolic_indexed_connector_field_stream_call(
     index: &str,
 ) -> rumoca_core::Expression {
     rumoca_core::Expression::FunctionCall {
-        name: rumoca_core::Reference::new(name),
+        name: resolved_stream_operator(name),
         args: vec![rumoca_core::Expression::FieldAccess {
             base: Box::new(rumoca_core::Expression::Index {
                 base: Box::new(variable_reference(connector)),
@@ -121,8 +159,18 @@ fn symbolic_indexed_connector_field_stream_call(
             span: stream_test_span(),
         }],
         is_constructor: false,
+        call_kind: rumoca_core::FunctionCallKind::Invocation,
         span: stream_test_span(),
     }
+}
+
+fn resolved_stream_operator(name: &str) -> rumoca_core::Reference {
+    let role = match name {
+        "inStream" => stream_operators::StreamOperatorRole::InStream,
+        "actualStream" => stream_operators::StreamOperatorRole::ActualStream,
+        _ => panic!("fixture requested unknown stream operator `{name}`"),
+    };
+    stream_operators::StreamOperatorIdentities::fixture().reference(role, stream_test_span())
 }
 
 fn variable_reference(name: &str) -> rumoca_core::Expression {
@@ -155,54 +203,70 @@ fn stream_overlay(ports: &[&str]) -> ast::InstanceOverlay {
     let mut overlay = ast::InstanceOverlay::new();
     let connections = ports
         .windows(2)
-        .map(|pair| ast::InstanceConnection {
-            a: ast::QualifiedName::from_dotted(&format!("{}.h_outflow", pair[0])),
-            b: ast::QualifiedName::from_dotted(&format!("{}.h_outflow", pair[1])),
-            connector_type: None,
-            span,
-            scope: String::new(),
-            family: None,
+        .map(|pair| {
+            ast::InstanceConnection::scalar(
+                ast::QualifiedName::from_dotted(&format!("{}.h_outflow", pair[0])),
+                ast::QualifiedName::from_dotted(&format!("{}.h_outflow", pair[1])),
+                None,
+                span,
+                String::new(),
+            )
+            .expect("test scalar connection is valid")
         })
         .collect();
-    overlay.add_class(ast::ClassInstanceData {
-        instance_id: rumoca_core::InstanceId(0),
-        qualified_name: ast::QualifiedName::from_ident("Root"),
-        connections,
-        ..Default::default()
-    });
+    let class_instance_id = overlay.alloc_id();
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            qualified_name: ast::QualifiedName::from_ident("Root"),
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
 fn outside_stream_overlay(scope: &str, ports: &[&str]) -> ast::InstanceOverlay {
     let span = stream_test_span();
     let mut overlay = ast::InstanceOverlay::new();
+    let connector_type = rumoca_core::TypeId(0x51_0001);
+    overlay.type_roots.insert(connector_type, connector_type);
     for port in ports {
         let instance_id = overlay.alloc_id();
-        overlay.add_component(ast::InstanceData {
-            instance_id,
-            qualified_name: ast::QualifiedName::from_dotted(&format!("{scope}.{port}")),
-            is_connector_type: true,
-            ..Default::default()
-        });
+        overlay
+            .add_component(ast::InstanceData {
+                instance_id,
+                qualified_name: ast::QualifiedName::from_dotted(&format!("{scope}.{port}")),
+                type_id: connector_type,
+                is_connector_type: true,
+                ..Default::default()
+            })
+            .expect("fixture occurrence insertion must succeed");
     }
     let connections = ports
         .windows(2)
-        .map(|pair| ast::InstanceConnection {
-            a: ast::QualifiedName::from_dotted(&format!("{scope}.{}", pair[0])),
-            b: ast::QualifiedName::from_dotted(&format!("{scope}.{}", pair[1])),
-            connector_type: None,
-            span,
-            scope: scope.to_string(),
-            family: None,
+        .map(|pair| {
+            ast::InstanceConnection::scalar(
+                ast::QualifiedName::from_dotted(&format!("{scope}.{}", pair[0])),
+                ast::QualifiedName::from_dotted(&format!("{scope}.{}", pair[1])),
+                None,
+                span,
+                scope.to_string(),
+            )
+            .expect("test scalar connection is valid")
         })
         .collect();
     let class_instance_id = overlay.alloc_id();
-    overlay.add_class(ast::ClassInstanceData {
-        instance_id: class_instance_id,
-        qualified_name: ast::QualifiedName::from_ident(scope),
-        connections,
-        ..Default::default()
-    });
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            qualified_name: ast::QualifiedName::from_ident(scope),
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
@@ -210,22 +274,28 @@ fn elementwise_array_stream_overlay() -> ast::InstanceOverlay {
     let span = stream_test_span();
     let connections = [1, 2]
         .into_iter()
-        .map(|index| ast::InstanceConnection {
-            a: ast::QualifiedName::from_dotted(&format!("a[{index}].h_outflow")),
-            b: ast::QualifiedName::from_dotted(&format!("b[{index}].h_outflow")),
-            connector_type: None,
-            span,
-            scope: String::new(),
-            family: None,
+        .map(|index| {
+            ast::InstanceConnection::scalar(
+                ast::QualifiedName::from_dotted(&format!("a[{index}].h_outflow")),
+                ast::QualifiedName::from_dotted(&format!("b[{index}].h_outflow")),
+                None,
+                span,
+                String::new(),
+            )
+            .expect("test scalar connection is valid")
         })
         .collect();
     let mut overlay = ast::InstanceOverlay::new();
-    overlay.add_class(ast::ClassInstanceData {
-        instance_id: rumoca_core::InstanceId(0),
-        qualified_name: ast::QualifiedName::from_ident("Root"),
-        connections,
-        ..Default::default()
-    });
+    let class_instance_id = overlay.alloc_id();
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            qualified_name: ast::QualifiedName::from_ident("Root"),
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
@@ -237,6 +307,8 @@ fn elementwise_array_stream_overlay() -> ast::InstanceOverlay {
 fn hierarchical_pass_through_overlay() -> ast::InstanceOverlay {
     let span = stream_test_span();
     let mut overlay = ast::InstanceOverlay::new();
+    let connector_type = rumoca_core::TypeId(0x51_0002);
+    overlay.type_roots.insert(connector_type, connector_type);
     for connector in [
         "src.port",
         "p1.port_a",
@@ -245,12 +317,15 @@ fn hierarchical_pass_through_overlay() -> ast::InstanceOverlay {
         "p2.v.port",
     ] {
         let instance_id = overlay.alloc_id();
-        overlay.add_component(ast::InstanceData {
-            instance_id,
-            qualified_name: ast::QualifiedName::from_dotted(connector),
-            is_connector_type: true,
-            ..Default::default()
-        });
+        overlay
+            .add_component(ast::InstanceData {
+                instance_id,
+                qualified_name: ast::QualifiedName::from_dotted(connector),
+                type_id: connector_type,
+                is_connector_type: true,
+                ..Default::default()
+            })
+            .expect("fixture occurrence insertion must succeed");
     }
     let connections = [
         ("", "src.port", "p1.port_a"),
@@ -259,27 +334,32 @@ fn hierarchical_pass_through_overlay() -> ast::InstanceOverlay {
         ("p2", "p2.port_a", "p2.v.port"),
     ]
     .into_iter()
-    .map(|(scope, a, b)| ast::InstanceConnection {
-        a: ast::QualifiedName::from_dotted(a),
-        b: ast::QualifiedName::from_dotted(b),
-        connector_type: None,
-        span,
-        scope: scope.to_string(),
-        family: None,
+    .map(|(scope, a, b)| {
+        ast::InstanceConnection::scalar(
+            ast::QualifiedName::from_dotted(a),
+            ast::QualifiedName::from_dotted(b),
+            None,
+            span,
+            scope.to_string(),
+        )
+        .expect("test scalar connection is valid")
     })
     .collect();
     let class_instance_id = overlay.alloc_id();
-    overlay.add_class(ast::ClassInstanceData {
-        instance_id: class_instance_id,
-        qualified_name: ast::QualifiedName::from_ident("Sys"),
-        connections,
-        ..Default::default()
-    });
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            qualified_name: ast::QualifiedName::from_ident("Sys"),
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
 fn hierarchical_pass_through_model() -> flat::Model {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     for connector in [
         "src.port",
         "p1.port_a",
@@ -340,8 +420,12 @@ fn weights_positive_flow(expression: &rumoca_core::Expression, flow: &str) -> bo
 }
 
 fn process(model: &mut flat::Model, overlay: &ast::InstanceOverlay) -> Result<(), FlattenError> {
+    finalize_connection_test_flat(model);
+    let overconstrained = overlay
+        .finalized_overconstrained()
+        .expect("stream fixture must construct finalized occurrence proofs");
     let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
-    process_connections(model, overlay, false, &mut forest)
+    process_connections_for_test(model, &overconstrained, &mut forest)
 }
 
 fn observed_expression(model: &flat::Model) -> &rumoca_core::Expression {
@@ -353,7 +437,7 @@ fn observed_expression(model: &flat::Model) -> &rumoca_core::Expression {
 
 #[test]
 fn three_connector_instream_lowers_to_regularized_weighted_mean() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     for (port, nominal) in [("a", 2.0), ("b", 4.0), ("c", 6.0)] {
         add_port(&mut model, port, nominal);
     }
@@ -390,7 +474,7 @@ fn three_connector_instream_lowers_to_regularized_weighted_mean() {
 
 #[test]
 fn connected_outside_stream_connectors_generate_one_equation_each() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     for port in ["port_1", "port_2", "port_3"] {
         add_port(&mut model, &format!("junction.{port}"), 1.0);
     }
@@ -404,13 +488,7 @@ fn connected_outside_stream_connectors_generate_one_equation_each() {
     let outside_stream_equations = model
         .equations
         .iter()
-        .filter(|equation| {
-            matches!(
-                &equation.origin,
-                flat::EquationOrigin::Connection { rhs, .. }
-                    if rhs.starts_with("inStream(")
-            )
-        })
+        .filter(|equation| matches!(&equation.origin, flat::EquationOrigin::OutsideStream { .. }))
         .collect::<Vec<_>>();
     assert_eq!(
         outside_stream_equations.len(),
@@ -430,7 +508,7 @@ fn connected_outside_stream_connectors_generate_one_equation_each() {
 
 #[test]
 fn actual_stream_lowers_to_flow_direction_if_expression() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a", 1.0);
     add_port(&mut model, "b", 1.0);
     add_observation_equation(&mut model, stream_call("actualStream", "a.h_outflow"));
@@ -473,7 +551,7 @@ fn actual_stream_lowers_to_flow_direction_if_expression() {
 
 #[test]
 fn indexed_instream_preserves_the_element_access_on_each_peer() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a", 1.0);
     add_port(&mut model, "b", 1.0);
     add_observation_equation(
@@ -503,7 +581,7 @@ fn indexed_instream_preserves_the_element_access_on_each_peer() {
 
 #[test]
 fn indexed_connector_field_stream_access_preserves_the_connector_index() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a", 1.0);
     add_port(&mut model, "b", 1.0);
     add_observation_equation(
@@ -540,7 +618,7 @@ fn indexed_connector_field_stream_access_preserves_the_connector_index() {
 
 #[test]
 fn symbolic_connector_index_selects_the_matching_scalar_stream_set() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     for port in ["a[1]", "a[2]", "b[1]", "b[2]"] {
         add_port(&mut model, port, 1.0);
     }
@@ -576,14 +654,14 @@ fn symbolic_connector_index_selects_the_matching_scalar_stream_set() {
 #[test]
 fn stream_operator_rejects_non_stream_argument_with_source_span() {
     let span = stream_test_span();
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     let name = rumoca_core::VarName::new("a.temperature");
-    model.add_variable(
+    add_standalone_variable(
+        &mut model,
         name.clone(),
         flat::Variable {
-            name,
             source_span: span,
-            ..flat::Variable::empty_with_span(span)
+            ..connection_test_variable(span)
         },
     );
     add_port(&mut model, "a", 1.0);
@@ -610,7 +688,7 @@ fn stream_operator_rejects_non_stream_argument_with_source_span() {
 /// being rejected as a non-stream reference.
 #[test]
 fn zero_sized_array_stream_member_of_a_connector_array_lowers_to_an_empty_array() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a[1]", 1.0);
     add_port(&mut model, "b[1]", 1.0);
     add_observation_equation(
@@ -638,7 +716,7 @@ fn zero_sized_array_stream_member_of_a_connector_array_lowers_to_an_empty_array(
 /// than a `FieldAccess` on an `Index`. That spelling must lower identically.
 #[test]
 fn zero_sized_stream_member_projected_off_a_whole_connector_array_lowers() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a[1]", 1.0);
     add_port(&mut model, "b[1]", 1.0);
     add_observation_equation(&mut model, stream_call("inStream", "a.Xi_outflow"));
@@ -662,7 +740,7 @@ fn zero_sized_stream_member_projected_off_a_whole_connector_array_lowers() {
 /// `if` expression over a nonexistent scalar.
 #[test]
 fn zero_sized_array_stream_member_lowers_actual_stream_to_an_empty_array() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a[1]", 1.0);
     add_port(&mut model, "b[1]", 1.0);
     add_observation_equation(
@@ -689,15 +767,15 @@ fn zero_sized_array_stream_member_lowers_actual_stream_to_an_empty_array() {
 #[test]
 fn missing_member_of_a_non_stream_connector_still_reports_a_stream_diagnostic() {
     let span = stream_test_span();
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     add_port(&mut model, "a", 1.0);
     let name = rumoca_core::VarName::new("plain.p");
-    model.add_variable(
+    add_standalone_variable(
+        &mut model,
         name.clone(),
         flat::Variable {
-            name,
             source_span: span,
-            ..flat::Variable::empty_with_span(span)
+            ..connection_test_variable(span)
         },
     );
     add_observation_equation(&mut model, stream_call("inStream", "plain.Xi_outflow"));
@@ -809,14 +887,19 @@ fn outside_peer_uses_positive_flow_sign_and_the_enclosing_set() {
 fn branching_pipe_overlay() -> ast::InstanceOverlay {
     let span = stream_test_span();
     let mut overlay = ast::InstanceOverlay::new();
+    let connector_type = rumoca_core::TypeId(0x51_0003);
+    overlay.type_roots.insert(connector_type, connector_type);
     for connector in ["src.port", "p1.port_a", "p1.v.port", "p1.w.port"] {
         let instance_id = overlay.alloc_id();
-        overlay.add_component(ast::InstanceData {
-            instance_id,
-            qualified_name: ast::QualifiedName::from_dotted(connector),
-            is_connector_type: true,
-            ..Default::default()
-        });
+        overlay
+            .add_component(ast::InstanceData {
+                instance_id,
+                qualified_name: ast::QualifiedName::from_dotted(connector),
+                type_id: connector_type,
+                is_connector_type: true,
+                ..Default::default()
+            })
+            .expect("fixture occurrence insertion must succeed");
     }
     let connections = [
         ("", "src.port", "p1.port_a"),
@@ -824,22 +907,27 @@ fn branching_pipe_overlay() -> ast::InstanceOverlay {
         ("p1", "p1.port_a", "p1.w.port"),
     ]
     .into_iter()
-    .map(|(scope, a, b)| ast::InstanceConnection {
-        a: ast::QualifiedName::from_dotted(a),
-        b: ast::QualifiedName::from_dotted(b),
-        connector_type: None,
-        span,
-        scope: scope.to_string(),
-        family: None,
+    .map(|(scope, a, b)| {
+        ast::InstanceConnection::scalar(
+            ast::QualifiedName::from_dotted(a),
+            ast::QualifiedName::from_dotted(b),
+            None,
+            span,
+            scope.to_string(),
+        )
+        .expect("test scalar connection is valid")
     })
     .collect();
     let class_instance_id = overlay.alloc_id();
-    overlay.add_class(ast::ClassInstanceData {
-        instance_id: class_instance_id,
-        qualified_name: ast::QualifiedName::from_ident("Sys"),
-        connections,
-        ..Default::default()
-    });
+    overlay
+        .add_class(ast::ClassInstanceData {
+            instance_id: class_instance_id,
+            qualified_name: ast::QualifiedName::from_ident("Sys"),
+            connections,
+            ..Default::default()
+        })
+        .expect("fixture occurrence insertion must succeed");
+    let _ = crate::test_support::finalized_test_overlay(&mut overlay);
     overlay
 }
 
@@ -847,7 +935,7 @@ fn branching_pipe_overlay() -> ast::InstanceOverlay {
 /// and an outside connector `max(+m_flow, 0)`.
 #[test]
 fn outside_connector_is_weighted_with_the_unnegated_flow() {
-    let mut model = flat::Model::new();
+    let mut model = connection_test_model();
     for connector in ["src.port", "p1.port_a", "p1.v.port", "p1.w.port"] {
         add_port(&mut model, connector, 1.0);
     }
@@ -896,7 +984,8 @@ fn outside_connector_equation_reports_its_own_scope_mixture() {
         .find(|equation| {
             matches!(
                 &equation.origin,
-                flat::EquationOrigin::Connection { lhs, .. } if lhs == "p1.port_a.h_outflow"
+                flat::EquationOrigin::OutsideStream { variable }
+                    if variable == "p1.port_a.h_outflow"
             )
         })
         .expect("MLS §15.1 requires one equation per outside stream connector");
@@ -915,11 +1004,12 @@ fn outside_connector_equation_reports_its_own_scope_mixture() {
 
 #[test]
 fn malformed_stream_set_reports_missing_flat_variable_without_panicking() {
-    let model = flat::Model::new();
+    let model = connection_test_model();
     let missing = rumoca_core::VarName::new("missing.h_outflow");
     let sets = vec![StreamConnectionSet {
         variables: vec![missing],
         scope: String::new(),
+        span: Span::DUMMY,
     }];
 
     let Err(error) = stream_operators::build_stream_connection_endpoints(
@@ -933,9 +1023,48 @@ fn malformed_stream_set_reports_missing_flat_variable_without_panicking() {
     assert!(
         matches!(
             &error,
-            FlattenError::MissingSourceContext { reason }
-                if reason.contains("missing.h_outflow")
+            FlattenError::InvalidConnectionEvidence { description, .. }
+                if description.contains("missing.h_outflow")
         ),
         "unexpected stream diagnostic: {error:?}"
+    );
+}
+
+#[test]
+fn missing_stream_member_refuses_compatibility_before_rewriting_or_projection_commit() {
+    let mut model = hierarchical_pass_through_model();
+    finalize_connection_test_flat(&mut model);
+    model.add_equation(flat::Equation::new(
+        stream_call("inStream", "src.port.h_outflow"),
+        stream_test_span(),
+        flat::EquationOrigin::ComponentEquation {
+            component: "sentinel".to_string(),
+        },
+    ));
+    model
+        .variables
+        .shift_remove(&rumoca_core::VarName::new("p1.port_a.m_flow"));
+    let before = connection_mutation_snapshot(&model);
+    let mut forest = crate::vcg::OverconstrainedEquationForest::empty();
+
+    let overlay = hierarchical_pass_through_overlay();
+    let overconstrained = overlay
+        .finalized_overconstrained()
+        .expect("stream fixture must construct finalized occurrence proofs");
+    let error = process_connections_for_test(&mut model, &overconstrained, &mut forest)
+        .expect_err("a stream endpoint without its exact associated flow must refuse");
+
+    assert!(matches!(error, FlattenError::IncompatibleConnectors { .. }));
+    assert_eq!(connection_mutation_snapshot(&model), before);
+    assert!(
+        model.equations[0]
+            .residual
+            .contains_subexpression(|expression| {
+                matches!(
+                    expression,
+                    rumoca_core::Expression::FunctionCall { name, .. }
+                        if name.var_name().last_segment() == "inStream"
+                )
+            })
     );
 }

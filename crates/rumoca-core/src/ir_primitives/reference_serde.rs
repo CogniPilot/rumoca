@@ -14,7 +14,10 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{ComponentReference, InstanceId, Reference, ResolvedFunctionReference, VarName};
+use super::{
+    ComponentReference, InstanceId, Reference, ResolvedFunctionReference, StructuredIndexBinderId,
+    VarName,
+};
 
 /// The complete current reference record.
 ///
@@ -36,6 +39,8 @@ struct ReferenceWire {
     resolved_function: Option<ResolvedFunctionReference>,
     #[serde(deserialize_with = "required")]
     instance_id: Option<InstanceId>,
+    #[serde(deserialize_with = "required")]
+    structured_binder: Option<StructuredIndexBinderId>,
     generated: bool,
 }
 
@@ -64,6 +69,10 @@ pub enum ReferenceContractError {
     /// record instance, so a reference may not carry the sentinel as though it
     /// named a concrete occurrence.
     UnsetInstanceIdentity,
+    /// A structured binder is a domain-local value target. It requires the
+    /// source token's exact spelling/span carrier and is exclusive with
+    /// concrete occurrence and callable identities. It does not mint a DefId.
+    InvalidStructuredBinderTarget,
 }
 
 impl std::fmt::Display for ReferenceContractError {
@@ -72,6 +81,9 @@ impl std::fmt::Display for ReferenceContractError {
             Self::EmptyName => formatter.write_str("reference requires a nonempty name"),
             Self::UnsetInstanceIdentity => formatter.write_str(
                 "reference carries the reserved unset occurrence identity InstanceId(0)",
+            ),
+            Self::InvalidStructuredBinderTarget => formatter.write_str(
+                "structured binder target requires source spelling/span evidence and excludes occurrence/callable identity",
             ),
         }
     }
@@ -89,6 +101,7 @@ impl Reference {
         component_ref: Option<ComponentReference>,
         resolved_function: Option<ResolvedFunctionReference>,
         instance_id: Option<InstanceId>,
+        structured_binder: Option<StructuredIndexBinderId>,
         generated: bool,
     ) -> Result<Self, ReferenceContractError> {
         if name.as_str().is_empty() {
@@ -97,11 +110,17 @@ impl Reference {
         if instance_id.is_some_and(InstanceId::is_unset) {
             return Err(ReferenceContractError::UnsetInstanceIdentity);
         }
+        if structured_binder.is_some()
+            && (component_ref.is_none() || instance_id.is_some() || resolved_function.is_some())
+        {
+            return Err(ReferenceContractError::InvalidStructuredBinderTarget);
+        }
         Ok(Self {
             name,
             component_ref,
             resolved_function,
             instance_id,
+            structured_binder,
             generated,
         })
     }
@@ -117,6 +136,7 @@ impl Serialize for Reference {
             component_ref: self.component_ref.clone(),
             resolved_function: self.resolved_function,
             instance_id: self.instance_id,
+            structured_binder: self.structured_binder,
             generated: self.generated,
         }
         .serialize(serializer)
@@ -134,6 +154,7 @@ impl<'de> Deserialize<'de> for Reference {
             wire.component_ref,
             wire.resolved_function,
             wire.instance_id,
+            wire.structured_binder,
             wire.generated,
         )
         .map_err(serde::de::Error::custom)

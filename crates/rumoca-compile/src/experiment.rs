@@ -79,7 +79,11 @@ fn apply_om_simulation_flags_solver(value: &ast::Expression, settings: &mut Expe
                     settings.solver = extract_string_literal(value);
                 }
             }
-            ast::Expression::Modification { target, value, .. } => {
+            ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => {
                 if let Some(key) = component_ref_last_ident(target)
                     && (key.eq_ignore_ascii_case("s") || key.eq_ignore_ascii_case("solver"))
                 {
@@ -141,7 +145,11 @@ fn extract_rumoca_solver_settings_from_modifications(
             ast::Expression::NamedArgument { name, value, .. } => {
                 apply_rumoca_solver_entry(name.text.as_ref(), value, &mut settings);
             }
-            ast::Expression::Modification { target, value, .. } => {
+            ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => {
                 if let Some(key) = component_ref_last_ident(target) {
                     apply_rumoca_solver_entry(key, value, &mut settings);
                 }
@@ -179,9 +187,12 @@ fn merge_rumoca_solver_settings_from_expr(
         {
             merge_rumoca_solver_settings_from_expr(value, settings);
         }
-        ast::Expression::Modification { target, value, .. }
-            if component_ref_last_ident(target)
-                .is_some_and(|key| key.eq_ignore_ascii_case("Solver")) =>
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } if component_ref_last_ident(target)
+            .is_some_and(|key| key.eq_ignore_ascii_case("Solver")) =>
         {
             merge_rumoca_solver_settings_from_expr(value, settings);
         }
@@ -208,7 +219,11 @@ fn extract_experiment_settings_from_modifications(
             ast::Expression::NamedArgument { name, value, .. } => {
                 apply_experiment_entry(name.text.as_ref(), value, &mut settings);
             }
-            ast::Expression::Modification { target, value, .. } => {
+            ast::Expression::Modification {
+                target,
+                value: Some(value),
+                ..
+            } => {
                 if let Some(key) = component_ref_last_ident(target) {
                     apply_experiment_entry(key, value, &mut settings);
                 }
@@ -254,9 +269,11 @@ fn extract_experiment_settings_from_annotation_expr(
         {
             extract_experiment_settings_from_annotation_expr(value)
         }
-        ast::Expression::Modification { target, value, .. }
-            if component_ref_last_ident(target) == Some("experiment") =>
-        {
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } if component_ref_last_ident(target) == Some("experiment") => {
             extract_experiment_settings_from_annotation_expr(value)
         }
         _ => None,
@@ -287,9 +304,12 @@ fn extract_rumoca_settings_from_annotation_expr(
         {
             extract_rumoca_settings_from_annotation_expr(value)
         }
-        ast::Expression::Modification { target, value, .. }
-            if component_ref_last_ident(target)
-                .is_some_and(|key| key.eq_ignore_ascii_case("__rumoca")) =>
+        ast::Expression::Modification {
+            target,
+            value: Some(value),
+            ..
+        } if component_ref_last_ident(target)
+            .is_some_and(|key| key.eq_ignore_ascii_case("__rumoca")) =>
         {
             extract_rumoca_settings_from_annotation_expr(value)
         }

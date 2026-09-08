@@ -14,17 +14,13 @@ pub struct MessageConfig {
 }
 
 /// A route entry can be either a simple string `"logical_key"` or a table.
-/// The table form accepts `name`, `to`, or `key` for the logical key; the
-/// semantic layer above the codec decides what the key means.
+/// The table form uses the sole current `name` spelling for the logical key;
+/// the semantic layer above the codec decides what the key means.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum RouteEntry {
     Simple(String),
-    Full {
-        #[serde(alias = "to", alias = "key")]
-        name: String,
-        scale: Option<f64>,
-    },
+    Full { name: String, scale: Option<f64> },
 }
 
 impl RouteEntry {

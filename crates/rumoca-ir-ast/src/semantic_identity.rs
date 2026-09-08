@@ -342,9 +342,41 @@ fn expressions_are_equivalent(existing: &[Expression], incoming: &[Expression]) 
     slices_are_equivalent(existing, incoming, expression_is_equivalent)
 }
 
-// SPEC_0021: Exception - exhaustive structural comparison over every AST expression variant.
-#[allow(clippy::too_many_lines)]
 fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> bool {
+    match (existing, incoming) {
+        (Expression::Empty { .. }, Expression::Empty { .. })
+        | (Expression::Range { .. }, Expression::Range { .. })
+        | (Expression::Unary { .. }, Expression::Unary { .. })
+        | (Expression::Binary { .. }, Expression::Binary { .. })
+        | (Expression::Terminal { .. }, Expression::Terminal { .. })
+        | (Expression::ComponentReference(_), Expression::ComponentReference(_))
+        | (Expression::Parenthesized { .. }, Expression::Parenthesized { .. }) => {
+            basic_expressions_are_equivalent(existing, incoming)
+        }
+        (Expression::DerivativeCall { .. }, Expression::DerivativeCall { .. })
+        | (Expression::FunctionCall { .. }, Expression::FunctionCall { .. })
+        | (Expression::NamedArgument { .. }, Expression::NamedArgument { .. }) => {
+            call_expressions_are_equivalent(existing, incoming)
+        }
+        (Expression::ClassModification { .. }, Expression::ClassModification { .. })
+        | (Expression::Modification { .. }, Expression::Modification { .. }) => {
+            modification_expressions_are_equivalent(existing, incoming)
+        }
+        (Expression::Array { .. }, Expression::Array { .. })
+        | (Expression::Tuple { .. }, Expression::Tuple { .. })
+        | (Expression::If { .. }, Expression::If { .. }) => {
+            aggregate_expressions_are_equivalent(existing, incoming)
+        }
+        (Expression::ArrayComprehension { .. }, Expression::ArrayComprehension { .. })
+        | (Expression::ArrayIndex { .. }, Expression::ArrayIndex { .. })
+        | (Expression::FieldAccess { .. }, Expression::FieldAccess { .. }) => {
+            access_expressions_are_equivalent(existing, incoming)
+        }
+        _ => false,
+    }
+}
+
+fn basic_expressions_are_equivalent(existing: &Expression, incoming: &Expression) -> bool {
     match (existing, incoming) {
         (Expression::Empty { .. }, Expression::Empty { .. }) => true,
         (
@@ -411,6 +443,30 @@ fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> boo
             component_references_are_equivalent(existing, incoming)
         }
         (
+            Expression::Parenthesized {
+                inner: existing, ..
+            },
+            Expression::Parenthesized {
+                inner: incoming, ..
+            },
+        ) => expression_is_equivalent(existing, incoming),
+        _ => false,
+    }
+}
+
+fn call_expressions_are_equivalent(existing: &Expression, incoming: &Expression) -> bool {
+    match (existing, incoming) {
+        (
+            Expression::DerivativeCall {
+                args: existing_args,
+                ..
+            },
+            Expression::DerivativeCall {
+                args: incoming_args,
+                ..
+            },
+        ) => expressions_are_equivalent(existing_args, incoming_args),
+        (
             Expression::FunctionCall {
                 comp: existing_comp,
                 args: existing_args,
@@ -428,6 +484,27 @@ fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> boo
                 && component_references_are_equivalent(existing_comp, incoming_comp)
                 && expressions_are_equivalent(existing_args, incoming_args)
         }
+        (
+            Expression::NamedArgument {
+                name: existing_name,
+                value: existing_value,
+                ..
+            },
+            Expression::NamedArgument {
+                name: incoming_name,
+                value: incoming_value,
+                ..
+            },
+        ) => {
+            token_text_eq(existing_name, incoming_name)
+                && expression_is_equivalent(existing_value, incoming_value)
+        }
+        _ => false,
+    }
+}
+
+fn modification_expressions_are_equivalent(existing: &Expression, incoming: &Expression) -> bool {
+    match (existing, incoming) {
         (
             Expression::ClassModification {
                 target: existing_target,
@@ -453,21 +530,6 @@ fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> boo
                 && existing_redeclare == incoming_redeclare
         }
         (
-            Expression::NamedArgument {
-                name: existing_name,
-                value: existing_value,
-                ..
-            },
-            Expression::NamedArgument {
-                name: incoming_name,
-                value: incoming_value,
-                ..
-            },
-        ) => {
-            token_text_eq(existing_name, incoming_name)
-                && expression_is_equivalent(existing_value, incoming_value)
-        }
-        (
             Expression::Modification {
                 target: existing_target,
                 value: existing_value,
@@ -480,8 +542,20 @@ fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> boo
             },
         ) => {
             component_references_are_equivalent(existing_target, incoming_target)
-                && expression_is_equivalent(existing_value, incoming_value)
+                && match (existing_value, incoming_value) {
+                    (Some(existing_value), Some(incoming_value)) => {
+                        expression_is_equivalent(existing_value, incoming_value)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
         }
+        _ => false,
+    }
+}
+
+fn aggregate_expressions_are_equivalent(existing: &Expression, incoming: &Expression) -> bool {
+    match (existing, incoming) {
         (
             Expression::Array {
                 elements: existing_elements,
@@ -520,14 +594,12 @@ fn expression_is_equivalent(existing: &Expression, incoming: &Expression) -> boo
             expression_pairs_are_equivalent(existing_branches, incoming_branches)
                 && expression_is_equivalent(existing_else, incoming_else)
         }
-        (
-            Expression::Parenthesized {
-                inner: existing, ..
-            },
-            Expression::Parenthesized {
-                inner: incoming, ..
-            },
-        ) => expression_is_equivalent(existing, incoming),
+        _ => false,
+    }
+}
+
+fn access_expressions_are_equivalent(existing: &Expression, incoming: &Expression) -> bool {
+    match (existing, incoming) {
         (
             Expression::ArrayComprehension {
                 expr: existing_expr,

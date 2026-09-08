@@ -22,8 +22,7 @@ fn required_external_tools_marker_is_scoped_to_the_gate() {
     let root = tempfile::tempdir().expect("temporary workspace root");
     let path = root.path().join("target/template-runtimes/strict");
     {
-        let _marker =
-            RequiredExternalToolsMarker::new(root.path(), true).expect("create strict marker");
+        let _marker = RequiredExternalToolsMarker::new(root.path()).expect("create strict marker");
         assert!(path.is_file());
     }
     assert!(
@@ -39,8 +38,7 @@ fn required_external_tools_marker_preserves_explicit_local_policy() {
     fs::create_dir_all(path.parent().expect("marker parent")).expect("create marker directory");
     fs::write(&path, b"local policy\n").expect("write local marker");
     {
-        let _marker =
-            RequiredExternalToolsMarker::new(root.path(), true).expect("reuse strict marker");
+        let _marker = RequiredExternalToolsMarker::new(root.path()).expect("reuse strict marker");
     }
     assert!(path.is_file(), "pre-existing marker belongs to the caller");
 }
