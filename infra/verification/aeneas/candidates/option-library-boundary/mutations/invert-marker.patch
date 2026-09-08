@@ -1,0 +1,7 @@
+--- a/option-library-boundary.rs
++++ b/option-library-boundary.rs
+@@ -11,3 +11,3 @@
+ pub fn same_marker<T: ?Sized>(left: PhantomData<T>, right: PhantomData<T>) -> bool {
+-    left == right
++    !(left == right)
+ }

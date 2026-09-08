@@ -1,0 +1,312 @@
+{
+  "scope": "Three source-extracted library bodies; Result::ok remains opaque and outside these laws; not whole DAE admission",
+  "time": {
+    "current_time": "2026-09-08 03:42:11 UTC"
+  },
+  "before": {
+    "chunk_id": "550103",
+    "exit_code": 0,
+    "original_token_count": 389,
+    "output": "ce511852742752bfb5e2b069fc97909c3e26e34b76fedb380d8f39ca507b3dde  /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs\n59295f6fb05215fbe84acca1438eeaad08252568f04f44164da37b077b95d5ed  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean\nd03c92296d683a52aad557df9722743df9291ba1669d98b1206f3bd5ccefad26  /tmp/rumoca-option-boundary-mutation-KoQI7p/option-library-boundary.rs\n99e477fc9d1cc48ef073199cf0ae267fe4aca07881194f939fd6d7f62f508aa6  /tmp/rumoca-option-library-boundary-E7TrsA/three-input/OptionBoundarySource.llbc\na4ed72c936f472ea4d2249fdf4f8fef85838122158b833c5cd18e05c7b840034  /tmp/rumoca-option-library-boundary-E7TrsA/three-source/OptionBoundarySource.lean\ned6f92cd6709ab948ae168187161db5be03085fd941ed4d2526fb400079978bd  /tmp/rumoca-option-boundary-mutation-KoQI7p/OptionBoundarySource.llbc\nf75b90601f42abba851f48f99eae4777995b06b2b78848d79d5eda743d45cb85  /tmp/rumoca-option-boundary-mutation-KoQI7p/lean/OptionBoundarySource.lean\naae9f01b197bff88deab2082c84d07949e054574d3cdca125d6e6eefeba19d49  /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\nae9bbe39611ebc6217edb14d73933223868ed768372c8db9b7779c9dbde9526c  /tmp/rumoca-transport-final-tools-jSpTEa/charon\n538716917f5c8b2da5face7c100e9b70c7ff6dd389900709fe9fb91733deb00b  /tmp/rumoca-transport-final-tools-jSpTEa/charon-driver\n9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\n"
+  },
+  "runs": [
+    {
+      "name": "native_and_strict_lint",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --test --edition=2024 /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs -o /tmp/rumoca-option-library-boundary-E7TrsA/native && /tmp/rumoca-option-library-boundary-E7TrsA/native --test-threads=4 && env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --test --edition=2024 --emit=metadata /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs --out-dir /tmp/rumoca-option-library-boundary-E7TrsA -Dwarnings -Dclippy::all -Dclippy::too_many_lines -Dclippy::excessive_nesting && env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --edition=2024 --check /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "89fe48",
+          "exit_code": 0,
+          "original_token_count": 62,
+          "output": "\nrunning 2 tests\ntest tests::option_result_cases_preserve_values_and_refusals ... ok\ntest tests::marker_equality_does_not_require_value_equality ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ]
+    },
+    {
+      "name": "mutated_native",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --test --edition=2024 /tmp/rumoca-option-boundary-mutation-KoQI7p/option-library-boundary.rs -o /tmp/rumoca-option-boundary-mutation-KoQI7p/native && /tmp/rumoca-option-boundary-mutation-KoQI7p/native --test-threads=4",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 101,
+      "results": [
+        {
+          "chunk_id": "c478e4",
+          "exit_code": 101,
+          "original_token_count": 181,
+          "output": "\nrunning 2 tests\ntest tests::option_result_cases_preserve_values_and_refusals ... ok\ntest tests::marker_equality_does_not_require_value_equality ... FAILED\n\nfailures:\n\n---- tests::marker_equality_does_not_require_value_equality stdout ----\n\nthread 'tests::marker_equality_does_not_require_value_equality' (3103659) panicked at /tmp/rumoca-option-boundary-mutation-KoQI7p/option-library-boundary.rs:38:9:\nassertion failed: same_marker::<NoEquality>(PhantomData, PhantomData)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::marker_equality_does_not_require_value_equality\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ]
+    },
+    {
+      "name": "baseline_extraction",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 90 /tmp/rumoca-transport-final-tools-jSpTEa/charon rustc --preset=aeneas --error-on-warnings '--start-from=option_library_boundary::*'  --dest-file=/tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundaryBaseline.llbc -- --edition=2024 --crate-name option_library_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs > /tmp/rumoca-option-library-boundary-E7TrsA/baseline-charon.log 2>&1 && timeout 90 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-option-library-boundary-E7TrsA/baseline /tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundaryBaseline.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/baseline-aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "9401a6",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "three_body_extraction",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 90 /tmp/rumoca-transport-final-tools-jSpTEa/charon rustc --preset=aeneas --error-on-warnings '--start-from=option_library_boundary::*' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --dest-file=/tmp/rumoca-option-library-boundary-E7TrsA/three-input/OptionBoundarySource.llbc -- --edition=2024 --crate-name option_library_boundary --crate-type lib infra/verification/charon/fixtures/option-library-boundary.rs > /tmp/rumoca-option-library-boundary-E7TrsA/three-source-charon.log 2>&1 && timeout 90 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-option-library-boundary-E7TrsA/three-source /tmp/rumoca-option-library-boundary-E7TrsA/three-input/OptionBoundarySource.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/three-source-aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "c7ca58",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "mutated_three_body_extraction",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 90 /tmp/rumoca-transport-final-tools-jSpTEa/charon rustc --preset=aeneas --error-on-warnings '--start-from=option_library_boundary::*' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --dest-file=/tmp/rumoca-option-boundary-mutation-KoQI7p/OptionBoundarySource.llbc -- --edition=2024 --crate-name option_library_boundary --crate-type lib /tmp/rumoca-option-boundary-mutation-KoQI7p/option-library-boundary.rs > /tmp/rumoca-option-boundary-mutation-KoQI7p/charon.log 2>&1 && timeout 90 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-option-boundary-mutation-KoQI7p/lean /tmp/rumoca-option-boundary-mutation-KoQI7p/OptionBoundarySource.llbc > /tmp/rumoca-option-boundary-mutation-KoQI7p/aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "cd0b26",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "all_four_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 90 /tmp/rumoca-transport-final-tools-jSpTEa/charon rustc --preset=aeneas --error-on-warnings '--start-from=option_library_boundary::*' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --include='core::result::*::ok' --dest-file=/tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundarySource.llbc -- --edition=2024 --crate-name option_library_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs > /tmp/rumoca-option-library-boundary-E7TrsA/source-charon.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "a1c582",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "all_four_aeneas",
+      "command": "timeout 90 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-option-library-boundary-E7TrsA/source /tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundarySource.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/source-aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "results": [
+        {
+          "chunk_id": "05a13f",
+          "exit_code": 1,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "join_trace",
+      "command": "timeout 90 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -log InterpJoin,InterpMatchCtxs -dest /tmp/rumoca-option-library-boundary-E7TrsA/join-trace /tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundarySource.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/join-trace.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "results": [
+        {
+          "chunk_id": "9b2422",
+          "exit_code": 1,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "dae_three_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 180 /tmp/rumoca-transport-final-tools-jSpTEa/charon cargo --preset=aeneas --error-on-warnings --start-from=rumoca_phase_solve::scalar_constant_derivative_refinement::admit_dae_profile --include=rumoca_ir_dae --include=rumoca_ir_solve --include=rumoca_core --include='core::bool::*::then' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --dest-file=/tmp/rumoca-option-library-boundary-E7TrsA/DaeThreeSource.llbc -- -p rumoca-phase-solve --lib > /tmp/rumoca-option-library-boundary-E7TrsA/dae-three-charon.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "256d15",
+          "session_id": 67636,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "569a2a",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "dae_three_aeneas",
+      "command": "timeout 180 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -filter-trait-methods -split-files -emit-json -gen-lib-entry -dest /tmp/rumoca-option-library-boundary-E7TrsA/dae-three /tmp/rumoca-option-library-boundary-E7TrsA/DaeThreeSource.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/dae-three-aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "0f5990",
+          "session_id": 59176,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "88a06d",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "dae_all_four_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 180 /tmp/rumoca-transport-final-tools-jSpTEa/charon cargo --preset=aeneas --error-on-warnings --start-from=rumoca_phase_solve::scalar_constant_derivative_refinement::admit_dae_profile --include=rumoca_ir_dae --include=rumoca_ir_solve --include=rumoca_core --include='core::bool::*::then' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::result::*::ok' --include='core::marker::*::eq' --dest-file=/tmp/rumoca-option-library-boundary-E7TrsA/DaeOptionSource.llbc -- -p rumoca-phase-solve --lib > /tmp/rumoca-option-library-boundary-E7TrsA/dae-source-charon.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "a5d0c7",
+          "session_id": 7881,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "a12fac",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "dae_all_four_aeneas",
+      "command": "timeout 180 /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -filter-trait-methods -split-files -emit-json -gen-lib-entry -dest /tmp/rumoca-option-library-boundary-E7TrsA/dae-source /tmp/rumoca-option-library-boundary-E7TrsA/DaeOptionSource.llbc > /tmp/rumoca-option-library-boundary-E7TrsA/dae-source-aeneas.log 2>&1",
+      "workdir": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "results": [
+        {
+          "chunk_id": "3f277f",
+          "session_id": 96850,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "d15579",
+          "exit_code": 1,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "generated_module",
+      "command": "env LEAN_PATH=/tmp/rumoca-option-library-boundary-E7TrsA/three-source:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o /tmp/rumoca-option-library-boundary-E7TrsA/three-source/OptionBoundarySource.olean /tmp/rumoca-option-library-boundary-E7TrsA/three-source/OptionBoundarySource.lean",
+      "workdir": "/tmp/rumoca-option-library-boundary-E7TrsA/three-source",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "50abbf",
+          "session_id": 85112,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "2cba76",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "unchanged_laws",
+      "command": "env LEAN_PATH=/tmp/rumoca-option-library-boundary-E7TrsA/three-source:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean",
+      "workdir": "/tmp/rumoca-option-library-boundary-E7TrsA/three-source",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "30fba1",
+          "session_id": 44111,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "2728cd",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "mutated_generated_module",
+      "command": "env LEAN_PATH=/tmp/rumoca-option-boundary-mutation-KoQI7p/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o /tmp/rumoca-option-boundary-mutation-KoQI7p/lean/OptionBoundarySource.olean /tmp/rumoca-option-boundary-mutation-KoQI7p/lean/OptionBoundarySource.lean",
+      "workdir": "/tmp/rumoca-option-boundary-mutation-KoQI7p/lean",
+      "expected_exit": 0,
+      "results": [
+        {
+          "chunk_id": "f25fea",
+          "session_id": 59432,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "dfcfa9",
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "unchanged_laws_on_mutated_rust",
+      "command": "env LEAN_PATH=/tmp/rumoca-option-boundary-mutation-KoQI7p/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean",
+      "workdir": "/tmp/rumoca-option-boundary-mutation-KoQI7p/lean",
+      "expected_exit": 1,
+      "results": [
+        {
+          "chunk_id": "b98517",
+          "session_id": 74456,
+          "original_token_count": 0,
+          "output": ""
+        },
+        {
+          "chunk_id": "843121",
+          "exit_code": 1,
+          "original_token_count": 188,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean:33:2: error: Tactic `rfl` failed: The left-hand side\n  same_marker left right\nis not definitionally equal to the right-hand side\n  Result.ok true\n\nT : Type\nleft right : core.marker.PhantomData T\n⊢ same_marker left right = Result.ok true\n'OptionBoundaryLaws.marker_caller' depends on axioms: [sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean:48:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'OptionBoundaryLaws.marker_caller' does not depend on any axioms\n+ info: 'OptionBoundaryLaws.marker_caller' depends on axioms: [sorryAx]\n"
+        }
+      ]
+    }
+  ],
+  "after": {
+    "chunk_id": "c8254e",
+    "exit_code": 0,
+    "original_token_count": 389,
+    "output": "ce511852742752bfb5e2b069fc97909c3e26e34b76fedb380d8f39ca507b3dde  /home/jgoppert/git/rumoca/infra/verification/charon/fixtures/option-library-boundary.rs\n59295f6fb05215fbe84acca1438eeaad08252568f04f44164da37b077b95d5ed  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-library-boundary/OptionBoundaryLaws.lean\nd03c92296d683a52aad557df9722743df9291ba1669d98b1206f3bd5ccefad26  /tmp/rumoca-option-boundary-mutation-KoQI7p/option-library-boundary.rs\n99e477fc9d1cc48ef073199cf0ae267fe4aca07881194f939fd6d7f62f508aa6  /tmp/rumoca-option-library-boundary-E7TrsA/three-input/OptionBoundarySource.llbc\na4ed72c936f472ea4d2249fdf4f8fef85838122158b833c5cd18e05c7b840034  /tmp/rumoca-option-library-boundary-E7TrsA/three-source/OptionBoundarySource.lean\ned6f92cd6709ab948ae168187161db5be03085fd941ed4d2526fb400079978bd  /tmp/rumoca-option-boundary-mutation-KoQI7p/OptionBoundarySource.llbc\nf75b90601f42abba851f48f99eae4777995b06b2b78848d79d5eda743d45cb85  /tmp/rumoca-option-boundary-mutation-KoQI7p/lean/OptionBoundarySource.lean\naae9f01b197bff88deab2082c84d07949e054574d3cdca125d6e6eefeba19d49  /nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\nae9bbe39611ebc6217edb14d73933223868ed768372c8db9b7779c9dbde9526c  /tmp/rumoca-transport-final-tools-jSpTEa/charon\n538716917f5c8b2da5face7c100e9b70c7ff6dd389900709fe9fb91733deb00b  /tmp/rumoca-transport-final-tools-jSpTEa/charon-driver\n9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\n"
+  },
+  "receipt_note": "Tool wall_time_seconds fields are omitted: they do not establish command duration. Expected exits are not observations. This local receipt is not an authenticated artifact.",
+  "inventory": {
+    "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '([.[0].functions[] | select(.is_opaque) | .rust_name] | sort) as $before | ([.[1].functions[] | select(.is_opaque) | .rust_name] | sort) as $after | {before_count:($before|length),after_count:($after|length),removed:($before-$after),added:($after-$before),remaining:$after}' /tmp/rumoca-dae-library-boundary-tk2Ela/dae-bool-source-lean/translation.json /tmp/rumoca-option-library-boundary-E7TrsA/dae-three/translation.json",
+    "result": {
+      "chunk_id": "aad24b",
+      "exit_code": 0,
+      "original_token_count": 302,
+      "output": "{\n  \"before_count\": 12,\n  \"after_count\": 9,\n  \"removed\": [\n    \"core::marker::{impl core::cmp::PartialEq<core::marker::PhantomData<T>> for core::marker::PhantomData<T>}::eq\",\n    \"core::option::{impl core::ops::try_trait::FromResidual<core::option::Option<core::convert::Infallible>> for core::option::Option<T>}::from_residual\",\n    \"core::option::{impl core::ops::try_trait::Try for core::option::Option<T>}::branch\"\n  ],\n  \"added\": [],\n  \"remaining\": [\n    \"core::f64::{f64}::to_bits\",\n    \"core::iter::adapters::map::{impl core::iter::traits::exact_size::ExactSizeIterator<B> for core::iter::adapters::map::Map<I, F>}::len\",\n    \"core::iter::adapters::map::{impl core::iter::traits::iterator::Iterator<B> for core::iter::adapters::map::Map<I, F>}::next\",\n    \"core::iter::traits::accum::{impl core::iter::traits::accum::Sum<usize> for usize}::sum\",\n    \"core::iter::traits::exact_size::ExactSizeIterator::len\",\n    \"core::iter::traits::iterator::Iterator::map\",\n    \"core::iter::traits::iterator::Iterator::sum\",\n    \"core::result::{core::result::Result<T, E>}::ok\",\n    \"core::slice::iter::{impl core::iter::traits::exact_size::ExactSizeIterator<&'_ T> for core::slice::iter::Iter<'_0, T>}::len\"\n  ]\n}\n"
+    }
+  },
+  "hashes_cover": "Before/after hashes bind the final Lean replays below, after extraction regeneration; no byte-identical LLBC regeneration claim is made.",
+  "extraction_artifact_hashes": {
+    "command": "sha256sum /tmp/rumoca-option-library-boundary-E7TrsA/source-aeneas.log /tmp/rumoca-option-library-boundary-E7TrsA/dae-source-aeneas.log /tmp/rumoca-option-library-boundary-E7TrsA/join-trace.log /tmp/rumoca-option-library-boundary-E7TrsA/dae-three/translation.json",
+    "result": {
+      "chunk_id": "582b84",
+      "exit_code": 0,
+      "original_token_count": 130,
+      "output": "a2e2d1b6c8d5d5f2d62491bf7f46df845bc011f9711f21720e54f70bf04b108b  /tmp/rumoca-option-library-boundary-E7TrsA/source-aeneas.log\n895b7bdc767f8c0df0860e560059da8ec7de1b0325ceeed420626daf55871cb3  /tmp/rumoca-option-library-boundary-E7TrsA/dae-source-aeneas.log\n0c18c49bdde98db8265ae27a1f89071ca3cd4360838434953c57d4a55b00e1d8  /tmp/rumoca-option-library-boundary-E7TrsA/join-trace.log\nac2199d7a16ca11da0aad354ceee4c8a4cc2f975a72275e7d6022c09caea987b  /tmp/rumoca-option-library-boundary-E7TrsA/dae-three/translation.json\n"
+    }
+  }
+}
