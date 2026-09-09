@@ -1,0 +1,397 @@
+diff -ru a/EmitJson.ml b/EmitJson.ml
+--- a/EmitJson.ml	2026-09-08 10:09:43.008877859 -0400
++++ b/EmitJson.ml	2026-09-08 10:13:45.508511154 -0400
+@@ -42,6 +42,13 @@
+ [@@deriving to_yojson]
+ 
+ (** Lean type declaration. *)
++type float_dependency = {
++  width : int;
++  lean_name : string;
++  lean_file : string;
++}
++[@@deriving to_yojson]
++
+ type type_entry = {
+   def_id : int;
+   lean_name : string;
+@@ -104,6 +111,7 @@
+   globals : global_entry list;
+   trait_decls : trait_decl_entry list;
+   trait_impls : trait_impl_entry list;
++  float_dependencies : float_dependency list;
+ }
+ [@@deriving to_yojson]
+ 
+@@ -122,6 +130,7 @@
+   mutable global_entries : global_entry list;
+   mutable trait_decl_entries : trait_decl_entry list;
+   mutable trait_impl_entries : trait_impl_entry list;
++  mutable float_dependency_entries : float_dependency list;
+   mutable current_lean_file : string;
+   mutable current_lean_namespace : string;
+   mutable current_in_namespace : bool;
+@@ -130,6 +139,7 @@
+ 
+ let make_state () : state =
+   {
++    float_dependency_entries = [];
+     function_entries = [];
+     type_entries = [];
+     global_entries = [];
+@@ -342,7 +352,24 @@
+         globals = List.rev state.global_entries;
+         trait_decls = List.rev state.trait_decl_entries;
+         trait_impls = List.rev state.trait_impl_entries;
++        float_dependencies = List.rev state.float_dependency_entries;
+       };
+     Some path
+   end
+   else None
++
++(** Record the floating-point widths the translated crate depends on. Each is
++    a primitive the backend names but never defines, so the model file listed
++    here must supply it; the entry is what lets a consumer decide that. *)
++let record_float_dependencies_if_enabled (floats : Pure.float_type list)
++    ~(lean_file : string) : unit =
++  if !Config.emit_json then
++    state.float_dependency_entries <-
++      List.map
++        (fun (f : Pure.float_type) ->
++          let width =
++            match f with F16 -> 16 | F32 -> 32 | F64 -> 64 | F128 -> 128
++          in
++          { width; lean_name = "Aeneas.Std." ^ ExtractBase.float_name f; lean_file })
++        floats
++      @ state.float_dependency_entries
+diff -ru a/extract/ExtractTypes.ml b/extract/ExtractTypes.ml
+--- a/extract/ExtractTypes.ml	2026-09-08 10:09:43.009896003 -0400
++++ b/extract/ExtractTypes.ml	2026-09-08 10:13:45.510511161 -0400
+@@ -2177,3 +2177,24 @@
+         if backend () = Lean then
+           extract_type_decl_record_field_projectors_simp_lemmas ctx fmt kind
+             decl)
++
++(** Emit, into the external-types template, one required-model placeholder per
++    floating-point width the crate references. The backend prints the width as
++    a bare name (see [ExtractBase.float_name]) and defines it nowhere, so the
++    model file replacing this template must supply it under [Aeneas.Std]. The
++    placeholder is an axiom of the same shape the template uses for opaque
++    types; whether an unfilled placeholder may be admitted is the consumer's
++    decision, not the translator's. *)
++let extract_float_dependency_placeholders (fmt : F.formatter)
++    (floats : Pure.float_type list) : unit =
++  List.iter
++    (fun (f : Pure.float_type) ->
++      let name = ExtractBase.float_name f in
++      F.pp_print_string fmt
++        ("/-- [" ^ String.lowercase_ascii name
++       ^ "]: floating-point storage primitive referenced by this crate.\n\
++         \    The translator names it and does not define it; the model \
++          file must supply\n\
++         \    `Aeneas.Std." ^ name ^ "`. -/\n" ^ "axiom Aeneas.Std." ^ name
++       ^ " : Type\n\n"))
++    floats
+diff -ru a/pure/PureUtils.ml b/pure/PureUtils.ml
+--- a/pure/PureUtils.ml	2026-09-08 10:09:43.012374113 -0400
++++ b/pure/PureUtils.ml	2026-09-08 10:57:24.393738534 -0400
+@@ -2857,3 +2857,185 @@
+   in
+   let app1 = { e = App (binop, b0); ty = TArrow (bool_ty, bool_ty) } in
+   { e = App (app1, b1); ty = bool_ty }
++
++(** Float widths referenced anywhere in a set of translated declarations.
++
++    The walk is typed and complete: every declaration record is destructured
++    exhaustively (warning 9 is an error inside this module, so a field added
++    later must be classified here before the module compiles), and each typed
++    field is visited through the derived pure visitors. A width is found
++    whether it appears in a field, a generic argument, a predicate, a
++    signature, an associated type, a constant, a body or a literal, and never
++    by inspecting emitted text. The result is sorted and duplicate-free. *)
++module FloatTypes = struct
++  [@@@warning "@9"]
++
++  let collect (types : type_decl list) (funs : fun_decl list)
++      (globals : global_decl list) (trait_decls : trait_decl list)
++      (trait_impls : trait_impl list) : float_type list =
++    let found : float_type list ref = ref [] in
++    let record (f : float_type) =
++      if not (List.mem f !found) then found := f :: !found
++    in
++    let tys =
++      object
++        inherit [_] iter_type_decl
++        method! visit_TFloat _ f = record f
++      end
++    in
++    let exprs =
++      object
++        inherit [_] iter_expr
++        method! visit_TFloat _ f = record f
++      end
++    in
++    let visit_generics (generics : generic_params) (preds : predicates) =
++      tys#visit_generic_params () generics;
++      tys#visit_predicates () preds
++    in
++    let visit_binder : 'a. ('a -> unit) -> 'a binder -> unit =
++     fun visit_value b ->
++      let {
++        binder_value;
++        binder_generics;
++        binder_preds;
++        binder_llbc_generics = _;
++        binder_explicit_info = _;
++      } =
++        b
++      in
++      visit_generics binder_generics binder_preds;
++      visit_value binder_value
++    in
++    let visit_sig (s : fun_sig) =
++      let {
++        generics;
++        explicit_info = _;
++        known_from_trait_refs = _;
++        llbc_generics = _;
++        preds;
++        inputs;
++        output;
++        fwd_info = _;
++        back_effect_info = _;
++      } =
++        s
++      in
++      visit_generics generics preds;
++      List.iter (tys#visit_ty ()) inputs;
++      tys#visit_ty () output
++    in
++    let visit_fun_body ({ inputs; body } : fun_body) =
++      List.iter (exprs#visit_tpat ()) inputs;
++      exprs#visit_texpr () body
++    in
++    let visit_fun (f : fun_decl) =
++      let {
++        def_id = _;
++        item_meta = _;
++        builtin_info = _;
++        src = _;
++        backend_attributes = _;
++        num_loops = _;
++        loop_id = _;
++        loop_pos = _;
++        name = _;
++        signature;
++        is_global_decl_body = _;
++        body;
++      } =
++        f
++      in
++      visit_sig signature;
++      Option.iter visit_fun_body body
++    in
++    let visit_global (g : global_decl) =
++      let {
++        def_id = _;
++        span = _;
++        item_meta = _;
++        builtin_info = _;
++        name = _;
++        llbc_generics = _;
++        generics;
++        explicit_info = _;
++        preds;
++        ty;
++        output_ty;
++        can_fail = _;
++        src = _;
++        body_id = _;
++      } =
++        g
++      in
++      visit_generics generics preds;
++      tys#visit_ty () ty;
++      tys#visit_ty () output_ty
++    in
++    let visit_trait_method (m : trait_method) =
++      let { method_id = _; item_name = _; item_meta = _; signature; default } =
++        m
++      in
++      visit_sig signature;
++      visit_binder (Option.iter (tys#visit_fun_decl_ref ())) default
++    in
++    let visit_trait_decl (d : trait_decl) =
++      let {
++        def_id = _;
++        name = _;
++        item_meta = _;
++        builtin_info = _;
++        generics;
++        explicit_info = _;
++        llbc_generics = _;
++        preds;
++        parent_clauses;
++        llbc_parent_clauses = _;
++        consts;
++        types = _;
++        methods;
++      } =
++        d
++      in
++      visit_generics generics preds;
++      List.iter (tys#visit_trait_param ()) parent_clauses;
++      List.iter (fun (_, _, ty) -> tys#visit_ty () ty) consts;
++      List.iter visit_trait_method methods
++    in
++    let visit_trait_impl (i : trait_impl) =
++      let {
++        def_id = _;
++        name = _;
++        item_meta = _;
++        builtin_info = _;
++        impl_trait;
++        llbc_impl_trait = _;
++        generics;
++        explicit_info = _;
++        llbc_generics = _;
++        preds;
++        parent_trait_refs;
++        consts;
++        types;
++        methods;
++      } =
++        i
++      in
++      tys#visit_trait_decl_ref () impl_trait;
++      visit_generics generics preds;
++      List.iter (tys#visit_trait_ref ()) parent_trait_refs;
++      List.iter (fun (_, _, r) -> tys#visit_global_decl_ref () r) consts;
++      List.iter (fun (_, _, ty) -> tys#visit_ty () ty) types;
++      List.iter
++        (fun (_, _, m) -> visit_binder (tys#visit_fun_decl_ref ()) m)
++        methods
++    in
++    List.iter (tys#visit_type_decl ()) types;
++    List.iter visit_fun funs;
++    List.iter visit_global globals;
++    List.iter visit_trait_decl trait_decls;
++    List.iter visit_trait_impl trait_impls;
++    List.sort compare !found
++end
++
++let crate_float_types = FloatTypes.collect
+diff -ru a/Translate.ml b/Translate.ml
+--- a/Translate.ml	2026-09-08 10:09:43.009176061 -0400
++++ b/Translate.ml	2026-09-08 10:57:24.402851334 -0400
+@@ -639,6 +639,9 @@
+           extract the opaque types in an opaque module, because some non-opaque
+           types may refer to opaque types and vice-versa. *)
+   extract_globals : bool;
++  float_dependencies : Pure.float_type list;
++      (** Floating-point widths whose required-model placeholders this file
++          must carry; empty everywhere except the external-types template. *)
+       (** If [true], generate a definition/declaration for top-level (global)
+           declarations *)
+   interface : bool;
+@@ -1440,6 +1443,9 @@
+   | HOL4 -> Printf.fprintf out "val _ = export_theory ()\n"
+   | Coq -> Printf.fprintf out "End %s.\n" fi.module_name);
+ 
++  if config.float_dependencies <> [] then
++    ExtractTypes.extract_float_dependency_placeholders fmt config.float_dependencies;
++
+   (* Some logging *)
+   if !Errors.error_list <> [] then
+     log#linfo
+@@ -1857,13 +1863,39 @@
+     crate_has_opaque_non_builtin_decls ctx true
+   in
+   let has_opaque = has_opaque_types || has_opaque_funs in
++  (* Floating-point widths are primitives the backend names but never defines:
++     they are a dependency on an external model exactly like an opaque type,
++     found from the typed IR. Only the Lean backend carries that model seam;
++     every other backend keeps its previous output, so the inventory is empty
++     there. *)
++  let float_types =
++    if Config.backend () = Lean then
++      PureUtils.crate_float_types
++        (List.map snd (Pure.TypeDeclId.Map.bindings ctx.trans_types))
++        (List.concat_map
++           (fun (_, (t : pure_fun_translation)) -> (t.f :: t.loops) @ t.bodies)
++           (FunDeclId.Map.bindings ctx.trans_funs))
++        (List.map snd (GlobalDeclId.Map.bindings ctx.trans_globals))
++        (List.map snd (Pure.TraitDeclId.Map.bindings ctx.trans_trait_decls))
++        (List.map snd (Pure.TraitImplId.Map.bindings ctx.trans_trait_impls))
++    else []
++  in
++  let has_float_types = float_types <> [] in
+ 
+   (* Extract one or several files, depending on the configuration *)
+-  (if !Config.split_files then (
++  if (not !Config.split_files) && has_float_types then
++    [%craise_opt_span] None
++       ("The crate references floating-point widths ("
++       ^ String.concat ", " (List.map ExtractBase.float_name float_types)
++       ^ ") whose model must be supplied by a TypesExternal module; single-file \
++          output has no such module to import. Use -split-files and provide the \
++          model, or remove the dependency.");
++   (if !Config.split_files then (
+      let base_gen_config =
+        {
+          extract_types = false;
+          extract_decreases_clauses = !Config.extract_decreases_clauses;
++         float_dependencies = [];
+          extract_template_decreases_clauses = false;
+          extract_fun_decls = false;
+          extract_trait_decls = false;
+@@ -1881,7 +1913,7 @@
+      (* If there are opaque types, we extract in an interface *)
+      (* Extract the opaque type declarations, if needed *)
+      let opaque_types_module =
+-       if has_opaque_types then (
++       if has_opaque_types || has_float_types then (
+          (* For F*, we generate an .fsti, and let the user write the .fst.
+             For the other backends, we generate a template file as a model
+             for the file the user has to provide. *)
+@@ -1910,6 +1942,7 @@
+              extract_opaque = true;
+              extract_transparent = false;
+              extract_types = true;
++             float_dependencies = float_types;
+              extract_trait_decls = true;
+              interface = true;
+            }
+@@ -1929,6 +1962,8 @@
+              noncomputable = false;
+            }
+          in
++         EmitJson.record_float_dependencies_if_enabled float_types
++           ~lean_file:(Filename.basename opaque_filename);
+          extract_file opaque_config ctx file_info;
+          (* Return the additional dependencies *)
+          [ opaque_imported_module ])
+@@ -2032,6 +2067,7 @@
+              extract_fun_decls = true;
+              extract_trait_impls = true;
+              extract_globals = true;
++             float_dependencies = [];
+              extract_transparent = false;
+              extract_opaque = true;
+              interface = true;
+@@ -2067,6 +2103,7 @@
+          extract_fun_decls = true;
+          extract_trait_impls = true;
+          extract_globals = true;
++         float_dependencies = [];
+        }
+      in
+      let clauses_module =
+@@ -2107,6 +2144,7 @@
+          extract_transparent = true;
+          extract_opaque = true;
+          extract_globals = true;
++         float_dependencies = [];
+          interface = false;
+        }
+      in

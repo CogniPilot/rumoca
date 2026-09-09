@@ -1,0 +1,59 @@
+     Running tests/box_copy.rs (target/debug/build/charon/a45115c7c9ad973b/out/box_copy-a45115c7c9ad973b)
+test retagged_copy_is_unchanged ... ok
+test adjacent_indexed_copy_projects_original_owner_and_index ... ok
+test projected_box_assignment_is_not_discarded ... ok
+test dropped_box_pointer_is_not_discarded ... ok
+test indexed_owner_replacement_between_copy_and_use_is_unchanged ... ok
+test extra_box_pointer_use_is_not_discarded ... ok
+test unused_box_pointer_copy_is_discarded ... ok
+test unused_retagged_box_copy_is_unchanged ... ok
+test unused_box_copy_into_argument_is_unchanged ... ok
+test mutable_borrow_is_unchanged ... ok
+test adjacent_box_copy_projects_original_owner_and_metadata ... ok
+test foreign_metadata_is_unchanged ... ok
+test raw_pointer_is_unchanged ... ok
+test indexed_raw_pointer_is_unchanged ... ok
+test owner_replacement_between_copy_and_borrow_is_unchanged ... ok
+test storage_end_between_copy_and_borrow_is_unchanged ... ok
+test adjacent_indexed_borrow_projects_original_owner_and_index ... ok
+test two_indexed_rewrites_compose ... ok
+test additional_temporary_read_is_unchanged ... ok
+test indexed_additional_temporary_read_is_unchanged ... ok
+test indexed_storage_end_between_copy_and_use_is_unchanged ... ok
+test indexed_mutable_borrow_is_unchanged ... ok
+test indexed_non_unit_metadata_is_unchanged ... ok
+test indexed_copy_retag_is_preserved ... ok
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+     Running tests/box_metadata.rs (target/debug/build/charon/831d5ce319be8a5e/out/box_metadata-831d5ce319be8a5e)
+test adjacent_borrow_preserves_pointee_and_metadata ... ok
+test owner_replacement_before_borrow_is_unchanged ... ok
+test nonadjacent_borrow_is_unchanged ... ok
+test raw_pointer_construction_is_unchanged ... ok
+test terminator_metadata_use_is_unchanged ... ok
+test multiple_statement_uses_are_unchanged ... ok
+test cross_block_borrow_is_unchanged ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+     Running tests/cyclic_retention.rs (target/debug/build/charon/08f87e38951045cc/out/cyclic_retention-08f87e38951045cc)
+test unrelated_active_cycle_is_not_used_as_the_retention_owner ... ok
+test recursive_associated_type_owner_does_not_retain_acyclic_parameters ... ok
+test reversed_declarations_still_use_one_recursive_boundary ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+     Running tests/merge_roots.rs (target/debug/build/charon/7de83608b525823c/out/merge_roots-7de83608b525823c)
+test merge_reports_a_lost_selected_root ... ok
+test consumed_roots_carry_their_disposition ... ok
+test nonrecursive_roots_survive_the_merge ... ok
+test explicit_selection_is_carried_and_its_dependency_is_not_a_root ... ok
+test mutually_recursive_roots_survive_the_merge ... ok
+test selected_default_method_survives_the_merge ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+     Running tests/specialized_traits.rs (target/debug/build/charon/afecafe421d6a1bb/out/specialized_traits-afecafe421d6a1bb)
+test cyclic_lifting_preserves_distinct_associated_types ... ok
+test specialization_preserves_closed_cyclic_parent_contracts ... ok
+test specialization_preserves_noninverse_cyclic_parent_contracts ... ok
+test specialization_preserves_typechecked_parent_trait_contracts ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+     Running tests/test-rust-name-matcher.rs (target/debug/build/charon/cb5cc405371f65ec/out/test_rust_name_matcher-cb5cc405371f65ec)
+test test_partial_mono_name_matcher ... ok
+test test_name_matcher ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+suites exit=0

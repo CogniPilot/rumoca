@@ -1,0 +1,15 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/0 ⠋Applied prepasses:  [----------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/0 ⠋Translated transparent functions:  [-------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋Translated trait declarations:  [########################################] 1/1 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋Translated trait impls:  [###############################################] 1/1 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/0 ⠋Post-processed translated transparent functions:  [----------------------] 0/0 ✔️
+[?25h[[92mInfo[39m ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float/Types.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float/Funs.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float/translation.json
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float/AssociatedFloat.lean
+[[92mInfo[39m ] Total execution time: 0.072667 seconds

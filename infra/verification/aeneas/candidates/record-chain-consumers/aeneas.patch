@@ -1,0 +1,47 @@
+diff -ruN src-before/extract/ExtractBase.ml src/extract/ExtractBase.ml
+--- a/extract/ExtractBase.ml	2026-09-08 15:42:26.317784785 -0400
++++ b/extract/ExtractBase.ml	2026-09-08 15:42:26.326014316 -0400
+@@ -1761,12 +1761,10 @@
+          Recover them before classifying or removing Self: the remaining
+          argument list may start with another parameter or contain no types. *)
+       let trait_name, args =
+-        let args = trait_impl.impl_trait.generics in
+-        match List.rev trait_decl.item_meta.name with
+-        | PeInstantiated binder :: rest ->
+-            ( List.rev rest,
+-              Charon.Substitute.instantiate_name_generics binder args )
+-        | _ -> (trait_decl.item_meta.name, args)
++        (* Fold every trailing record, last to first, with the full trait
++           arguments (Self included) before Self is removed below. *)
++        Charon.Substitute.fold_name_records trait_decl.item_meta.name
++          trait_impl.impl_trait.generics
+       in
+       let name = ctx_prepare_name trait_impl.item_meta ctx trait_name in
+       (* Check if the impl is a blanket impl and add a suffix to avoid name
+diff -ruN src-before/extract/ExtractName.ml src/extract/ExtractName.ml
+--- a/extract/ExtractName.ml	2026-09-08 15:42:26.317357776 -0400
++++ b/extract/ExtractName.ml	2026-09-08 15:42:26.323799819 -0400
+@@ -168,7 +168,10 @@
+   | Types.PeInstantiated binder :: _ ->
+       let params = binder.binder_params in
+       Some (params, Charon.TypesUtils.generic_args_of_params None params)
+-  | _ -> None
++  | _ ->
++      (* A trailing [PeExtended] record is provenance, not a copy: the item
++         keeps its original identity and is looked up bare. *)
++      None
+ 
+ let name_to_simple_name (ctx : ctx) (n : Types.name) : string list =
+   let c = default_to_pat_config in
+diff -ruN src-before/llbc/LlbcAstUtils.ml src/llbc/LlbcAstUtils.ml
+--- a/llbc/LlbcAstUtils.ml	2026-09-08 15:42:26.319665343 -0400
++++ b/llbc/LlbcAstUtils.ml	2026-09-08 15:42:26.328587443 -0400
+@@ -106,7 +106,7 @@
+ let strip_target_or_instantiated_suffix (n : name) : name =
+   let rec strip_all (n : name) : name =
+     match n with
+-    | (PeTarget _ | PeInstantiated _) :: rest -> strip_all rest
++    | (PeTarget _ | PeInstantiated _ | PeExtended _) :: rest -> strip_all rest
+     | _ -> List.rev n
+   in
+   strip_all (List.rev n)

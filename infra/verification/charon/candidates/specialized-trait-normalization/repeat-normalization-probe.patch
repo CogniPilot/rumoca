@@ -1,0 +1,12 @@
+diff --git a/tests/specialized_traits.rs b/tests/specialized_traits.rs
+--- a/tests/specialized_traits.rs
++++ b/tests/specialized_traits.rs
+@@ -46,6 +46,8 @@ fn specialization_preserves_typechecked_parent_trait_contracts() -> anyhow::Result<
+     ctx.options.monomorphize_mut = Some(MonomorphizeMut::All);
+     partial_monomorphization::Transform.transform_ctx(&mut ctx);
+     assert!(ctx.translated.trait_decls.elem_count() > original_trait_count);
++    charon_lib::transform::normalize::normalize_trait_refs::Transform.transform_ctx(&mut ctx);
++    charon_lib::transform::normalize::expand_associated_types::Transform.transform_ctx(&mut ctx);
+     let mut identity_mismatches = Vec::new();
+     for implementation in &ctx.translated.trait_impls {
+         let declaration = &ctx.translated.trait_decls[implementation.impl_trait.id];

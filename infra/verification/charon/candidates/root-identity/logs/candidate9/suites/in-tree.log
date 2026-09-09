@@ -1,0 +1,64 @@
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.30s
+     Running tests/box_copy.rs (target/debug/build/charon/a45115c7c9ad973b/out/box_copy-a45115c7c9ad973b)
+
+running 24 tests
+test additional_temporary_read_is_unchanged ... ok
+test retagged_copy_is_unchanged ... ok
+test indexed_owner_replacement_between_copy_and_use_is_unchanged ... ok
+test raw_pointer_is_unchanged ... ok
+test indexed_copy_retag_is_preserved ... ok
+test adjacent_indexed_borrow_projects_original_owner_and_index ... ok
+test indexed_non_unit_metadata_is_unchanged ... ok
+test mutable_borrow_is_unchanged ... ok
+test dropped_box_pointer_is_not_discarded ... ok
+test storage_end_between_copy_and_borrow_is_unchanged ... ok
+test unused_box_pointer_copy_is_discarded ... ok
+test owner_replacement_between_copy_and_borrow_is_unchanged ... ok
+test projected_box_assignment_is_not_discarded ... ok
+test unused_retagged_box_copy_is_unchanged ... ok
+test indexed_raw_pointer_is_unchanged ... ok
+test indexed_additional_temporary_read_is_unchanged ... ok
+test indexed_storage_end_between_copy_and_use_is_unchanged ... ok
+test indexed_mutable_borrow_is_unchanged ... ok
+test two_indexed_rewrites_compose ... ok
+test extra_box_pointer_use_is_not_discarded ... ok
+test adjacent_box_copy_projects_original_owner_and_metadata ... ok
+test unused_box_copy_into_argument_is_unchanged ... ok
+test adjacent_indexed_copy_projects_original_owner_and_index ... ok
+test foreign_metadata_is_unchanged ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+
+     Running tests/box_metadata.rs (target/debug/build/charon/831d5ce319be8a5e/out/box_metadata-831d5ce319be8a5e)
+
+running 7 tests
+test raw_pointer_construction_is_unchanged ... ok
+test cross_block_borrow_is_unchanged ... ok
+test owner_replacement_before_borrow_is_unchanged ... ok
+test multiple_statement_uses_are_unchanged ... ok
+test terminator_metadata_use_is_unchanged ... ok
+test nonadjacent_borrow_is_unchanged ... ok
+test adjacent_borrow_preserves_pointee_and_metadata ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+     Running tests/cyclic_retention.rs (target/debug/build/charon/08f87e38951045cc/out/cyclic_retention-08f87e38951045cc)
+
+running 3 tests
+test unrelated_active_cycle_is_not_used_as_the_retention_owner ... ok
+test reversed_declarations_still_use_one_recursive_boundary ... ok
+test recursive_associated_type_owner_does_not_retain_acyclic_parameters ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/specialized_traits.rs (target/debug/build/charon/afecafe421d6a1bb/out/specialized_traits-afecafe421d6a1bb)
+
+running 4 tests
+test cyclic_lifting_preserves_distinct_associated_types ... ok
+test specialization_preserves_closed_cyclic_parent_contracts ... ok
+test specialization_preserves_typechecked_parent_trait_contracts ... ok
+test specialization_preserves_noninverse_cyclic_parent_contracts ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+

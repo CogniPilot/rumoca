@@ -1,0 +1,204 @@
+{
+  "aeneas_version": "f9a8e338188447c77f31246892cb9a7a742e58ef-rumoca-9977c3508c94785b30cc7247fb34f3393c66dd8ffcfafba9b8d0110a7462685f-alias-2eb1a079b9d0651fbd735874d20d4d42ff93610d2830dd4f0923e75deee1535f-stored-ca4d7deda43a23c507127ae8fe50c067b11e1fb2ae1a03c483dbb004d19c028a-static-0715f5ed8e209865e6b50fe868e5d6ea4d5659ea451c03b5e1f5429f4243d9c2-lifecycle-f4a7ac4625751e3a36cccc53e6fb6ba2fb63867c3a40495f23a4f6dfffdae00c-roots-33f74ca918c8d1ec8467937092ffa568beb13c1eee79c8d4ea2aac47cedafdc4-no-signature-guess-8304e1048252c79d52796df71b524a268853c6ced6fe9a06269bcfaabd7653d3-no-method-guess-80955670afb1f8e66fbb69850db5154536365354a21ccbbb6238a2e94fcad996-drop-control-43b5571e07953a8b1fcbcad9cb8487e7f4a8c93caf43607c872d57c7b01b44ed-builtin-identity-e582e802919472a277478e06a439b4c889af1882f8f2f337a13c0a71ce6f5ebf-specialized-names-c5e43a84ff49bd85c51c6b0b997f1ddc1ae66030a9d70227542d5c0520f2aa4d-impl-names-16ac1aae87438b5421b9d57c12ac30bb1fc55adef6d2ed8ac4891421e270b594-name-presentation-bcbd909f4633ae9e46508e71479b06ff46298bf9e1af4f73a890ac106b33b918-alias-inference-487ef0120e152757801612bcedcdd3c5035023eb9d993c32157b7e8707a12e98-loop-return-order-89e3f86f4f026a8b215d30c6f6f4402077f08f84984c382b660994e91f974635-record-chain-replay-e9f3030e54ddb25dbe2f1ba49748bb5f5addb2d2488331f5311cdffb001a7375-ml-73bf6c64ca427b915e05d2719acbe40eb535b293eb20978f1c12c2bce5ace7a7",
+  "charon_version": "0.1.248",
+  "crate": "law",
+  "functions": [
+    {
+      "def_id": 4,
+      "lean_name": "core.result.ResultU32U8.Insts.CoreOpsTry_traitTry.branch",
+      "lean_file": "FunsExternal_Template.lean",
+      "rust_name": "core::result::{impl core::ops::try_trait::Try for core::result::Result::<u32, u8>}::branch::<u32, u8>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 2176,
+        "end_line": 2176
+      },
+      "is_opaque": true,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 6,
+      "lean_name": "core.result.ResultU64U16.Insts.CoreOpsTry_traitTry.branch",
+      "lean_file": "FunsExternal_Template.lean",
+      "rust_name": "core::result::{impl core::ops::try_trait::Try for core::result::Result::<u64, u16>}::branch::<u64, u16>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 2176,
+        "end_line": 2176
+      },
+      "is_opaque": true,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 5,
+      "lean_name": "core.result.ResultU32U8.Insts.CoreOpsTry_traitFromResidualResultInfallibleU8.from_residual",
+      "lean_file": "FunsExternal_Template.lean",
+      "rust_name": "core::result::{impl core::ops::try_trait::FromResidual<core::result::Result::<core::convert::Infallible, u8>> for core::result::Result::<u32, u8>}::from_residual::<u32, u8, u8>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 2191,
+        "end_line": 2191
+      },
+      "is_opaque": true,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 7,
+      "lean_name": "core.result.ResultU64U16.Insts.CoreOpsTry_traitFromResidualResultInfallibleU16.from_residual",
+      "lean_file": "FunsExternal_Template.lean",
+      "rust_name": "core::result::{impl core::ops::try_trait::FromResidual<core::result::Result::<core::convert::Infallible, u16>> for core::result::Result::<u64, u16>}::from_residual::<u64, u16, u16>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 2191,
+        "end_line": 2191
+      },
+      "is_opaque": true,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 0,
+      "lean_name": "law.p32",
+      "lean_file": "Funs.lean",
+      "rust_name": "law::p32",
+      "is_local": true,
+      "source": { "file": "law.rs", "begin_line": 1, "end_line": 1 },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 1,
+      "lean_name": "law.p64",
+      "lean_file": "Funs.lean",
+      "rust_name": "law::p64",
+      "is_local": true,
+      "source": { "file": "law.rs", "begin_line": 2, "end_line": 2 },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 2,
+      "lean_name": "law.t32",
+      "lean_file": "Funs.lean",
+      "rust_name": "law::t32",
+      "is_local": true,
+      "source": { "file": "law.rs", "begin_line": 3, "end_line": 3 },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 3,
+      "lean_name": "law.t64",
+      "lean_file": "Funs.lean",
+      "rust_name": "law::t64",
+      "is_local": true,
+      "source": { "file": "law.rs", "begin_line": 4, "end_line": 4 },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    }
+  ],
+  "types": [
+    {
+      "def_id": 4,
+      "lean_name": "law.core.result.ResultInfallibleU8",
+      "lean_file": "Types.lean",
+      "rust_name": "core::result::Result::<core::convert::Infallible, u8>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 558,
+        "end_line": 558
+      }
+    },
+    {
+      "def_id": 3,
+      "lean_name": "law.core.ops.control_flow.ControlFlowResultInfallibleU8U32",
+      "lean_file": "Types.lean",
+      "rust_name": "core::ops::control_flow::ControlFlow::<core::result::Result::<core::convert::Infallible, u8>, u32>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/ops/control_flow.rs",
+        "begin_line": 89,
+        "end_line": 89
+      }
+    },
+    {
+      "def_id": 7,
+      "lean_name": "law.core.result.ResultInfallibleU16",
+      "lean_file": "Types.lean",
+      "rust_name": "core::result::Result::<core::convert::Infallible, u16>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 558,
+        "end_line": 558
+      }
+    },
+    {
+      "def_id": 6,
+      "lean_name": "law.core.ops.control_flow.ControlFlowResultInfallibleU16U64",
+      "lean_file": "Types.lean",
+      "rust_name": "core::ops::control_flow::ControlFlow::<core::result::Result::<core::convert::Infallible, u16>, u64>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/ops/control_flow.rs",
+        "begin_line": 89,
+        "end_line": 89
+      }
+    },
+    {
+      "def_id": 1,
+      "lean_name": "law.core.result.ResultU32U8",
+      "lean_file": "Types.lean",
+      "rust_name": "core::result::Result::<u32, u8>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 558,
+        "end_line": 558
+      }
+    },
+    {
+      "def_id": 2,
+      "lean_name": "law.core.result.ResultU64U16",
+      "lean_file": "Types.lean",
+      "rust_name": "core::result::Result::<u64, u16>",
+      "is_local": false,
+      "source": {
+        "file": "/rustc/library/core/src/result.rs",
+        "begin_line": 558,
+        "end_line": 558
+      }
+    }
+  ],
+  "globals": [],
+  "trait_decls": [],
+  "trait_impls": []
+}

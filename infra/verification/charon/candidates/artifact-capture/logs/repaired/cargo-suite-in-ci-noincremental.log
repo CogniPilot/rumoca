@@ -1,0 +1,58 @@
+   Compiling regex-syntax v0.8.5
+   Compiling aho-corasick v1.1.3
+   Compiling crossbeam-utils v0.8.21
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon)
+   Compiling same-file v1.0.6
+   Compiling snapbox-macros v0.3.10
+   Compiling escape8259 v0.5.3
+   Compiling normalize-line-endings v0.3.0
+   Compiling macros v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/macros)
+   Compiling similar v2.7.0
+   Compiling hax-adt-into v0.3.5 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/adt-into)
+   Compiling rustc_trait_elaboration v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/rustc_trait_elaboration)
+   Compiling closure-region-facts v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/closure-region-facts)
+   Compiling walkdir v2.5.0
+   Compiling libtest-mimic v0.8.1
+   Compiling snapbox v0.6.21
+   Compiling crossbeam-epoch v0.9.18
+   Compiling crossbeam-deque v0.8.6
+   Compiling regex-automata v0.4.9
+   Compiling regex v1.11.1
+   Compiling bstr v1.12.0
+   Compiling tracing-subscriber v0.3.19
+   Compiling env_filter v0.1.3
+   Compiling assert_cmd v2.0.17
+   Compiling globset v0.4.16
+   Compiling env_logger v0.11.8
+   Compiling ignore v0.4.23
+   Compiling tracing-tree v0.4.0 (https://github.com/Nadrieril/tracing-tree#841286bf)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.34s
+     Running tests/cargo.rs (target/debug/build/charon/02bc60fe9fd09816/out/cargo-02bc60fe9fd09816)
+
+running 11 tests
+     Removed     Removed 0 files
+ 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+test unsafe_                                      ... ok
+test toml                                         ... ok
+test build-script                                 ... ok
+test issue-1298-absolute-path-for-generated-files ... ok
+test workspace                                    ... ok
+test error-dependencies                           ... ok
+test issue-412-dup-deps                           ... ok
+test test-attributes                              ... ok
+test issue-396-lib-bin                            ... ok
+test dependencies                                 ... ok
+test multi-targets                                ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.68s
+
+exit=0

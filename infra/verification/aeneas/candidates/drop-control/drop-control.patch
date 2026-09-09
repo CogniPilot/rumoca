@@ -1,0 +1,118 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -697,6 +697,107 @@
+ 
+     The main goal of this pass is to improve the quality of the generated code.
+ *)
++(** Remove drop-control discriminant switches that are dead under
++    [Config.drop_as_no_op].
++
++    After a [match] moves the payload out of one enum variant and leaves the
++    other variants untouched, rustc's drop elaboration emits, at the end of
++    the function, a switch on the enum's discriminant whose taken branch is
++    empty and whose fallback drops the enum and then continues exactly as the
++    code after the switch does. The switch exists only to route to that
++    [Drop]. When drops are evaluated as no-ops the two paths are the same, and
++    the discriminant read is the only thing the switch still does. That read
++    fails on a partially moved value whose branches have been joined, so the
++    dead switch blocks translation of bodies such as [core::result::Result::ok].
++
++    Precondition, checked syntactically and refused otherwise:
++    - the scrutinee is a discriminant read of a plain local [p], not a
++      projection, so no path is read that a surviving statement does not read;
++    - there is exactly one taken branch [b] and a fallback;
++    - the fallback is [Drop p] followed by [rest], and [rest] reaches
++      [StorageDead p] through storage and no-op statements only, without a
++      [StorageLive p] first, so [p] is discarded before any other use.
++    Contract. The switch is rustc drop elaboration: its sole consumer is the
++    [Drop] in the fallback, which [drop_as_no_op] never evaluates, so under
++    that mode the discriminant read has no remaining use and removing it
++    changes nothing the mode observes. This is a claim about that domain, not
++    an equivalence of interpreter checks: the surviving [StorageDead] read
++    keeps the path and borrow checks on [p], but [drop_value] deliberately
++    accepts a bottom root that the discriminant read rejects, and skipping
++    exactly that check on a value about to be discarded is the point;
++    - [b.statements @ after] equals [rest] modulo statement ids, block ids and
++      spans, where [after] is the code following the switch.
++    The switch is then replaced by [b.statements]: the [Drop] the mode already
++    ignores disappears, every other statement is preserved, and no place is
++    read. Nothing is done when drops are evaluated. *)
++let remove_dead_drop_switches (crate : crate) (f : fun_decl) : fun_decl =
++  if not !Config.drop_as_no_op then f
++  else
++    let normalize (span : span) (ls : statement list) : statement list =
++      let visitor =
++        object
++          inherit [_] map_statement
++          method! visit_statement_id _ _ = StatementId.zero
++          method! visit_block_id _ _ = BlockId.zero
++          method! visit_span _ _ = span
++        end
++      in
++      List.map (visitor#visit_statement ()) ls
++    in
++    (* [rest] must reach [StorageDead local] through storage and no-op
++       statements only, and must not re-enter [StorageLive local] first, so
++       the local is discarded before any assignment, return, branch or
++       reinitialization. *)
++    let rec discarded_before_use (local : local_id) (ls : statement list) : bool =
++      match ls with
++      | [] -> false
++      | { kind = StorageDead l; _ } :: _ when l = local -> true
++      | { kind = StorageLive l; _ } :: _ when l = local -> false
++      | { kind = StorageDead _ | StorageLive _ | Nop | PlaceMention _; _ } :: tl ->
++          discarded_before_use local tl
++      | _ -> false
++    in
++    let rec update_statements (ls : statement list) : statement list =
++      match ls with
++      | [] -> []
++      | st :: after -> (
++          let after = update_statements after in
++          match st.kind with
++          | Switch
++              ( ({ scrutinee = SwitchDiscriminant ({ kind = PlaceLocal local; _ } as p);
++                   branches = [ (_, taken) ];
++                   fallback = Some fb } as data),
++                blocks ) -> (
++              let blocks = List.map update_block blocks in
++              let taken = List.nth blocks (BranchId.to_int taken) in
++              let fallback = List.nth blocks (BranchId.to_int fb) in
++              match fallback.statements with
++              | { kind = Drop (dropped, _, _, _); _ } :: rest
++                when dropped = p
++                     && discarded_before_use local rest
++                     && normalize st.span (taken.statements @ after)
++                        = normalize st.span rest ->
++                  let replacement = taken.statements @ after in
++                  [%ldebug
++                    "remove_dead_drop_switches: replacing switch with:\n"
++                    ^ Print.list_to_string ~sep:"\n" (statement_to_string crate) replacement];
++                  replacement
++              | _ -> { st with kind = Switch (data, blocks) } :: after)
++          | Switch (data, blocks) ->
++              { st with kind = Switch (data, List.map update_block blocks) } :: after
++          | Loop block -> { st with kind = Loop (update_block block) } :: after
++          | _ -> st :: after)
++    and update_block (block : block) : block =
++      { block with statements = update_statements block.statements }
++    in
++    let body =
++      match f.body with
++      | StructuredBody body ->
++          StructuredBody { body with body = update_block body.body }
++      | other -> other
++    in
++    { f with body }
++
+ let remove_useless_joins (crate : crate) (f : fun_decl) : fun_decl =
+   let f0 = f in
+ 
+@@ -2384,6 +2485,7 @@
+       ("fix_closure_signature_regions", fix_closure_signature_regions);
+       ("erase_body_regions", erase_body_regions);
+       ("remove_unreachable", remove_unreachable);
++      ("remove_dead_drop_switches", remove_dead_drop_switches);
+       ("update_loop", update_loops);
+       ("remove_useless_joins", remove_useless_joins);
+       ( "remove_shallow_borrows_storage_live_dead",

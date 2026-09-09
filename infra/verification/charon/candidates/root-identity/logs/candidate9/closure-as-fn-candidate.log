@@ -1,0 +1,266 @@
+warning: function `main` is never used
+ --> closure-as-fn.rs:3:4
+  |
+3 | fn main() {
+  |    ^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
+# Final LLBC before serialization:
+
+// Full name: core::marker::MetaSized
+#[fundamental]
+#[lang_item(MetaSized)]
+pub trait MetaSized<Self>
+
+// Full name: core::marker::Sized
+#[fundamental]
+#[lang_item(Sized)]
+pub trait Sized<Self>
+{
+    proof ImpliedClause0: (Self: MetaSized)
+    non-dyn-compatible
+}
+
+struct () {}
+
+// Full name: core::marker::Destruct
+#[lang_item(Destruct)]
+pub trait Destruct<Self>
+{
+    fn drop_glue<'_0_1>;
+    non-dyn-compatible
+}
+
+// Full name: core::marker::Tuple
+#[fundamental]
+#[lang_item(Tuple)]
+pub trait Tuple<Self>
+{
+    proof ImpliedClause0: (Self: MetaSized)
+    non-dyn-compatible
+}
+
+// Full name: core::ops::function::FnOnce
+#[fundamental]
+#[lang_item(FnOnce)]
+pub trait FnOnce<Self, Args>
+{
+    proof ImpliedClause0: (Self: MetaSized)
+    proof ImpliedClause1: (Args: Sized)
+    proof ImpliedClause2: (Args: Tuple)
+    proof ImpliedClause3: (Self::Output: Sized)
+    type Output
+    fn call_once;
+    vtable: core::ops::function::FnOnce::{vtable}<Args, Self::Output>
+}
+
+// Full name: core::ops::function::FnMut
+#[fundamental]
+#[lang_item(FnMut)]
+pub trait FnMut<Self, Args>
+{
+    proof ImpliedClause0: (Self: MetaSized)
+    proof ImpliedClause1: (Self: FnOnce<Args>)
+    proof ImpliedClause2: (Args: Sized)
+    proof ImpliedClause3: (Args: Tuple)
+    fn call_mut<'_0_1>;
+    vtable: core::ops::function::FnMut::{vtable}<Args, Self::ImpliedClause1::Output>
+}
+
+// Full name: core::ops::function::Fn
+#[fundamental]
+#[lang_item(Fn)]
+pub trait Fn<Self, Args>
+{
+    proof ImpliedClause0: (Self: MetaSized)
+    proof ImpliedClause1: (Self: FnMut<Args>)
+    proof ImpliedClause2: (Args: Sized)
+    proof ImpliedClause3: (Args: Tuple)
+    fn call<'_0_1>;
+    vtable: core::ops::function::Fn::{vtable}<Args, Self::ImpliedClause1::ImpliedClause1::Output>
+}
+
+// Full name: test_crate::main::closure
+struct closure {}
+
+// Full name: test_crate::main::closure::{impl Destruct for closure}::drop_glue
+unsafe fn drop_glue<'_0>(_1: &'_0 mut closure)
+{
+    let _0: (); // return
+    let _1: &'1 mut closure; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::{impl Fn<()> for closure}::call
+fn call<'_0>(_1: &'_0 closure, tupled_args: ())
+{
+    let _0: (); // return
+    let _1: &'1 closure; // arg #1
+    let tupled_args: (); // arg #2
+    let _3: i32; // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(_3)
+    _3 = const 1i32 panic./ const 0i32
+    storage_dead(_3)
+    _0 = ()
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::{impl FnMut<()> for closure}::call_mut
+fn call_mut<'_0>(state: &'_0 mut closure, args: ())
+{
+    let _0: (); // return
+    let state: &'_0 mut closure; // arg #1
+    let args: (); // arg #2
+    let _3: &'0 closure; // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(_3)
+    _3 = &(*state)
+    _0 = call<'2>(move _3, move args)
+    ↳⚡ storage_dead(_3)
+        storage_dead(args)
+        storage_dead(state)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(args)
+    storage_dead(state)
+    return
+}
+
+// Full name: test_crate::main::{impl FnOnce<()> for closure}::call_once
+fn call_once(_1: closure, _2: ())
+{
+    let _0: (); // return
+    let _1: closure; // arg #1
+    let _2: (); // arg #2
+    let _3: &'1 mut closure; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _0 = ()
+    _3 = &mut _1
+    _0 = call_mut<'2>(move _3, move _2)
+    ↳⚡ drop[drop_glue<'3>] _1
+        ↳⚡ storage_dead(_3)
+            storage_dead(_2)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    drop[drop_glue<'4>] _1
+    ↳⚡ storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::closure::as_fn
+fn as_fn()
+{
+    let _0: (); // return
+    let args: (); // local
+    let state: closure; // local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(args)
+    storage_live(state)
+    args = ()
+    state = closure {  }
+    _0 = call_once(move state, move args)
+    ↳⚡ storage_dead(state)
+        storage_dead(args)
+        unwind_continue
+    storage_dead(state)
+    storage_dead(args)
+    return
+}
+
+// Full name: test_crate::main
+fn main()
+{
+    let _0: (); // return
+    let f: fn(); // local
+    let _2: closure; // anonymous local
+    let _3: (); // anonymous local
+    let _4: fn(); // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(f)
+    storage_live(_2)
+    _2 = closure {  }
+    f = cast<as_fn, fn()>(const as_fn)
+    storage_dead(_2)
+    fake_read(f)
+    set_type(typeof(f) == fn())
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy f
+    _3 = (move _4)()
+    ↳⚡ unwind_continue
+    storage_dead(_4)
+    storage_dead(_3)
+    _0 = ()
+    storage_dead(f)
+    return
+}
+
+// Full name: test_crate::main::{impl FnOnce<()> for closure}
+impl "impl_FnOnce_unit_for_closure" FnOnce<()> for closure {
+    proof ImpliedClause0: (closure: MetaSized) = {built_in impl MetaSized for closure}
+    proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+    proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+    proof ImpliedClause3: ((): Sized) = {built_in impl Sized for ()}
+    type Output = ()
+    fn call_once = call_once
+    vtable: impl_FnOnce_unit_for_closure::{vtable}
+}
+
+// Full name: test_crate::main::{impl FnMut<()> for closure}
+impl "impl_FnMut_unit_for_closure" FnMut<()> for closure {
+    proof ImpliedClause0: (closure: MetaSized) = {built_in impl MetaSized for closure}
+    proof ImpliedClause1: (closure: FnOnce<()>) = impl_FnOnce_unit_for_closure
+    proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+    proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+    fn call_mut<'_0_1> = call_mut<'_0_1>
+    vtable: impl_FnMut_unit_for_closure::{vtable}
+}
+
+// Full name: test_crate::main::{impl Fn<()> for closure}
+impl "impl_Fn_unit_for_closure" Fn<()> for closure {
+    proof ImpliedClause0: (closure: MetaSized) = {built_in impl MetaSized for closure}
+    proof ImpliedClause1: (closure: FnMut<()>) = impl_FnMut_unit_for_closure
+    proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+    proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+    fn call<'_0_1> = call<'_0_1>
+    vtable: impl_Fn_unit_for_closure::{vtable}
+}
+
+// Full name: test_crate::main::closure::{impl Destruct for closure}
+impl "impl_Destruct_for_closure" Destruct for closure {
+    fn drop_glue<'_0_1> = drop_glue<'_0_1>
+    non-dyn-compatible
+}
+
+
+

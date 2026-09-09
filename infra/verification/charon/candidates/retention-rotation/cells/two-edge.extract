@@ -1,0 +1,15 @@
+IMPL rotation::A for rotation::SA
+   IMPL rotation::A for rotation::SA: proof ImpliedClause2: (rotation::SB: rotation::B) = rotation::{impl rotation::B for rotation::SB}
+   IMPL rotation::A for rotation::SA: type X = rotation::SB
+IMPL rotation::B for rotation::SB
+   IMPL rotation::B for rotation::SB: proof ImpliedClause2: (rotation::SA: rotation::A) = rotation::{impl rotation::A for rotation::SA}
+   IMPL rotation::B for rotation::SB: type Y = rotation::SA
+   rotation::A: proof ImpliedClause2: (Self::X: rotation::B)
+   rotation::A: type X
+   rotation::B: proof ImpliedClause2: (Self::Y: rotation::A)
+   rotation::B: type Y
+TRAIT core::marker::Destruct header=core::marker::Destruct<Self>
+TRAIT core::marker::MetaSized header=core::marker::MetaSized<Self>
+TRAIT core::marker::Sized header=core::marker::Sized<Self>
+TRAIT rotation::A header=rotation::A<Self>
+TRAIT rotation::B header=rotation::B<Self>

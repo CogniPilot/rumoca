@@ -1,0 +1,24 @@
+--- a/backends/lean/Aeneas/Std/Vec.lean
++++ b/backends/lean/Aeneas/Std/Vec.lean
+@@ -502,14 +502,18 @@
+   «from» := alloc.vec.FromVecArray.from
+ }
+ 
+-/- Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3967:4-3967:33 -/
++@[rust_fun "alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice" (keepParams := [true, false])]
++def alloc.vec.Vec.into_boxed_slice {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=
++  ok v.slice
++
+ @[rust_fun "alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from" (keepParams := [true,false])]
+-def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) := ok v.slice
++def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=
++  alloc.vec.Vec.into_boxed_slice v
+ 
+ @[step]
+ theorem alloc.vec.FromBoxSliceVec.from_spec {T : Type} (v : alloc.vec.Vec T) :
+   alloc.vec.FromBoxSliceVec.from v ⦃ s => s.length = v.length ∧ s.val = v.val⦄ := by
+-  simp [Vec.val, alloc.vec.FromBoxSliceVec.from]
++  simp [Vec.val, alloc.vec.FromBoxSliceVec.from, alloc.vec.Vec.into_boxed_slice]
+ 
+ @[reducible, rust_trait_impl "core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>" (keepParams := [true, false])]
+ def core.convert.FromBoxSliceVec (T : Type) :

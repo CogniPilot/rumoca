@@ -1,0 +1,33 @@
+   Compiling multi-targets v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid/mt)
+    Blocking waiting for file lock on build directory
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.09s
+   Compiling multi-targets v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid/mt)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.59s
+opaque type ()
+
+pub fn multi_targets::no_os(left: u64, right: u64) -> u64
+{
+    let _0: u64; // return
+    let left: u64; // arg #1
+    let right: u64; // arg #2
+    let _3: u64; // anonymous local
+    let _4: u64; // anonymous local
+    let _5: u64; // anonymous local
+
+    storage_live(_0)
+    storage_live(_5)
+    storage_live(_3)
+    _3 = copy left
+    storage_live(_4)
+    _4 = copy right
+    _5 = copy _3 panic.+ copy _4
+    _0 = move _5
+    storage_dead(_4)
+    storage_dead(_3)
+    storage_dead(_5)
+    storage_dead(right)
+    storage_dead(left)
+    return
+}
+
+

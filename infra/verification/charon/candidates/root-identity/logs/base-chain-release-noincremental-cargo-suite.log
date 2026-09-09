@@ -1,0 +1,428 @@
+   Compiling proc-macro2 v1.0.96
+   Compiling unicode-ident v1.0.18
+   Compiling serde_core v1.0.228
+   Compiling memchr v2.7.5
+   Compiling serde v1.0.228
+   Compiling libc v0.2.175
+   Compiling cfg-if v1.0.1
+   Compiling regex-syntax v0.8.5
+   Compiling anstyle v1.0.11
+   Compiling once_cell v1.21.3
+   Compiling semver v1.0.26
+   Compiling syn v1.0.109
+   Compiling shlex v1.3.0
+   Compiling utf8parse v0.2.2
+   Compiling colorchoice v1.0.4
+   Compiling log v0.4.27
+   Compiling is_terminal_polyfill v1.70.1
+   Compiling anstyle-query v1.1.4
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.15.1
+   Compiling foldhash v0.1.5
+   Compiling strsim v0.11.1
+   Compiling fnv v1.0.7
+   Compiling either v1.15.0
+   Compiling ident_case v1.0.1
+   Compiling autocfg v1.5.0
+   Compiling rustix v1.0.8
+   Compiling thiserror v2.0.18
+   Compiling linux-raw-sys v0.9.4
+   Compiling bitflags v2.9.1
+   Compiling regex-syntax v0.6.29
+   Compiling anstyle-parse v0.2.7
+   Compiling lock_api v0.4.14
+   Compiling lazy_static v1.5.0
+   Compiling getrandom v0.3.3
+   Compiling equivalent v1.0.2
+   Compiling version_check v0.9.5
+   Compiling itoa v1.0.15
+   Compiling cc v1.2.32
+   Compiling zerocopy v0.8.27
+   Compiling pin-project-lite v0.2.16
+   Compiling hashbrown v0.15.5
+   Compiling parking_lot_core v0.9.12
+   Compiling tracing-core v0.1.34
+   Compiling anstream v0.6.20
+   Compiling byteorder v1.5.0
+   Compiling overload v0.1.1
+   Compiling itertools v0.13.0
+   Compiling clap_lex v0.7.5
+   Compiling doc-comment v0.3.3
+   Compiling unicode-segmentation v1.12.0
+   Compiling powerfmt v0.2.0
+   Compiling predicates-core v1.0.9
+   Compiling serde_json v1.0.142
+   Compiling ahash v0.8.12
+   Compiling heck v0.5.0
+   Compiling nu-ansi-term v0.46.0
+   Compiling spin v0.9.8
+   Compiling deranged v0.4.0
+   Compiling sharded-slab v0.1.7
+   Compiling thread_local v1.1.9
+   Compiling num-traits v0.2.19
+   Compiling rustc_version v0.4.1
+   Compiling hash32 v0.2.1
+   Compiling clap_builder v4.5.43
+   Compiling time-core v0.1.4
+   Compiling fastrand v2.3.0
+   Compiling paste v1.0.15
+   Compiling difflib v0.4.0
+   Compiling aho-corasick v1.1.3
+   Compiling assert_cmd v2.0.17
+   Compiling tracing-log v0.2.0
+   Compiling stable_deref_trait v1.2.0
+   Compiling convert_case v0.6.0
+   Compiling termtree v0.5.1
+   Compiling num-conv v0.1.0
+   Compiling winnow v0.7.12
+   Compiling heapless v0.7.17
+   Compiling toml_write v0.1.2
+   Compiling ryu v1.0.20
+   Compiling quote v1.0.40
+   Compiling num_threads v0.1.7
+   Compiling anyhow v1.0.98
+   Compiling predicates v3.1.3
+   Compiling predicates-tree v1.0.12
+   Compiling vte v0.14.1
+   Compiling syn v2.0.104
+   Compiling itertools v0.14.0
+   Compiling jiff v0.2.15
+   Compiling fixedbitset v0.5.7
+   Compiling nu-ansi-term v0.50.1
+   Compiling rustc-hash v2.1.2
+   Compiling wait-timeout v0.2.1
+   Compiling unicode-width v0.2.2
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon)
+   Compiling env_home v0.1.0
+   Compiling parking_lot v0.12.5
+   Compiling time v0.3.41
+   Compiling minimal-lexical v0.2.1
+   Compiling crossbeam-utils v0.8.21
+   Compiling annotate-snippets v0.12.12
+   Compiling nom v7.1.3
+   Compiling strip-ansi-escapes v0.2.1
+   Compiling psm v0.1.26
+   Compiling stacker v0.1.21
+   Compiling num-integer v0.1.46
+   Compiling indoc v2.0.6
+   Compiling take_mut v0.2.2
+   Compiling regex-automata v0.1.10
+   Compiling same-file v1.0.6
+   Compiling num-bigint v0.4.6
+   Compiling walkdir v2.5.0
+   Compiling regex-automata v0.4.9
+   Compiling snapbox-macros v0.3.10
+   Compiling similar v2.7.0
+   Compiling normalize-line-endings v0.3.0
+   Compiling escape8259 v0.5.3
+   Compiling tempfile v3.20.0
+   Compiling which v7.0.3
+   Compiling crossbeam-epoch v0.9.18
+   Compiling matchers v0.1.0
+   Compiling crossbeam-deque v0.8.6
+   Compiling snapbox v0.6.21
+   Compiling darling_core v0.20.11
+   Compiling ext-trait-proc_macros v1.0.1
+   Compiling macros v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/macros)
+   Compiling ext-trait v1.0.1
+   Compiling serde_derive v1.0.228
+   Compiling tracing-attributes v0.1.30
+   Compiling thiserror-impl v2.0.18
+   Compiling clap_derive v4.5.41
+   Compiling serde_state_derive v1.0.0 (https://github.com/Nadrieril/serde_state?branch=main#78055e2f)
+   Compiling extension-traits v1.0.1
+   Compiling regex v1.11.1
+   Compiling bstr v1.12.0
+   Compiling tracing v0.1.41
+   Compiling env_filter v0.1.3
+   Compiling cobs v0.3.0
+   Compiling tracing-subscriber v0.3.19
+   Compiling hax-adt-into v0.3.5 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/adt-into)
+   Compiling env_logger v0.11.8
+   Compiling rustc_trait_elaboration v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/rustc_trait_elaboration)
+   Compiling globset v0.4.16
+   Compiling darling_macro v0.20.11
+   Compiling clap v4.5.43
+   Compiling libtest-mimic v0.8.1
+   Compiling darling v0.20.11
+   Compiling derive_generic_visitor_macros v1.1.1
+   Compiling ignore v0.4.23
+   Compiling derive_generic_visitor v1.1.1
+   Compiling tracing-tree v0.4.0 (https://github.com/Nadrieril/tracing-tree#841286bf)
+   Compiling indexmap v2.10.0
+   Compiling toml_datetime v0.6.11
+   Compiling serde_spanned v0.6.9
+   Compiling serde_stacker v0.1.12
+   Compiling serde_state v1.0.0 (https://github.com/Nadrieril/serde_state?branch=main#78055e2f)
+   Compiling index_vec v0.1.4
+   Compiling ustr v1.1.0
+   Compiling postcard v1.1.3
+   Compiling toml_edit v0.22.27
+   Compiling petgraph v0.8.3
+   Compiling closure-region-facts v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/closure-region-facts)
+   Compiling toml v0.8.23
+    Finished `release` profile [optimized] target(s) in 58.29s
+     Running tests/cargo.rs (target/release/build/charon/8d2e217ac52ffcff/out/cargo-8d2e217ac52ffcff)
+
+running 11 tests
+     Removed 62 files, 134.3KiB total
+     Removed     Removed     Removed     Removed 0 files
+     Removed     Removed     Removed     Removed     Removed 0 files
+     Removed 0 files
+ 0 files
+ 0 files
+ 0 files
+ 0 files
+ 0 files
+ 0 files
+ 0 files
+test toml                                         ... FAILED
+test unsafe_                                      ... FAILED
+test workspace                                    ... ok
+test error-dependencies                           ... ok
+test test-attributes                              ... FAILED
+test issue-412-dup-deps                           ... FAILED
+test issue-396-lib-bin                            ... FAILED
+test multi-targets                                ... ok
+test dependencies                                 ... FAILED
+test build-script                                 ... FAILED
+test issue-1298-absolute-path-for-generated-files ... ok
+
+failures:
+
+---- toml ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/toml.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-cargo-toml v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/toml)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `test-cargo-toml` (bin "test-cargo-toml")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524400-1788881874312602078 rustc --crate-name test_cargo_toml --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=e7534af0044cdccd --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/toml/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/test-cargo-toml/37b50b9975b2bab6/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/toml/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/test-cargo-toml/37b50b9975b2bab6/out` (exit status: 101)
+
+
+---- unsafe_ ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/unsafe_.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling unsafe v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/unsafe_)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `unsafe` (bin "unsafe")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524404-1788881874312983009 rustc --crate-name unsafe --edition=2021 src/bin/unsafe.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=b4dba83b3d3b964a --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/unsafe_/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/unsafe/65c0af3dc630614d/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/unsafe_/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/unsafe/65c0af3dc630614d/out` (exit status: 101)
+
+
+---- test-attributes ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/test-attributes.llbc -- --tests`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-attributes v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/test-attributes)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `test-attributes` (lib test)
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524395-1788881874312626478 rustc --crate-name test_attributes --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=0cecd83ab853b4ab -C extra-filename=-5d16c72ededf98c5 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/test-attributes/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/test-attributes/5d16c72ededf98c5/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/test-attributes/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/test-attributes/5d16c72ededf98c5/out` (exit status: 101)
+
+
+---- issue-412-dup-deps ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps.llbc --include=mydup --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling mydup v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/dep-v1)
+   Compiling mydup v0.2.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/dep-v2)
+   Compiling issue-412-dup-deps v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `issue-412-dup-deps` (bin "issue-412-dup-deps")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524401-1788881874313401771 rustc --crate-name issue_412_dup_deps --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=67c38ae23845a4df --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/issue-412-dup-deps/e67ddb9ebc7b96e7/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/mydup/78ed1cd3c4be2913/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/mydup/985357d2cba54cbb/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/issue-412-dup-deps/e67ddb9ebc7b96e7/out --extern mydup1=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/mydup/78ed1cd3c4be2913/out/libmydup-78ed1cd3c4be2913.rlib --extern mydup2=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/mydup/985357d2cba54cbb/out/libmydup-985357d2cba54cbb.rlib` (exit status: 101)
+
+
+---- issue-396-lib-bin ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling issue-396-lib-bin v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `issue-396-lib-bin` (bin "issue-396-lib-bin")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524402-1788881874311658214 rustc --crate-name issue_396_lib_bin --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fc9ad270f7954bc4 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/f1f20f2eb60c726e/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/077009894ea9ee52/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/issue-396-lib-bin/f1f20f2eb60c726e/out --extern issue_396_lib_bin=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/077009894ea9ee52/out/libissue_396_lib_bin-077009894ea9ee52.rlib` (exit status: 101)
+
+
+---- dependencies ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies.llbc -- --features=test_feature`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling take_mut v0.2.2
+   Compiling test-cargo-dependencies v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `test-cargo-dependencies` (bin "test-cargo-dependencies")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524397-1788881874311688364 rustc --crate-name test_cargo_dependencies --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="test_feature"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "test_feature"))' -C metadata=0668ed094fabb86f --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/test-cargo-dependencies/67dd2a67c6e844e7/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/take_mut/e7b7ca690e5a19ed/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/test-cargo-dependencies/67dd2a67c6e844e7/out --extern take_mut=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/dependencies/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/take_mut/e7b7ca690e5a19ed/out/libtake_mut-e7b7ca690e5a19ed.rlib` (exit status: 101)
+
+
+---- build-script ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/build-script.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-cargo-build-script v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/build-script)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::panicking::panic
+   3: core::option::unwrap_failed
+   4: rustc_middle::hir::map::crate_hash
+      [... omitted 1 frame ...]
+   5: <closure_region_facts::artifact::Identity>::current
+   6: <closure_region_facts::artifact::PendingArtifact>::capture
+   7: <closure_region_facts::session::CollectingCallbacks as rustc_driver_impl::Callbacks>::after_analysis
+   8: rustc_interface::interface::run_compiler::<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}
+   9: <rustc_thread_pool::job::StackJob<rustc_thread_pool::latch::LatchRef<rustc_thread_pool::latch::LockLatch>, <rustc_thread_pool::registry::Registry>::in_worker_cold<<rustc_thread_pool::thread_pool::ThreadPool>::install<rustc_interface::util::run_in_thread_pool_with_globals<rustc_interface::interface::run_compiler<(), rustc_driver_impl::run_compiler::{closure#0}>::{closure#2}, ()>::{closure#5}::{closure#0}::{closure#1}::{closure#0}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()> as rustc_thread_pool::job::Job>::execute
+  10: <rustc_thread_pool::registry::WorkerThread>::wait_or_steal_until_cold
+  11: <rustc_thread_pool::registry::ThreadBuilder>::run
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+ERROR Compilation panicked
+error: could not compile `test-cargo-build-script` (bin "test-cargo-build-script")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/target/release/charon-driver charon-dont-cache-this-3524399-1788881874311682274 rustc --crate-name test_cargo_build_script --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4587625310b567d1 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/build-script/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/x86_64-unknown-linux-gnu/debug/build/test-cargo-build-script/f0969a993a9bb379/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/cargo/build-script/target/charon-closure-facts/b8b80a6f87811c88385b399775830574a1998d20b5a31ad5bb99e99fe777f5b4/debug/build/test-cargo-build-script/f0969a993a9bb379/out --cfg abc` (exit status: 101)
+
+
+
+failures:
+    toml
+    unsafe_
+    test-attributes
+    issue-412-dup-deps
+    issue-396-lib-bin
+    dependencies
+    build-script
+
+test result: FAILED. 4 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+error: test failed, to rerun pass `--test cargo`
+exit=101

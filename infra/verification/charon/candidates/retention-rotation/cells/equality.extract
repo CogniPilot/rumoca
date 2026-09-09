@@ -1,0 +1,11 @@
+   eqc::A: proof ImpliedClause2: (Self_X: eqc::B<Self, Self_X>)
+   eqc::B: proof ImpliedClause2: (Self_Y: eqc::A<Self_Clause2_X>)
+IMPL eqc::A<eqc::SB> for eqc::SA
+   IMPL eqc::A<eqc::SB> for eqc::SA: proof ImpliedClause2: (eqc::SB: eqc::B<eqc::SA, eqc::SB>) = eqc::{impl eqc::B<eqc::SA, eqc::SB> for eqc::SB}
+IMPL eqc::B<eqc::SA, for for
+   IMPL eqc::B<eqc::SA, for for: proof ImpliedClause2: (eqc::SA: eqc::A<eqc::SB>) = eqc::{impl eqc::A<eqc::SB> for eqc::SA}
+TRAIT core::marker::Destruct header=core::marker::Destruct<Self>
+TRAIT core::marker::MetaSized header=core::marker::MetaSized<Self>
+TRAIT core::marker::Sized header=core::marker::Sized<Self>
+TRAIT eqc::A header=eqc::A<Self,
+TRAIT eqc::B header=eqc::B<Self,

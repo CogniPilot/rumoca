@@ -1,0 +1,13 @@
+--- a/extract/ExtractBuiltinLean.ml
++++ b/extract/ExtractBuiltinLean.ml
+@@ -192,6 +192,10 @@
+     (* file: "Aeneas/Std/Alloc.lean", line: 25 *)
+     mk_fun "alloc::alloc::{core::clone::Clone<alloc::alloc::Global>}::clone"
+       "alloc.alloc.CloneGlobal.clone";
++    (* file: "Aeneas/Std/Box.lean", line: 5 *)
++    mk_fun
++      "alloc::boxed::convert::{core::convert::From<Box<[@T]>, &'0 [@T]>}::from"
++      "alloc.boxed.FromBoxSliceSharedSlice.from";
+     (* file: "Aeneas/Std/Core/Core.lean", line: 50 *)
+     mk_fun "alloc::boxed::{core::clone::Clone<Box<@T>>}::clone"
+       "core.alloc.boxed.CloneBox.clone"

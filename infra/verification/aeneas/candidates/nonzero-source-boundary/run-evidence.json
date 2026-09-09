@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "status": "DIAGNOSTIC FIX; no proof or adoption",
+  "as_of": "2026-09-08T23:34:50Z",
+  "branch": "msl-trace-parity-50",
+  "baseline": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "anchors": [
+    "SPEC_0033 sections 2a/4/6",
+    "SPEC_0037 sections 2/6 (experimental DRAFT)"
+  ],
+  "scope": "Original NonZero source boundary; no Rust production, range, branding, live tool pin, or storage-model changes.",
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Charon extracts the original range-carrying type; Aeneas rejects TPattern(U32,1..=4294967295) and subsequently crashes. No Lean is emitted on that route."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Operation-only source extraction emits an identity body for inner Clone without looking inside its type. Numeric equality still calls opaque get; this is not an equality proof."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The operation-only output and selected production Types.lean contain duplicate markerCopyInst field names for distinct constraints. Their complete Lean admission is not claimed."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "Fixing parent-clause field naming is necessary before a whole-module check of these selected sources. Range/get correspondence remains separately unresolved."
+    }
+  ],
+  "upstream": [
+    {
+      "url": "https://github.com/AeneasVerif/charon/pull/1212",
+      "finding": "Merged pattern-type extraction, merge d925fdfe06a3bd40ea9b5a33a066a0503cdf27a8"
+    },
+    {
+      "url": "https://github.com/AeneasVerif/aeneas/pull/1083",
+      "finding": "Merged companion only updates pin and unsupported fallbacks; does not implement TPattern semantics."
+    },
+    {
+      "url": "https://github.com/AeneasVerif/aeneas/issues/1051",
+      "finding": "Open duplicate-supertrait field naming issue; maintainer identifies Aeneas naming ownership in comments."
+    },
+    {
+      "url": "https://github.com/AeneasVerif/aeneas/issues/838",
+      "finding": "Rejected lead: string-pattern trait issue, not Rust TPattern support."
+    }
+  ],
+  "hash_check": {
+    "chunk_id": "d2588d",
+    "wall_time_seconds": 0.00000306,
+    "exit_code": 0,
+    "original_token_count": 128,
+    "output": "2291009033a959450b2e9980c32ebc4b91d79e4d1997a210103d4ba26470f664  infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs\n1c853f44f35eb05b580b8e4a37b9550a249fdae4b43142f0f7123f0d071408bd  dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc\n4a8a6c183beb09dc3c827d1b13af0300faebac705a2318da6283c69aaa3782c1  dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc\n29e152d0e155cc9b5cbe076217d5afa8ec7bf836ac9b81f263b9848f05824bac  dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean\n"
+  },
+  "runs": [
+    {
+      "store_key": "nonzero_charon",
+      "name": "initial source-retention probe",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=nonzero_source_boundary --include='core::num::nonzero::NonZero' --include='core::num::niche_types::NonZeroU32Inner' --include='core::num::nonzero::*::eq' --include='core::num::nonzero::*::get' --include='core::num::nonzero::*::clone' --include='core::num::niche_types::*::clone' --include='core::option::*::clone' --dest-file=/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc -- --edition=2024 --crate-name nonzero_source_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "3d2f63",
+        "wall_time_seconds": 0.458973543,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_aeneas",
+      "name": "initial Aeneas translation",
+      "command": "timeout 90 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/generated /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "00884c",
+        "wall_time_seconds": 0.235650538,
+        "exit_code": 2,
+        "original_token_count": 1057,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/11 ⠋\r\rApplied prepasses:  [####----------------------------------------------]  1/11 ⠙\rApplied prepasses:  [##################################################] 11/11 ✔️\r\n\u001b[?25h[\u001b[91mError\u001b[39m] unsupported type: (Generated_Types.TPattern (\n   (Generated_Types.TLiteral (Generated_Values.TUInt Generated_Values.U32)),\n   (Generated_Types.Range (\n      { Generated_Types.kind =\n        (Generated_Types.CLiteral\n           (Generated_Values.VScalar\n              (Generated_Values.UnsignedScalar (Generated_Values.U32, 1))));\n        ty =\n        (Generated_Types.TLiteral\n           (Generated_Values.TUInt Generated_Values.U32))\n        },\n      { Generated_Types.kind =\n        (Generated_Types.CLiteral\n           (Generated_Values.VScalar\n              (Generated_Values.UnsignedScalar (Generated_Values.U32,\n                 4294967295))));\n        ty =\n        (Generated_Types.TLiteral\n           (Generated_Values.TUInt Generated_Values.U32))\n        }\n      ))\n   ))\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n[\u001b[91mError\u001b[39m] Encountered an error when analyzing the following type declarations group:\ncore::num::niche_types::NonZeroU32Inner (Source: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55)\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n[\u001b[91mError\u001b[39m] Internal error: please file an issue\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h[\u001b[93mWarn\u001b[39m ] Could not translate type decl 'core::num::niche_types::NonZeroU32Inner because of previous error\nName pattern: 'core::num::niche_types::NonZeroU32Inner'\n\nThis definition is (transitively) used at the following locations:\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 3:0-5:1\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:4-4:8\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:4-4:17\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:12-4:17\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 11:0-13:1\n… (omitted - change the number of displayed spans with -max-error-spans)\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\nCompiler source: symbolic/SymbolicToPure.ml, line 153\n\nUncaught exception:\n  \n  Not_found\n\nRaised at Stdlib__Map.Make.find in file \"map.ml\", line 141, characters 10-25\nCalled from Aeneas__TypesUtils.type_decl_from_decl_id_is_tuple_struct in file \"llbc/TypesUtils.ml\" (inlined), line 535, characters 13-39\nCalled from Aeneas__SymbolicToPureTypes.normalize_inference_ty in file \"symbolic/SymbolicToPureTypes.ml\", lines 261-262, characters 9-37\nCalled from Aeneas__PureUtils.mk_visited_params_visitor.object#visit_ty in file \"pure/PureUtils.ml\", line 1760, characters 51-68\nCalled from Stdlib__List.iter in file \"list.ml\", line 112, characters 12-15\nCalled from Aeneas__PureUtils.compute_explicit_info in file \"pure/PureUtils.ml\", line 1797, characters 2-43\nCalled from Aeneas__SymbolicToPureTypes.translate_fun_sig_from_decomposed in file \"symbolic/SymbolicToPureTypes.ml\", line 1264, characters 22-69\nCalled from Aeneas__SymbolicToPureTypes.translate_fun_sigs_from_decomposed in file \"symbolic/SymbolicToPureTypes.ml\", line 1092, characters 11-58\nCalled from Aeneas__Translate.translate_crate_to_pure.(fun) in file \"Translate.ml\", line 382, characters 21-64\nCalled from Stdlib__List.filter_map in file \"list.ml\", line 280, characters 12-15\nCalled from Aeneas__Translate.translate_crate_to_pure in file \"Translate.ml\", lines 375-400, characters 6-59\nCalled from Aeneas__Translate.translate_crate in file \"Translate.ml\", line 2241, characters 31-71\nCalled from Dune__exe__Main in file \"Main.ml\", lines 767-768, characters 8-37\n"
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_native_compile",
+      "name": "native compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs -Dwarnings -o /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/native-tests",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "68d520",
+        "wall_time_seconds": 0.00000324,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_native_tests",
+      "name": "native nonzero tests",
+      "command": "/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/native-tests --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "cc8159",
+        "wall_time_seconds": 0.00000332,
+        "exit_code": 0,
+        "original_token_count": 56,
+        "output": "\nrunning 2 tests\ntest tests::cloning_preserves_payload_and_absence ... ok\ntest tests::equality_distinguishes_identity ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_clippy",
+      "name": "strict scoped Clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs --emit=metadata -o /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/tests.rmeta -Dwarnings",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "447f5f",
+        "wall_time_seconds": 0.00000343,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_format",
+      "name": "Rust formatting",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --edition=2024 --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "dfeeda",
+        "wall_time_seconds": 0.00000756,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "store_key": "nonzero_ops_charon",
+      "name": "source operations with existing opaque storage boundary",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=nonzero_source_boundary --include='core::num::nonzero::*::eq' --include='core::num::nonzero::*::clone' --include='core::num::niche_types::*::clone' --include='core::option::*::clone' --dest-file=/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc -- --edition=2024 --crate-name nonzero_source_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "026bd2",
+        "wall_time_seconds": 0.438513586,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "store_key": "nonzero_ops_aeneas",
+      "name": "operation-only source Aeneas translation",
+      "command": "timeout 90 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "c87ee3",
+        "wall_time_seconds": 0.467282087,
+        "exit_code": 0,
+        "original_token_count": 663,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/11 ⠋\r\rApplied prepasses:  [####----------------------------------------------]  1/11 ⠙\rApplied prepasses:  [##################################################] 11/11 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/7 ⠋\r\rTranslated transparent functions:  [#####--------------------------------] 1/7 ⠙\r\rTranslated transparent functions:  [#####################----------------] 4/7 ⠙\r\rTranslated transparent functions:  [##########################-----------] 5/7 ⠙\rTranslated transparent functions:  [#####################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [########################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/9 ⠋\rTranslated trait impls:  [#########################################------] 8/9 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/7 ⠋\r\rPost-processed translated transparent functions:  [###-------------------] 1/7 ⠋\rPost-processed translated transparent functions:  [######################] 7/7 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/translation.json\n[\u001b[93mWarn\u001b[39m ] The crate contains extracted external, unknown definitions: we advise using the option -split-files to allow manually providing these definitions in separate files.\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.409497 seconds\n"
+      }
+    },
+    {
+      "store_key": "nonzeroTracer",
+      "name": "production_unit_derivative_20260908_2320",
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "742551",
+          "wall_time_seconds": 0.00000144,
+          "exit_code": 0,
+          "original_token_count": 185,
+          "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.80s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.09s\n\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "5e8a53",
+        "wall_time_seconds": 1.001474215,
+        "session_id": 99236,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "not_run": [
+    "No nonzero Laws.lean exists or has passed. No nonzero proof admission.",
+    "No complete selected production module Lean check; four opaque operations remain in the production measurement.",
+    "No translator range-erasure patch, new opaque operation contract, or production source replay.",
+    "No cargo xtask verify lean-pilot/quick/full, MSL sweep or remote CI: isolated diagnostic, no dependency-closed adoption milestone."
+  ]
+}

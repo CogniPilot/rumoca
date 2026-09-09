@@ -1,0 +1,26 @@
+--- a/tests/specialized_traits.rs
++++ b/tests/specialized_traits.rs
+@@ -10,8 +10,22 @@
+ 
+ #[test]
+ fn specialization_preserves_typechecked_parent_trait_contracts() -> anyhow::Result<()> {
++    assert_parent_contracts(include_str!("fixtures/specialized_traits.rs"))
++}
++
++#[test]
++fn specialization_preserves_closed_cyclic_parent_contracts() -> anyhow::Result<()> {
++    assert_parent_contracts(include_str!("fixtures/cyclic-assoc-source.rs"))
++}
++
++#[test]
++fn specialization_preserves_noninverse_cyclic_parent_contracts() -> anyhow::Result<()> {
++    assert_parent_contracts(include_str!("fixtures/cyclic-noninverse-source.rs"))
++}
++
++fn assert_parent_contracts(source: &str) -> anyhow::Result<()> {
+     let translated = util::translate_rust_text(
+-        include_str!("fixtures/specialized_traits.rs"),
++        source,
+         &[
+             "--error-on-warnings",
+             "--include=core::option::*::branch",

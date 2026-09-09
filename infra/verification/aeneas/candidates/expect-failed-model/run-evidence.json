@@ -1,0 +1,1344 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-08 21:32:51 UTC",
+  "status": "READY_FOR_INDEPENDENT_BOUNDED_REVIEW",
+  "author": "Codex",
+  "reviewer": "Claude",
+  "branch": "msl-trace-parity-50",
+  "head": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "scope": "Source-retained specialized Option.expect uses a narrow nongeneric expect_failed model; string-literal bounds use kernel proofs; official binding generator is executable with the pinned Lean initializer API.",
+  "spec_anchors": [
+    "SPEC_0033 sections 2, 2a, 4, 6",
+    "experimental SPEC_0037 sections 2, 6"
+  ],
+  "claims": [
+    {
+      "claim": "Fresh fixture emits nine transparent function entries and zero opaque entries",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectFreshCharon",
+        "expectFreshTranslations",
+        "expectFreshCensus"
+      ]
+    },
+    {
+      "claim": "Six guarded Some/None laws pass over unedited generated Rust function bodies",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectFreshLeanRuns positive"
+      ]
+    },
+    {
+      "claim": "Eight guarded string laws preserve arbitrary supplied bytes/length and instantiate empty, ASCII, and multi-byte literals without native axioms",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectStringGuardedLaws"
+      ]
+    },
+    {
+      "claim": "Fresh actual Rust ID-value mutation and helper-model divergence mutation break unchanged laws after generated modules compile; independent wrong-result witnesses compile",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectFreshLeanRuns",
+        "expectmodelFreshWitness",
+        "expectrustFreshWitness"
+      ]
+    },
+    {
+      "claim": "Reverting to the original string model breaks six exact axiom guards; false byte bound is rejected",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectNativeAxiomRegression",
+        "expectWrongStringBound"
+      ]
+    },
+    {
+      "claim": "Official generator baseline is byte-identical to immutable registry; final registry diff exactly equals binding-registry.patch",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectBaselineExactDiff",
+        "expectRegistryStringR2Run",
+        "expectRegistryStringR2Diff"
+      ],
+      "exact_patch_equality": true
+    },
+    {
+      "claim": "Four native positive tests, strict scoped Clippy and format pass; Rust mutant fails exactly its value test",
+      "status": "VERIFIED",
+      "evidence": [
+        "expectNativeR2Runs",
+        "expectFinalChecks"
+      ]
+    },
+    {
+      "claim": "This resolves the corresponding complete production DAE composition binding",
+      "status": "NOT_MEASURED",
+      "reason": "Only the reduced DAE-shaped fixture is replayed here; the full composition and canonical tool adoption remain open."
+    }
+  ],
+  "tcb": [
+    "Pinned Rust 1.100.0-nightly 2026-08-18, Charon candidate4 and Aeneas candidate stack; translator semantic correctness is not proved here.",
+    "Pinned Lean 4.31.0 kernel and imported model library; admitted theorem transitive axioms exactly propext, Classical.choice, Quot.sound.",
+    "New expect_failed definition is a trusted typed library abstraction, not proof of Rust panic implementation. It shares existing Option.expect abstraction: panic formatting, hooks, output, allocation and unwinding are outside the observation model.",
+    "The model is restricted to core::option::expect_failed(&str)->!; it does not bind generic Display, arbitrary panic_display, or arbitrary Never-returning functions.",
+    "Brand marker functionalization inherits the existing translation model; no Rust branding, ownership or production type change."
+  ],
+  "construction": "Some/None source branches remain in translated nominal specialized Option bodies. Only the leaf library call has a model; impossible successful Never values are eliminated by the separately bounded-reviewed Never candidate.",
+  "preservation": "No Rumoca production source, live tool pin or .lake source/output changed. The String proof edit changes no argument type, bound or value body. Compiler runtime performance is therefore unaffected by mechanism; no benchmark claimed.",
+  "not_run": [
+    "Canonical cargo xtask verify lean-pilot integration: candidate dependency stack not adopted.",
+    "New full upstream Aeneas/Charon suite: this packet exercises the declared bounded library path only.",
+    "cargo xtask verify quick/full rerun: no dependency-closed adoption milestone; last quick remains red as recorded in roadmaps.",
+    "Remote CI and full MSL parity sweep: not a compiler capability change; no cohort claim."
+  ],
+  "counting": {
+    "unit_derivative_relations": 1,
+    "total_relations": 18,
+    "closed_near_term_milestones": 1,
+    "total_near_term_milestones": 8,
+    "added_relations": 0
+  },
+  "replay_notes": [
+    "Commands and cwd fields are recorded in runs. LEAN_PATH orders the selected generated directory, isolated complete Std namespace, then pinned dependencies.",
+    "stdlib-after and stdlib-mutant use read-only symlinks for unchanged modules; five positive and four mutant output modules are own regular files. String.olean in stdlib-mutant references rebuilt positive String.olean.",
+    "Fresh final source is candidate fixture.rs. Older diagnostic runs retain historical outputs and may point at subsequently revised proof files; only fresh/guarded rows bind final proof bytes.",
+    "Mutant proof runs intentionally fail; sorryAx in their failed elaboration diagnostics is rejected by guards, never accepted as proof.",
+    "package.nix builds only the Aeneas registry candidate. Applying Std/extractor source patches in canonical tooling is separate, not silently implemented by that recipe."
+  ],
+  "trusted_source_hashes": {
+    "chunk_id": "c25472",
+    "wall_time_seconds": 0.00000324,
+    "exit_code": 0,
+    "original_token_count": 123,
+    "output": "9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\nb447a2b853a5d294ed64ef0d21b9a57be148d5c253e1e64e3430787de56d0906  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/src/lean/Lean/ImportingFlag.lean\n2dab92cdbec51b006307496b24cc757d7b2bc4056eff156d0fff445f66c1d2f5  /nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/core/src/option.rs\n"
+  },
+  "lean_version": {
+    "chunk_id": "793036",
+    "wall_time_seconds": 0.0000032,
+    "exit_code": 0,
+    "original_token_count": 27,
+    "output": "Lean (version 4.31.0, x86_64-unknown-linux-gnu, commit 68218e876d2a38b1985b8590fff244a83c321783, Release)\n"
+  },
+  "fresh_census": {
+    "chunk_id": "d13042",
+    "wall_time_seconds": 0.00000339,
+    "exit_code": 0,
+    "original_token_count": 10,
+    "output": "{\n  \"functions\": 9,\n  \"opaque\": []\n}\n"
+  },
+  "runs": {
+    "expectBaseRegistryRun": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true --run /home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean",
+      "initial": {
+        "chunk_id": "9b9d1b",
+        "wall_time_seconds": 1.001238622,
+        "session_id": 76259,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "e5133a",
+          "wall_time_seconds": 0.00000184,
+          "exit_code": 1,
+          "original_token_count": 107,
+          "output": "Starting extraction\nCould not find native implementation of external declaration '_private._stdin.0.enableInitializerExecutionUnsafe' (symbols 'l___private___stdin_0__enableInitializerExecutionUnsafe___boxed' or 'l___private___stdin_0__enableInitializerExecutionUnsafe').\nFor declarations from `Init`, `Std`, or `Lean`, you need to set `supportInterpreter := true` in the relevant `lean_exe` statement in your `lakefile.lean`.\n"
+        }
+      ]
+    },
+    "expectApiRegistryRun": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean",
+      "initial": {
+        "chunk_id": "200c44",
+        "wall_time_seconds": 1.000673714,
+        "session_id": 34916,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "0975d7",
+          "wall_time_seconds": 0.00000266,
+          "exit_code": 1,
+          "original_token_count": 32,
+          "output": "uncaught exception: process 'lean' exited with code 255\nstderr:\ncould not execute external process 'lean'\n\nStarting extraction\n"
+        }
+      ]
+    },
+    "expectApiRegistryWithPath": {
+      "command": "timeout 90 env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH='/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean",
+      "initial": {
+        "chunk_id": "a93c2e",
+        "wall_time_seconds": 1.002014223,
+        "session_id": 18501,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "a6030b",
+          "wall_time_seconds": 0.00000409,
+          "exit_code": 1,
+          "original_token_count": 34,
+          "output": "excessive memory consumption detected at 'interpreter' (potential solution: increase memory consumption threshold)\nStarting extraction\n"
+        }
+      ]
+    },
+    "expectApiRegistry12G": {
+      "command": "/usr/bin/time -v timeout 90 env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH='/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean",
+      "initial": {
+        "chunk_id": "f16b4d",
+        "wall_time_seconds": 0.0000077,
+        "exit_code": 127,
+        "original_token_count": 21,
+        "output": "/run/current-system/sw/bin/bash: line 1: /usr/bin/time: No such file or directory\n"
+      },
+      "observations": []
+    },
+    "expectApiRegistry12GRun": {
+      "command": "time -p timeout 90 env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH='/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/backends/lean",
+      "initial": {
+        "chunk_id": "cad035",
+        "wall_time_seconds": 1.000690834,
+        "session_id": 9743,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "ecc155",
+          "wall_time_seconds": 0.001133775,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "Starting extraction\nExtraction done\nreal 62.69\nuser 6.61\nsys 14.31\n"
+        }
+      ]
+    },
+    "expectBaselineExactDiff": {
+      "command": "diff -u /nix/store/ggqlihgr6rpr4maz16vsi93did0chbrs-aeneas-static-lifecycle-source/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml",
+      "chunk_id": "ef5d36",
+      "wall_time_seconds": 0.00000456,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "expectFormatBaselineExact": {
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --inplace /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml",
+      "chunk_id": "4b3c8d",
+      "wall_time_seconds": 0.06503857,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    "expectRegistryAfterRun": {
+      "command": "time -p timeout 120 env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean",
+      "initial": {
+        "chunk_id": "f7cdc9",
+        "wall_time_seconds": 1.000846666,
+        "session_id": 40313,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "1cd6c4",
+          "wall_time_seconds": 0.00000189,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "Starting extraction\nExtraction done\nreal 7.41\nuser 3.16\nsys 3.38\n"
+        }
+      ]
+    },
+    "expectGeneratedRegistryDelta": {
+      "command": "diff -u /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml",
+      "chunk_id": "4f279f",
+      "wall_time_seconds": 0.00000415,
+      "exit_code": 1,
+      "original_token_count": 197,
+      "output": "--- /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml\t2026-09-08 16:34:54.772384084 -0400\n+++ /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml\t2026-09-08 16:42:12.921300004 -0400\n@@ -1001,6 +1001,8 @@\n     (* file: \"Aeneas/Std/Core/Iter.lean\", line: 639 *)\n     mk_fun \"core::ops::range::{core::ops::range::RangeInclusive<@Idx>}::new\"\n       \"core.ops.range.RangeInclusive.new\";\n+    (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 38 *)\n+    mk_fun \"core::option::expect_failed\" \"core.option.expect_failed\";\n     (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 11 *)\n     mk_fun \"core::option::{core::option::Option<@T>}::expect\"\n       \"core.option.Option.expect\";\n"
+    },
+    "expectBuild": {
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/package.nix --max-jobs 1 --cores 4",
+      "initial": {
+        "chunk_id": "50fedb",
+        "wall_time_seconds": 1.000301045,
+        "session_id": 49368,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "0a5d70",
+          "wall_time_seconds": 5.001289657,
+          "session_id": 49368,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/l6nyxqvzg7iyfw0id0b7kdgwgmm41qd4-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/l6nyxqvzg7iyfw0id0b7kdgwgmm41qd4-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "52f792",
+          "wall_time_seconds": 0.00000273,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ]
+    },
+    "expectTranslate": {
+      "command": "timeout 120 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated/DaeBuiltinBindingSource /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc",
+      "initial": {
+        "chunk_id": "a52ae3",
+        "wall_time_seconds": 0.525356614,
+        "exit_code": 0,
+        "original_token_count": 689,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/14 ⠋\r\rApplied prepasses:  [###-----------------------------------------------]  1/14 ⠙\rApplied prepasses:  [##################################################] 14/14 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/10 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/10 ⠙\r\rTranslated transparent functions:  [#######----------------------------]  2/10 ⠙\r\rTranslated transparent functions:  [#####################--------------]  6/10 ⠙\r\rTranslated transparent functions:  [###################################] 10/10 ⠹\rTranslated transparent functions:  [###################################] 10/10 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [##########------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###########------------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/10 ⠋\r\rPost-processed translated transparent functions:  [##------------------]  1/10 ⠋\rPost-processed translated transparent functions:  [####################] 10/10 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated/DaeBuiltinBindingSource\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated/DaeBuiltinBindingSource/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated/DaeBuiltinBindingSource/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated/DaeBuiltinBindingSource/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.452859 seconds\n"
+      },
+      "observations": []
+    },
+    "expectLawsRun": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+      "initial": {
+        "chunk_id": "b0aa6e",
+        "wall_time_seconds": 1.000978139,
+        "session_id": 92581,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "9d7ee6",
+          "wall_time_seconds": 0.00000215,
+          "exit_code": 0,
+          "original_token_count": 226,
+          "output": "'ExpectFailedLaws.expect_id_some' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_id._native.decide.ax_1]\n'ExpectFailedLaws.expect_id_none' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_id._native.decide.ax_1]\n'ExpectFailedLaws.expect_view_some' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_view._native.decide.ax_1]\n'ExpectFailedLaws.expect_view_none' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_view._native.decide.ax_1]\n'ExpectFailedLaws.expect_plain_some' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_plain._native.decide.ax_1]\n'ExpectFailedLaws.expect_plain_none' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n dae_builtin_binding.expect_plain._native.decide.ax_1]\n"
+        }
+      ]
+    },
+    "expectLawsR2Run": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+      "initial": {
+        "chunk_id": "73110c",
+        "wall_time_seconds": 1.000834112,
+        "session_id": 7525,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "6e6f29",
+          "wall_time_seconds": 0.00000152,
+          "exit_code": 0,
+          "original_token_count": 142,
+          "output": "'ExpectFailedLaws.expect_id_some' depends on axioms: [propext, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_id_none' depends on axioms: [propext, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_view_some' depends on axioms: [propext, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_view_none' depends on axioms: [propext, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_plain_some' depends on axioms: [propext, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_plain_none' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectGuardedLawsRun": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+      "initial": {
+        "chunk_id": "92580e",
+        "wall_time_seconds": 1.000333508,
+        "session_id": 77564,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "ad17c5",
+          "exit_code": 0,
+          "output": "",
+          "wall_time_seconds": 9.6e-7
+        }
+      ]
+    },
+    "expectStringProbe7": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/StringBoundProbe.lean",
+      "initial": {
+        "chunk_id": "286642",
+        "wall_time_seconds": 1.001306703,
+        "session_id": 18794,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "6caf4a",
+          "wall_time_seconds": 0.00000179,
+          "exit_code": 0,
+          "original_token_count": 13,
+          "output": "'required_id_bound' depends on axioms: [propext]\n"
+        }
+      ]
+    },
+    "expectStdRuns": [
+      {
+        "name": "CoreOption",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean",
+        "initial": {
+          "chunk_id": "85baa2",
+          "wall_time_seconds": 1.000581162,
+          "session_id": 11264,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "92fdd2",
+            "wall_time_seconds": 0.000411212,
+            "exit_code": 1,
+            "original_token_count": 77,
+            "output": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean:1:0: error: object file '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/Core.olean' of module Aeneas.Std.Core.Core does not exist\n"
+          }
+        ]
+      },
+      {
+        "name": "CoreOption_complete_namespace",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core/CoreOption.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean",
+        "initial": {
+          "chunk_id": "b201a6",
+          "wall_time_seconds": 1.000178876,
+          "session_id": 47853,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "40bc78",
+            "wall_time_seconds": 0.0000013,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas/Std/Core",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core.lean",
+        "initial": {
+          "chunk_id": "56b7a2",
+          "wall_time_seconds": 1.001085737,
+          "session_id": 43593,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "b489c4",
+            "wall_time_seconds": 0.537293699,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas/Std",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std.lean",
+        "initial": {
+          "chunk_id": "8ca599",
+          "wall_time_seconds": 1.001631928,
+          "session_id": 83272,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "c3123b",
+            "wall_time_seconds": 0.548726091,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas.lean",
+        "initial": {
+          "chunk_id": "b05566",
+          "wall_time_seconds": 1.001047563,
+          "session_id": 46926,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "6439d0",
+            "wall_time_seconds": 0.831210177,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      }
+    ],
+    "expectStdR2Runs": [
+      {
+        "name": "String",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/String.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/String.lean",
+        "initial": {
+          "chunk_id": "d99945",
+          "wall_time_seconds": 1.001157566,
+          "session_id": 30645,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "07e254",
+            "wall_time_seconds": 0.00000147,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas/Std/Core/CoreOption",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core/CoreOption.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean",
+        "initial": {
+          "chunk_id": "5c4ef7",
+          "wall_time_seconds": 1.000963996,
+          "session_id": 51412,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "ec8761",
+            "wall_time_seconds": 0.697241911,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas/Std/Core",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core.lean",
+        "initial": {
+          "chunk_id": "e52ca3",
+          "wall_time_seconds": 1.0005419,
+          "session_id": 84381,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "38a768",
+            "wall_time_seconds": 0.512507035,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas/Std",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std.lean",
+        "initial": {
+          "chunk_id": "55ea71",
+          "wall_time_seconds": 1.000407397,
+          "session_id": 12415,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "345fcf",
+            "wall_time_seconds": 0.520179012,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "name": "Aeneas",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas.lean",
+        "initial": {
+          "chunk_id": "c8be17",
+          "wall_time_seconds": 1.0016319,
+          "session_id": 30591,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "c579bb",
+            "wall_time_seconds": 0.553249124,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      }
+    ],
+    "expectMutantStdR2Runs": [
+      {
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/model-mutant/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core/CoreOption.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/model-mutant/backends/lean/Aeneas/Std/Core/CoreOption.lean",
+        "initial": {
+          "chunk_id": "1d36f2",
+          "wall_time_seconds": 1.000711593,
+          "session_id": 53603,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "29fd99",
+            "wall_time_seconds": 0.704311108,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core.lean",
+        "initial": {
+          "chunk_id": "4a44ed",
+          "wall_time_seconds": 1.000787632,
+          "session_id": 4114,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "e40d28",
+            "wall_time_seconds": 0.636294515,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std.lean",
+        "initial": {
+          "chunk_id": "d1995c",
+          "wall_time_seconds": 1.001490455,
+          "session_id": 87506,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "2cb9db",
+            "wall_time_seconds": 0.545761016,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas.lean",
+        "initial": {
+          "chunk_id": "dc4f4f",
+          "wall_time_seconds": 1.001607715,
+          "session_id": 45838,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "ecada0",
+            "wall_time_seconds": 0.555318081,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      }
+    ],
+    "expectNativeR2Runs": [
+      {
+        "mode": "positive",
+        "step": "lint",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition=2024 --crate-name dae_builtin_binding --test --emit=metadata -D warnings --out-dir /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs",
+        "initial": {
+          "chunk_id": "0afae4",
+          "wall_time_seconds": 0.00000411,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "mode": "positive",
+        "step": "native-build",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --crate-name dae_builtin_binding --test -D warnings -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/positive-native-tests /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs",
+        "initial": {
+          "chunk_id": "11590f",
+          "wall_time_seconds": 0.00000272,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "mode": "positive",
+        "step": "native-test",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/positive-native-tests --test-threads=4",
+        "initial": {
+          "chunk_id": "2194bc",
+          "wall_time_seconds": 0.00000281,
+          "exit_code": 0,
+          "original_token_count": 85,
+          "output": "\nrunning 4 tests\ntest tests::missing_id_panics - should panic ... ok\ntest tests::plain_absence_panics - should panic ... ok\ntest tests::missing_view_panics - should panic ... ok\ntest tests::preserves_present_values_and_try_dispositions ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        },
+        "observations": []
+      },
+      {
+        "mode": "mutant",
+        "step": "lint",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition=2024 --crate-name dae_builtin_binding --test --emit=metadata -D warnings --out-dir /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs",
+        "initial": {
+          "chunk_id": "9567ff",
+          "wall_time_seconds": 0.00000284,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "mode": "mutant",
+        "step": "native-build",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --crate-name dae_builtin_binding --test -D warnings -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/mutant-native-tests /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs",
+        "initial": {
+          "chunk_id": "7816ad",
+          "wall_time_seconds": 0.00000335,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "mode": "mutant",
+        "step": "native-test",
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/mutant-native-tests --test-threads=4",
+        "initial": {
+          "chunk_id": "008e2b",
+          "wall_time_seconds": 0.0000035,
+          "exit_code": 101,
+          "original_token_count": 184,
+          "output": "\nrunning 4 tests\ntest tests::missing_view_panics - should panic ... ok\ntest tests::plain_absence_panics - should panic ... ok\ntest tests::preserves_present_values_and_try_dispositions ... FAILED\ntest tests::missing_id_panics - should panic ... ok\n\nfailures:\n\n---- tests::preserves_present_values_and_try_dispositions stdout ----\n\nthread 'tests::preserves_present_values_and_try_dispositions' (246322) panicked at /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs:52:9:\nassertion `left == right` failed\n  left: 9\n right: 17\n\n\nfailures:\n    tests::preserves_present_values_and_try_dispositions\n\ntest result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        },
+        "observations": []
+      }
+    ],
+    "expectFreshCharon": [
+      {
+        "mode": "positive",
+        "command": "timeout 120 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=dae_builtin_binding::expect_plain --start-from=dae_builtin_binding::expect_id --start-from=dae_builtin_binding::expect_view --start-from=dae_builtin_binding::id_value --start-from=dae_builtin_binding::view_value --start-from=dae_builtin_binding::propagate --include='core::option::*::expect' --include='core::result::*::branch' --dest-file=/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc -- --edition=2024 --crate-name dae_builtin_binding --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs",
+        "initial": {
+          "chunk_id": "e2c351",
+          "wall_time_seconds": 0.404503859,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "mode": "mutant",
+        "command": "timeout 120 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=dae_builtin_binding::expect_plain --start-from=dae_builtin_binding::expect_id --start-from=dae_builtin_binding::expect_view --start-from=dae_builtin_binding::id_value --start-from=dae_builtin_binding::view_value --start-from=dae_builtin_binding::propagate --include='core::option::*::expect' --include='core::result::*::branch' --dest-file=/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/DaeBuiltinBindingSource.llbc -- --edition=2024 --crate-name dae_builtin_binding --crate-type lib /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs",
+        "initial": {
+          "chunk_id": "d2ac3a",
+          "wall_time_seconds": 0.409016817,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      }
+    ],
+    "expectFreshTranslations": [
+      {
+        "mode": "positive",
+        "command": "timeout 120 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc",
+        "initial": {
+          "chunk_id": "cfbd83",
+          "wall_time_seconds": 0.506045264,
+          "exit_code": 0,
+          "original_token_count": 706,
+          "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/14 ⠋\r\rApplied prepasses:  [###-----------------------------------------------]  1/14 ⠙\rApplied prepasses:  [##################################################] 14/14 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/10 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/10 ⠙\r\rTranslated transparent functions:  [#######----------------------------]  2/10 ⠙\r\rTranslated transparent functions:  [#####################--------------]  6/10 ⠙\r\rTranslated transparent functions:  [###################################] 10/10 ⠹\rTranslated transparent functions:  [###################################] 10/10 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [##########------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###########------------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/10 ⠋\r\rPost-processed translated transparent functions:  [##------------------]  1/10 ⠋\rPost-processed translated transparent functions:  [####################] 10/10 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.445168 seconds\n"
+        },
+        "observations": []
+      },
+      {
+        "mode": "rust-mutant",
+        "command": "timeout 120 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/DaeBuiltinBindingSource.llbc",
+        "initial": {
+          "chunk_id": "f609c5",
+          "wall_time_seconds": 0.00000523,
+          "exit_code": 0,
+          "original_token_count": 710,
+          "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/DaeBuiltinBindingSource.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/14 ⠋\r\rApplied prepasses:  [###-----------------------------------------------]  1/14 ⠙\rApplied prepasses:  [##################################################] 14/14 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/10 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/10 ⠙\r\rTranslated transparent functions:  [#######----------------------------]  2/10 ⠙\r\rTranslated transparent functions:  [#####################--------------]  6/10 ⠙\r\rTranslated transparent functions:  [###################################] 10/10 ⠹\rTranslated transparent functions:  [###################################] 10/10 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [##########------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###########------------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/10 ⠋\r\rPost-processed translated transparent functions:  [##------------------]  1/10 ⠋\rPost-processed translated transparent functions:  [####################] 10/10 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.447734 seconds\n"
+        },
+        "observations": []
+      },
+      {
+        "mode": "model-mutant",
+        "command": "timeout 120 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc",
+        "initial": {
+          "chunk_id": "4cc8b2",
+          "wall_time_seconds": 0.497460052,
+          "exit_code": 0,
+          "original_token_count": 710,
+          "output": "\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/14 ⠋\r[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc\n\rApplied prepasses:  [###-----------------------------------------------]  1/14 ⠙\rApplied prepasses:  [##################################################] 14/14 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/10 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/10 ⠙\r\rTranslated transparent functions:  [#######----------------------------]  2/10 ⠙\r\rTranslated transparent functions:  [#####################--------------]  6/10 ⠙\r\rTranslated transparent functions:  [###################################] 10/10 ⠹\rTranslated transparent functions:  [###################################] 10/10 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [##########------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###########------------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/10 ⠋\r\rPost-processed translated transparent functions:  [##------------------]  1/10 ⠋\rPost-processed translated transparent functions:  [####################] 10/10 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.441546 seconds\n"
+        },
+        "observations": []
+      }
+    ],
+    "expectFreshLeanRuns": [
+      {
+        "mode": "positive",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.lean",
+        "initial": {
+          "chunk_id": "a5d774",
+          "wall_time_seconds": 1.00104017,
+          "session_id": 23775,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "9f3878",
+            "wall_time_seconds": 0.877392026,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "positive",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.lean",
+        "initial": {
+          "chunk_id": "1d3d40",
+          "wall_time_seconds": 1.00137556,
+          "session_id": 84747,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "de4259",
+            "wall_time_seconds": 1.46831066,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "positive",
+        "step": "laws",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+        "initial": {
+          "chunk_id": "f1000e",
+          "wall_time_seconds": 1.001325678,
+          "session_id": 44911,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "4c46f8",
+            "wall_time_seconds": 0.00000183,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "rust-mutant",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.lean",
+        "initial": {
+          "chunk_id": "33b7ea",
+          "wall_time_seconds": 1.001384443,
+          "session_id": 57795,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "1ac2f7",
+            "wall_time_seconds": 1.914024094,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "rust-mutant",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.lean",
+        "initial": {
+          "chunk_id": "bb030c",
+          "wall_time_seconds": 1.001252403,
+          "session_id": 10117,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "8fe68e",
+            "wall_time_seconds": 0.877895171,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "rust-mutant",
+        "step": "laws",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+        "initial": {
+          "chunk_id": "05d912",
+          "wall_time_seconds": 0.81783213,
+          "exit_code": 1,
+          "original_token_count": 272,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:10:35: error: Tactic `rfl` failed: The left-hand side\n  dae_builtin_binding.expect_id\n    (dae_builtin_binding.core.option.OptionVariableId.Some { value := value, brand := PUnit.unit })\nis not definitionally equal to the right-hand side\n  Result.ok { value := value, brand := PUnit.unit }\n\ncase mk.unit\nvalue : U32\n⊢ dae_builtin_binding.expect_id\n      (dae_builtin_binding.core.option.OptionVariableId.Some { value := value, brand := PUnit.unit }) =\n    Result.ok { value := value, brand := PUnit.unit }\n'ExpectFailedLaws.expect_id_some' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:34:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ExpectFailedLaws.expect_id_some' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'ExpectFailedLaws.expect_id_some' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+        },
+        "observations": []
+      },
+      {
+        "mode": "model-mutant",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.lean",
+        "initial": {
+          "chunk_id": "23dbad",
+          "wall_time_seconds": 1.001522222,
+          "session_id": 80423,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "bbc498",
+            "wall_time_seconds": 0.869672814,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "model-mutant",
+        "step": "compile",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant -o /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.olean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.lean",
+        "initial": {
+          "chunk_id": "602f0e",
+          "wall_time_seconds": 1.000981224,
+          "session_id": 29363,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "939d13",
+            "wall_time_seconds": 0.004803244,
+            "exit_code": 0,
+            "original_token_count": 0,
+            "output": ""
+          }
+        ]
+      },
+      {
+        "mode": "model-mutant",
+        "step": "laws",
+        "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean",
+        "initial": {
+          "chunk_id": "6b680b",
+          "wall_time_seconds": 1.001281211,
+          "session_id": 34136,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": [
+          {
+            "chunk_id": "0150fc",
+            "wall_time_seconds": 0.00000168,
+            "exit_code": 1,
+            "original_token_count": 460,
+            "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:14:2: error: Tactic `rfl` failed: The left-hand side\n  dae_builtin_binding.expect_id dae_builtin_binding.core.option.OptionVariableId.None\nis not definitionally equal to the right-hand side\n  Result.fail Error.panic\n\n⊢ dae_builtin_binding.expect_id dae_builtin_binding.core.option.OptionVariableId.None = Result.fail Error.panic\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:23:2: error: Tactic `rfl` failed: The left-hand side\n  dae_builtin_binding.expect_view dae_builtin_binding.core.option.OptionVariableView.None\nis not definitionally equal to the right-hand side\n  Result.fail Error.panic\n\n⊢ dae_builtin_binding.expect_view dae_builtin_binding.core.option.OptionVariableView.None = Result.fail Error.panic\n'ExpectFailedLaws.expect_id_none' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:37:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ExpectFailedLaws.expect_id_none' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'ExpectFailedLaws.expect_id_none' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'ExpectFailedLaws.expect_view_none' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean:43:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ExpectFailedLaws.expect_view_none' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'ExpectFailedLaws.expect_view_none' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+          }
+        ]
+      }
+    ],
+    "expectmodelFreshWitness": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/ModelMutationWitness.lean",
+      "initial": {
+        "chunk_id": "8ac20f",
+        "wall_time_seconds": 1.000953664,
+        "session_id": 28129,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "3a290c",
+          "wall_time_seconds": 0.00000224,
+          "exit_code": 0,
+          "original_token_count": 44,
+          "output": "'mutated_id_none_diverges' depends on axioms: [propext, Classical.choice, Quot.sound]\n'mutated_view_none_diverges' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectrustFreshWitness": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/RustMutationWitness.lean",
+      "initial": {
+        "chunk_id": "b78c9e",
+        "wall_time_seconds": 0.705172632,
+        "exit_code": 0,
+        "original_token_count": 20,
+        "output": "'mutated_id_is_nine' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+      },
+      "observations": []
+    },
+    "expectStringLawsR5Run": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "1cf261",
+        "wall_time_seconds": 1.000913763,
+        "session_id": 66944,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "0d5390",
+          "wall_time_seconds": 0.00000202,
+          "exit_code": 0,
+          "original_token_count": 189,
+          "output": "'StringBoundLaws.explicit_symbolic_bound' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.explicit_symbolic_bytes' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.empty_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.ascii_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectStringGuardedLaws": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "ec310c",
+        "wall_time_seconds": 1.000375561,
+        "session_id": 53905,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "c009ac",
+          "wall_time_seconds": 0.00000165,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    "expectNativeAxiomRegression": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "ac1371",
+        "wall_time_seconds": 0.789844714,
+        "exit_code": 1,
+        "original_token_count": 842,
+        "output": "'StringBoundLaws.empty_length' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n empty_length._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:47:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.empty_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.empty_length' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  empty_length._native.decide.ax_1]\n'StringBoundLaws.ascii_length' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n ascii_length._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:50:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.ascii_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.ascii_length' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  ascii_length._native.decide.ax_1]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n two_byte_utf8._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:53:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.two_byte_utf8' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  two_byte_utf8._native.decide.ax_1]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n three_byte_utf8._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:56:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.three_byte_utf8' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  three_byte_utf8._native.decide.ax_1]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n four_byte_utf8._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:59:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.four_byte_utf8' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  four_byte_utf8._native.decide.ax_1]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext,\n Classical.choice,\n Quot.sound,\n mixed_utf8_length._native.decide.ax_1]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:62:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext,\n+  Classical.choice,\n+  Quot.sound,\n+  mixed_utf8_length._native.decide.ax_1]\n"
+      },
+      "observations": []
+    },
+    "expectWrongStringBound": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/WrongStringBound.lean",
+      "initial": {
+        "chunk_id": "19a687",
+        "wall_time_seconds": 1.000677894,
+        "session_id": 15649,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "6adb04",
+          "wall_time_seconds": 0.00000166,
+          "exit_code": 1,
+          "original_token_count": 44,
+          "output": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/WrongStringBound.lean:3:41: error: Tactic `decide` proved that the proposition\n  \"A\".toByteArray.size ≤ 0\nis false\n"
+        }
+      ]
+    },
+    "expectRegistryStringR2Run": {
+      "command": "time -p timeout 120 env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean",
+      "initial": {
+        "chunk_id": "9aed02",
+        "wall_time_seconds": 1.000952001,
+        "session_id": 61246,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "f3b73f",
+          "wall_time_seconds": 0.00000227,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "Starting extraction\nExtraction done\nreal 8.61\nuser 3.11\nsys 3.52\n"
+        }
+      ]
+    },
+    "expectRegistryStringR2Format": {
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --inplace /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml",
+      "initial": {
+        "chunk_id": "925607",
+        "wall_time_seconds": 0.009129756,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    "expectRegistryStringR2Diff": {
+      "chunk_id": "95961e",
+      "wall_time_seconds": 0.00000329,
+      "exit_code": 1,
+      "original_token_count": 141,
+      "output": "--- a/extract/ExtractBuiltinLean.ml\n+++ b/extract/ExtractBuiltinLean.ml\n@@ -1001,6 +1001,8 @@\n     (* file: \"Aeneas/Std/Core/Iter.lean\", line: 639 *)\n     mk_fun \"core::ops::range::{core::ops::range::RangeInclusive<@Idx>}::new\"\n       \"core.ops.range.RangeInclusive.new\";\n+    (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 38 *)\n+    mk_fun \"core::option::expect_failed\" \"core.option.expect_failed\";\n     (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 11 *)\n     mk_fun \"core::option::{core::option::Option<@T>}::expect\"\n       \"core.option.Option.expect\";\n"
+    },
+    "expectFinalChecks": [
+      {
+        "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --edition 2024 --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs",
+        "initial": {
+          "chunk_id": "90ec3a",
+          "wall_time_seconds": 0.00000294,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "command": "git apply --check --whitespace=error --directory=dev/expect-failed-review-rWJ1CL/registry-before/src /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/binding-registry.patch",
+        "initial": {
+          "chunk_id": "ed6e3c",
+          "wall_time_seconds": 0.00000334,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "command": "git apply --check --whitespace=error --directory=dev/expect-failed-review-rWJ1CL/before /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/stdlib.patch",
+        "initial": {
+          "chunk_id": "510782",
+          "wall_time_seconds": 0.0000029,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "command": "git apply --check --whitespace=error --directory=dev/expect-failed-review-rWJ1CL/before /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/string-bound-kernel.patch",
+        "initial": {
+          "chunk_id": "0e21c0",
+          "wall_time_seconds": 0.00000292,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "command": "git apply --check --whitespace=error --directory=infra/verification/lean-pilot/.lake/packages/aeneas /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/extractor-initializer-api.patch",
+        "initial": {
+          "chunk_id": "4fa9e4",
+          "wall_time_seconds": 0.00000455,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      },
+      {
+        "command": "git diff --check",
+        "initial": {
+          "chunk_id": "61130a",
+          "wall_time_seconds": 0.00000282,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        },
+        "observations": []
+      }
+    ],
+    "expectIdentityHashes": [
+      {
+        "command": "sha256sum /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon-driver",
+        "initial": {
+          "chunk_id": "3e7736",
+          "wall_time_seconds": 0.00000619,
+          "exit_code": 0,
+          "original_token_count": 115,
+          "output": "3a041c484f6a6649aa0017d5e1263b5b5314f479356e7bd8829033400c92b636  /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n29d5b284bdc09dbca1851eb87f55e44f9586cbbfb6b6a2fdda18b84a3f34defc  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon\n962d85360637dbf2976443f6c23b51793f687ca285288ab95dcd082fda7d586c  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon-driver\n"
+        },
+        "observations": []
+      },
+      {
+        "command": "sha256sum /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml",
+        "initial": {
+          "chunk_id": "2ae619",
+          "wall_time_seconds": 0.00000399,
+          "exit_code": 0,
+          "original_token_count": 87,
+          "output": "85da36fbecd6c3719e001975761abf4f585c529a15d5e1dd909a1e73a570aadf  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml\n3ceb2c5e72ec80bba0076466bf87d77fa13d94197ca6a547432ea52acf66d5e3  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml\n"
+        },
+        "observations": []
+      },
+      {
+        "command": "sha256sum infra/verification/aeneas/candidates/expect-failed-model/fixture.rs /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/DaeBuiltinBindingSource.llbc",
+        "initial": {
+          "chunk_id": "11bc0e",
+          "wall_time_seconds": 0.00000343,
+          "exit_code": 0,
+          "original_token_count": 155,
+          "output": "b18af907841adfdd9df69043a45b73f301663ca2cb179ee84366e8412444b3eb  infra/verification/aeneas/candidates/expect-failed-model/fixture.rs\n4e7c98eef66a25517401273aff1ae278fa090f0bd857a1a1d7fd18b2c2c9a99b  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/dae-builtin-binding.rs\n4e7ba7650c2781c109d93fd1430e3c51b4829eeeda87fbeb42652e58888c5bab  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh/DaeBuiltinBindingSource.llbc\nd15a6617218a54617240f1f1b22997d659e00cfb470cfa08e749c83f9932d169  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/rust-mutant/DaeBuiltinBindingSource.llbc\n"
+        },
+        "observations": []
+      },
+      {
+        "command": "sha256sum /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/model-mutant/backends/lean/Aeneas/Std/Core/CoreOption.lean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/String.lean /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+        "initial": {
+          "chunk_id": "f39a39",
+          "wall_time_seconds": 0.00000373,
+          "exit_code": 0,
+          "original_token_count": 179,
+          "output": "68edab067dc2efb7246075db1713bc11c75f306585c7982b8500f9a8a9920667  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/model-mutant/backends/lean/Aeneas/Std/Core/CoreOption.lean\ncda2473bbd4ff7979aaf642cfde59f2e526fccd4babb50be7f37a3eafa2f9015  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/Core/CoreOption.lean\ne8e154dd8d759d38f889ce1da994a4eb03eb3829ef4641ad6ae9e82daf5f622e  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/Aeneas/Std/String.lean\n75f3291c63ff602f6e0ec4f9853fcd936108088e131c094c307a91894e182ba4  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean\n"
+        },
+        "observations": []
+      }
+    ],
+    "expectFinalArtifactHashes": {
+      "command": "sha256sum '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/binding-registry.patch' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/stdlib.patch' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/string-bound-kernel.patch' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/extractor-initializer-api.patch' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/package.nix' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean' '/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/translation.json' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/translation.json' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/translation.json' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/before/backends/lean/Aeneas/Std/Core/CoreOption.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/before/backends/lean/Aeneas/Std/String.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/ModelMutationWitness.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/RustMutationWitness.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/WrongStringBound.lean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/String.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core/CoreOption.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core/CoreOption.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std.olean' '/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas.olean'",
+      "initial": {
+        "chunk_id": "2e14b1",
+        "wall_time_seconds": 0.00000323,
+        "exit_code": 0,
+        "original_token_count": 1594,
+        "output": "abb920339583e827d79e67e8218178a9ac8dd7863aaf1e2522ca1f6a89be5344  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/binding-registry.patch\nf57dce2a87d5c427efe9aa56554a00ab4d0855774317f1957760f38b4e4d0357  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/stdlib.patch\n07c378e7d551586280881137a017325fe9254a274f44d8cbc925e2b8a84a2154  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/string-bound-kernel.patch\n925b013b072e7859dbbc323f829e95f4fc8f9aed652a4aa03e9f80266d283d3e  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/extractor-initializer-api.patch\n48e402bb9061ef6f78f9183ee49f0292e8ba27e3d6475656c1590b865b88aff2  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/package.nix\nb18af907841adfdd9df69043a45b73f301663ca2cb179ee84366e8412444b3eb  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/fixture.rs\n596da030de9f96c0b56bfcae2d1f111f6eab269bfb1cd73a90b803d31c4a78ed  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/Laws.lean\n3512441132fdb74c3283555d0fbd7df9fed0948af5478572afb8f4866147ae8d  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean\ne1e7a17d673e951422be2e8d2621e31f9f4cc5d2cab5ffae752b23230a08e44a  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.lean\n9ba1e1c31d28be0ba738ce77e56cb1c11d05012de5be1bf0127287656467de54  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.lean\nee25f5d4f65259bd70896bad4887ad096534fad835f3436855e1b95cbd3d5d6c  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Types.olean\nc4e04994659785914a6b2b569f141bd4121aeaa95e166974211f633e7bf1ea6b  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/Funs.olean\nde9536d445c97f6e646d506319868a0815bfbac71fb3a8913feee834a43f1d38  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/translation.json\n0003310ff5599c542acf2de4f74a24c336e60e60c53c8a91603a660366368c26  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.lean\nab69c525d4d9e4fa3fe4982bb316cf954ff13740a1a27b682c2e365703231006  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.lean\n5556a8e0914cd5b334c3163b56ba2952fad5ad37ce0212b8e0c2a5b8c8524d70  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Types.olean\nb5d292f3090244d23e8568612c264767c42c8d9743661d4ca9cf1b87915465b6  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/Funs.olean\nf533dbe9e6e724c834b2d244d3b4decb7588850931906f303c64caca235b1c8c  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-rust-mutant/DaeBuiltinBindingSource/translation.json\ne1e7a17d673e951422be2e8d2621e31f9f4cc5d2cab5ffae752b23230a08e44a  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.lean\n9ba1e1c31d28be0ba738ce77e56cb1c11d05012de5be1bf0127287656467de54  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.lean\nc691bf11fd6aa7e6db5c0452dfa385de68033d9350ba8b5e0c88149c4c2a26c4  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Types.olean\nb3960f23b6e0661d9f08df0aa12857c53c89bf7a2a6c234205a0afa981ecc49c  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/Funs.olean\nde9536d445c97f6e646d506319868a0815bfbac71fb3a8913feee834a43f1d38  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-model-mutant/DaeBuiltinBindingSource/translation.json\nfddacf14ee8f9a3bc692c2bd3586eb597fb3091c16e82a20c0ce14ea8f91e240  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/before/backends/lean/Aeneas/Std/Core/CoreOption.lean\n1eb8cf964c5dda81f2c4d4b1937122b185178cbd39a80f0dc85f6af0a28b0031  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/before/backends/lean/Aeneas/Std/String.lean\n517b8e4ee7296bc696ca85c74b0976b1c7a14221b34783e6c51aff587b84e4b9  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/ModelMutationWitness.lean\n4111aa7b679da34064745a0ea29af8d8258d40442803c800e2b081a078a98d39  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/RustMutationWitness.lean\nf744f897d6f088f1518e399a08c02c4697711697d5d7e30a19919bfa3681fd65  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/WrongStringBound.lean\nd8f34d8ea70d8707a96ce342c6d247223a614f5e401ed94b7b932c6e5153a231  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/String.olean\n1543534da5c9e6e5335297d50152043b815733a0c95fa29c05518bea77f37ece  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core/CoreOption.olean\n242d73750baba264c9806c5bc30e6d57f4babdb4ff91f9fc9df7b642fb44339e  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std/Core.olean\n5ba33f29a876f6b72fc330901e88251e1767d882008934aa97508fe38e2d6a29  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas/Std.olean\n47be74ee8d8d14c23a5a36c01be7e27b165f9351cfe463b8fdc6494b63f83eeb  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after/Aeneas.olean\n191db41bbb397b983eadfb59c5803760a6ec91631f42ddce252f2e92cb953aa0  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core/CoreOption.olean\n242d73750baba264c9806c5bc30e6d57f4babdb4ff91f9fc9df7b642fb44339e  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std/Core.olean\n5ba33f29a876f6b72fc330901e88251e1767d882008934aa97508fe38e2d6a29  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas/Std.olean\n47be74ee8d8d14c23a5a36c01be7e27b165f9351cfe463b8fdc6494b63f83eeb  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-mutant/Aeneas.olean\n"
+      },
+      "observations": []
+    },
+    "unitDerivative2020": {
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "initial": {
+        "chunk_id": "5bbe76",
+        "wall_time_seconds": 1.001487286,
+        "session_id": 32155,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "2f7f9c",
+          "wall_time_seconds": 0.00000229,
+          "exit_code": 0,
+          "original_token_count": 185,
+          "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 1.13s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.10s\n\n"
+        }
+      ]
+    },
+    "expectStringLawsRun": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "4b4868",
+        "wall_time_seconds": 1.00180484,
+        "session_id": 10504,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "9d7d5f",
+          "wall_time_seconds": 0.00000158,
+          "exit_code": 1,
+          "original_token_count": 1372,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:7:71: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) ↑(toStr \"\" ⋯) = []\nbecause its `Decidable` instance\n  (List.map (fun b => ↑b) ↑(toStr \"\" ⋯)).instDecidableEqNil\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `List.instDecidableEqNil`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) ↑(toStr \"\" ⋯) with\n  | [] => isTrue ⋯\n  | head :: tail => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:8:74: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) ↑(toStr \"A\" ⋯) = [65]\nbecause its `Decidable` instance\n  instDecidableEqList (List.map (fun b => ↑b) ↑(toStr \"A\" ⋯)) [65]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) ↑(toStr \"A\" ⋯) with\n  | [] =>\n    match [65] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [65] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:9:82: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) ↑(toStr \"é\" ⋯) = [195, 169]\nbecause its `Decidable` instance\n  instDecidableEqList (List.map (fun b => ↑b) ↑(toStr \"é\" ⋯)) [195, 169]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) ↑(toStr \"é\" ⋯) with\n  | [] =>\n    match [195, 169] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [195, 169] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:10:89: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) ↑(toStr \"€\" ⋯) = [226, 130, 172]\nbecause its `Decidable` instance\n  instDecidableEqList (List.map (fun b => ↑b) ↑(toStr \"€\" ⋯)) [226, 130, 172]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) ↑(toStr \"€\" ⋯) with\n  | [] =>\n    match [226, 130, 172] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [226, 130, 172] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:11:93: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) ↑(toStr \"😀\" ⋯) = [240, 159, 152, 128]\nbecause its `Decidable` instance\n  instDecidableEqList (List.map (fun b => ↑b) ↑(toStr \"😀\" ⋯)) [240, 159, 152, 128]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) ↑(toStr \"😀\" ⋯) with\n  | [] =>\n    match [240, 159, 152, 128] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [240, 159, 152, 128] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:65: error: Tactic `decide` failed for proposition\n  (↑(toStr \"Aé€😀\" ⋯)).length = 10\nbecause its `Decidable` instance\n  instDecidableEqNat (↑(toStr \"Aé€😀\" ⋯)).length 10\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instances `instDecidableEqNat` and `Nat.decEq`, reduction got stuck at the `Decidable` instance\n  match h : (↑(toStr \"Aé€😀\" ⋯)).length.beq 10 with\n  | true => isTrue ⋯\n  | false => isFalse ⋯\n'StringBoundLaws.empty_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.ascii_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.explicit_symbolic_bound' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectStringLawsR2Run": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "89db02",
+        "wall_time_seconds": 1.000783235,
+        "session_id": 33246,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "95cc93",
+          "wall_time_seconds": 0.00000161,
+          "exit_code": 1,
+          "original_token_count": 1676,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:9:2: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"\".toByteArray.toList) = []\nbecause its `Decidable` instance\n  (List.map (fun b => ↑b)\n      (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"\".toByteArray.toList)).instDecidableEqNil\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `List.instDecidableEqNil`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"\".toByteArray.toList) with\n  | [] => isTrue ⋯\n  | head :: tail => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:2: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"A\".toByteArray.toList) = [65]\nbecause its `Decidable` instance\n  instDecidableEqList\n    (List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"A\".toByteArray.toList)) [65]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"A\".toByteArray.toList) with\n  | [] =>\n    match [65] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [65] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:15:2: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"é\".toByteArray.toList) = [195, 169]\nbecause its `Decidable` instance\n  instDecidableEqList\n    (List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"é\".toByteArray.toList)) [195, 169]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"é\".toByteArray.toList) with\n  | [] =>\n    match [195, 169] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [195, 169] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:18:2: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"€\".toByteArray.toList) =\n    [226, 130, 172]\nbecause its `Decidable` instance\n  instDecidableEqList\n    (List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"€\".toByteArray.toList))\n    [226, 130, 172]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"€\".toByteArray.toList) with\n  | [] =>\n    match [226, 130, 172] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [226, 130, 172] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:21:2: error: Tactic `decide` failed for proposition\n  List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"😀\".toByteArray.toList) =\n    [240, 159, 152, 128]\nbecause its `Decidable` instance\n  instDecidableEqList\n    (List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"😀\".toByteArray.toList))\n    [240, 159, 152, 128]\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instance `instDecidableEqList`, reduction got stuck at the `Decidable` instance\n  match List.map (fun b => ↑b) (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"😀\".toByteArray.toList) with\n  | [] =>\n    match [240, 159, 152, 128] with\n    | [] => isTrue ⋯\n    | head :: tail => isFalse ⋯\n  | a :: «as» =>\n    match [240, 159, 152, 128] with\n    | [] => isFalse ⋯\n    | b :: bs =>\n      match decEq a b with\n      | isTrue hab =>\n        match «as».hasDecEq bs with\n        | isTrue habs => isTrue ⋯\n        | isFalse nabs => isFalse ⋯\n      | isFalse nab => isFalse ⋯\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:24:2: error: Tactic `decide` failed for proposition\n  (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"Aé€😀\".toByteArray.toList).length = 10\nbecause its `Decidable` instance\n  instDecidableEqNat (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"Aé€😀\".toByteArray.toList).length 10\ndid not reduce to `isTrue` or `isFalse`.\n\nAfter unfolding the instances `instDecidableEqNat` and `Nat.decEq`, reduction got stuck at the `Decidable` instance\n  match h : (List.map (fun x => { toFin := ⟨x.toNat, ⋯⟩ }#uscalar) \"Aé€😀\".toByteArray.toList).length.beq 10 with\n  | true => isTrue ⋯\n  | false => isFalse ⋯\n'StringBoundLaws.empty_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.ascii_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.explicit_symbolic_bound' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectStringLawsR3Run": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "eda9d4",
+        "wall_time_seconds": 1.001230514,
+        "session_id": 31917,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "b015ed",
+          "wall_time_seconds": 0.00000173,
+          "exit_code": 1,
+          "original_token_count": 2097,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:8:76: error: 'decide' tactic does nothing\n\nNote: This linter can be disabled with `set_option linter.unusedTactic false`\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:10:8: error: Possibly looping simp theorem: `toStr.eq_1`\n\nNote: Possibly caused by: `UScalarTy.U8_numBits_eq`, `Nat.reducePow`, `Fin.mk_uInt8ToNat`, `BitVec.ofFin_uInt8ToFin`, `ByteArray.toList`, `ByteArray.toList.loop`, `String.size_toByteArray`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:10:31: error: Possibly looping simp theorem: `ByteArray.toList.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:10:49: error: Possibly looping simp theorem: `ByteArray.toList.loop.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:10:2: error: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:8: error: Possibly looping simp theorem: `toStr.eq_1`\n\nNote: Possibly caused by: `UScalarTy.U8_numBits_eq`, `Nat.reducePow`, `Fin.mk_uInt8ToNat`, `BitVec.ofFin_uInt8ToFin`, `ByteArray.toList`, `ByteArray.toList.loop`, `String.size_toByteArray`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:31: error: Possibly looping simp theorem: `ByteArray.toList.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:49: error: Possibly looping simp theorem: `ByteArray.toList.loop.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:2: error: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:14:8: error: Possibly looping simp theorem: `toStr.eq_1`\n\nNote: Possibly caused by: `UScalarTy.U8_numBits_eq`, `Nat.reducePow`, `Fin.mk_uInt8ToNat`, `BitVec.ofFin_uInt8ToFin`, `ByteArray.toList`, `ByteArray.toList.loop`, `String.size_toByteArray`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:14:31: error: Possibly looping simp theorem: `ByteArray.toList.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:14:49: error: Possibly looping simp theorem: `ByteArray.toList.loop.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:14:2: error: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:16:8: error: Possibly looping simp theorem: `toStr.eq_1`\n\nNote: Possibly caused by: `UScalarTy.U8_numBits_eq`, `Nat.reducePow`, `Fin.mk_uInt8ToNat`, `BitVec.ofFin_uInt8ToFin`, `ByteArray.toList`, `ByteArray.toList.loop`, `String.size_toByteArray`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:16:31: error: Possibly looping simp theorem: `ByteArray.toList.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:16:49: error: Possibly looping simp theorem: `ByteArray.toList.loop.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:16:2: error: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:18:8: error: Possibly looping simp theorem: `toStr.eq_1`\n\nNote: Possibly caused by: `UScalarTy.U8_numBits_eq`, `Nat.reducePow`, `Fin.mk_uInt8ToNat`, `BitVec.ofFin_uInt8ToFin`, `ByteArray.toList`, `ByteArray.toList.loop`, `String.size_toByteArray`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:18:31: error: Possibly looping simp theorem: `ByteArray.toList.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`, `zero_add`, and `Nat.reduceAdd`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:18:49: error: Possibly looping simp theorem: `ByteArray.toList.loop.eq_1`\n\nNote: Possibly caused by: `ByteArray.toList.loop`\n\nHint: You can disable a simp theorem from the default simp set by passing `- theoremName` to `simp`.\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:18:2: error: Tactic `simp` failed with a nested error:\nmaximum recursion depth has been reached\nuse `set_option maxRecDepth <num>` to increase limit\nuse `set_option diagnostics true` to get diagnostic information\n'StringBoundLaws.empty_bytes' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.ascii_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.explicit_symbolic_bound' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    "expectStringLawsR4Run": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/generated:/home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/stdlib-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean",
+      "initial": {
+        "chunk_id": "828515",
+        "wall_time_seconds": 1.001712742,
+        "session_id": 62108,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "c6bb83",
+          "wall_time_seconds": 0.00000268,
+          "exit_code": 1,
+          "original_token_count": 253,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/StringBoundLaws.lean:12:83: error: unsolved goals\ns : String\nh : s.toByteArray.size ≤ U32.max\n⊢ ∀ a ∈ s.toByteArray.toList, ↑(a.toBitVec#uscalar) = a.toNat\n'StringBoundLaws.explicit_symbolic_bound' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.explicit_symbolic_bytes' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'StringBoundLaws.empty_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.ascii_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.two_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.three_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.four_byte_utf8' depends on axioms: [propext, Classical.choice, Quot.sound]\n'StringBoundLaws.mixed_utf8_length' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    }
+  }
+}

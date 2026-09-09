@@ -1,0 +1,306 @@
+diff --git a/Translate.ml b/Translate.ml
+index a7ce246..c493cd3 100644
+--- a/Translate.ml
++++ b/Translate.ml
+@@ -221,6 +221,7 @@ let translate_function_to_pure_aux (trans_ctx : trans_ctx)
+       loop_ids_map;
+       mk_return = None;
+       mk_panic = None;
++      expected_result_ty = None;
+       mk_continue = None;
+       mk_break = None;
+       mut_borrow_to_consumed = BorrowId.Map.empty;
+diff --git a/extract/Extract.ml b/extract/Extract.ml
+index a8a479b..971c9f4 100644
+--- a/extract/Extract.ml
++++ b/extract/Extract.ml
+@@ -1527,6 +1527,12 @@ and extract_Switch (span : Meta.span) (ctx : extraction_ctx) (fmt : F.formatter)
+ 
+       extract_branch true e_then;
+       extract_branch false e_else
++  | Match [] ->
++      if backend () <> Lean then
++        [%craise] span "Never elimination is only supported by the Lean backend";
++      F.pp_print_string fmt "nomatch";
++      F.pp_print_space fmt ();
++      extract_texpr span ctx fmt ~inside:true ~inside_do:false scrut
+   | Match branches -> (
+       (* Open a box for the [match ... with] *)
+       F.pp_open_hovbox fmt ctx.indent_incr;
+diff --git a/interp/InterpStatements.ml b/interp/InterpStatements.ml
+index 3932a24..b103aa5 100644
+--- a/interp/InterpStatements.ml
++++ b/interp/InterpStatements.ml
+@@ -1551,7 +1551,13 @@ and eval_function_call_symbolic_from_inst_sig (config : config)
+    * by giving {!Unit} to the continuation, because we place us in the case
+    * where we haven't panicked. Of course, the translation needs to take the
+    * panic case into account... *)
+-  ([ (ctx, Unit) ], cc_singleton __FILE__ __LINE__ span cc)
++  if inst_sg.output = TNever then
++    (* Retain the call and all its effects. Its successful result is
++       uninhabited, so no execution context continues past it. *)
++    ( [],
++      cf_empty __FILE__ __LINE__ span
++        (cc (SA.Expansion (dest_place, ret_spc, SA.ExpandAdt []))) )
++  else ([ (ctx, Unit) ], cc_singleton __FILE__ __LINE__ span cc)
+ 
+ (** Evaluate a statement seen as a function body *)
+ and eval_function_body (config : config) (body : block) : stl_cm_fun =
+diff --git a/pure/PureMicroPassesGeneral.ml b/pure/PureMicroPassesGeneral.ml
+index 2eb3251..10a6a8e 100644
+--- a/pure/PureMicroPassesGeneral.ml
++++ b/pure/PureMicroPassesGeneral.ml
+@@ -1026,6 +1026,7 @@ let simplify_let_tuple span (ctx : ctx) (monadic : bool) (pat : tpat)
+       | Lambda (pat, inner) -> mk_opened_lambda span pat (update inner)
+       | Let (monadic, pat, bound, next) ->
+           mk_opened_let monadic pat bound (update next)
++      | Switch (_, Match []) -> { e with ty = new_ty }
+       | Switch (scrut, body) ->
+           let switch =
+             match body with
+@@ -3081,6 +3082,8 @@ let add_fuel_one (ctx : ctx) (loops : fun_decl LoopId.Map.t) (def : fun_decl) :
+         let e1 = update fuel e1 in
+         let e2 = update fuel e2 in
+         { e = Switch (scrut, If (e1, e2)); ty = e1.ty }
++    | Switch (scrut, Match []) ->
++        { e with e = Switch (update None scrut, Match []) }
+     | Switch (scrut, Match branches) ->
+         (* The scrutinee must be pure *)
+         let scrut = update None scrut in
+diff --git a/pure/PureMicroPassesLoops.ml b/pure/PureMicroPassesLoops.ml
+index c84e158..89c9cba 100644
+--- a/pure/PureMicroPassesLoops.ml
++++ b/pure/PureMicroPassesLoops.ml
+@@ -54,6 +54,13 @@ let update_rec_continue_breaks (ctx : ctx) (def : fun_decl) (loop_func : texpr)
+         let bound = update bound in
+         let next = update next in
+         mk_opened_let monadic pat bound next
++    | Switch (_, Match []) | EError _ ->
++        let ty =
++          match try_unwrap_loop_result e.ty with
++          | None -> e.ty
++          | Some (_, break) -> mk_result_ty break
++        in
++        { e with ty }
+     | Switch (scrut, body) ->
+         let scrut = update scrut in
+         let body, ty =
+@@ -83,13 +90,6 @@ let update_rec_continue_breaks (ctx : ctx) (def : fun_decl) (loop_func : texpr)
+         let updates = List.map (fun (fid, e) -> (fid, update e)) updates in
+         { e with e = StructUpdate { struct_id; init; updates } }
+     | Meta (m, e) -> mk_emeta m (update e)
+-    | EError _ ->
+-        let ty =
+-          match try_unwrap_loop_result e.ty with
+-          | None -> e.ty
+-          | Some (_, break) -> mk_result_ty break
+-        in
+-        { e with ty }
+   in
+   update e
+ 
+@@ -133,6 +133,8 @@ let update_non_rec_continue_breaks (ctx : ctx) (def : fun_decl) (input_ty : ty)
+         let bound = update bound in
+         let next = update next in
+         mk_opened_let monadic pat bound next
++    | Switch (_, Match []) ->
++        { e with ty = mk_result_ty (mk_loop_result_ty input_ty output_ty) }
+     | Switch (scrut, body) ->
+         let scrut = update scrut in
+         let body, ty =
+@@ -537,6 +539,8 @@ let simplify_loop_output_conts (ctx : ctx) (def : fun_decl) =
+           let _, pat, next = open_binder ctx span pat next in
+           let next = update next in
+           mk_closed_let span monadic pat bound next
++      | Switch (_, Match []) ->
++          { e with ty = mk_loop_result_ty continue_ty break_ty }
+       | Switch (scrut, switch) ->
+           (* No need to update the scrutinee *)
+           let switch =
+@@ -594,6 +598,7 @@ let simplify_loop_output_conts (ctx : ctx) (def : fun_decl) =
+               let e0 = update vars e0 in
+               let e1 = update vars e1 in
+               (If (e0, e1), e0.ty)
++          | Match [] -> (Match [], e.ty)
+           | Match branches ->
+               let branches =
+                 List.map
+@@ -1153,6 +1158,8 @@ let filter_loop_useless_inputs_outputs_update_continue_break (span : Meta.span)
+         let pat, next = opt_open_binder pat next in
+         let next = update next in
+         mk_let monadic pat bound next
++    | Switch (_, Match []) ->
++        { e with ty = mk_loop_result_ty continue_ty break_ty }
+     | Switch (scrut, switch) ->
+         (* No need to update the scrutinee *)
+         let switch =
+@@ -1715,6 +1722,7 @@ let filter_loop_useless_inputs_outputs (ctx : ctx)
+         | _ ->
+             (* No need to update the bound expression *)
+             mk_closed_let span monadic pat bound next)
++    | Switch (_, Match []) -> e
+     | Switch (scrut, switch) ->
+         (* No need to update the scrutinee *)
+         let switch =
+@@ -1833,6 +1841,14 @@ let reorder_loop_outputs (ctx : ctx) (def : fun_decl) =
+           let _, pat, next = open_binder ctx span pat next in
+           let next = update next in
+           mk_closed_let span monadic pat bound next
++      | Switch (_, Match []) ->
++          let break_ty =
++            mk_simpl_tuple_ty
++              (List.map
++                 (fun i -> Collections.List.nth loop.output_tys i)
++                 output_indices)
++          in
++          { e with ty = mk_loop_result_ty continue_ty break_ty }
+       | Switch (scrut, switch) ->
+           (* No need to update the scrutinee *)
+           let switch =
+@@ -2229,6 +2245,7 @@ let reorder_loop_outputs (ctx : ctx) (def : fun_decl) =
+             (* No need to update the bound expression *)
+             let next = explore next in
+             mk_closed_let span monadic pat bound next)
++    | Switch (_, Match []) -> e
+     | Switch (scrut, switch) ->
+         (* No need to update the scrutinee *)
+         let switch =
+@@ -2603,6 +2620,8 @@ let loops_to_recursive_update_loop_body (ctx : ctx) (def : fun_decl)
+         (* No need to update the bound expression *)
+         let next = update next in
+         mk_opened_let monadic pat bound next
++    | Switch (_, Match []) ->
++        { e with ty = mk_loop_result_ty continue_ty break_ty }
+     | Switch (scrut, switch) ->
+         (* No need to update the scrutinee *)
+         let switch =
+diff --git a/pure/PureTypeCheck.ml b/pure/PureTypeCheck.ml
+index e9a07a4..403fa63 100644
+--- a/pure/PureTypeCheck.ml
++++ b/pure/PureTypeCheck.ml
+@@ -257,6 +257,7 @@ let rec check_texpr (span : Meta.span) (ctx : tc_ctx) (e : texpr) : unit =
+           check_texpr span ctx e_then;
+           check_texpr span ctx e_else
+       | Match branches ->
++          if branches = [] then [%pure_type_check] span (scrut.ty = TNever);
+           let check_branch (br : match_branch) : unit =
+             [%pure_type_check] span (br.pat.ty = scrut.ty);
+             let ctx = check_tpat span ctx br.pat in
+diff --git a/symbolic/SymbolicToPure.ml b/symbolic/SymbolicToPure.ml
+index edd3e39..45ae575 100644
+--- a/symbolic/SymbolicToPure.ml
++++ b/symbolic/SymbolicToPure.ml
+@@ -46,7 +46,14 @@ let translate_fun_decl_body (ctx : bs_ctx) (signature : fun_sig) (body : S.expr)
+     let output = mk_simpl_tuple_ty tys in
+     mk_output output
+   in
+-  let ctx = { ctx with mk_return = Some mk_return; mk_panic = Some mk_panic } in
++  let ctx =
++    {
++      ctx with
++      mk_return = Some mk_return;
++      mk_panic = Some mk_panic;
++      expected_result_ty = Some signature.output;
++    }
++  in
+   let body = translate_expr body ctx in
+   (* Sanity check *)
+   type_check_texpr ctx body;
+diff --git a/symbolic/SymbolicToPureCore.ml b/symbolic/SymbolicToPureCore.ml
+index 60fbf8a..170437d 100644
+--- a/symbolic/SymbolicToPureCore.ml
++++ b/symbolic/SymbolicToPureCore.ml
+@@ -228,6 +228,9 @@ type bs_ctx = {
+           - [None] for a backward computation
+ 
+           We initialize this at [None]. *)
++  expected_result_ty : ty option;
++      (** The expected type of the current function, backward function, loop, or
++          join body. Absent only before entering an expression scope. *)
+   mk_panic : texpr option;
+       (** Small helper: translate a [fail] expression.
+ 
+diff --git a/symbolic/SymbolicToPureExpressions.ml b/symbolic/SymbolicToPureExpressions.ml
+index e4f85ed..0a760dd 100644
+--- a/symbolic/SymbolicToPureExpressions.ml
++++ b/symbolic/SymbolicToPureExpressions.ml
+@@ -1393,7 +1393,18 @@ and translate_expansion (p : S.mplace option) (sv : V.symbolic_value)
+   | ExpandAdt branches -> (
+       (* We don't do the same thing if there is a branching or not *)
+       match branches with
+-      | [] -> [%craise] ctx.span "Unreachable"
++      | [] ->
++          [%cassert] ctx.span (scrutinee.ty = TNever)
++            "Empty symbolic elimination requires Never";
++          let ty =
++            match ctx.expected_result_ty with
++            | Some ty -> ty
++            | None -> [%craise] ctx.span "Missing expression result type"
++          in
++          {
++            e = Switch (mk_opt_mplace_texpr scrutinee_mplace scrutinee, Match []);
++            ty;
++          }
+       | [ (variant_id, svl, branch) ]
+         when not
+                (TypesUtils.ty_is_custom_adt sv.V.sv_ty
+@@ -1701,23 +1712,19 @@ and translate_forward_end (return_value : (C.eval_ctx * V.tvalue) option)
+               if effect_info.can_fail then mk_result_ok_texpr ctx.span output
+               else output
+             in
++            let output_ty =
++              mk_simpl_tuple_ty
++                (List.map
++                   (fun (_, tys) ->
++                     mk_simpl_tuple_ty (List.map (fun (_, ty) -> ty) tys))
++                   back_sg.outputs)
++            in
++            let expected_result_ty =
++              if effect_info.can_fail then mk_result_ty output_ty else output_ty
++            in
+             let mk_panic =
+-              (* TODO: we should use a [Fail] function *)
+-              let mk_output output_ty =
+-                mk_result_fail_texpr_with_error_id ctx.span error_failure_id
+-                  output_ty
+-              in
+-              let outputs =
+-                (RegionGroupId.Map.find bid ctx.sg.fun_ty.back_sg).outputs
+-              in
+-              let output =
+-                mk_simpl_tuple_ty
+-                  (List.map
+-                     (fun (_, tys) ->
+-                       mk_simpl_tuple_ty (List.map (fun (_, ty) -> ty) tys))
+-                     outputs)
+-              in
+-              mk_output output
++              mk_result_fail_texpr_with_error_id ctx.span error_failure_id
++                output_ty
+             in
+             let ctx =
+               {
+@@ -1728,6 +1735,7 @@ and translate_forward_end (return_value : (C.eval_ctx * V.tvalue) option)
+                     ctx.backward_inputs;
+                 mk_return = Some mk_return;
+                 mk_panic = Some mk_panic;
++                expected_result_ty = Some expected_result_ty;
+               }
+             in
+             (ctx, backward_inputs)
+@@ -1972,6 +1980,7 @@ and translate_loop (loop : S.loop) (ctx0 : bs_ctx) : texpr =
+         mk_return = None;
+         mk_continue = Some mk_continue;
+         mk_break = Some mk_break;
++        expected_result_ty = Some (mk_loop_result_ty continue_ty break_ty);
+       }
+     in
+ 
+@@ -2115,6 +2124,7 @@ and translate_let (ctx0 : bs_ctx) (lete : S.let_expr) : texpr =
+         mk_return = None;
+         mk_continue = None;
+         mk_break = None;
++        expected_result_ty = Some (mk_result_ty output_ty);
+       }
+     in
+ 

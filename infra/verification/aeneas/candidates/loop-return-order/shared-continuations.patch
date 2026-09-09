@@ -1,0 +1,70 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -586,12 +586,43 @@
+-                let rec decompose_after (after : statement list) :
+-                    statement list =
+-                  match after with
+-                  | [] ->
+-                      [%craise] span
+-                        "Early returns inside of loops are not supported yet"
+-                  | st :: after -> (
+-                      match st.kind with
+-                      | Return -> [ { st with kind = Break 0 } ]
+-                      | Abort _ -> [ st ]
+-                      | _ -> st :: decompose_after after)
+-                in
++                let decompose_after (after : statement list) : statement list =
++                  (* Keep a shared continuation outside switches. A branch may
++                     fall through, but the complete continuation must end in
++                     return or abort on every reachable path. *)
++                  let rec rewrite (statements : statement list) :
++                      statement list * bool =
++                    match statements with
++                    | [] -> ([], true)
++                    | st :: tail -> (
++                        match st.kind with
++                        | Return -> ([ { st with kind = Break 0 } ], false)
++                        | Abort _ -> ([ st ], false)
++                        | Switch (data, branches) ->
++                            let branches =
++                              List.map
++                                (fun b ->
++                                  let statements, falls_through =
++                                    rewrite b.statements
++                                  in
++                                  ({ b with statements }, falls_through))
++                                branches
++                            in
++                            let falls_through =
++                              List.exists (fun (_, falls) -> falls) branches
++                            in
++                            let st =
++                              { st with kind =
++                                  Switch (data, List.map fst branches) }
++                            in
++                            if falls_through then
++                              let tail, falls_through = rewrite tail in
++                              (st :: tail, falls_through)
++                            else ([ st ], false)
++                        | _ ->
++                            let tail, falls_through = rewrite tail in
++                            (st :: tail, falls_through))
++                  in
++                  let statements, falls_through = rewrite after in
++                  if falls_through then
++                    [%craise] span
++                      "Early returns inside of loops are not supported yet";
++                  statements
++                in
+@@ -2370,8 +2401,10 @@
+       ("erase_body_regions", erase_body_regions);
+       ("remove_unreachable", remove_unreachable);
+       ("remove_dead_drop_switches", remove_dead_drop_switches);
+-      ("update_loop", update_loops);
++      (* Expose supported shared return continuations inside branches before
++         normalizing early returns from loops nested in those branches. *)
+       ("remove_useless_joins", remove_useless_joins);
++      ("update_loop", update_loops);
+       ( "remove_shallow_borrows_storage_live_dead",
+         remove_shallow_borrows_storage_live_dead );
+       ("decompose_str_borrows", decompose_str_borrows);

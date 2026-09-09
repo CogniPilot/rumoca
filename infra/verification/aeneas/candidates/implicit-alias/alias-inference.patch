@@ -1,0 +1,280 @@
+--- a/pure/PureUtils.ml
++++ b/pure/PureUtils.ml
+@@ -1751,12 +1751,13 @@
+     }
+   else explicit
+ 
+-let mk_visited_params_visitor () =
++let mk_visited_params_visitor (normalize_ty : ty -> ty) =
+   let tys = ref Pure.TypeVarId.Set.empty in
+   let cgs = ref Pure.ConstGenericVarId.Set.empty in
+   let visitor =
+     object
+-      inherit [_] Pure.iter_type_decl
++      inherit [_] Pure.iter_type_decl as super
++      method! visit_ty env ty = super#visit_ty env (normalize_ty ty)
+       method! visit_type_var_id _ id = tys := Pure.TypeVarId.Set.add id !tys
+ 
+       method! visit_const_generic_var_id _ id =
+@@ -1767,7 +1768,7 @@
+ 
+ (** Compute which input parameters should be implicit or explicit.
+ 
+-    The way we do it is simple: if a parameter appears in one of the inputs,
++    After expanding emitted type aliases, if a parameter appears in an input,
+     then it should be implicit. For instance, the type parameter of [Vec::get]
+     should be implicit, while the type parameter of [Vec::new] should be
+     explicit (it only appears in the output). Also note that here we consider
+@@ -1787,9 +1788,11 @@
+     For now, we only filter trait clauses of the shape [A : Allocator], while
+     filtering the corresponding argument at the same time, so this should not be
+     a problem, but it may be in the future. *)
+-let compute_explicit_info (generics : Pure.generic_params) (input_tys : ty list)
+-    : explicit_info =
+-  let visitor, implicit_tys, implicit_cgs = mk_visited_params_visitor () in
++let compute_explicit_info (normalize_ty : ty -> ty)
++    (generics : Pure.generic_params) (input_tys : ty list) : explicit_info =
++  let visitor, implicit_tys, implicit_cgs =
++    mk_visited_params_visitor normalize_ty
++  in
+   List.iter (visitor#visit_trait_param ()) generics.trait_clauses;
+   List.iter (visitor#visit_ty ()) input_tys;
+   let make_explicit_ty (v : type_param) : Pure.explicit =
+@@ -1812,9 +1815,9 @@
+     the trait refs are provided.
+ 
+     This is similar to [compute_explicit_info]. *)
+-let compute_known_info (explicit : explicit_info)
++let compute_known_info (normalize_ty : ty -> ty) (explicit : explicit_info)
+     (generics : Pure.generic_params) : known_info =
+-  let visitor, known_tys, known_cgs = mk_visited_params_visitor () in
++  let visitor, known_tys, known_cgs = mk_visited_params_visitor normalize_ty in
+   List.iter (visitor#visit_trait_param ()) generics.trait_clauses;
+   let make_known_ty ((e, v) : explicit * type_param) : Pure.known =
+     if e = Explicit || Pure.TypeVarId.Set.mem v.index !known_tys then Known
+--- a/symbolic/SymbolicToPureTypes.ml
++++ b/symbolic/SymbolicToPureTypes.ml
+@@ -251,6 +251,44 @@
+ let translate_fields (span : Meta.span) (fl : T.field list) : field list =
+   List.map (translate_field span) fl
+ 
++(** Follow only the transparent tuple aliases selected by type analysis. Their
++    generic parameters are inferable through the instantiated fields, not
++    through the alias name. Nominal and builtin constructors stay intact.
++    Recursive declarations are never selected as tuple aliases. *)
++let rec normalize_inference_ty (ctx : C.decls_ctx) (ty : ty) : ty =
++  match ty with
++  | TAdt (TAdtId id, args)
++    when TypesUtils.type_decl_from_decl_id_is_tuple_struct
++           ctx.type_ctx.type_infos id ->
++      let def = TypeDeclId.Map.find id ctx.type_ctx.type_decls in
++      begin
++        match
++          match_name_find_opt ctx def.item_meta.name
++            (ExtractBuiltin.builtin_types_map ())
++        with
++        | Some _ -> ty
++        | None ->
++            let span = def.item_meta.span in
++            let params, _ = translate_generic_params (Some span) def.generics in
++            let subst = make_subst_from_generics params args in
++            let fields =
++              match def.kind with
++              | T.Struct fields -> translate_fields span fields
++              | _ -> [%internal_error] span
++            in
++            let fields =
++              List.map (fun f -> ty_substitute subst f.field_ty) fields
++            in
++            normalize_inference_ty ctx (mk_simpl_tuple_ty fields)
++      end
++  | _ -> ty
++
++let compute_explicit_info (ctx : C.decls_ctx) =
++  PureUtils.compute_explicit_info (normalize_inference_ty ctx)
++
++let compute_known_info (ctx : C.decls_ctx) =
++  PureUtils.compute_known_info (normalize_inference_ty ctx)
++
+ let translate_variant (span : Meta.span) (v : T.variant) : variant =
+   let variant_name = v.variant_name in
+   let fields = translate_fields span v.fields in
+@@ -302,7 +340,7 @@
+     let ctx = PrintPure.decls_ctx_to_fmt_env ctx in
+     "translated generic_params:\n"
+     ^ PrintPure.generic_params_to_string ctx generics];
+-  let explicit_info = compute_explicit_info generics [] in
++  let explicit_info = compute_explicit_info ctx generics [] in
+   [%ldebug "explicit info:\n" ^ show_explicit_info explicit_info];
+   let kind = translate_type_decl_kind span def.T.kind in
+   let item_meta = def.item_meta in
+@@ -1047,11 +1085,11 @@
+   let dsg =
+     { generics; llbc_generics = sg.item_binder_params; preds; fun_ty }
+   in
+-  translate_fun_sigs_from_decomposed dsg
++  translate_fun_sigs_from_decomposed decls_ctx dsg
+ 
+-and translate_fun_sigs_from_decomposed (dsg : Pure.decomposed_fun_sig) :
+-    fun_sigs =
+-  let sg = translate_fun_sig_from_decomposed dsg in
++and translate_fun_sigs_from_decomposed (decls_ctx : C.decls_ctx)
++    (dsg : Pure.decomposed_fun_sig) : fun_sigs =
++  let sg = translate_fun_sig_from_decomposed decls_ctx dsg in
+   let ty = mk_arrows sg.inputs sg.output in
+   { dsg; sg; ty }
+ 
+@@ -1107,9 +1145,9 @@
+   let inputs = List.map (ty_substitute subst) flat_sig.inputs in
+   let output = ty_substitute subst flat_sig.output in
+ 
+-  let explicit_info = compute_explicit_info method_generics inputs in
++  let explicit_info = compute_explicit_info decls_ctx method_generics inputs in
+   let known_from_trait_refs =
+-    compute_known_info explicit_info method_generics
++    compute_known_info decls_ctx explicit_info method_generics
+   in
+   {
+     flat_sig with
+@@ -1203,8 +1241,8 @@
+   in
+   mk_output_ty_from_effect_info effect_info output
+ 
+-and translate_fun_sig_from_decomposed (dsg : Pure.decomposed_fun_sig) : fun_sig
+-    =
++and translate_fun_sig_from_decomposed (decls_ctx : C.decls_ctx)
++    (dsg : Pure.decomposed_fun_sig) : fun_sig =
+   let generics = dsg.generics in
+   let llbc_generics = dsg.llbc_generics in
+   let preds = dsg.preds in
+@@ -1223,8 +1261,10 @@
+     (inputs, output)
+   in
+   (* Compute which input type parameters are explicit/implicit *)
+-  let explicit_info = compute_explicit_info generics inputs in
+-  let known_from_trait_refs = compute_known_info explicit_info generics in
++  let explicit_info = compute_explicit_info decls_ctx generics inputs in
++  let known_from_trait_refs =
++    compute_known_info decls_ctx explicit_info generics
++  in
+   (* Put together *)
+   {
+     generics;
+--- a/symbolic/SymbolicToPure.ml
++++ b/symbolic/SymbolicToPure.ml
+@@ -81,7 +81,7 @@
+   let def_id = def.def_id in
+   let name = name_to_string ctx def.item_meta.name in
+   (* Translate the signature *)
+-  let signature = translate_fun_sig_from_decomposed ctx.sg in
++  let signature = translate_fun_sig_from_decomposed ctx.decls_ctx ctx.sg in
+   (* Translate the body, if there is *)
+   let body =
+     match body with
+@@ -150,13 +150,13 @@
+         None)
+     (TypeDeclId.Map.values ctx.type_ctx.to_extract)
+ 
+-let translate_binder (span : span option) (translate_inside : 'a -> 'b)
+-    (x : 'a T.binder) : 'b binder =
++let translate_binder (ctx : Contexts.decls_ctx) (span : span option)
++    (translate_inside : 'a -> 'b) (x : 'a T.binder) : 'b binder =
+   let binder_llbc_generics = x.T.binder_params in
+   let binder_generics, binder_preds =
+     translate_generic_params span binder_llbc_generics
+   in
+-  let binder_explicit_info = compute_explicit_info binder_generics [] in
++  let binder_explicit_info = compute_explicit_info ctx binder_generics [] in
+   {
+     binder_value = translate_inside x.T.binder_value;
+     binder_generics;
+@@ -179,7 +179,7 @@
+     item_meta = method_.item_meta;
+     signature;
+     default =
+-      translate_binder span
++      translate_binder ctx span
+         (fun (m : A.trait_method) ->
+           Option.map (translate_fun_decl_ref span translate_ty) m.default)
+         bound_method;
+@@ -209,7 +209,7 @@
+       item_meta.name
+   in
+   let generics, preds = translate_generic_params opt_span llbc_generics in
+-  let explicit_info = compute_explicit_info generics [] in
++  let explicit_info = compute_explicit_info ctx generics [] in
+   let parent_clauses =
+     List.map (translate_trait_clause opt_span) llbc_parent_clauses
+   in
+@@ -303,7 +303,7 @@
+       item_meta.name
+   in
+   let generics, preds = translate_generic_params span llbc_generics in
+-  let explicit_info = compute_explicit_info generics [] in
++  let explicit_info = compute_explicit_info ctx generics [] in
+   let parent_trait_refs =
+     List.map (translate_fwd_trait_ref span ctx) implied_trait_refs
+   in
+@@ -328,7 +328,8 @@
+         in
+         ( method_id,
+           name,
+-          translate_binder span (translate_fun_decl_ref span translate_ty) m ))
++          translate_binder ctx span (translate_fun_decl_ref span translate_ty) m
++        ))
+       (TraitMethodId.Map.to_list methods)
+   in
+   (* Lookup the builtin information, if there is *)
+@@ -371,7 +372,7 @@
+   let generics, preds =
+     translate_generic_params (Some decl.item_meta.span) llbc_generics
+   in
+-  let explicit_info = compute_explicit_info generics [] in
++  let explicit_info = compute_explicit_info ctx generics [] in
+   let output_ty = translate_fwd_ty (Some decl.item_meta.span) ctx ty in
+   let builtin_info =
+     match_name_find_opt ctx item_meta.name
+--- a/symbolic/SymbolicToPureExpressions.ml
++++ b/symbolic/SymbolicToPureExpressions.ml
+@@ -250,7 +250,7 @@
+ 
+   (* The output type of the function *)
+   let result_ty =
+-    let sg = translate_fun_sig_from_decomposed ctx.sg in
++    let sg = translate_fun_sig_from_decomposed ctx.decls_ctx ctx.sg in
+     sg.output
+   in
+ 
+--- a/pure/PureMicroPassesLoops.ml
++++ b/pure/PureMicroPassesLoops.ml
+@@ -3178,8 +3178,13 @@
+       }
+     in
+ 
+-    let explicit_info = compute_explicit_info generics input_tys in
+-    let known_from_trait_refs = compute_known_info explicit_info generics in
++    let explicit_info =
++      SymbolicToPureTypes.compute_explicit_info ctx.trans_ctx generics input_tys
++    in
++    let known_from_trait_refs =
++      SymbolicToPureTypes.compute_known_info ctx.trans_ctx explicit_info
++        generics
++    in
+     let loop_sig : fun_sig =
+       {
+         generics;
+@@ -3490,8 +3495,12 @@
+   in
+ 
+   let input_tys = List.map (fun (v : tpat) -> v.ty) body_fun_body.inputs in
+-  let explicit_info = compute_explicit_info generics input_tys in
+-  let known_from_trait_refs = compute_known_info explicit_info generics in
++  let explicit_info =
++    SymbolicToPureTypes.compute_explicit_info ctx.trans_ctx generics input_tys
++  in
++  let known_from_trait_refs =
++    SymbolicToPureTypes.compute_known_info ctx.trans_ctx explicit_info generics
++  in
+   let llbc_generics : T.generic_params =
+     let { types; const_generics; trait_clauses; trait_type_constraints; _ } :
+         T.generic_params =

@@ -1,0 +1,7 @@
+error: failed to resolve item path `rootid::{impl rootid::View}::refine`: `--start-from` only supports impl patterns if they're the first element of the path
+ --> order-type-impl.rs:3:59
+  |
+3 | pub fn free(view: &View<'_>) -> u32 { view.refine() + 1 }
+  |                                                          ^
+
+ERROR Code failed to compile

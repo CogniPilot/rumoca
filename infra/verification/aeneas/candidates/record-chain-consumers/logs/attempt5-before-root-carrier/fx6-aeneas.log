@@ -1,0 +1,14 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/fx6/fx.llbc
+Applied prepasses:  [----------------------------------------------------] 0/4 ⠋Applied prepasses:  [#############---------------------------------------] 1/4 ⠙Applied prepasses:  [####################################################] 4/4 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+Translated transparent functions:  [-------------------------------------] 0/4 ⠋Translated transparent functions:  [#########----------------------------] 1/4 ⠋Translated transparent functions:  [##################-------------------] 2/4 ⠙Translated transparent functions:  [#####################################] 4/4 ✔️
+Translated trait declarations:  [----------------------------------------] 0/3 ⠋Translated trait declarations:  [########################################] 3/3 ✔️
+Translated trait impls:  [-----------------------------------------------] 0/1 ⠋Translated trait impls:  [###############################################] 1/1 ✔️
+Post-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+Post-processed translated transparent functions:  [----------------------] 0/4 ⠋Post-processed translated transparent functions:  [#####-----------------] 1/4 ⠋Post-processed translated transparent functions:  [######################] 4/4 ✔️
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/fx6/out5
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/fx6/out5/Types.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/fx6/out5/Funs.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/fx6/out5/translation.json
+[Info ] Total execution time: 0.373415 seconds

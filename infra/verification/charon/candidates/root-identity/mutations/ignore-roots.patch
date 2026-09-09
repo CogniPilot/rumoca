@@ -1,0 +1,11 @@
+--- a/src/transform/add_missing_info/reorder_decls.rs
++++ b/src/transform/add_missing_info/reorder_decls.rs
+@@ -395,7 +395,7 @@
+         .all_items()
+         .filter(|item| item.item_meta().name.is_builtin())
+         .map(|item| item.id())
+-        .chain(roots)
++        .chain(roots.into_iter().take(0))
+         .collect();
+ 
+     // Explore reachable items.

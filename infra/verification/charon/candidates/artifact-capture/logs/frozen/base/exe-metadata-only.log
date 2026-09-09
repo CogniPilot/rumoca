@@ -1,0 +1,5 @@
+
+thread 'rustc' (3684676) panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked

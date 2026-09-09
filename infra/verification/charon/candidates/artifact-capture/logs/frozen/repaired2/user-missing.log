@@ -1,0 +1,42 @@
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta")
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#0}`, which is (transitively) used at the following location(s):
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta")
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#1}`, which is (transitively) used at the following location(s):
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta")
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#2}`, which is (transitively) used at the following location(s):
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs:2:41
+
+error: Could not compute the value of Self::Clause0::Clause0::Output (on {impl#2}<'3>) needed to update item reference core::ops::function::Fn<closure, (&'_Bound(0, 0) u32,)>.
+       Constraints in scope:
+       
+ --> /home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ERROR Charon failed to translate this code (7 errors)

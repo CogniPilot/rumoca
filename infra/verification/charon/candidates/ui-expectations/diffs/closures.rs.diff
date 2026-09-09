@@ -1,0 +1,163 @@
+---- closures.rs ----
+
+---- expected: tests/ui/closures.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | struct (_,)<A> {
+   4    4 |   _0: A,
+   5    5 | }
+          ⋮
+1253 1253 |     TraitClause1: (T: Trait<'a>),
+1254 1254 |     TypeOutlives0: T: '_1,
+1255 1255 |     RegionOutlives0: 'a: '_1,
+1256 1256 | {
+1257 1257 |     let _0: (); // return
+1258      -     let _1: &'2 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+     1258 +     let _1: &'4 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1259 1259 | 
+1260 1260 |     storage_live(_0)
+1261 1261 |     _0 = ()
+1262 1262 |     storage_dead(_1)
+1263 1263 |     return
+          ⋮
+1271 1271 |     TypeOutlives0: T: '_2,
+1272 1272 |     TypeOutlives1: T: '_1,
+1273 1273 |     RegionOutlives0: 'a: '_2,
+1274 1274 | {
+1275 1275 |     let _0: &'0 T; // return
+1276      -     let _1: &'3 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+     1276 +     let _1: &'5 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1277 1277 |     let tupled_args: (&'_1 T,); // arg #2
+1278      -     let y: &'5 T; // local
+     1278 +     let y: &'7 T; // local
+1279 1279 | 
+1280 1280 |     storage_live(_0)
+1281 1281 |     storage_live(y)
+1282 1282 |     y = move tupled_args._0
+1283 1283 |     _0 = copy y
+          ⋮
+1297 1297 |     RegionOutlives0: 'a: '_2,
+1298 1298 | {
+1299 1299 |     let _0: &'_1 T; // return
+1300 1300 |     let state: &'_2 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1301 1301 |     let args: (&'_1 T,); // arg #2
+1302      -     let _3: &'1 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+     1302 +     let _3: &'0 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+1303 1303 | 
+1304 1304 |     storage_live(_0)
+1305 1305 |     storage_live(_3)
+1306 1306 |     _3 = &(*state)
+1307      -     _0 = {impl Fn<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '7, T>[TraitClause0, TraitClause1](move _3, move args)
+     1307 +     _0 = {impl Fn<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '2, T>[TraitClause0, TraitClause1](move _3, move args)
+1308 1308 |     ↳⚡ storage_dead(_3)
+1309 1309 |         storage_dead(args)
+1310 1310 |         storage_dead(state)
+1311 1311 |         unwind_continue
+1312 1312 |     storage_dead(_3)
+          ⋮
+1322 1322 |     TraitClause1: (T: Trait<'a>),
+1323 1323 |     TypeOutlives0: T: '_1,
+1324 1324 | {
+1325 1325 |     let _0: &'0 T; // return
+1326 1326 |     let _1: test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1327      -     let _2: (&'2 T,); // arg #2
+1328      -     let _3: &'5 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+     1327 +     let _2: (&'4 T,); // arg #2
+     1328 +     let _3: &'7 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+1329 1329 | 
+1330 1330 |     storage_live(_0)
+1331 1331 |     storage_live(_3)
+1332 1332 |     _3 = &mut _1
+1333      -     _0 = {impl FnMut<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '16, T>[TraitClause0, TraitClause1](move _3, move _2)
+1334      -     ↳⚡ drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '22, T>[TraitClause0, TraitClause1]] _1
+     1333 +     _0 = {impl FnMut<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '18, T>[TraitClause0, TraitClause1](move _3, move _2)
+     1334 +     ↳⚡ drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '24, T>[TraitClause0, TraitClause1]] _1
+1335 1335 |         ↳⚡ storage_dead(_3)
+1336 1336 |             storage_dead(_2)
+1337 1337 |             storage_dead(_1)
+1338 1338 |             unwind_terminate
+1339 1339 |         storage_dead(_3)
+1340 1340 |         storage_dead(_2)
+1341 1341 |         storage_dead(_1)
+1342 1342 |         unwind_continue
+1343      -     drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '28, T>[TraitClause0, TraitClause1]] _1
+     1343 +     drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '30, T>[TraitClause0, TraitClause1]] _1
+1344 1344 |     ↳⚡ storage_dead(_3)
+1345 1345 |         storage_dead(_2)
+1346 1346 |         storage_dead(_1)
+1347 1347 |         unwind_continue
+1348 1348 |     storage_dead(_3)
+          ⋮
+2594 2594 | pub fn test_closure_capture(x: u32, y: u32) -> u32
+2595 2595 | {
+2596 2596 |     let _0: u32; // return
+2597 2597 |     let x: u32; // arg #1
+2598 2598 |     let y: u32; // arg #2
+2599      -     let f: &'6 test_crate::test_closure_capture::closure<'7, '8>; // local
+2600      -     let _4: test_crate::test_closure_capture::closure<'9, '10>; // anonymous local
+     2599 +     let f: &'5 test_crate::test_closure_capture::closure<'6, '7>; // local
+     2600 +     let _4: test_crate::test_closure_capture::closure<'8, '9>; // anonymous local
+2601 2601 |     let _5: &'11 u32; // anonymous local
+2602 2602 |     let _6: &'12 u32; // anonymous local
+2603 2603 |     let _7: &'13 test_crate::test_closure_capture::closure<'14, '15>; // anonymous local
+2604 2604 |     let _8: (u32,); // anonymous local
+2605 2605 | 
+          ⋮
+2617 2617 |     fake_read(f)
+2618 2618 |     storage_live(_7)
+2619 2619 |     _7 = &(*f)
+2620 2620 |     storage_live(_8)
+2621 2621 |     _8 = (const 0u32,)
+2622      -     _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'26, '27, '28>(move _7, move _8)
+     2622 +     _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'24, '25, '26>(move _7, move _8)
+2623 2623 |     ↳⚡ storage_dead(y)
+2624 2624 |         storage_dead(x)
+2625 2625 |         unwind_continue
+2626 2626 |     storage_dead(_8)
+2627 2627 |     storage_dead(_7)
+          ⋮
+3120 3120 | // Full name: test_crate::test_fnmut_with_ref
+3121 3121 | fn test_fnmut_with_ref()
+3122 3122 | {
+3123 3123 |     let _0: (); // return
+3124 3124 |     let sum: usize; // local
+3125      -     let closure: test_crate::test_fnmut_with_ref::closure<'2>; // local
+     3125 +     let closure: test_crate::test_fnmut_with_ref::closure<'1>; // local
+3126 3126 |     let _3: &'3 mut usize; // anonymous local
+3127 3127 |     let _4: (); // anonymous local
+3128 3128 |     let _5: &'6 mut test_crate::test_fnmut_with_ref::closure<'7>; // anonymous local
+3129 3129 |     let _6: (&'10 usize,); // anonymous local
+3130 3130 |     let _7: &'11 usize; // anonymous local
+3131 3131 |     let _8: &'12 usize; // anonymous local
+3132 3132 |     let _9: &'13 usize; // anonymous local
+3133 3133 |     let _10: &'15 usize; // anonymous local
+3134      -     let _11: &'27 usize; // anonymous local
+     3134 +     let _11: &'25 usize; // anonymous local
+3135 3135 |     let _12: usize; // anonymous local
+3136 3136 | 
+3137 3137 |     storage_live(_10)
+3138 3138 |     storage_live(_11)
+3139 3139 |     storage_live(_12)
+          ⋮
+3160 3160 |     storage_live(_8)
+3161 3161 |     _9 = move _10
+3162 3162 |     _8 = &(*_9)
+3163 3163 |     _7 = &(*_8)
+3164 3164 |     _6 = (move _7,)
+3165      -     _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'24, '25, '26>(move _5, move _6)
+     3165 +     _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'22, '23, '24>(move _5, move _6)
+3166 3166 |     ↳⚡ storage_dead(_9)
+3167 3167 |         unwind_continue
+3168 3168 |     storage_dead(_7)
+3169 3169 |     storage_dead(_6)
+3170 3170 |     storage_dead(_5)
+          ⋮
+3253 3253 |     non-dyn-compatible
+3254 3254 | }
+3255 3255 | 
+3256 3256 | 
+3257 3257 | 
+
+
+

@@ -1,0 +1,10 @@
+error[E0425]: cannot find value `undefined_name` in this scope
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/broken.rs:1:50
+  |
+1 | pub fn make() -> impl Fn(&u32) -> u32 { |x| *x + undefined_name }
+  |                                                  ^^^^^^^^^^^^^^ not found in this scope
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0425`.
+ERROR Code failed to compile

@@ -19,6 +19,17 @@ The deletion alone does **not** fix translation: Charon still needs to issue
 the missing declaration constraints. Full upstream regression and live integration
 gates are pending that producer implementation; this is not semantic adoption.
 
+The deletion also regresses two retained fixtures the predecessor translates,
+so this binary is not an unconditional replacement of its predecessor for
+closure inputs: `two-region-iterator.rs` (LLBC abae485b), accepted earlier as
+translating with no errors, now fails at `InterpBorrows.ml:1206` and emits
+`two_regions_ref_item::call_mut` as `sorry` (predecessor exit 0, candidate
+exit 1); `captured_move` goes 0 to 1 while `unrelated_outer` now translates.
+Other retained closure and static-regions fixtures are unchanged. Independent
+review receipt: `review-evidence.json` (commands, exit codes, LLBC, log and
+Lean hashes for the six cells, the Lean checks and the regression pair).
+Patch sha256: 80955670afb1f8e6 (full hash in the receipt).
+
 ## Controlled causal experiment
 
 Extract the existing `simpler-closures.rs` fixture with root
@@ -40,7 +51,8 @@ the guess replacing the output with that unused parent region anyway.
 | Guess retained | Rejects | Rejects | Rejects |
 | Guess deleted | Rejects | Translates and Lean-checks | Rejects |
 
-All six runs use `-checks -strict-joins -sequential`; all five rejections reach
+All six runs use `-checks -strict-joins -sequential -print-error-emitters` (the
+last flag is what prints the emitter location); all five rejections reach
 `InterpBorrows.ml:1206`. Only the forward relation with the guess deleted
 translates. Its generated code returns the supplied value and unit closure state,
 without an external axiom. Pinned Lean checks with `-j4 -M4096

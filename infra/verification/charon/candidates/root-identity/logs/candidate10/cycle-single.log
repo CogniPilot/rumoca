@@ -1,0 +1,94 @@
+# Final LLBC before serialization:
+
+opaque type ()
+
+// Full name: cycle::even
+pub fn even(value: u32) -> bool
+{
+    let _0: bool; // return
+    let value: u32; // arg #1
+    let _2: bool; // anonymous local
+    let _3: u32; // anonymous local
+    let _4: u32; // anonymous local
+    let _5: u32; // anonymous local
+    let _6: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(_6)
+    storage_live(_2)
+    storage_live(_3)
+    _3 = copy value
+    _2 = move _3 == const 0u32
+    if move _2 {
+    } else {
+        storage_dead(_3)
+        storage_live(_4)
+        storage_live(_5)
+        _5 = copy value
+        _6 = copy _5 panic.- const 1u32
+        _4 = move _6
+        storage_dead(_5)
+        _0 = odd(move _4)
+        ↳⚡ storage_dead(_6)
+            storage_dead(value)
+            unwind_continue
+        storage_dead(_4)
+        storage_dead(_2)
+        storage_dead(_6)
+        storage_dead(value)
+        return
+    }
+    storage_dead(_3)
+    _0 = const true
+    storage_dead(_2)
+    storage_dead(_6)
+    storage_dead(value)
+    return
+}
+
+// Full name: cycle::odd
+pub fn odd(value: u32) -> bool
+{
+    let _0: bool; // return
+    let value: u32; // arg #1
+    let _2: bool; // anonymous local
+    let _3: u32; // anonymous local
+    let _4: u32; // anonymous local
+    let _5: u32; // anonymous local
+    let _6: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(_6)
+    storage_live(_2)
+    storage_live(_3)
+    _3 = copy value
+    _2 = move _3 == const 0u32
+    if move _2 {
+    } else {
+        storage_dead(_3)
+        storage_live(_4)
+        storage_live(_5)
+        _5 = copy value
+        _6 = copy _5 panic.- const 1u32
+        _4 = move _6
+        storage_dead(_5)
+        _0 = even(move _4)
+        ↳⚡ storage_dead(_6)
+            storage_dead(value)
+            unwind_continue
+        storage_dead(_4)
+        storage_dead(_2)
+        storage_dead(_6)
+        storage_dead(value)
+        return
+    }
+    storage_dead(_3)
+    _0 = const false
+    storage_dead(_2)
+    storage_dead(_6)
+    storage_dead(value)
+    return
+}
+
+
+

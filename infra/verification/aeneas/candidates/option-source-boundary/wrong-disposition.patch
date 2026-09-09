@@ -1,0 +1,10 @@
+--- a/fixture.rs
++++ b/fixture.rs
+@@ -1,5 +1,6 @@
+ pub fn copy_value<T: Copy>(value: Option<&T>) -> Option<T> {
+-    value.copied()
++    let _ = value;
++    None
+ }
+ 
+ pub fn flatten_value<T>(value: Option<Option<T>>) -> Option<T> {

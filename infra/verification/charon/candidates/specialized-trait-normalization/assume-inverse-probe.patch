@@ -1,0 +1,11 @@
+diff --git a/cyclic-noninverse-source.rs b/cyclic-noninverse-source.rs
+--- a/cyclic-noninverse-source.rs
++++ b/cyclic-noninverse-source.rs
+@@ -1,6 +1,6 @@
+ pub trait TryLike: Sized {
+     type Output;
+-    type Residual: ResidualLike<Self::Output>;
++    type Residual: ResidualLike<Self::Output, TryType = Self>;
+     fn extract(self) -> Self::Output;
+ }
+ 

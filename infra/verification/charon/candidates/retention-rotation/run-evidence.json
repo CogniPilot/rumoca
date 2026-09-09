@@ -1,0 +1,32 @@
+{
+  "scope": "Read-only diagnostic: order and root rotation of associated-demand retention on cycles with two Self-changing edges. No producer change. Not adoption or proof credit.",
+  "recorded_at": "2026-09-08T13:01:00Z",
+  "receipt_note": "Each record carries the observed exit_code of the actual charon process; expected_exit is a label. trait_lines and impl_lines count entries in the extract and guard against an empty or truncated extract passing as identical; a cell with zero trait_lines is invalid. rustc_warnings counts rustc lint lines, which --error-on-warnings does not govern. Cells with --start-from translate only the root-reachable graph, which excludes the concrete impls; the -all cells carry them. The comparison key is the sha256 of a sorted textual extract of every trait header, retained associated type, implied clause and impl obligation from the final LLBC printed by the pinned Aeneas -print-llbc, insensitive to declaration order, ids and spans; that print step exits 1 only on its --preset=aeneas check after printing. No demand-error message appears in any log. No timing fields.",
+  "tool": { "charon": "/tmp/rumoca-demand-retention-QVu1kr/charon", "charon_sha256": "10ca62cdad3f2804801e5b8a7b8e96b4eba76c2242663c508a9205f8f0fe2a9d", "charon_driver_sha256": "d9ae2041e32e62e0eb08a91acda7b30be0c4c3eb6ab0484f52cf405000dbfa11", "bound_in": "charon/candidates/associated-demand-retention/run-evidence.json", "flags": "--lift-associated-types=* --error-on-warnings [--start-from=<root>]", "env": "CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots" },
+  "printer": "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -print-llbc",
+  "records": [
+    { "name": "two-edge-ab-root-a", "source": "cells/two-edge-ab.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "e99df265853ed430", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 0 },
+    { "name": "two-edge-ab-root-b", "source": "cells/two-edge-ab.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "e99df265853ed430", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 0 },
+    { "name": "two-edge-ba-root-a", "source": "cells/two-edge-ba.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "e99df265853ed430", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 0 },
+    { "name": "two-edge-ba-root-b", "source": "cells/two-edge-ba.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "e99df265853ed430", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 0 },
+    { "name": "two-edge-ab-all", "source": "cells/two-edge-ab.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "6ef6e6cbe2010c55", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 2 },
+    { "name": "two-edge-ba-all", "source": "cells/two-edge-ba.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "6ef6e6cbe2010c55", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 2 },
+    { "name": "mixed-abc", "source": "cells/mixed-abc.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "ecee3c6b891ab86c", "rustc_warnings": 0, "trait_lines": 6, "impl_lines": 3 },
+    { "name": "mixed-cba", "source": "cells/mixed-cba.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "ecee3c6b891ab86c", "rustc_warnings": 0, "trait_lines": 6, "impl_lines": 3 },
+    { "name": "mixed-bca", "source": "cells/mixed-bca.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "ecee3c6b891ab86c", "rustc_warnings": 0, "trait_lines": 6, "impl_lines": 3 },
+    { "name": "mixed-acb", "source": "cells/mixed-acb.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "ecee3c6b891ab86c", "rustc_warnings": 0, "trait_lines": 6, "impl_lines": 3 },
+    { "name": "equality-ab", "source": "cells/equality-ab.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "4e7b1d1246594d56", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 2 },
+    { "name": "equality-ba", "source": "cells/equality-ba.rs", "expected_exit": 0, "exit_code": 0, "extract_sha256_prefix": "4e7b1d1246594d56", "rustc_warnings": 0, "trait_lines": 5, "impl_lines": 2 }
+  ],
+  "comparisons": { "two_edge_root_cells_distinct": 1, "two_edge_all_cells_distinct": 1, "mixed_distinct": 1, "equality_distinct": 1, "demand_errors_reached": 0, "retained_two_edge": "A keeps X, B keeps Y; impls A for SA {X = SB}, B for SB {Y = SA}", "retained_mixed": "A keeps X, C keeps Z, B nothing; three impls identical", "retained_equality": "none; both lifted; impls fully instantiated" },
+  "inputs": {
+    "cells/equality-ab.rs": "1c6de7c3ea92402591dc8d44cf507c042228efe8e4a7d6908a60218c573e7d58",
+    "cells/equality-ba.rs": "9a8b93b110755878d3568e37cdde0bbcc4e244cb99ffba3a597bd4224ccc4a52",
+    "cells/mixed-abc.rs": "97dc98a86ef8d3d429068dd442b65caf7ee0614f0f5544e7dafdace7ffa4fa2b",
+    "cells/mixed-acb.rs": "795c022ee8800c0bb5bf505a2fc06b6ad0770ea8f702ea0828008150fd431655",
+    "cells/mixed-bca.rs": "d80b2dd283f9fe467cda29a8603a9d8c5a05215f6eaa504515dab96d7d22e910",
+    "cells/mixed-cba.rs": "9966a90ae2695afafb36c7c77daa6dbaeaa82fac562b002a9ae4a9b0b0b717f1",
+    "cells/two-edge-ab.rs": "864c9497b3d7b2863fc5b3bf7a4423a2cc8d3f98204628337a66e51100454b53",
+    "cells/two-edge-ba.rs": "037eb92b2399baa797ba71a199f70946813ca2328b272adeb2a4d5c6703fd2ac"
+  }
+}

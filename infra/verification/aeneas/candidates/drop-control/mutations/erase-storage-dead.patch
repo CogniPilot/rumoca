@@ -1,0 +1,11 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -777,7 +777,7 @@
+                      && discarded_before_use local rest
+                      && normalize st.span (taken.statements @ after)
+                         = normalize st.span rest ->
+-                  let replacement = taken.statements @ after in
++                  let replacement = List.filter (fun (s : statement) -> match s.kind with StorageDead _ -> false | _ -> true) (taken.statements @ after) in
+                   [%ldebug
+                     "remove_dead_drop_switches: replacing switch with:\n"
+                     ^ Print.list_to_string ~sep:"\n" (statement_to_string crate) replacement];

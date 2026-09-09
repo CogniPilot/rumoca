@@ -1,0 +1,23 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti-m0/Ud07CatalogComposition.llbc
+[?25lApplied prepasses:  [------------------------------------------------]   0/187 ⠋Applied prepasses:  [------------------------------------------------]   1/187 ⠙Applied prepasses:  [###---------------------------------------------]  13/187 ⠙Applied prepasses:  [######################--------------------------]  87/187 ⠙Applied prepasses:  [################################################] 187/187 ✔️
+[?25h[[91mError[39m] -keep-function matched a function absent from declaration ordering: rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement
+Source: 'crates/rumoca-ir-solve/src/model.rs', lines 2751:4-2751:68
+Uncaught exception:
+  
+  Aeneas.Errors.CFailure(_)
+
+Raised at Aeneas__Errors.craise_opt_span in file "Errors.ml", line 123, characters 4-46
+Called from Aeneas__Errors.craise in file "Errors.ml" (inlined), line 126, characters 2-43
+Called from Aeneas__PrePasses.simplify_trait_calls.(fun) in file "PrePasses.ml", lines 2295-2297, characters 18-43
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 19-42
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 26-41
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 26-41
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 26-41
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 26-41
+Called from Stdlib__Map.Make.fold in file "map.ml", line 329, characters 26-41
+Called from Aeneas__PrePasses.simplify_trait_calls.(fun) in file "PrePasses.ml", lines 2291-2300, characters 10-47
+Called from Stdlib__List.fold_left in file "list.ml", line 123, characters 24-34
+Called from Aeneas__PrePasses.simplify_trait_calls in file "PrePasses.ml", lines 2287-2306, characters 4-56
+Called from Aeneas__PrePasses.apply_passes in file "PrePasses.ml", line 2464, characters 14-40
+Called from Dune__exe__Main in file "Main.ml", line 758, characters 14-45
+aeneas exit=2

@@ -1,0 +1,815 @@
+{
+   "packet" : "charon/candidates/trait-identity",
+   "patch" : {
+      "base" : "root-identity candidate13",
+      "file" : "trait-identity.patch",
+      "files" : [
+         "src/ast/meta/names.rs",
+         "src/bin/generate-asts/generate_ml/util.rs",
+         "src/bin/generate-asts/generate_rust.rs",
+         "src/name_matcher/mod.rs",
+         "src/pretty/fmt_with_ctx.rs",
+         "src/transform/normalize/expand_associated_types.rs",
+         "tests/record_chain.rs",
+         "tests/util/mod.rs"
+      ],
+      "lines" : 515,
+      "revision" : "explicit-role (rustfmt clean)",
+      "sha256" : "7e7be6323aa9ac5c324f40eb30d5986b1183c5cbd567eed1a0b850a7fc8b07e6"
+   },
+   "rows" : [
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--print-llbc",
+            "--dest-file=<scratch>/ti3.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "try_branch",
+            "--crate-type",
+            "lib",
+            "controls/try_branch.rs"
+         ],
+         "exit" : 0,
+         "log" : "logs/reproducer/trait-identity.llbc.print.log",
+         "log_sha256" : "24c37fd2ae61b2796c09ed7b40ce6175a822eb345cbf650ac1a548d31d40ebcb",
+         "name" : "reproducer-charon",
+         "observed" : "impl printed as `impl Try<T, Result<Infallible, E>, Result<T, E>> for Result<T, E>` (semantic arguments kept); trait declaration name carries the extension binder",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows",
+         "tool" : "trait-identity (ti3)"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "<scratch>/ti3-out",
+            "<scratch>/ti3.llbc"
+         ],
+         "exit" : 0,
+         "log" : "logs/reproducer/trait-identity.aeneas.log",
+         "log_sha256" : "de7b042b85ff4a83436b4e065e569eaa41c838c4c75bc9ab4b24d344abcd34c2",
+         "name" : "reproducer-aeneas",
+         "observed" : "branch bound to core.result.Result.Insts.CoreOpsTry.branch; zero opaque entries (candidate4: specialized axiom, one opaque entry)",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows",
+         "tool" : "M0 aeneas j64xdd5b (8abfa150)"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-DwarningAsError=true",
+            "-R",
+            "<check dir>",
+            "-o",
+            "Ti3/Types.olean",
+            "Ti3/Types.lean"
+         ],
+         "env" : {
+            "LEAN_PATH" : "<check dir>:$(lake env printenv LEAN_PATH in infra/verification/lean-pilot)"
+         },
+         "exit" : 0,
+         "log" : "logs/lean/Types.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "reproducer-lean-Types",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-DwarningAsError=true",
+            "-R",
+            "<check dir>",
+            "-o",
+            "Ti3/Funs.olean",
+            "Ti3/Funs.lean"
+         ],
+         "env" : {
+            "LEAN_PATH" : "<check dir>:$(lake env printenv LEAN_PATH in infra/verification/lean-pilot)"
+         },
+         "exit" : 0,
+         "log" : "logs/lean/Funs.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "reproducer-lean-Funs",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-R",
+            "<check dir>",
+            "Laws.lean"
+         ],
+         "exit" : 0,
+         "law_file" : "logs/lean/Laws.lean",
+         "log" : "logs/lean/Laws.log",
+         "log_sha256" : "7e56d75d8826cc255b7f69e060ebb4bef32d520b62673cf0b754777110a12c87",
+         "name" : "reproducer-lean-laws",
+         "observed" : "twice_err (Err path) and twice_ok (Ok path) proven on the generated `twice` through the Std branch and from_residual definitions",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : "the M0 measurement command (measurement.json) with the ti3 launcher and scratch destinations",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "log" : "logs/composition/charon.log",
+         "log_sha256" : "b11c8a188222af3be599549a68b4aa363247ea1358f967e1f6d577fad97d252c",
+         "name" : "composition-charon",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "<the three M0 roots>",
+            "-dest",
+            "<scratch>/combined-lean",
+            "<scratch>/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "measured interaction, not accepted",
+         "exit" : 0,
+         "log" : "logs/composition/aeneas.log",
+         "log_sha256" : "7ea3c99ea8487190d549c15c4ba62c7013379cb9d26e163506262c03531ec0ec",
+         "name" : "composition-aeneas",
+         "observed" : "branch bound; 24 of 140 entries opaque against candidate4 eleven of 127: the impl methods of lifted builtin traits (Deref, SliceIndex, Iterator, IntoIterator, TryFrom) are newly opaque, and Aeneas warns that FromIterator/IntoIterator/Iterator form a mutually recursive extracted group, which candidate4 never emitted because those traits bound to the Std builtin model",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata"
+         ],
+         "exit" : 0,
+         "log" : "logs/suites/in-tree-suites.log",
+         "log_sha256" : "2ad0921b8fedfbba5f29531ea20cb96632713a6b1549249a26ed54f9c4f06829",
+         "name" : "in-tree-suites",
+         "observed" : "3, 4, 24, 7 passed",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/suites/cargo-in-ci-noincremental.log",
+         "log_sha256" : "2f2256cfd966264062fc5d5b82d3676021159b66576db7aed30b45f423f22e50",
+         "name" : "cargo-suite",
+         "observed" : "3 passed, 8 failed: the inherited crate-hash panic (this tree has no artifact-capture patch)",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/suites/ui-in-ci.log",
+         "log_sha256" : "0a3be307a7cb2cb399c6daf52c158573734efce0c0b421d7ebde320cbf98c5a3",
+         "name" : "ui-suite",
+         "observed" : "359 passed, 81 failed: the inherited 18 plus 63 that the root-identity tree alone also fails (logs/suites/ui-in-ci-root-identity-only.log, same 81); this patch adds none",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows"
+      },
+      {
+         "classification" : "rejected_control",
+         "exit" : 2,
+         "log" : "logs/rejected-general-binder/root3-substitute-assertion.log",
+         "log_sha256" : "f90a3811551394b44ab8b0b44cad7f2ee58cfa592abeecc417d5e04fe4c54ca8",
+         "name" : "rejected-general-binder",
+         "observed" : "reproducer binds; composition: root 3 dies in Substitute.instantiate_name_generics (params vs supplied args) and 108 items carry binders; kept as the named rejected control",
+         "patch" : "logs/rejected-general-binder/general-binder.patch",
+         "status" : "first measurement on the pre-repair root-identity tree (ti3); superseded by the rebased rows",
+         "tool" : "ti (composed tree without root-identity, binder on every lifted item)"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/rebased/reproducer.aeneas.log",
+         "log_sha256" : "0d18f8d2363a6ec96b9e2191a08a4c2eec8c6d7ccd78103aa3c7e24be682c4ff",
+         "name" : "rebased-reproducer",
+         "observed" : "branch bound to core.result.Result.Insts.CoreOpsTry.branch; impl printed with its full lifted arguments",
+         "tool" : "candidate9 plus trait-identity (driver 084e5ccb)"
+      },
+      {
+         "classification" : "measured interaction, not accepted",
+         "exit" : 0,
+         "log" : "logs/rebased/composition-aeneas.log",
+         "log_sha256" : "73fefeaa93dbfae379049ad5dc43751094ad7fe6a4e65c8e064ce8d3c750b0cb",
+         "manifest" : "logs/rebased/composition-translation.json",
+         "name" : "rebased-composition",
+         "observed" : "three roots kept, Aeneas exits 0 (the FnOnce name clash of the pre-merge-fix build is gone), branch bound, 24 of 140 entries opaque: the impl methods of lifted builtin traits, plus the mutually-recursive-group warning for FromIterator/IntoIterator/Iterator; the Aeneas bare-pattern lookup counterpart remains",
+         "tool" : "candidate9 plus trait-identity (driver 084e5ccb)"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/rebased/in-tree-suites.log",
+         "log_sha256" : "b2ce4b4f9ae6147898e38e74dcc9114146b606bc8971237d34c93106072fb90c",
+         "name" : "rebased-in-tree-suites",
+         "observed" : "3, 4, 24, 7 passed"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/rebased/ui-in-ci.log",
+         "log_sha256" : "19f3a0425f935910447652574f913a82f2e2cfc6fcdcacd14769702ce156d9a1",
+         "name" : "rebased-ui-suite",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new on top of candidate9"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--print-llbc",
+            "--dest-file=chain-poly.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-poly-charon.log",
+         "log_sha256" : "5f85f3f001a824285f99f9a4201994bc30f76387f906157109c2ab90955e1565",
+         "name" : "record-chain-law-poly",
+         "observed" : "impl Try<T, Result<Infallible, E>, Result<T, E>> for Result<T, E>; 4 instantiation records in the LLBC"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "chain-poly-out",
+            "chain-poly.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-poly-aeneas.log",
+         "log_sha256" : "1abc685905c8b2486372d14a2f166e12b13168f9029809e0849255251d330423",
+         "name" : "record-chain-law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch (Std); zero errors"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--monomorphize",
+            "--print-llbc",
+            "--dest-file=chain-mono.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-mono-charon.log",
+         "log_sha256" : "fde5834139565887dd34a458ebddb08fc5771317bc080ba1085f3d7bfa346a16",
+         "name" : "record-chain-law-mono",
+         "observed" : "impl Try for Result::<u32, u8> and Result::<u64, u16>; 30 records"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "chain-mono-out",
+            "chain-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-mono-aeneas.log",
+         "log_sha256" : "63e7bb2d6d24525e9c768f29aa5c9a2af8688425bc9d7ea630e18da6fb0dc33a",
+         "name" : "record-chain-law-mono-aeneas",
+         "observed" : "two distinct copies bind ResultU32U8 and ResultU64U16 ...CoreOpsTry_traitTry.branch; the pre-existing copies-never-bind-at-declared-arity boundary, unchanged"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--monomorphize-mut",
+            "--print-llbc",
+            "--dest-file=chain-mut.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-mut-charon.log",
+         "log_sha256" : "5f85f3f001a824285f99f9a4201994bc30f76387f906157109c2ab90955e1565",
+         "name" : "record-chain-law-mut",
+         "observed" : "same as poly; 4 records"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "chain-mut-out",
+            "chain-mut.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/law-mut-aeneas.log",
+         "log_sha256" : "3b07628bf26fd0a24de63e5dd3a2b3951a834f01a10afc47a18e97ddfac543aa",
+         "name" : "record-chain-law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors"
+      },
+      {
+         "argv" : "the rebased-composition-charon argv with the record-chain binaries",
+         "classification" : "green",
+         "exit" : 0,
+         "name" : "record-chain-composition-charon",
+         "observed" : "composed LLBC sha256 2f587c168b03c438c0c5e041f7f3be495024d691f0ce6ab9babee6da0c13445c; probe: 30 items carry records; TraitDecl 30 and 31 (FnOnce copies) carry ext,copy chains"
+      },
+      {
+         "argv" : [
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement",
+            "-keep-function",
+            "rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement",
+            "-keep-function",
+            "rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement",
+            "-dest",
+            "combined-lean",
+            "Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "counterexample_retained",
+         "exit" : 2,
+         "log" : "logs/record-chain/aeneas-composition.log",
+         "log_sha256" : "ca42a78f04c3d7b0959d7cb288b72ca92a279372cb445c3e356d10f390e7c1cb",
+         "name" : "record-chain-composition-aeneas",
+         "observed" : "Uncaught Failure in Charon__Substitute.instantiate_name_generics from NameMatcher.name_with_generics_to_pattern_aux line 935 via Aeneas ExtractBase.ctx_compute_trait_impl_name_raw: the M0 consumer folds one record per site"
+      },
+      {
+         "argv" : "the previous argv plus -log-debug Extract",
+         "classification" : "counterexample_retained",
+         "exit" : 2,
+         "log" : "logs/record-chain/aeneas-composition-extract-debug.log",
+         "log_sha256" : "a07c9970b42c964733a2e42734de5e3423376d279e4c4f6fdeb90c41578bf1d4",
+         "name" : "record-chain-composition-extract-debug",
+         "observed" : "last item named before the exception: core::ops::function::impls::{impl FnOnce::<_, _>::<&_ mut _, _, _> for F} (TraitImpl 44 of TraitDecl 30); args without self type <, >"
+      },
+      {
+         "argv" : "the rebased (replace-semantics) composition LLBC through the same aeneas with -log-debug Extract",
+         "classification" : "control",
+         "exit" : 0,
+         "log" : "logs/record-chain/aeneas-composition-replace-extract-debug.log",
+         "log_sha256" : "291d63dec142083bb533db67e88a5df6efae68bf6c5503ee28694b5b300386c6",
+         "name" : "record-chain-composition-replace-extract-debug",
+         "observed" : "the same impl is named Mut0F.Insts.CoreOpsFunctionFnOnce with the same args over a single copy record"
+      },
+      {
+         "argv" : [
+            "env",
+            "CHAIN_PROBE_LLBC=<llbc>",
+            "cargo",
+            "test",
+            "--test",
+            "chain_probe",
+            "--",
+            "--nocapture"
+         ],
+         "classification" : "measurement",
+         "exit" : 0,
+         "log" : "logs/record-chain/chain-probe-composition.txt",
+         "log_sha256" : "6edb567a568f978d8c71ece4501aaebc7fa70abec42d3ab853a4eadc358b0289",
+         "name" : "record-chain-probe",
+         "observed" : "controls/chain_probe.rs; copy record of TraitDecl 30: params (1r,3t), args at the lifted arity; ext record: params (0,3), args the identity of 2; the replace build carries identical copy records (chain-probe-replace-composition.txt)"
+      },
+      {
+         "argv" : [
+            "perl",
+            "-0pe",
+            "s/\\{\"Instantiated\":(\\{(?:[^{}]++|(?1))*\\})\\},\\{\"Instantiated\":(\\{(?:[^{}]++|(?2))*\\})\\}\\]/{\"Instantiated\":$2}]/g",
+            "<",
+            "Ud07CatalogComposition.llbc",
+            ">",
+            "A.llbc",
+            "&&",
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "A-lean",
+            "A.llbc"
+         ],
+         "classification" : "isolation",
+         "exit" : 0,
+         "log" : "logs/record-chain/experiment-A-aeneas.log",
+         "log_sha256" : "494a43d34fa4d75208537882b41f19d9685c4fdb424a8a1701bfad149dc6fcbd",
+         "log_translation" : "logs/record-chain/experiment-A-translation.json",
+         "name" : "record-chain-experiment-A",
+         "observed" : "4 textual substitutions (two names, in item_meta and item_names); the extension record under each copy removed: exit 0, 24 of 138 opaque; the two functions fewer than the replace build are the two kept entry points, because this argv omits the -keep-function flags (translation.json retained)"
+      },
+      {
+         "argv" : [
+            "perl",
+            "-0pe",
+            "s/\\{\"Instantiated\":(\\{(?:[^{}]++|(?1))*\\})\\},\\{\"Instantiated\":(\\{(?:[^{}]++|(?2))*\\})\\}\\]/{\"Instantiated\":$2},{\"Instantiated\":$1}]/g",
+            "<",
+            "Ud07CatalogComposition.llbc",
+            ">",
+            "B.llbc",
+            "&&",
+            "aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "B-lean",
+            "B.llbc"
+         ],
+         "classification" : "isolation",
+         "exit" : 2,
+         "log" : "logs/record-chain/experiment-B-aeneas.log",
+         "log_sha256" : "4ee2a52048b21e4fd145c630d01f2c2817609717b1ba125021c8da99a7212ec4",
+         "name" : "record-chain-experiment-B",
+         "observed" : "chain order swapped so the extension record is last: the same Failure; the consumer fails on any chain, not on the extension record alone"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/record-chain/cargo-suites.log",
+         "log_sha256" : "99dfc3417e538e40f78a9c722e274700a5dbaf669e6fc5ce8c1d1da2da97b7c2",
+         "name" : "record-chain-cargo-suites",
+         "observed" : "4 of 4 suites ok"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/record-chain/ui-suite.log",
+         "log_sha256" : "424350f09890b58124109ae0af3f2eba00b0008eb8aabc2b8121abbfaa816a24",
+         "name" : "record-chain-ui-suite",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "run",
+            "--release",
+            "--bin",
+            "generate-asts"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role/generate-asts.log",
+         "log_sha256" : "496a30660724706131ce98be7bf61400ef9a24d31e477ee00afa3573cc2d6c45",
+         "name" : "explicit-role-generate-asts",
+         "observed" : "charon-ml generated files regenerated; after ocamlformat 0.27.0 the diff against the pinned files is the PeExtended variant only (Types, OfJson, OfPostcard; postcard tag 5, earlier tags unchanged); the regenerated Rust files from_rustc.rs and translate_from_rustc.rs differed by formatting only and were restored"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "record_chain"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role/suites.log",
+         "log_sha256" : "4f5f6caeceb7ab872cbc12f6c3ab52141d97777926aec1d7a331a64fc82e12de",
+         "name" : "explicit-role-law-suite",
+         "observed" : "5 of 5: extension_keeps_original_identity, identity_copy_is_a_copy, trait_evidence_only_copy_is_a_copy, repeated_composition_folds_to_the_declared_identity, producer_emits_chains_under_partial_monomorphization (controls/record_chain.rs)"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "record_chain",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata",
+            "--test",
+            "merge_roots",
+            "--test",
+            "test-rust-name-matcher"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role/suites.log",
+         "log_sha256" : "4f5f6caeceb7ab872cbc12f6c3ab52141d97777926aec1d7a331a64fc82e12de",
+         "name" : "explicit-role-suites",
+         "observed" : "7 suites ok: 5, 3, 4, 24, 7, 1, 2"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/explicit-role/ui-suite.log",
+         "log_sha256" : "c1cf3d2ab770c6011063c39dc27cdf3be45295ff814c46919153df5a3ee56a61",
+         "name" : "explicit-role-ui-suite",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--remove-associated-types=*",
+            "--monomorphize-mut",
+            "--include=core::ops::function::impls::*::call_once",
+            "--print-llbc",
+            "--dest-file=aeneas.llbc",
+            "--",
+            "--edition=2021",
+            "--crate-name",
+            "test_crate",
+            "--crate-type",
+            "lib",
+            "fx.rs"
+         ],
+         "classification" : "measurement",
+         "exit" : 0,
+         "log" : "logs/explicit-role/fnonce-fixture-charon.log",
+         "log_sha256" : "2d83ac54e50621aae0187148d573312194822ebff7afb22e064322c12fdf77e4",
+         "name" : "explicit-role-fnonce-fixture",
+         "observed" : "the producer emits trait_decls#3 ext,copy core::ops::function::FnOnce (fnonce-fixture-chains.txt): the composition's chain reproduced from a 12-line fixture"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "record_chain",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata",
+            "--test",
+            "merge_roots",
+            "--test",
+            "test-rust-name-matcher"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role-on-candidate11/suites.log",
+         "log_sha256" : "5097bcf9468c475af5c31d908d46555f71b7b359f84c0ccdc74313b3e609a3b2",
+         "name" : "explicit-role-on-candidate11-suites",
+         "observed" : "7 suites ok on the explicit-role tree over candidate11: 5, 3, 4, 24, 7, 3, 2 (merge_roots now three carrier controls)"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/explicit-role-on-candidate11/ui-suite.log",
+         "log_sha256" : "6c30530b761854f21d3299de725bb2a8b085b1673376449abe9257ec8f95b0cc",
+         "name" : "explicit-role-on-candidate11-ui",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "record_chain",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata",
+            "--test",
+            "merge_roots",
+            "--test",
+            "test-rust-name-matcher"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role-on-candidate12/suites.log",
+         "log_sha256" : "d1d6c74069d25b4984e456e14490181f9c586b0e9b35cba2369d8b57f0e0813b",
+         "name" : "explicit-role-on-candidate12-suites",
+         "observed" : "7 suites ok on the explicit-role tree over candidate12: 5, 3, 4, 24, 7, 6, 2"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/explicit-role-on-candidate12/ui-suite.log",
+         "log_sha256" : "911c8173cc09343fd2dc88e631aa5a1cbfd1279ba2d99948b7efdfcd808709c3",
+         "name" : "explicit-role-on-candidate12-ui",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "record_chain",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata",
+            "--test",
+            "merge_roots",
+            "--test",
+            "test-rust-name-matcher"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/explicit-role-on-candidate13/suites.log",
+         "log_sha256" : "85a7eacfdb0cdc538430cb6b4c89a22eff4bff36e683dbbfbf765fc4ea82b3e3",
+         "name" : "explicit-role-on-candidate13-suites",
+         "observed" : "7 suites ok on the explicit-role tree over candidate13: 5, 3, 4, 24, 7, 6, 2; rustfmt clean"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/explicit-role-on-candidate13/ui-suite.log",
+         "log_sha256" : "99d9b6e62cf709ba85118afa83afed97bcb3c42c92339c0500aad893c9d5ddf6",
+         "name" : "explicit-role-on-candidate13-ui",
+         "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+      }
+   ],
+   "status" : "producer change implemented on candidate9 and measured; the Aeneas bare-pattern lookup for extension binders is the declared counterpart in the specialized-names lane, not implemented here; not accepted",
+   "tool" : {
+      "built_from" : "root-identity candidate9 source plus trait-identity.patch, cargo dev profile (scratch build, not frozen)",
+      "charon_sha256" : "1d3f6c5c27ed5dad46a9aadb159ecb6327a6289fb6927e3f1df415f190a4984b",
+      "driver_sha256" : "084e5ccb1c079020c7c579869a62c9229a127b397613c69e10be72eaaec424d9",
+      "explicit_role" : {
+         "charon_driver_sha256_prefix" : "0a80828e",
+         "charon_sha256_prefix" : "694ecefb",
+         "note" : "cargo debug build of the final tree, copied before the suite run"
+      },
+      "explicit_role_on_candidate11" : {
+         "charon_driver_sha256_prefix" : "ea59c3a1",
+         "charon_sha256_prefix" : "92abbbfd",
+         "note" : "cargo debug build of the explicit-role tree on candidate11, copied before the suite run; the binaries used for the record-chain-consumers measurements"
+      },
+      "explicit_role_on_candidate12" : {
+         "charon_driver_sha256_prefix" : "4606bbc2",
+         "charon_sha256_prefix" : "807c2574",
+         "note" : "cargo debug build of the explicit-role tree on candidate12, copied before the suite run; the binaries used for the record-chain-consumers final measurements"
+      },
+      "explicit_role_on_candidate13" : {
+         "charon_driver_sha256_prefix" : "51385045",
+         "charon_sha256_prefix" : "2fee9358",
+         "note" : "cargo debug build of the rustfmt-clean explicit-role tree on the renamed candidate13; the binaries used for the consumer final measurements"
+      },
+      "record_chain" : {
+         "charon_driver_sha256_prefix" : "a08728bd",
+         "charon_sha256_prefix" : "139ee55f",
+         "note" : "frozen copies taken before the probe run; cargo test relinks target/debug afterwards"
+      }
+   }
+}

@@ -1,0 +1,25 @@
+--- a/src/transform/normalize/expand_associated_types.rs
++++ b/src/transform/normalize/expand_associated_types.rs
+@@ -1412,6 +1412,22 @@
+ }
+ 
+ pub struct Transform;
++
++#[cfg(test)]
++mod demand_tests {
++    use super::*;
++
++    #[test]
++    fn repeated_associated_type_demand_uses_one_parameter() {
++        let mut modifications =
++            ItemModifications::from_constraint_set(TypeConstraintSet::default(), true);
++        let path = TraitRefPath::self_ref(TraitDeclId::ZERO).with_assoc_type(AssocTypeId::ZERO);
++        modifications.replace_path(path.clone());
++        modifications.replace_path(path.clone());
++        assert_eq!(modifications.required_extra_paths, vec![path]);
++    }
++}
++
+ impl TransformPass for Transform {
+     fn should_run(&self, options: &crate::options::TranslateOptions) -> bool {
+         !(options.lift_associated_types.is_empty() && options.no_normalize)

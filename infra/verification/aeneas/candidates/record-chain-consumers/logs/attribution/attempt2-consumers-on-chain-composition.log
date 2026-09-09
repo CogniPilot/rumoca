@@ -1,0 +1,109 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti6-m0/Ud07CatalogComposition.llbc
+Applied prepasses:  [------------------------------------------------]   0/187 ⠋Applied prepasses:  [------------------------------------------------]   1/187 ⠙[Error] Early returns inside of loops are not supported yet
+Source: 'crates/rumoca-phase-solve/src/variable_catalog_refinement.rs', lines 336:0-394:1
+[Error] Ignoring the body of 'rumoca_phase_solve::variable_catalog_refinement::check_projected_variable_catalog_refinement' because of previous error
+Source: 'crates/rumoca-phase-solve/src/variable_catalog_refinement.rs', lines 336:0-394:1
+Applied prepasses:  [###---------------------------------------------]  13/187 ⠙Applied prepasses:  [############################--------------------] 112/187 ⠙Applied prepasses:  [################################################] 187/187 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [----------------------------------------]  0/54 ⠋Translated opaque functions:  [########################################] 54/54 ✔️
+Translated transparent functions:  [-----------------------------------]  0/97 ⠋Translated transparent functions:  [-----------------------------------]  1/97 ⠙Translated transparent functions:  [#----------------------------------]  3/97 ⠙Translated transparent functions:  [##---------------------------------]  7/97 ⠹Translated transparent functions:  [##---------------------------------]  8/97 ⠸Translated transparent functions:  [###--------------------------------]  9/97 ⠼Translated transparent functions:  [###--------------------------------] 10/97 ⠼Translated transparent functions:  [###--------------------------------] 11/97 ⠼Translated transparent functions:  [####-------------------------------] 13/97 ⠴Translated transparent functions:  [############-----------------------] 35/97 ⠴Translated transparent functions:  [#################------------------] 48/97 ⠦Translated transparent functions:  [#################------------------] 49/97 ⠧Translated transparent functions:  [##################-----------------] 51/97 ⠇Translated transparent functions:  [####################---------------] 57/97 ⠇Translated transparent functions:  [#######################------------] 64/97 ⠏Translated transparent functions:  [#######################------------] 65/97 ⠏Translated transparent functions:  [########################-----------] 68/97 ⠏Translated transparent functions:  [#########################----------] 70/97 ⠏Translated transparent functions:  [###########################--------] 75/97 ⠋Translated transparent functions:  [###########################--------] 77/97 ⠙Translated transparent functions:  [##############################-----] 85/97 ⠙Translated transparent functions:  [###############################----] 88/97 ⠹Translated transparent functions:  [################################---] 91/97 ⠹Translated transparent functions:  [###################################] 97/97 ✔️
+Translated trait declarations:  [--------------------------------------]  0/33 ⠋Translated trait declarations:  [#################---------------------] 15/33 ✔️
+Translated trait impls:  [---------------------------------------------]  0/69 ⠋Translated trait impls:  [####################-------------------------] 31/69 ✔️
+Post-processed translated opaque functions:  [-------------------------]  0/54 ⠋Post-processed translated opaque functions:  [-------------------------]  1/54 ⠋Post-processed translated opaque functions:  [#########################] 54/54 ✔️
+Post-processed translated transparent functions:  [--------------------]  0/97 ⠋Post-processed translated transparent functions:  [--------------------]  1/97 ⠋Post-processed translated transparent functions:  [#-------------------]  7/97 ⠙Post-processed translated transparent functions:  [#-------------------]  8/97 ⠙Post-processed translated transparent functions:  [#-------------------]  9/97 ⠙Post-processed translated transparent functions:  [##------------------] 13/97 ⠙Post-processed translated transparent functions:  [######--------------] 33/97 ⠹Post-processed translated transparent functions:  [#########-----------] 48/97 ⠹Post-processed translated transparent functions:  [##########----------] 49/97 ⠸Post-processed translated transparent functions:  [##########----------] 51/97 ⠸Post-processed translated transparent functions:  [#############-------] 64/97 ⠸Post-processed translated transparent functions:  [##############------] 70/97 ⠼Post-processed translated transparent functions:  [###############-----] 77/97 ⠴Post-processed translated transparent functions:  [##################--] 88/97 ⠴Post-processed translated transparent functions:  [####################] 97/97 ⠴Post-processed translated transparent functions:  [####################] 97/97 ✔️
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator::', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator::', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64
+Compiler source: extract/Extract.ml, line 2866
+
+[Error] Name clash detected: the following identifiers are bound to the same name "core.ops.function.FnOnce" (the generated code will be incorrect):
+- trait_decl_id: 6
+  Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+- trait_decl_id: 31
+  Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+
+You may want to rename some of your definitions, or report an issue.
+Note that you can change the name used in the generated code by using the attribute #[aeneas::rename("NAME")] or #[charon::rename("NAME")]. For instance:
+
+```
+#![feature(register_tool)]
+#![register_tool(aeneas)]
+
+#[aeneas::rename("Bar")]
+type Foo = i32;
+```
+
+Those attributes can be applied to type definitions, functions, methods, trait
+declarations or trait implementations. For more examples, see:
+https://github.com/AeneasVerif/aeneas/blob/main/tests/src/rename_attribute.rs
+
+
+
+[Error] Error when registering the name for id: trait_decl_id: 31:
+The chosen name is already in the names set: core.ops.function.FnOnce
+Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+[Error] Name clash detected: the following identifiers are bound to the same name "core.ops.function.FnOnce.mk" (the generated code will be incorrect):
+- trait_decl_constructor: trait_decl: core::ops::function::FnOnce:: (id: 6)
+  Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+- trait_decl_constructor: trait_decl: core::ops::function::FnOnce::::<_, _, rumoca_ir_dae::ids::VariableId<_>> (id: 31)
+  Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+
+You may want to rename some of your definitions, or report an issue.
+Note that you can change the name used in the generated code by using the attribute #[aeneas::rename("NAME")] or #[charon::rename("NAME")]. For instance:
+
+```
+#![feature(register_tool)]
+#![register_tool(aeneas)]
+
+#[aeneas::rename("Bar")]
+type Foo = i32;
+```
+
+Those attributes can be applied to type definitions, functions, methods, trait
+declarations or trait implementations. For more examples, see:
+https://github.com/AeneasVerif/aeneas/blob/main/tests/src/rename_attribute.rs
+
+
+
+[Error] Error when registering the name for id: trait_decl_constructor: trait_decl: core::ops::function::FnOnce::::<_, _, rumoca_ir_dae::ids::VariableId<_>> (id: 31):
+The chosen name is already in the names set: core.ops.function.FnOnce.mk
+Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti6-m0/combined-lean
+[Info ] Generated the partial file (because of 6 errors, including 4 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti6-m0/combined-lean/TypesExternal_Template.lean
+[Info ] Generated the partial file (because of 6 errors, including 4 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti6-m0/combined-lean/Types.lean
+[Info ] Generated the partial file (because of 6 errors, including 4 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti6-m0/combined-lean/FunsExternal_Template.lean
+Uncaught exception:
+  
+  (Failure Unexpected)
+
+Raised at Charon__TypesUtils.as_ident in file "charon-ml/src/TypesUtils.ml", line 36, characters 9-37
+Called from Aeneas__ExtractBase.ctx_compute_var_basename in file "extract/ExtractBase.ml", line 2052, characters 35-59
+Called from Aeneas__Extract.extract_tpat in file "extract/Extract.ml", line 361, characters 20-69
+Called from Charon__Collections.List.fold_left_link.fold in file "charon-ml/src/Collections.ml", line 104, characters 20-27
+Called from Aeneas__Extract.extract_adt_g_value.extract_as_tuple in file "extract/Extract.ml", lines 138-143, characters 8-26
+Called from Aeneas__Extract.extract_tpat in file "extract/Extract.ml", lines 372-373, characters 8-38
+Called from Aeneas__Extract.extract_lets.extract_let in file "extract/Extract.ml", line 1363, characters 22-77
+Called from Stdlib__List.fold_left in file "list.ml", line 123, characters 24-34
+Called from Aeneas__Extract.extract_lets in file "extract/Extract.ml", lines 1433-1435, characters 4-14
+Called from Aeneas__Extract.extract_fun_decl_gen in file "extract/Extract.ml", lines 2286-2287, characters 8-52
+Called from Aeneas__Translate.export_functions_group_scc.(fun) in file "Translate.ml", line 892, characters 14-71
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.export_functions_group_scc in file "Translate.ml", line 906, characters 4-42
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.export_functions_group in file "Translate.ml", line 990, characters 4-45
+Called from Aeneas__Translate.extract_definitions.(fun) in file "Translate.ml", line 1274, characters 10-29
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.extract_file in file "Translate.ml", line 1430, characters 2-36
+Called from Aeneas__Translate.extract_translated_crate in file "Translate.ml", line 2096, characters 5-42
+Called from Dune__exe__Main in file "Main.ml", lines 767-768, characters 8-37

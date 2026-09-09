@@ -1,0 +1,134 @@
+---- simple/issue-1040-closure-upvar-lifetime.rs ----
+
+---- expected: tests/ui/simple/issue-1040-closure-upvar-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 114  114 | }
+ 115  115 | 
+ 116  116 | // Full name: test_crate::foo::{impl Fn<()> for closure<'_0>}::call
+ 117  117 | fn call<'_0, '_1, '_2>(_1: &'_2 closure<'_0>, tupled_args: ()) -> &'_1 u8
+ 118  118 | where
+ 119      -     RegionOutlives0: '_0: '_2,
+      119 +     RegionOutlives0: '_0: '_1,
+      120 +     RegionOutlives1: '_0: '_2,
+ 120  121 | {
+ 121      -     let _0: &'0 u8; // return
+ 122      -     let _1: &'2 closure<'_0>; // arg #1
+      122 +     let _0: &'1 u8; // return
+      123 +     let _1: &'3 closure<'_0>; // arg #1
+ 123  124 |     let tupled_args: (); // arg #2
+ 124  125 | 
+ 125  126 |     storage_live(_0)
+ 126  127 |     _0 = &(*(*_1)._0)
+ 127  128 |     storage_dead(tupled_args)
+          ⋮
+ 130  131 | }
+ 131  132 | 
+ 132  133 | // Full name: test_crate::foo::{impl FnMut<()> for closure<'_0>}::call_mut
+ 133  134 | fn call_mut<'_0, '_1, '_2>(state: &'_2 mut closure<'_0>, args: ()) -> &'_1 u8
+ 134  135 | where
+ 135      -     RegionOutlives0: '_0: '_2,
+      136 +     RegionOutlives0: '_0: '_1,
+      137 +     RegionOutlives1: '_0: '_2,
+ 136  138 | {
+ 137  139 |     let _0: &'_1 u8; // return
+ 138  140 |     let state: &'_2 mut closure<'_0>; // arg #1
+ 139  141 |     let args: (); // arg #2
+ 140  142 |     let _3: &'0 closure<'_0>; // anonymous local
+          ⋮
+ 153  155 |     return
+ 154  156 | }
+ 155  157 | 
+ 156  158 | // Full name: test_crate::foo::{impl FnOnce<()> for closure<'_0>}::call_once
+ 157  159 | fn call_once<'_0, '_1>(_1: closure<'_0>, _2: ()) -> &'_1 u8
+      160 + where
+      161 +     RegionOutlives0: '_0: '_1,
+ 158  162 | {
+ 159      -     let _0: &'0 u8; // return
+      163 +     let _0: &'1 u8; // return
+ 160  164 |     let _1: closure<'_0>; // arg #1
+ 161  165 |     let _2: (); // arg #2
+ 162      -     let _3: &'2 mut closure<'_0>; // anonymous local
+      166 +     let _3: &'3 mut closure<'_0>; // anonymous local
+ 163  167 | 
+ 164  168 |     storage_live(_0)
+ 165  169 |     storage_live(_3)
+ 166  170 |     _3 = &mut _1
+ 167      -     _0 = call_mut<'_0, '_1, '4>(move _3, move _2)
+ 168      -     ↳⚡ drop[drop_glue<'_0, '5>] _1
+      171 +     _0 = call_mut<'_0, '_1, '5>(move _3, move _2)
+      172 +     ↳⚡ drop[drop_glue<'_0, '6>] _1
+ 169  173 |         ↳⚡ storage_dead(_3)
+ 170  174 |             storage_dead(_2)
+ 171  175 |             storage_dead(_1)
+ 172  176 |             unwind_terminate
+ 173  177 |         storage_dead(_3)
+ 174  178 |         storage_dead(_2)
+ 175  179 |         storage_dead(_1)
+ 176  180 |         unwind_continue
+ 177      -     drop[drop_glue<'_0, '6>] _1
+      181 +     drop[drop_glue<'_0, '7>] _1
+ 178  182 |     ↳⚡ storage_dead(_3)
+ 179  183 |         storage_dead(_2)
+ 180  184 |         storage_dead(_1)
+ 181  185 |         unwind_continue
+ 182  186 |     storage_dead(_3)
+          ⋮
+ 184  188 |     storage_dead(_1)
+ 185  189 |     return
+ 186  190 | }
+ 187  191 | 
+ 188  192 | // Full name: test_crate::foo::{impl FnOnce<()> for closure<'_0>}
+ 189      - impl<'_0, '_1> "impl_FnOnce_unit_for_closure" FnOnce<()> for closure<'_0> {
+      193 + impl<'_0, '_1> "impl_FnOnce_unit_for_closure" FnOnce<()> for closure<'_0>
+      194 + where
+      195 +     RegionOutlives0: '_0: '_1,
+      196 + {
+ 190  197 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 191  198 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 192  199 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 193  200 |     proof ImpliedClause3: (&'_ u8: Sized) = {built_in impl Sized for &'_ u8}
+ 194  201 |     type Output = &'_ u8
+ 195  202 |     fn call_once = call_once<'_0, '_1>
+ 196  203 |     vtable: impl_FnOnce_unit_for_closure::{vtable}<'_0, '_1>
+ 197  204 | }
+ 198  205 | 
+ 199  206 | // Full name: test_crate::foo::{impl FnMut<()> for closure<'_0>}
+ 200      - impl<'_0, '_1> "impl_FnMut_unit_for_closure" FnMut<()> for closure<'_0> {
+      207 + impl<'_0, '_1> "impl_FnMut_unit_for_closure" FnMut<()> for closure<'_0>
+      208 + where
+      209 +     RegionOutlives0: '_0: '_1,
+      210 + {
+ 201  211 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 202  212 |     proof ImpliedClause1: (closure<'_0>: FnOnce<()>) = impl_FnOnce_unit_for_closure<'_0, '_1>
+ 203  213 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 204  214 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+ 205  215 |     fn call_mut<'_0_1> = call_mut<'_0, '_1, '_0_1>
+ 206  216 |     vtable: impl_FnMut_unit_for_closure::{vtable}<'_0, '_1>
+ 207  217 | }
+ 208  218 | 
+ 209  219 | // Full name: test_crate::foo::{impl Fn<()> for closure<'_0>}
+ 210      - impl<'_0, '_1> "impl_Fn_unit_for_closure" Fn<()> for closure<'_0> {
+      220 + impl<'_0, '_1> "impl_Fn_unit_for_closure" Fn<()> for closure<'_0>
+      221 + where
+      222 +     RegionOutlives0: '_0: '_1,
+      223 + {
+ 211  224 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 212  225 |     proof ImpliedClause1: (closure<'_0>: FnMut<()>) = impl_FnMut_unit_for_closure<'_0, '_1>
+ 213  226 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 214  227 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+ 215  228 |     fn call<'_0_1> = call<'_0, '_1, '_0_1>
+          ⋮
+ 222  235 |     non-dyn-compatible
+ 223  236 | }
+ 224  237 | 
+ 225  238 | 
+ 226  239 | 
+
+
+

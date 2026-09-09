@@ -1,0 +1,119 @@
+---- monomorphization/closure-fn.rs ----
+
+---- expected: tests/ui/monomorphization/closure-fn.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | opaque type core::marker::MetaSized::{vtable}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+ 129  129 |     storage_live(_0)
+ 130  130 |     storage_live(_2)
+ 131  131 |     _2 = &(*f)
+ 132  132 |     storage_live(_3)
+ 133  133 |     _3 = (const 10u8, const 20u8)
+ 134      -     _0 = impl_Fn_for_closure<'17, '18>::call<'19>(move _2, move _3)
+      134 +     _0 = impl_Fn_for_closure<'15, '16>::call<'17>(move _2, move _3)
+ 135  135 |     ↳⚡ storage_dead(f)
+ 136  136 |         unwind_continue
+ 137  137 |     storage_dead(_3)
+ 138  138 |     storage_dead(_2)
+ 139  139 |     storage_dead(f)
+          ⋮
+ 151  151 |     storage_live(_0)
+ 152  152 |     storage_live(_2)
+ 153  153 |     _2 = &mut (*f)
+ 154  154 |     storage_live(_3)
+ 155  155 |     _3 = (const 10u8, const 20u8)
+ 156      -     _0 = impl_FnMut_for_closure<'17, '18>::call_mut<'19>(move _2, move _3)
+      156 +     _0 = impl_FnMut_for_closure<'15, '16>::call_mut<'17>(move _2, move _3)
+ 157  157 |     ↳⚡ storage_dead(f)
+ 158  158 |         unwind_continue
+ 159  159 |     storage_dead(_3)
+ 160  160 |     storage_dead(_2)
+ 161  161 |     storage_dead(f)
+          ⋮
+ 188  188 |     storage_live(_0)
+ 189  189 |     storage_live(_2)
+ 190  190 |     _2 = move f
+ 191  191 |     storage_live(_3)
+ 192  192 |     _3 = (const 10u8, const 20u8)
+ 193      -     _0 = impl_FnOnce_for_closure<'10, '11>::call_once(move _2, move _3)
+ 194      -     ↳⚡ conditional_drop[drop_glue<'17, '18, '19>] _2
+      193 +     _0 = impl_FnOnce_for_closure<'8, '9>::call_once(move _2, move _3)
+      194 +     ↳⚡ conditional_drop[drop_glue<'14, '15, '16>] _2
+ 195  195 |         ↳⚡ storage_dead(f)
+ 196  196 |             unwind_terminate
+ 197      -         conditional_drop[drop_glue<'33, '34, '35>] f
+      197 +         conditional_drop[drop_glue<'28, '29, '30>] f
+ 198  198 |         ↳⚡ storage_dead(f)
+ 199  199 |             unwind_terminate
+ 200  200 |         storage_dead(f)
+ 201  201 |         unwind_continue
+ 202  202 |     storage_dead(_3)
+ 203  203 |     storage_dead(_2)
+ 204      -     conditional_drop[drop_glue<'25, '26, '27>] f
+      204 +     conditional_drop[drop_glue<'21, '22, '23>] f
+ 205  205 |     ↳⚡ storage_dead(f)
+ 206  206 |         unwind_continue
+ 207  207 |     storage_dead(f)
+ 208  208 |     return
+ 209  209 | }
+          ⋮
+ 212  212 | fn main()
+ 213  213 | {
+ 214  214 |     let _0: (); // return
+ 215  215 |     let v: u8; // local
+ 216  216 |     let z: u8; // local
+ 217      -     let f: closure<'3, '4>; // local
+      217 +     let f: closure<'2, '3>; // local
+ 218  218 |     let _4: &'5 u8; // anonymous local
+ 219  219 |     let _5: &'6 u8; // anonymous local
+ 220  220 |     let _6: u8; // anonymous local
+ 221  221 |     let _7: &'10 closure<'11, '12>; // anonymous local
+ 222  222 |     let _8: (u8, u8); // anonymous local
+          ⋮
+ 249  249 |     storage_live(_6)
+ 250  250 |     storage_live(_7)
+ 251  251 |     _7 = &f
+ 252  252 |     storage_live(_8)
+ 253  253 |     _8 = (const 10u8, const 20u8)
+ 254      -     _6 = impl_Fn_for_closure<'38, '39>::call<'40>(move _7, move _8)
+      254 +     _6 = impl_Fn_for_closure<'36, '37>::call<'38>(move _7, move _8)
+ 255  255 |     ↳⚡ unwind_continue
+ 256  256 |     storage_dead(_8)
+ 257  257 |     storage_dead(_7)
+ 258  258 |     storage_dead(_6)
+ 259  259 |     storage_live(_9)
+ 260  260 |     storage_live(_10)
+ 261  261 |     storage_live(_11)
+ 262  262 |     _11 = &f
+ 263  263 |     _10 = &(*_11)
+ 264      -     _9 = apply_to::<closure<'_, '_>><'44>(move _10)
+      264 +     _9 = apply_to::<closure<'_, '_>><'42>(move _10)
+ 265  265 |     ↳⚡ unwind_continue
+ 266  266 |     storage_dead(_10)
+ 267  267 |     storage_dead(_11)
+ 268  268 |     storage_dead(_9)
+ 269  269 |     storage_live(_12)
+ 270  270 |     storage_live(_13)
+ 271  271 |     storage_live(_14)
+ 272  272 |     _14 = &mut f
+ 273  273 |     _13 = &two-phase-mut (*_14)
+ 274      -     _12 = apply_to_mut::<closure<'_, '_>><'48>(move _13)
+      274 +     _12 = apply_to_mut::<closure<'_, '_>><'46>(move _13)
+ 275  275 |     ↳⚡ unwind_continue
+ 276  276 |     storage_dead(_13)
+ 277  277 |     storage_dead(_14)
+ 278  278 |     storage_dead(_12)
+ 279  279 |     storage_live(_15)
+          ⋮
+ 414  414 |     return
+ 415  415 | }
+ 416  416 | 
+ 417  417 | 
+ 418  418 | 
+
+
+

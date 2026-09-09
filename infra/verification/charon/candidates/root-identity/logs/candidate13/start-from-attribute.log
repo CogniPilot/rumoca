@@ -1,0 +1,58 @@
+warning: function `dont_translate` is never used
+ --> sfa.rs:5:4
+  |
+5 | fn dont_translate() {}
+  |    ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `dont_translate` is never used
+  --> sfa.rs:13:8
+   |
+13 |     fn dont_translate() {}
+   |        ^^^^^^^^^^^^^^
+
+warning: function `do_translate` is never used
+  --> sfa.rs:16:8
+   |
+16 |     fn do_translate() {}
+   |        ^^^^^^^^^^^^
+
+warning: function `also_translate` is never used
+  --> sfa.rs:19:8
+   |
+19 |     fn also_translate() {}
+   |        ^^^^^^^^^^^^^^
+
+warning: struct `Type1` is never constructed
+  --> sfa.rs:21:12
+   |
+21 |     struct Type1;
+   |            ^^^^^
+
+warning: struct `Type2` is never constructed
+  --> sfa.rs:22:12
+   |
+22 |     struct Type2;
+   |            ^^^^^
+
+warning: trait `Trait1` is never used
+  --> sfa.rs:24:11
+   |
+24 |     trait Trait1 {
+   |           ^^^^^^
+
+warning: trait `Trait2` is never used
+  --> sfa.rs:37:11
+   |
+37 |     trait Trait2 {}
+   |           ^^^^^^
+
+warning: function `dont_translate` is never used
+ --> sfa.rs:9:8
+  |
+9 |     fn dont_translate() {}
+  |        ^^^^^^^^^^^^^^
+
+warning: 9 warnings emitted
+

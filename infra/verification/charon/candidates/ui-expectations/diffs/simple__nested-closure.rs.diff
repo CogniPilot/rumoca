@@ -1,0 +1,460 @@
+---- simple/nested-closure.rs ----
+
+---- expected: tests/ui/simple/nested-closure.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 114  114 |     TypeOutlives1: T: '_3,
+ 115  115 |     RegionOutlives0: 'a: '_3,
+ 116  116 |     RegionOutlives1: '_1: '_3,
+ 117  117 | {
+ 118  118 |     let _0: T; // return
+ 119      -     let _1: &'1 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      119 +     let _1: &'2 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 120  120 |     let tupled_args: (&'_2 u32,); // arg #2
+ 121      -     let _z: &'2 u32; // local
+ 122      -     let _4: &'3 T; // anonymous local
+      121 +     let _z: &'3 u32; // local
+      122 +     let _4: &'5 T; // anonymous local
+ 123  123 | 
+ 124  124 |     storage_live(_0)
+ 125  125 |     storage_live(_z)
+ 126  126 |     _z = move tupled_args._0
+ 127  127 |     storage_live(_4)
+ 128  128 |     _4 = &(*(*_1)._0)
+ 129      -     _0 = TraitClause1::clone<'5>(move _4)
+      129 +     _0 = TraitClause1::clone<'7>(move _4)
+ 130  130 |     ↳⚡ storage_dead(_z)
+ 131  131 |         storage_dead(tupled_args)
+ 132  132 |         storage_dead(_1)
+ 133  133 |         unwind_continue
+ 134  134 |     storage_dead(_4)
+          ⋮
+ 153  153 |     TraitClause0: (T: Sized),
+ 154  154 |     TraitClause1: (T: Clone),
+ 155  155 |     TypeOutlives0: T: '_1,
+ 156  156 |     TypeOutlives1: T: '_5,
+ 157  157 |     TypeOutlives2: T: '_4,
+ 158      -     RegionOutlives0: 'a: '_5,
+ 159      -     RegionOutlives1: '_1: '_5,
+      158 +     RegionOutlives0: 'a: '_3,
+      159 +     RegionOutlives1: '_3: 'a,
+      160 +     RegionOutlives2: '_1: '_4,
+      161 +     RegionOutlives3: 'a: '_5,
+      162 +     RegionOutlives4: '_1: '_5,
+ 160  163 | {
+ 161  164 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 162      -     let _1: &'5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      165 +     let _1: &'6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 163  166 |     let tupled_args: (&'_2 u32,); // arg #2
+ 164      -     let _y: &'6 u32; // local
+ 165      -     let _4: &'7 T; // anonymous local
+      167 +     let _y: &'7 u32; // local
+      168 +     let _4: &'9 T; // anonymous local
+ 166  169 | 
+ 167  170 |     storage_live(_0)
+ 168  171 |     storage_live(_y)
+ 169  172 |     _y = move tupled_args._0
+ 170  173 |     storage_live(_4)
+          ⋮
+ 192  195 |     TraitClause0: (T: Sized),
+ 193  196 |     TraitClause1: (T: Clone),
+ 194  197 |     TypeOutlives0: T: '_1,
+ 195  198 |     TypeOutlives1: T: '_6,
+ 196  199 |     TypeOutlives2: T: '_5,
+ 197      -     RegionOutlives0: 'a: '_6,
+ 198      -     RegionOutlives1: '_1: '_6,
+      200 +     RegionOutlives0: 'a: '_2,
+      201 +     RegionOutlives1: 'a: '_3,
+      202 +     RegionOutlives2: '_2: 'a,
+      203 +     RegionOutlives3: '_2: '_3,
+      204 +     RegionOutlives4: '_3: 'a,
+      205 +     RegionOutlives5: '_3: '_2,
+      206 +     RegionOutlives6: '_5: '_4,
+      207 +     RegionOutlives7: '_1: '_4,
+      208 +     RegionOutlives8: '_1: '_5,
+      209 +     RegionOutlives9: 'a: '_6,
+      210 +     RegionOutlives10: '_1: '_6,
+ 199  211 | {
+ 200  212 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 201      -     let _1: &'5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      213 +     let _1: &'6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 202  214 |     let tupled_args: (); // arg #2
+ 203      -     let _3: &'6 T; // anonymous local
+      215 +     let _3: &'8 T; // anonymous local
+ 204  216 | 
+ 205  217 |     storage_live(_0)
+ 206  218 |     storage_live(_3)
+ 207  219 |     _3 = &(*(*_1)._0)
+ 208  220 |     _0 = test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure { _0: move _3 }
+          ⋮
+ 236  248 |     let _13: (&'41 u32,); // anonymous local
+ 237  249 |     let _14: &'42 u32; // anonymous local
+ 238  250 |     let _15: &'43 u32; // anonymous local
+ 239  251 |     let _16: &'44 u32; // anonymous local
+ 240  252 |     let _17: &'45 u32; // anonymous local
+ 241      -     let _18: &'63 u32; // anonymous local
+ 242      -     let _19: &'81 u32; // anonymous local
+ 243      -     let _20: &'96 u32; // anonymous local
+      253 +     let _18: &'61 u32; // anonymous local
+      254 +     let _19: &'77 u32; // anonymous local
+      255 +     let _20: &'90 u32; // anonymous local
+ 244  256 |     let _21: u32; // anonymous local
+ 245      -     let _22: &'97 u32; // anonymous local
+      257 +     let _22: &'91 u32; // anonymous local
+ 246  258 |     let _23: u32; // anonymous local
+ 247  259 | 
+ 248  260 |     storage_live(_0)
+ 249  261 |     storage_live(_16)
+ 250  262 |     storage_live(_17)
+          ⋮
+ 260  272 |     storage_live(_7)
+ 261  273 |     storage_live(_8)
+ 262  274 |     _8 = &clo
+ 263  275 |     storage_live(_9)
+ 264  276 |     _9 = ()
+ 265      -     _7 = impl_Fn_unit_for_closure::call<'54, '56, '57, '58, '59, '60, '61, T>[TraitClause0, TraitClause1](move _8, move _9)
+      277 +     _7 = impl_Fn_unit_for_closure::call<'53, '54, '55, '56, '57, '58, '59, T>[TraitClause0, TraitClause1](move _8, move _9)
+ 266  278 |     ↳⚡ storage_dead(_17)
+ 267  279 |         storage_dead(_16)
+ 268  280 |         storage_dead(x)
+ 269  281 |         unwind_continue
+ 270  282 |     storage_live(_18)
+          ⋮
+ 281  293 |     storage_live(_12)
+ 282  294 |     _17 = move _18
+ 283  295 |     _12 = &(*_17)
+ 284  296 |     _11 = &(*_12)
+ 285  297 |     _10 = (move _11,)
+ 286      -     _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'73, '75, '76, '77, '78, '79, T>[TraitClause0, TraitClause1](move _6, move _10)
+      298 +     _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'70, '71, '72, '73, '74, '75, T>[TraitClause0, TraitClause1](move _6, move _10)
+ 287  299 |     ↳⚡ storage_dead(_17)
+ 288  300 |         storage_dead(_16)
+ 289  301 |         storage_dead(x)
+ 290  302 |         unwind_continue
+ 291  303 |     storage_live(_19)
+          ⋮
+ 303  315 |     storage_live(_15)
+ 304  316 |     _16 = move _19
+ 305  317 |     _15 = &(*_16)
+ 306  318 |     _14 = &(*_15)
+ 307  319 |     _13 = (move _14,)
+ 308      -     _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'91, '93, '94, '95, T>[TraitClause0, TraitClause1](move _4, move _13)
+      320 +     _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'86, '87, '88, '89, T>[TraitClause0, TraitClause1](move _4, move _13)
+ 309  321 |     ↳⚡ storage_dead(_17)
+ 310  322 |         storage_dead(_16)
+ 311  323 |         storage_dead(x)
+ 312  324 |         unwind_continue
+ 313  325 |     storage_dead(_14)
+          ⋮
+ 339  351 |     TypeOutlives1: T: '_2,
+ 340  352 |     RegionOutlives0: 'a: '_2,
+ 341  353 |     RegionOutlives1: '_1: '_2,
+ 342  354 | {
+ 343  355 |     let _0: (); // return
+ 344      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      356 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 345  357 | 
+ 346  358 |     storage_live(_0)
+ 347  359 |     _0 = ()
+ 348  360 |     storage_dead(_1)
+ 349  361 |     return
+          ⋮
+ 355  367 |     TraitClause0: (T: Sized),
+ 356  368 |     TraitClause1: (T: Clone),
+ 357  369 |     TypeOutlives0: T: '_1,
+ 358  370 |     TypeOutlives1: T: '_6,
+ 359  371 |     TypeOutlives2: T: '_5,
+ 360      -     RegionOutlives0: 'a: '_6,
+ 361      -     RegionOutlives1: '_1: '_6,
+      372 +     RegionOutlives0: 'a: '_2,
+      373 +     RegionOutlives1: 'a: '_3,
+      374 +     RegionOutlives2: '_2: 'a,
+      375 +     RegionOutlives3: '_2: '_3,
+      376 +     RegionOutlives4: '_3: 'a,
+      377 +     RegionOutlives5: '_3: '_2,
+      378 +     RegionOutlives6: '_5: '_4,
+      379 +     RegionOutlives7: '_1: '_4,
+      380 +     RegionOutlives8: '_1: '_5,
+      381 +     RegionOutlives9: 'a: '_6,
+      382 +     RegionOutlives10: '_1: '_6,
+ 362  383 | {
+ 363  384 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]; // return
+ 364  385 |     let state: &'_6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 365  386 |     let args: (); // arg #2
+ 366  387 |     let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 384  405 | where
+ 385  406 |     TraitClause0: (T: Sized),
+ 386  407 |     TraitClause1: (T: Clone),
+ 387  408 |     TypeOutlives0: T: '_1,
+ 388  409 |     TypeOutlives1: T: '_5,
+      410 +     RegionOutlives0: 'a: '_2,
+      411 +     RegionOutlives1: 'a: '_3,
+      412 +     RegionOutlives2: '_2: 'a,
+      413 +     RegionOutlives3: '_2: '_3,
+      414 +     RegionOutlives4: '_3: 'a,
+      415 +     RegionOutlives5: '_3: '_2,
+      416 +     RegionOutlives6: '_5: '_4,
+      417 +     RegionOutlives7: '_1: '_4,
+      418 +     RegionOutlives8: '_1: '_5,
+ 389  419 | {
+ 390  420 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 391  421 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 392  422 |     let _2: (); // arg #2
+ 393      -     let _3: &'5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      423 +     let _3: &'6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 394  424 | 
+ 395  425 |     storage_live(_0)
+ 396  426 |     storage_live(_3)
+ 397  427 |     _3 = &mut _1
+ 398      -     _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '12, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 399      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+      428 +     _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '13, T>[TraitClause0, TraitClause1](move _3, move _2)
+      429 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '16, T>[TraitClause0, TraitClause1]] _1
+ 400  430 |         ↳⚡ storage_dead(_3)
+ 401  431 |             storage_dead(_2)
+ 402  432 |             storage_dead(_1)
+ 403  433 |             unwind_terminate
+ 404  434 |         storage_dead(_3)
+ 405  435 |         storage_dead(_2)
+ 406  436 |         storage_dead(_1)
+ 407  437 |         unwind_continue
+ 408      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+      438 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '19, T>[TraitClause0, TraitClause1]] _1
+ 409  439 |     ↳⚡ storage_dead(_3)
+ 410  440 |         storage_dead(_2)
+ 411  441 |         storage_dead(_1)
+ 412  442 |         unwind_continue
+ 413  443 |     storage_dead(_3)
+          ⋮
+ 420  450 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_FnOnce_unit_for_closure" FnOnce<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 421  451 | where
+ 422  452 |     TraitClause0: (T: Sized),
+ 423  453 |     TraitClause1: (T: Clone),
+ 424  454 |     TypeOutlives0: T: '_1,
+      455 +     RegionOutlives0: 'a: '_2,
+      456 +     RegionOutlives1: 'a: '_3,
+      457 +     RegionOutlives2: '_2: 'a,
+      458 +     RegionOutlives3: '_2: '_3,
+      459 +     RegionOutlives4: '_3: 'a,
+      460 +     RegionOutlives5: '_3: '_2,
+      461 +     RegionOutlives6: '_5: '_4,
+      462 +     RegionOutlives7: '_1: '_4,
+      463 +     RegionOutlives8: '_1: '_5,
+ 425  464 | {
+ 426  465 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 427  466 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 428  467 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 429  468 |     proof ImpliedClause3: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]: Sized) = {built_in impl Sized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]}
+          ⋮
+ 436  475 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_FnMut_unit_for_closure" FnMut<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 437  476 | where
+ 438  477 |     TraitClause0: (T: Sized),
+ 439  478 |     TraitClause1: (T: Clone),
+ 440  479 |     TypeOutlives0: T: '_1,
+      480 +     RegionOutlives0: 'a: '_2,
+      481 +     RegionOutlives1: 'a: '_3,
+      482 +     RegionOutlives2: '_2: 'a,
+      483 +     RegionOutlives3: '_2: '_3,
+      484 +     RegionOutlives4: '_3: 'a,
+      485 +     RegionOutlives5: '_3: '_2,
+      486 +     RegionOutlives6: '_5: '_4,
+      487 +     RegionOutlives7: '_1: '_4,
+      488 +     RegionOutlives8: '_1: '_5,
+ 441  489 | {
+ 442  490 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 443  491 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnOnce<()>) = impl_FnOnce_unit_for_closure<'a, '_1, '_2, '_3, '_4, '_5, T>[TraitClause0, TraitClause1]
+ 444  492 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 445  493 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 451  499 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_Fn_unit_for_closure" Fn<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 452  500 | where
+ 453  501 |     TraitClause0: (T: Sized),
+ 454  502 |     TraitClause1: (T: Clone),
+ 455  503 |     TypeOutlives0: T: '_1,
+      504 +     RegionOutlives0: 'a: '_2,
+      505 +     RegionOutlives1: 'a: '_3,
+      506 +     RegionOutlives2: '_2: 'a,
+      507 +     RegionOutlives3: '_2: '_3,
+      508 +     RegionOutlives4: '_3: 'a,
+      509 +     RegionOutlives5: '_3: '_2,
+      510 +     RegionOutlives6: '_5: '_4,
+      511 +     RegionOutlives7: '_1: '_4,
+      512 +     RegionOutlives8: '_1: '_5,
+ 456  513 | {
+ 457  514 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 458  515 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnMut<()>) = impl_FnMut_unit_for_closure<'a, '_1, '_2, '_3, '_4, '_5, T>[TraitClause0, TraitClause1]
+ 459  516 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 460  517 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 482  539 |     TypeOutlives1: T: '_2,
+ 483  540 |     RegionOutlives0: 'a: '_2,
+ 484  541 |     RegionOutlives1: '_1: '_2,
+ 485  542 | {
+ 486  543 |     let _0: (); // return
+ 487      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      544 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 488  545 | 
+ 489  546 |     storage_live(_0)
+ 490  547 |     _0 = ()
+ 491  548 |     storage_dead(_1)
+ 492  549 |     return
+          ⋮
+ 498  555 |     TraitClause0: (T: Sized),
+ 499  556 |     TraitClause1: (T: Clone),
+ 500  557 |     TypeOutlives0: T: '_1,
+ 501  558 |     TypeOutlives1: T: '_5,
+ 502  559 |     TypeOutlives2: T: '_4,
+ 503      -     RegionOutlives0: 'a: '_5,
+ 504      -     RegionOutlives1: '_1: '_5,
+      560 +     RegionOutlives0: 'a: '_3,
+      561 +     RegionOutlives1: '_3: 'a,
+      562 +     RegionOutlives2: '_1: '_4,
+      563 +     RegionOutlives3: 'a: '_5,
+      564 +     RegionOutlives4: '_1: '_5,
+ 505  565 | {
+ 506  566 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]; // return
+ 507  567 |     let state: &'_5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 508  568 |     let args: (&'_2 u32,); // arg #2
+ 509  569 |     let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 527  587 | where
+ 528  588 |     TraitClause0: (T: Sized),
+ 529  589 |     TraitClause1: (T: Clone),
+ 530  590 |     TypeOutlives0: T: '_1,
+ 531  591 |     TypeOutlives1: T: '_4,
+      592 +     RegionOutlives0: 'a: '_3,
+      593 +     RegionOutlives1: '_3: 'a,
+      594 +     RegionOutlives2: '_1: '_4,
+ 532  595 | {
+ 533  596 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 534  597 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 535      -     let _2: (&'4 u32,); // arg #2
+ 536      -     let _3: &'6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      598 +     let _2: (&'5 u32,); // arg #2
+      599 +     let _3: &'7 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 537  600 | 
+ 538  601 |     storage_live(_0)
+ 539  602 |     storage_live(_3)
+ 540  603 |     _3 = &mut _1
+ 541      -     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '15, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 542      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+      604 +     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '16, T>[TraitClause0, TraitClause1](move _3, move _2)
+      605 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '19, T>[TraitClause0, TraitClause1]] _1
+ 543  606 |         ↳⚡ storage_dead(_3)
+ 544  607 |             storage_dead(_2)
+ 545  608 |             storage_dead(_1)
+ 546  609 |             unwind_terminate
+ 547  610 |         storage_dead(_3)
+ 548  611 |         storage_dead(_2)
+ 549  612 |         storage_dead(_1)
+ 550  613 |         unwind_continue
+ 551      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '21, T>[TraitClause0, TraitClause1]] _1
+      614 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '22, T>[TraitClause0, TraitClause1]] _1
+ 552  615 |     ↳⚡ storage_dead(_3)
+ 553  616 |         storage_dead(_2)
+ 554  617 |         storage_dead(_1)
+ 555  618 |         unwind_continue
+ 556  619 |     storage_dead(_3)
+          ⋮
+ 563  626 | impl<'a, '_1, '_2, '_3, '_4, T> FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 564  627 | where
+ 565  628 |     TraitClause0: (T: Sized),
+ 566  629 |     TraitClause1: (T: Clone),
+ 567  630 |     TypeOutlives0: T: '_1,
+      631 +     RegionOutlives0: 'a: '_3,
+      632 +     RegionOutlives1: '_3: 'a,
+      633 +     RegionOutlives2: '_1: '_4,
+ 568  634 | {
+ 569  635 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 570  636 |     proof ImpliedClause1: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 571  637 |     proof ImpliedClause2: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+ 572  638 |     proof ImpliedClause3: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]: Sized) = {built_in impl Sized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]}
+          ⋮
+ 579  645 | impl<'a, '_1, '_2, '_3, '_4, T> FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 580  646 | where
+ 581  647 |     TraitClause0: (T: Sized),
+ 582  648 |     TraitClause1: (T: Clone),
+ 583  649 |     TypeOutlives0: T: '_1,
+      650 +     RegionOutlives0: 'a: '_3,
+      651 +     RegionOutlives1: '_3: 'a,
+      652 +     RegionOutlives2: '_1: '_4,
+ 584  653 | {
+ 585  654 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 586  655 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnOnce<(&'_ u32,)>) = {impl FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}<'a, '_1, '_2, '_3, '_4, T>[TraitClause0, TraitClause1]
+ 587  656 |     proof ImpliedClause2: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 588  657 |     proof ImpliedClause3: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+          ⋮
+ 594  663 | impl<'a, '_1, '_2, '_3, '_4, T> Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 595  664 | where
+ 596  665 |     TraitClause0: (T: Sized),
+ 597  666 |     TraitClause1: (T: Clone),
+ 598  667 |     TypeOutlives0: T: '_1,
+      668 +     RegionOutlives0: 'a: '_3,
+      669 +     RegionOutlives1: '_3: 'a,
+      670 +     RegionOutlives2: '_1: '_4,
+ 599  671 | {
+ 600  672 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 601  673 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnMut<(&'_ u32,)>) = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}<'a, '_1, '_2, '_3, '_4, T>[TraitClause0, TraitClause1]
+ 602  674 |     proof ImpliedClause2: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 603  675 |     proof ImpliedClause3: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+          ⋮
+ 625  697 |     TypeOutlives1: T: '_2,
+ 626  698 |     RegionOutlives0: 'a: '_2,
+ 627  699 |     RegionOutlives1: '_1: '_2,
+ 628  700 | {
+ 629  701 |     let _0: (); // return
+ 630      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      702 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 631  703 | 
+ 632  704 |     storage_live(_0)
+ 633  705 |     _0 = ()
+ 634  706 |     storage_dead(_1)
+ 635  707 |     return
+          ⋮
+ 671  743 |     TraitClause1: (T: Clone),
+ 672  744 |     TypeOutlives0: T: '_1,
+ 673  745 | {
+ 674  746 |     let _0: T; // return
+ 675  747 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 676      -     let _2: (&'0 u32,); // arg #2
+ 677      -     let _3: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      748 +     let _2: (&'1 u32,); // arg #2
+      749 +     let _3: &'3 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 678  750 | 
+ 679  751 |     storage_live(_0)
+ 680  752 |     storage_live(_3)
+ 681  753 |     _3 = &mut _1
+ 682      -     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '9, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 683      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '12, T>[TraitClause0, TraitClause1]] _1
+      754 +     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '10, T>[TraitClause0, TraitClause1](move _3, move _2)
+      755 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '13, T>[TraitClause0, TraitClause1]] _1
+ 684  756 |         ↳⚡ storage_dead(_3)
+ 685  757 |             storage_dead(_2)
+ 686  758 |             storage_dead(_1)
+ 687  759 |             unwind_terminate
+ 688  760 |         storage_dead(_3)
+ 689  761 |         storage_dead(_2)
+ 690  762 |         storage_dead(_1)
+ 691  763 |         unwind_continue
+ 692      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+      764 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '16, T>[TraitClause0, TraitClause1]] _1
+ 693  765 |     ↳⚡ storage_dead(_3)
+ 694  766 |         storage_dead(_2)
+ 695  767 |         storage_dead(_1)
+ 696  768 |         unwind_continue
+ 697  769 |     storage_dead(_3)
+          ⋮
+ 757  829 |     non-dyn-compatible
+ 758  830 | }
+ 759  831 | 
+ 760  832 | 
+ 761  833 | 
+
+
+

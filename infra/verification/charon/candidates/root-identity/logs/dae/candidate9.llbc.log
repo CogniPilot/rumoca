@@ -1,0 +1,3070 @@
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling object v0.37.3
+   Compiling libc v0.2.186
+   Compiling gimli v0.32.3
+   Compiling rustix v1.1.4
+   Compiling memchr v2.8.2
+   Compiling serde_core v1.0.228
+   Compiling adler2 v2.0.1
+   Compiling cfg-if v1.0.4
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling owo-colors v4.3.0
+   Compiling rustc-demangle v0.1.27
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.13.0
+   Compiling unicode-width v0.2.2
+   Compiling is_ci v1.2.0
+   Compiling serde v1.0.228
+   Compiling unicode-linebreak v0.1.5
+   Compiling thiserror v2.0.18
+   Compiling rumoca-core v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-core)
+   Compiling arrayref v0.3.9
+   Compiling arrayvec v0.7.8
+   Compiling unicode-width v0.1.14
+   Compiling cpufeatures v0.3.0
+   Compiling constant_time_eq v0.4.2
+   Compiling supports-unicode v3.0.0
+   Compiling hashbrown v0.17.1
+   Compiling supports-hyperlinks v3.2.0
+   Compiling equivalent v1.0.2
+   Compiling rustc-hash v2.1.3
+   Compiling cc v1.2.66
+   Compiling miniz_oxide v0.8.9
+   Compiling supports-color v3.0.2
+   Compiling textwrap v0.16.2
+   Compiling syn v2.0.118
+   Compiling addr2line v0.25.1
+   Compiling terminal_size v0.4.4
+   Compiling indexmap v2.14.0
+   Compiling blake3 v1.8.5
+   Compiling backtrace v0.3.76
+   Compiling miette-derive v7.6.0
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling backtrace-ext v0.2.1
+   Compiling miette v7.6.0
+   Compiling rumoca-ir-dae v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-dae)
+# Final LLBC before serialization:
+
+opaque type ()
+
+// Full name: core::option::Option
+#[lang_item(Option)]
+#[diagnostic_item("Option")]
+pub enum Option<T> {
+  None,
+  Some { _0: T },
+}
+
+// Full name: core::ops::function::FnOnce
+#[fundamental]
+#[lang_item(FnOnce)]
+pub trait FnOnce<Self, Args, Self_Output>
+{
+    fn call_once;
+    vtable: core::ops::function::FnOnce::{vtable}<Args, Self_Output>
+}
+
+// Full name: core::marker::Destruct
+#[lang_item(Destruct)]
+pub trait Destruct<Self>
+{
+    fn drop_glue<'_0_1>;
+    non-dyn-compatible
+}
+
+// Full name: core::bool::{bool}::then
+#[diagnostic_item("bool_then")]
+pub fn then<T, F>(_1: bool, _2: F) -> Option<T>
+where
+    TraitClause0: (F: FnOnce<(), T>),
+    TraitClause1: (F: Destruct),
+= <opaque>
+
+// Full name: core::clone::Clone
+#[lang_item(Clone)]
+#[diagnostic_item("Clone")]
+pub trait Clone<Self>
+{
+    fn clone<'_0_1>;
+    non-dyn-compatible
+}
+
+// Full name: core::clone::impls::{impl Clone for usize}::clone
+pub fn impl_Clone_for_usize::clone<'_0>(_1: &'_0 usize) -> usize
+= <opaque>
+
+// Full name: core::clone::impls::{impl Clone for usize}
+impl "impl_Clone_for_usize" Clone for usize {
+    fn clone<'_0_1> = impl_Clone_for_usize::clone<'_0_1>
+    non-dyn-compatible
+}
+
+// Full name: core::clone::impls::{impl Clone for u32}::clone
+pub fn impl_Clone_for_u32::clone<'_0>(_1: &'_0 u32) -> u32
+= <opaque>
+
+// Full name: core::clone::impls::{impl Clone for u32}
+impl "impl_Clone_for_u32" Clone for u32 {
+    fn clone<'_0_1> = impl_Clone_for_u32::clone<'_0_1>
+    non-dyn-compatible
+}
+
+// Full name: core::cmp::PartialEq
+#[lang_item(PartialEq)]
+#[diagnostic_item("PartialEq")]
+pub trait PartialEq<Self, Rhs>
+{
+    fn eq<'_0_1, '_1_1>;
+    vtable: core::cmp::PartialEq::{vtable}<Rhs>
+}
+
+// Full name: core::cmp::Ordering
+#[lang_item(OrderingEnum)]
+pub enum Ordering {
+  Less,
+  Equal,
+  Greater,
+}
+
+// Full name: core::cmp::PartialOrd
+#[lang_item(PartialOrd)]
+#[diagnostic_item("PartialOrd")]
+pub trait PartialOrd<Self, Rhs>
+{
+    proof ImpliedClause0: (Self: PartialEq<Rhs>)
+    fn partial_cmp<'_0_1, '_1_1>;
+    vtable: core::cmp::PartialOrd::{vtable}<Rhs>
+}
+
+// Full name: core::cmp::impls::{impl PartialEq<usize> for usize}::eq
+pub fn impl_PartialEq_usize_for_usize::eq<'_0, '_1>(_1: &'_0 usize, _2: &'_1 usize) -> bool
+= <opaque>
+
+// Full name: core::cmp::impls::{impl PartialEq<usize> for usize}
+impl "impl_PartialEq_usize_for_usize" PartialEq<usize> for usize {
+    fn eq<'_0_1, '_1_1> = impl_PartialEq_usize_for_usize::eq<'_0_1, '_1_1>
+    vtable: impl_PartialEq_usize_for_usize::{vtable}
+}
+
+// Full name: core::cmp::impls::{impl PartialOrd<usize> for usize}::partial_cmp
+pub fn impl_PartialOrd_usize_for_usize::partial_cmp<'_0, '_1>(_1: &'_0 usize, _2: &'_1 usize) -> Option<Ordering>
+= <opaque>
+
+// Full name: core::cmp::impls::{impl PartialOrd<usize> for usize}
+impl "impl_PartialOrd_usize_for_usize" PartialOrd<usize> for usize {
+    proof ImpliedClause0: (usize: PartialEq<usize>) = impl_PartialEq_usize_for_usize
+    fn partial_cmp<'_0_1, '_1_1> = impl_PartialOrd_usize_for_usize::partial_cmp<'_0_1, '_1_1>
+    vtable: impl_PartialOrd_usize_for_usize::{vtable}
+}
+
+// Full name: core::convert::From
+#[lang_item(From)]
+#[diagnostic_item("From")]
+pub trait From<Self, T>
+{
+    fn from;
+    non-dyn-compatible
+}
+
+// Full name: core::convert::{impl Into<U> for T}::into
+#[track_caller]
+pub fn into<T, U>(_1: T) -> U
+where
+    TraitClause0: (U: From<T>),
+= <opaque>
+
+// Full name: core::convert::Infallible
+pub enum Infallible {
+}
+
+// Full name: core::result::Result
+#[diagnostic_item("Result")]
+pub enum Result<T, E> {
+  Ok { _0: T },
+  Err { _0: E },
+}
+
+// Full name: core::num::error::TryFromIntError
+pub opaque type TryFromIntError
+
+// Full name: core::convert::num::ptr_try_from_impls::{impl TryFrom<usize, TryFromIntError> for u32}::try_from
+pub fn try_from(_1: usize) -> Result<u32, TryFromIntError>
+= <opaque>
+
+// Full name: core::fmt::Arguments
+#[lang_item(FormatArguments)]
+pub opaque type Arguments<'a>
+
+struct str {
+  _0: [u8],
+}
+
+// Full name: core::fmt::{Arguments<'a>}::from_str_nonconst
+pub fn from_str_nonconst<'a>(_1: &'static str) -> Arguments<'a>
+= <opaque>
+
+// Full name: core::iter::adapters::map::Map
+pub opaque type Map<I, F>
+
+// Full name: core::iter::adapters::map::Map::{impl Destruct for Map<I, F>}::drop_glue
+unsafe fn impl_Destruct_for_Map::drop_glue<'_0, I, F>(_1: &'_0 mut Map<I, F>)
+where
+    TypeOutlives0: I: '_0,
+    TypeOutlives1: F: '_0,
+= <opaque>
+
+// Full name: core::ops::function::FnMut
+#[fundamental]
+#[lang_item(FnMut)]
+pub trait FnMut<Self, Args, Self_Clause0_Output>
+{
+    proof ImpliedClause0: (Self: FnOnce<Args, Self_Clause0_Output>)
+    fn call_mut<'_0_1>;
+    vtable: core::ops::function::FnMut::{vtable}<Args, Self_Clause0_Output>
+}
+
+// Full name: core::iter::traits::collect::FromIterator
+#[diagnostic_item("FromIterator")]
+pub trait FromIterator<Self, A>
+{
+    fn from_iter<T, Clause0_IntoIter, TraitClause0_1: (T: IntoIterator<A, Clause0_IntoIter>)>;
+    non-dyn-compatible
+}
+
+// Full name: core::iter::traits::collect::IntoIterator
+#[diagnostic_item("IntoIterator")]
+pub trait IntoIterator<Self, Self_Item, Self_IntoIter>
+{
+    proof ImpliedClause0: (Self_IntoIter: Iterator<Self_Item>)
+    fn into_iter;
+    vtable: core::iter::traits::collect::IntoIterator::{vtable}<Self_Item, Self_IntoIter>
+}
+
+// Full name: core::iter::traits::iterator::Iterator
+#[lang_item(Iterator)]
+#[diagnostic_item("Iterator")]
+pub trait Iterator<Self, Self_Item>
+{
+    fn next<'_0_1>;
+    fn map<B, F, TraitClause0_1: (F: FnMut<(Self_Item,), B>)> = map<Self, B, F, Self_Item>[Self, TraitClause0_1]
+    fn collect<B, TraitClause0_1: (B: FromIterator<Self_Item>)> = collect<Self, B, Self_Item>[Self, TraitClause0_1]
+    vtable: core::iter::traits::iterator::Iterator::{vtable}<Self_Item>
+}
+
+// Full name: core::iter::traits::iterator::Iterator::collect
+#[diagnostic_item("iterator_collect_fn")]
+pub fn collect<Self, B, Clause0_Item>(_1: Self) -> B
+where
+    TraitClause0: (Self: Iterator<Clause0_Item>),
+    TraitClause1: (B: FromIterator<Clause0_Item>),
+= <opaque>
+
+// Full name: core::iter::traits::iterator::Iterator::map
+#[diagnostic_item("IteratorMap")]
+pub fn map<Self, B, F, Clause0_Item>(_1: Self, _2: F) -> Map<Self, F>
+where
+    TraitClause0: (Self: Iterator<Clause0_Item>),
+    TraitClause1: (F: FnMut<(Clause0_Item,), B>),
+= <opaque>
+
+// Full name: core::iter::adapters::map::{impl Iterator<B> for Map<I, F>}::next
+pub fn impl_Iterator_for_Map::next<'_0, B, I, F, Clause0_Item>(_1: &'_0 mut Map<I, F>) -> Option<B>
+where
+    TraitClause0: (I: Iterator<Clause0_Item>),
+    TraitClause1: (F: FnMut<(Clause0_Item,), B>),
+    TypeOutlives0: I: '_0,
+    TypeOutlives1: F: '_0,
+= <opaque>
+
+// Full name: core::iter::adapters::map::{impl Iterator<B> for Map<I, F>}
+impl<B, I, F, Clause0_Item> "impl_Iterator_for_Map" Iterator<B> for Map<I, F>
+where
+    TraitClause0: (I: Iterator<Clause0_Item>),
+    TraitClause1: (F: FnMut<(Clause0_Item,), B>),
+{
+    fn next<'_0_1> = impl_Iterator_for_Map::next<'_0_1, B, I, F, Clause0_Item>[TraitClause0, TraitClause1]
+    fn map<B, F, TraitClause0_1: (F: FnMut<(B,), B>)> = map<Map<I, F>, B, F, B>[impl_Iterator_for_Map<B, I, F, Clause0_Item>[TraitClause0, TraitClause1], TraitClause0_1]
+    fn collect<B, TraitClause0_1: (B: FromIterator<B>)> = collect<Map<I, F>, B, B>[impl_Iterator_for_Map<B, I, F, Clause0_Item>[TraitClause0, TraitClause1], TraitClause0_1]
+    vtable: impl_Iterator_for_Map::{vtable}<B, I, F>[TraitClause0, TraitClause1]
+}
+
+// Full name: core::iter::range::Step
+#[diagnostic_item("range_step")]
+pub trait Step<Self>
+{
+    proof ImpliedClause0: (Self: Clone)
+    proof ImpliedClause1: (Self: PartialOrd<Self>)
+    fn steps_between<'_0_1, '_1_1>;
+    fn forward_checked;
+    fn forward_overflowing;
+    fn backward_checked;
+    fn backward_overflowing;
+    non-dyn-compatible
+}
+
+// Full name: core::iter::range::{impl Step for usize}::backward_overflowing
+pub fn backward_overflowing(_1: usize, _2: usize) -> (usize, bool)
+= <opaque>
+
+// Full name: core::iter::range::{impl Step for usize}::forward_overflowing
+pub fn forward_overflowing(_1: usize, _2: usize) -> (usize, bool)
+= <opaque>
+
+// Full name: core::iter::range::{impl Step for usize}::backward_checked
+pub fn backward_checked(_1: usize, _2: usize) -> Option<usize>
+= <opaque>
+
+// Full name: core::iter::range::{impl Step for usize}::forward_checked
+pub fn forward_checked(_1: usize, _2: usize) -> Option<usize>
+= <opaque>
+
+// Full name: core::iter::range::{impl Step for usize}::steps_between
+pub fn steps_between<'_0, '_1>(_1: &'_0 usize, _2: &'_1 usize) -> (usize, Option<usize>)
+= <opaque>
+
+// Full name: core::iter::range::{impl Step for usize}
+impl "impl_Step_for_usize" Step for usize {
+    proof ImpliedClause0: (usize: Clone) = impl_Clone_for_usize
+    proof ImpliedClause1: (usize: PartialOrd<usize>) = impl_PartialOrd_usize_for_usize
+    fn steps_between<'_0_1, '_1_1> = steps_between<'_0_1, '_1_1>
+    fn forward_checked = forward_checked
+    fn forward_overflowing = forward_overflowing
+    fn backward_checked = backward_checked
+    fn backward_overflowing = backward_overflowing
+    non-dyn-compatible
+}
+
+// Full name: core::ops::range::Range
+#[lang_item(Range)]
+pub struct Range<Idx> {
+  start: Idx,
+  end: Idx,
+}
+
+// Full name: core::iter::range::{impl Iterator<A> for Range<A>}::next
+pub fn impl_Iterator_for_Range::next<'_0, A>(_1: &'_0 mut Range<A>) -> Option<A>
+where
+    TraitClause0: (A: Step),
+    TypeOutlives0: A: '_0,
+= <opaque>
+
+// Full name: core::iter::range::{impl Iterator<A> for Range<A>}
+impl<A> "impl_Iterator_for_Range" Iterator<A> for Range<A>
+where
+    TraitClause0: (A: Step),
+{
+    fn next<'_0_1> = impl_Iterator_for_Range::next<'_0_1, A>[TraitClause0]
+    fn map<B, F, TraitClause0_1: (F: FnMut<(A,), B>)> = map<Range<A>, B, F, A>[impl_Iterator_for_Range<A>[TraitClause0], TraitClause0_1]
+    fn collect<B, TraitClause0_1: (B: FromIterator<A>)> = collect<Range<A>, B, A>[impl_Iterator_for_Range<A>[TraitClause0], TraitClause0_1]
+    vtable: impl_Iterator_for_Range::{vtable}<A>[TraitClause0]
+}
+
+// Full name: core::marker::PhantomData
+#[lang_item(PhantomData)]
+pub struct PhantomData<T> {}
+
+// Full name: core::num::error::TryFromIntError::{impl Destruct for TryFromIntError}::drop_glue
+unsafe fn impl_Destruct_for_TryFromIntError::drop_glue<'_0>(_1: &'_0 mut TryFromIntError)
+= <opaque>
+
+// Full name: core::num::error::TryFromIntError::{impl Destruct for TryFromIntError}
+impl "impl_Destruct_for_TryFromIntError" Destruct for TryFromIntError {
+    fn drop_glue<'_0_1> = impl_Destruct_for_TryFromIntError::drop_glue<'_0_1>
+    non-dyn-compatible
+}
+
+// Full name: core::ops::control_flow::ControlFlow
+#[diagnostic_item("ControlFlow")]
+pub enum ControlFlow<B, C> {
+  Continue { _0: C },
+  Break { _0: B },
+}
+
+// Full name: core::option::{Option<T>}::expect
+#[track_caller]
+#[diagnostic_item("option_expect")]
+pub fn expect<'_0, T>(_1: Option<T>, _2: &'_0 str) -> T
+= <opaque>
+
+// Full name: core::option::{impl Try<T, Option<Infallible>, Option<T>> for Option<T>}::branch
+pub fn branch<T>(_1: Option<T>) -> ControlFlow<Option<Infallible>, T>
+= <opaque>
+
+// Full name: core::option::{impl FromResidual<Option<Infallible>> for Option<T>}::from_residual
+pub fn from_residual<T>(_1: Option<Infallible>) -> Option<T>
+= <opaque>
+
+// Full name: core::result::{Result<T, E>}::ok
+#[diagnostic_item("result_ok_method")]
+pub fn ok<T, E>(_1: Result<T, E>) -> Option<T>
+where
+    TraitClause0: (T: Destruct),
+    TraitClause1: (E: Destruct),
+= <opaque>
+
+// Full name: core::slice::index::SliceIndex
+#[diagnostic_item("SliceIndex")]
+pub trait SliceIndex<Self, T, Self_Output>
+{
+    fn get<'_0_1>;
+    fn get_mut<'_0_1>;
+    fn get_unchecked;
+    fn get_unchecked_mut;
+    #[track_caller]
+    fn index<'_0_1>;
+    #[track_caller]
+    fn index_mut<'_0_1>;
+    vtable: core::slice::index::SliceIndex::{vtable}<T, Self_Output>
+}
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::index_mut
+pub fn index_mut<'_0, T>(_1: usize, _2: &'_0 mut [T]) -> &'_0 mut T
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::index
+pub fn impl_SliceIndex_slice_for_usize::index<'_0, T>(_1: usize, _2: &'_0 [T]) -> &'_0 T
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::get_unchecked_mut
+#[track_caller]
+pub unsafe fn get_unchecked_mut<T>(_1: usize, _2: *mut [T]) -> *mut T
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::get_unchecked
+#[track_caller]
+pub unsafe fn get_unchecked<T>(_1: usize, _2: *const [T]) -> *const T
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::get_mut
+pub fn get_mut<'_0, T>(_1: usize, _2: &'_0 mut [T]) -> Option<&'_0 mut T>
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}::get
+pub fn impl_SliceIndex_slice_for_usize::get<'_0, T>(_1: usize, _2: &'_0 [T]) -> Option<&'_0 T>
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+// Full name: core::slice::index::{impl SliceIndex<[T], T> for usize}
+impl<T> "impl_SliceIndex_slice_for_usize" SliceIndex<[T], T> for usize {
+    fn get<'_0_1> = impl_SliceIndex_slice_for_usize::get<'_0_1, T>
+    fn get_mut<'_0_1> = get_mut<'_0_1, T>
+    fn get_unchecked = get_unchecked<T>
+    fn get_unchecked_mut = get_unchecked_mut<T>
+    fn index<'_0_1> = impl_SliceIndex_slice_for_usize::index<'_0_1, T>
+    fn index_mut<'_0_1> = index_mut<'_0_1, T>
+    vtable: impl_SliceIndex_slice_for_usize::{vtable}<T>
+}
+
+#[lang_item(SliceLen)]
+pub fn core::slice::{[T]}::len<'_0, T>(_1: &'_0 [T]) -> usize
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+pub fn core::slice::{[T]}::get<'_0, T, I, Clause0_Output>(_1: &'_0 [T], _2: I) -> Option<&'_0 Clause0_Output>
+where
+    TraitClause0: (I: SliceIndex<[T], Clause0_Output>),
+    TypeOutlives0: T: '_0,
+    TypeOutlives1: Clause0_Output: '_0,
+    TypeOutlives2: I: '_0,
+= <opaque>
+
+// Full name: std::collections::hash::set::HashSet
+#[diagnostic_item("HashSet")]
+pub opaque type HashSet<T, S, A>
+
+// Full name: alloc::alloc::Global
+#[lang_item(GlobalAlloc)]
+pub struct Global {}
+
+// Full name: alloc::boxed::Box
+#[fundamental]
+#[lang_item(OwnedBox)]
+pub opaque type Box<T>
+
+// Full name: alloc::boxed::convert::{impl From<&'_0 [T]> for Box<[T]>}::from
+pub fn from<'_0, T>(_1: &'_0 [T]) -> Box<[T]>
+where
+    TraitClause0: (T: Clone),
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+// Full name: alloc::boxed::convert::{impl From<&'_0 [T]> for Box<[T]>}
+impl<'_0, T> "impl_From_for_Box_slice_Global" From<&'_0 [T]> for Box<[T]>
+where
+    TraitClause0: (T: Clone),
+    TypeOutlives0: T: '_0,
+{
+    fn from = from<'_0, T>[TraitClause0]
+    non-dyn-compatible
+}
+
+// Full name: alloc::boxed::Box::{impl Destruct for Box<T>}::drop_glue
+unsafe fn impl_Destruct_for_Box::drop_glue<'_0, T, A>(_1: &'_0 mut Box<T>)
+where
+    TypeOutlives0: T: '_0,
+    TypeOutlives1: A: '_0,
+= <opaque>
+
+// Full name: alloc::boxed::{impl Deref<T> for Box<T>}::deref
+pub fn deref<'_0, T, A>(_1: &'_0 Box<T>) -> &'_0 T
+where
+    TypeOutlives0: T: '_0,
+    TypeOutlives1: A: '_0,
+= <opaque>
+
+// Full name: alloc::string::String
+#[lang_item(String)]
+pub opaque type String
+
+// Full name: alloc::vec::Vec
+#[diagnostic_item("Vec")]
+pub opaque type Vec<T>
+
+// Full name: alloc::vec::Vec::{impl Destruct for Vec<T>}::drop_glue
+unsafe fn impl_Destruct_for_Vec::drop_glue<'_0, T, A>(_1: &'_0 mut Vec<T>)
+where
+    TypeOutlives0: T: '_0,
+    TypeOutlives1: A: '_0,
+= <opaque>
+
+// Full name: alloc::vec::{Vec<T>}::into_boxed_slice
+pub fn into_boxed_slice<T, A>(_1: Vec<T>) -> Box<[T]>
+= <opaque>
+
+// Full name: alloc::vec::{impl FromIterator<T> for Vec<T>}::from_iter
+pub fn from_iter<T, I, Clause0_IntoIter>(_1: I) -> Vec<T>
+where
+    TraitClause0: (I: IntoIterator<T, Clause0_IntoIter>),
+= <opaque>
+
+// Full name: alloc::vec::{impl FromIterator<T> for Vec<T>}
+impl<T> "impl_FromIterator_for_Vec_Global" FromIterator<T> for Vec<T> {
+    fn from_iter<T, Clause0_IntoIter, TraitClause0_1: (T: IntoIterator<T, Clause0_IntoIter>)> = from_iter<T, T, Clause0_IntoIter>[TraitClause0_1]
+    non-dyn-compatible
+}
+
+// Full name: rumoca_core::clock_lattice::ClockRational
+pub opaque type ClockRational
+
+// Full name: rumoca_core::clock_lattice::PeriodicClockSchedule
+pub opaque type PeriodicClockSchedule
+
+// Full name: rumoca_core::ir_primitives::component_refs_and_functions::ComponentReference
+pub opaque type ComponentReference
+
+// Full name: rumoca_core::ir_primitives::var_name::VarName
+pub opaque type VarName
+
+// Full name: rumoca_core::ir_primitives::DefId
+pub struct DefId {
+  _0: u32,
+}
+
+// Full name: rumoca_core::ir_primitives::SourceOccurrenceId
+#[serde(transparent)]
+pub opaque type SourceOccurrenceId
+
+// Full name: rumoca_core::ir_primitives::TypeId
+pub struct TypeId {
+  _0: u32,
+}
+
+// Full name: rumoca_core::ir_primitives::ProvenanceSpan
+pub opaque type ProvenanceSpan
+
+// Full name: rumoca_core::ir_primitives::StateSelect
+pub enum StateSelect {
+  Default,
+  Never,
+  Avoid,
+  Prefer,
+  Always,
+}
+
+// Full name: rumoca_core::ir_primitives::Fixity
+#[serde(from = "bool", into = "bool")]
+pub enum Fixity {
+  Fixed,
+  Free,
+}
+
+// Full name: rumoca_core::ir_primitives::InlineAnnotation
+pub enum InlineAnnotation {
+  Unstated,
+  Requested,
+  Never,
+}
+
+// Full name: rumoca_core::source_map::SourceMap
+pub opaque type SourceMap
+
+// Full name: rumoca_core::structured_domain::StructuredIndexBinderId
+pub opaque type StructuredIndexBinderId
+
+// Full name: rumoca_core::structured_domain::StructuredIndexBinder
+pub struct StructuredIndexBinder {
+  id: StructuredIndexBinderId,
+  display_name: String,
+  lower: i64,
+  upper: i64,
+  step: i64,
+}
+
+// Full name: rumoca_core::structured_domain::StructuredIndexDomain
+pub struct StructuredIndexDomain {
+  binders: Vec<StructuredIndexBinder>,
+}
+
+// Full name: rumoca_core::structured_domain::checked_extent_product
+pub fn checked_extent_product<'_0>(_1: &'_0 [u32]) -> Option<usize>
+= <opaque>
+
+// Full name: rumoca_core::structured_domain::ComprehensionScalarView
+pub enum ComprehensionScalarView {
+  BinderSubstitution,
+  RowMajorProjection,
+  BinderPrefixProjection { binder_count: u32 },
+}
+
+// Full name: rustc_hash::FxBuildHasher
+pub struct FxBuildHasher {}
+
+// Full name: rumoca_ir_dae::clocks::ClockTransferKind
+#[serde(rename_all = "snake_case")]
+pub enum ClockTransferKind {
+  SubSample { factor: i64 },
+  SuperSample { factor: i64 },
+  ShiftSample { counter: i64, resolution: i64 },
+  BackSample { counter: i64, resolution: i64 },
+}
+
+// Full name: rumoca_ir_dae::clocks::ClockKind
+#[serde(rename_all = "snake_case")]
+enum ClockKind {
+  Periodic { _0: PeriodicClockSchedule },
+  Triggered { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::provenance::DaeGeneration
+#[serde(rename_all = "snake_case")]
+pub enum DaeGeneration {
+  SyntheticResidual,
+  BindingEquation,
+  ConnectionEquation,
+  FlowBalanceEquation,
+  AlgorithmEquation,
+  DiscreteUpdate,
+  ConditionLowering,
+  PreValueLowering,
+  ClockLowering,
+  DelayLowering,
+  SemiLinearLowering,
+  TerminalLowering,
+  EventActionLowering,
+  InitializationEquation,
+  DefaultStart,
+  ArrayEquationProjection,
+  RecordEquationProjection,
+  FunctionLoopLowering,
+  FunctionConditionLowering,
+  FunctionAggregateLowering,
+  DerivedParameterLowering,
+  IndexReduction,
+  AliasElimination,
+  RuntimeDiscontinuity,
+}
+
+// Full name: rumoca_ir_dae::provenance::DaeProvenanceOrigin
+#[serde(rename_all = "snake_case")]
+pub enum DaeProvenanceOrigin {
+  Source,
+  Generated { _0: DaeGeneration },
+}
+
+// Full name: rumoca_ir_dae::provenance::DaeProvenance
+pub struct DaeProvenance {
+  origin: DaeProvenanceOrigin,
+  span: ProvenanceSpan,
+}
+
+// Full name: rumoca_ir_dae::clocks::ClockEntry
+#[serde(deny_unknown_fields)]
+struct ClockEntry {
+  kind: ClockKind,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::clocks::ClockedVariableKind
+pub enum ClockedVariableKind {
+  DiscreteReal,
+  DiscreteValue,
+}
+
+// Full name: rumoca_ir_dae::clocks::ClockOwnershipEntry
+#[serde(deny_unknown_fields)]
+struct ClockOwnershipEntry {
+  variable: u32,
+  kind: ClockedVariableKind,
+  clock: u32,
+  sampled: bool,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::conditions::ConditionNode
+#[serde(rename_all = "snake_case")]
+enum ConditionNode {
+  Initial,
+  Always,
+  Relation { _0: u32 },
+  Discrete { _0: u32 },
+  Clock { _0: u32 },
+  Not { _0: u32 },
+  And { lhs: u32, rhs: u32 },
+  Or { lhs: u32, rhs: u32 },
+  AnyRise { lhs: u32, rhs: u32 },
+}
+
+// Full name: rumoca_ir_dae::conditions::RelationEntry
+#[serde(deny_unknown_fields)]
+struct RelationEntry {
+  expression: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::conditions::ConditionEntry
+#[serde(deny_unknown_fields)]
+struct ConditionEntry {
+  node: Option<ConditionNode>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::conditions::RootEntry
+#[serde(deny_unknown_fields)]
+struct RootEntry {
+  relation: u32,
+  activation: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::conditions::StructuredRootEntry
+#[serde(deny_unknown_fields)]
+struct StructuredRootEntry {
+  domain: u32,
+  expression: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::discrete_values::DiscreteBranchActivationEntry
+#[serde(rename_all = "snake_case")]
+enum DiscreteBranchActivationEntry {
+  Always,
+  When { trigger: u32, guard: u32 },
+}
+
+// Full name: rumoca_ir_dae::discrete_values::PackedRange
+struct PackedRange {
+  start: u32,
+  len: u32,
+}
+
+// Full name: rumoca_ir_dae::discrete_values::StructuredDiscreteValueEntry
+#[serde(deny_unknown_fields)]
+struct StructuredDiscreteValueEntry {
+  domain: u32,
+  scalar_view: ComprehensionScalarView,
+  scalar_rows: u32,
+}
+
+// Full name: rumoca_ir_dae::discrete_values::DiscreteValueOwnerEntry
+#[serde(deny_unknown_fields)]
+struct DiscreteValueOwnerEntry {
+  targets: PackedRange,
+  branches: PackedRange,
+  structure: Option<StructuredDiscreteValueEntry>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::discrete_values::DiscreteValueBranchEntry
+#[serde(deny_unknown_fields)]
+struct DiscreteValueBranchEntry {
+  activation: DiscreteBranchActivationEntry,
+  values: PackedRange,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::equations::ResidualEquationEntry
+#[serde(deny_unknown_fields)]
+struct ResidualEquationEntry {
+  residual: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::equations::DiscreteRealActivationEntry
+#[serde(rename_all = "snake_case")]
+enum DiscreteRealActivationEntry {
+  Always,
+  When { trigger: u32, guard: u32 },
+}
+
+// Full name: rumoca_ir_dae::equations::DiscreteRealEquationEntry
+#[serde(deny_unknown_fields)]
+struct DiscreteRealEquationEntry {
+  residual: u32,
+  activation: DiscreteRealActivationEntry,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::equations::FamilyBodyRange
+#[serde(deny_unknown_fields)]
+struct FamilyBodyRange {
+  start: u32,
+  len: u32,
+}
+
+// Full name: rumoca_ir_dae::equations::StructuredFamilyEntry
+#[serde(deny_unknown_fields)]
+struct StructuredFamilyEntry {
+  domain: u32,
+  scalar_view: ComprehensionScalarView,
+  bodies: FamilyBodyRange,
+  scalar_rows: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::equations::EquationOwnerEntry
+#[serde(rename_all = "snake_case")]
+enum EquationOwnerEntry {
+  Residual { _0: u32 },
+  Structured { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::equations::InitialDiscreteValueEntry
+#[serde(deny_unknown_fields)]
+struct InitialDiscreteValueEntry {
+  target: u32,
+  value: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::events::TimeEventKind
+#[serde(untagged)]
+enum TimeEventKind {
+  Static { instant: ClockRational },
+  Dynamic { deadline: u32 },
+}
+
+// Full name: rumoca_ir_dae::events::TimeEventEntry
+#[serde(deny_unknown_fields)]
+struct TimeEventEntry {
+  kind: TimeEventKind,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::events::EventActionKind
+#[serde(rename_all = "snake_case")]
+enum EventActionKind {
+  Assert { message: u32, level: Option<u32> },
+  Terminate { message: u32 },
+  Reinitialize { state: u32, value: u32 },
+}
+
+// Full name: rumoca_ir_dae::events::EventActionEntry
+#[serde(deny_unknown_fields)]
+struct EventActionEntry {
+  trigger: u32,
+  guard: u32,
+  kind: EventActionKind,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::expression::arena::OperandRange
+struct OperandRange {
+  start: u32,
+  len: u32,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::ExpressionVariability
+#[serde(rename_all = "snake_case")]
+pub enum ExpressionVariability {
+  Constant,
+  Parameter,
+  Discrete,
+  Continuous,
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::PackedSubscriptKind
+#[serde(rename_all = "snake_case")]
+enum PackedSubscriptKind {
+  Index { _0: u32 },
+  Whole,
+  Slice { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::PackedSubscript
+#[serde(deny_unknown_fields)]
+struct PackedSubscript {
+  kind: PackedSubscriptKind,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::DaeLiteral
+#[serde(rename_all = "snake_case")]
+pub enum DaeLiteral {
+  Real { _0: f64 },
+  Integer { _0: i64 },
+  Enumeration { _0: i64 },
+  Boolean { _0: bool },
+  String { _0: String },
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::Coordinate
+#[serde(rename_all = "snake_case")]
+enum Coordinate {
+  Parameter { _0: u32 },
+  Input { _0: u32 },
+  State { _0: u32 },
+  Derivative { _0: u32 },
+  Algebraic { _0: u32 },
+  DiscreteReal { _0: u32 },
+  DiscreteValue { _0: u32 },
+  PreDiscreteReal { _0: u32 },
+  PreDiscreteValue { _0: u32 },
+  Time,
+  ClockInterval { _0: u32 },
+  Condition { _0: u32 },
+  Delay { _0: u32 },
+  Previous { _0: u32 },
+  Terminal { _0: u32 },
+  Binder { domain: u32, ordinal: u32 },
+  FunctionParameter { function: u32, ordinal: u32 },
+  PreState { _0: u32 },
+  PreAlgebraic { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::PureBuiltin
+#[serde(rename_all = "snake_case")]
+pub enum PureBuiltin {
+  Abs,
+  Sign,
+  Sqrt,
+  Div,
+  Mod,
+  Rem,
+  Floor,
+  Ceil,
+  Integer,
+  Sin,
+  Cos,
+  Tan,
+  Asin,
+  Acos,
+  Atan,
+  Atan2,
+  Sinh,
+  Cosh,
+  Tanh,
+  Exp,
+  Log,
+  Log10,
+  Smooth,
+  NoEvent,
+  Homotopy,
+  Min,
+  Max,
+  Sum,
+  Product,
+  Size,
+  Zeros,
+  Ones,
+  Fill,
+  Linspace,
+  Cross,
+  PromotedCat1,
+  PromotedCat2,
+  Identity,
+  Vector,
+  Transpose,
+  Diagonal,
+  OuterProduct,
+  Skew,
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::BinaryOperator
+#[serde(rename_all = "snake_case")]
+pub enum BinaryOperator {
+  Add,
+  Subtract,
+  Multiply,
+  Divide,
+  Power,
+  ElementwiseAdd,
+  ElementwiseSubtract,
+  ElementwiseMultiply,
+  ElementwiseDivide,
+  ElementwisePower,
+  Equal,
+  NotEqual,
+  Less,
+  LessEqual,
+  Greater,
+  GreaterEqual,
+  And,
+  Or,
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::UnaryOperator
+#[serde(rename_all = "snake_case")]
+pub enum UnaryOperator {
+  Plus,
+  Negate,
+  Not,
+}
+
+// Full name: rumoca_ir_dae::expression::nodes::ExprNode
+#[serde(rename_all = "snake_case")]
+enum ExprNode {
+  Literal { _0: DaeLiteral },
+  Coordinate { _0: Coordinate },
+  Unary { operator: UnaryOperator, operand: u32 },
+  Binary { operator: BinaryOperator, lhs: u32, rhs: u32 },
+  Conditional { operands: OperandRange },
+  Array { operands: OperandRange },
+  Record { operands: OperandRange },
+  Field { base: u32, field: u32 },
+  Range { start: u32, explicit_step: Option<u32>, stop: u32 },
+  Comprehension { domain: u32, body: u32 },
+  Index { base: u32, subscripts: OperandRange },
+  ArrayUpdate { base: u32, value: u32, subscripts: OperandRange },
+  Builtin { builtin: PureBuiltin, operands: OperandRange },
+  Call { owner: u32, function: u32, output: u32, operands: OperandRange },
+  StringConversion { declaration: DefId, value: u32, minimum_length: Option<u32>, left_justified: Option<u32>, significant_digits: Option<u32>, format: Option<u32> },
+  FunctionValue { function: u32, value: u32, definition_ordinal: u32 },
+  FunctionFoldParameter { function: u32, fold: u32, carried: u32, definition_ordinal: u32 },
+  FunctionFoldOutput { function: u32, fold: u32, carried: u32, definition_ordinal: u32 },
+  ClockTransfer { kind: ClockTransferKind, source: u32, source_clock: u32, target_clock: u32 },
+}
+
+// Full name: rumoca_ir_dae::expression::arena::FrozenExpressionArenaStorage
+struct FrozenExpressionArenaStorage {
+  nodes: Box<[ExprNode]>,
+  provenance: Box<[DaeProvenance]>,
+  value_types: Box<[u32]>,
+  variability: Box<[ExpressionVariability]>,
+  binder_domains: Box<[Option<u32>]>,
+  function_scopes: Box<[Option<u32>]>,
+  operands: Box<[u32]>,
+  subscripts: Box<[PackedSubscript]>,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::ScalarType
+#[serde(rename_all = "snake_case")]
+pub enum ScalarType {
+  Real,
+  Integer,
+  Enumeration,
+  Boolean,
+  String,
+  Record,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::{impl PartialEq<ScalarType> for ScalarType}::eq
+#[inline(hint)]
+pub fn impl_PartialEq_ScalarType_for_ScalarType::eq<'_0, '_1>(self: &'_0 ScalarType, other: &'_1 ScalarType) -> bool
+{
+    let _0: bool; // return
+    let self: &'1 ScalarType; // arg #1
+    let other: &'2 ScalarType; // arg #2
+    let __self_discr: isize; // local
+    let _4: &'3 ScalarType; // anonymous local
+    let __arg1_discr: isize; // local
+    let _6: &'4 ScalarType; // anonymous local
+    let _7: isize; // anonymous local
+    let _8: isize; // anonymous local
+
+    storage_live(_0)
+    storage_live(__self_discr)
+    storage_live(_4)
+    _4 = &(*self)
+    __self_discr = @discriminant((*_4))
+    storage_dead(_4)
+    fake_read(__self_discr)
+    storage_live(__arg1_discr)
+    storage_live(_6)
+    _6 = &(*other)
+    __arg1_discr = @discriminant((*_6))
+    storage_dead(_6)
+    fake_read(__arg1_discr)
+    storage_live(_7)
+    _7 = copy __self_discr
+    storage_live(_8)
+    _8 = copy __arg1_discr
+    _0 = move _7 == move _8
+    storage_dead(_8)
+    storage_dead(_7)
+    storage_dead(__arg1_discr)
+    storage_dead(__self_discr)
+    storage_dead(other)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::RecordFieldType
+#[serde(deny_unknown_fields)]
+struct RecordFieldType {
+  name: VarName,
+  value_type: u32,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::ValueType
+#[serde(deny_unknown_fields)]
+pub struct ValueType {
+  scalar: ScalarType,
+  dimensions: Box<[u32]>,
+  record_name: Option<VarName>,
+  record_fields: Box<[RecordFieldType]>,
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::{ValueType}::scalar_type
+pub fn scalar_type<'_0>(self: &'_0 ValueType) -> ScalarType
+{
+    let _0: ScalarType; // return
+    let self: &'1 ValueType; // arg #1
+
+    storage_live(_0)
+    _0 = copy (*self).scalar
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::expression::value_types::{ValueType}::dimensions
+pub fn dimensions<'_0>(self: &'_0 ValueType) -> &'_0 [u32]
+{
+    let _0: &'1 [u32]; // return
+    let self: &'3 ValueType; // arg #1
+    let _2: &'4 [u32]; // anonymous local
+    let _3: &'6 Box<[u32]>; // anonymous local
+    let _4: &'7 Box<[u32]>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    storage_live(_3)
+    storage_live(_4)
+    _4 = &(*self).dimensions
+    _3 = &(*_4)
+    _2 = deref<'9, [u32], Global>(move _3)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    _0 = &(*_2) with_metadata(copy _2.metadata)
+    storage_dead(_4)
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(self)
+    return
+}
+
+pub fn rumoca_ir_dae::expression::value_types::{ValueType}::scalar_count<'_0>(self: &'_0 ValueType) -> Option<usize>
+{
+    let _0: Option<usize>; // return
+    let self: &'1 ValueType; // arg #1
+    let _2: bool; // anonymous local
+    let _3: &'3 ScalarType; // anonymous local
+    let _4: &'4 ScalarType; // anonymous local
+    let _5: &'6 [u32]; // anonymous local
+    let _6: &'7 [u32]; // anonymous local
+    let _7: &'8 ValueType; // anonymous local
+    let _8: &'9 ScalarType; // anonymous local
+    let _9: &'10 ScalarType; // anonymous local
+    let _10: &'19 ScalarType; // anonymous local
+    let _11: ScalarType; // anonymous local
+
+    storage_live(_9)
+    storage_live(_10)
+    storage_live(_11)
+    _11 = ScalarType::Record {  }
+    _10 = &_11
+    _9 = move _10
+    storage_live(_0)
+    storage_live(_8)
+    storage_live(_2)
+    storage_live(_3)
+    _3 = &(*self).scalar
+    storage_live(_4)
+    _8 = move _9
+    _4 = &(*_8)
+    _2 = impl_PartialEq_ScalarType_for_ScalarType::eq<'13, '14>(move _3, move _4)
+    ↳⚡ storage_dead(_8)
+        storage_dead(self)
+        unwind_continue
+    if move _2 {
+    } else {
+        storage_dead(_4)
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_live(_5)
+        storage_live(_6)
+        storage_live(_7)
+        _7 = &(*self)
+        _6 = dimensions<'16>(move _7)
+        ↳⚡ storage_dead(_8)
+            storage_dead(self)
+            unwind_continue
+        _5 = &(*_6) with_metadata(copy _6.metadata)
+        storage_dead(_7)
+        _0 = checked_extent_product<'18>(move _5)
+        ↳⚡ storage_dead(_8)
+            storage_dead(self)
+            unwind_continue
+        storage_dead(_6)
+        storage_dead(_5)
+        storage_dead(_8)
+        storage_dead(self)
+        storage_dead(_11)
+        storage_dead(_10)
+        storage_dead(_9)
+        return
+    }
+    storage_dead(_4)
+    storage_dead(_3)
+    _0 = Option::None {  }
+    storage_dead(_2)
+    storage_dead(_8)
+    storage_dead(self)
+    storage_dead(_11)
+    storage_dead(_10)
+    storage_dead(_9)
+    return
+}
+
+// Full name: rumoca_ir_dae::ids::VariableId
+pub struct VariableId<mut 'dae>
+where
+    RegionOutlives0: 'dae: 'dae,
+{
+  raw: u32,
+  brand: PhantomData<&'dae mut &'dae ()>,
+}
+
+// Full name: rumoca_ir_dae::ids::ValueTypeId
+pub struct ValueTypeId<mut 'dae>
+where
+    RegionOutlives0: 'dae: 'dae,
+{
+  raw: u32,
+  brand: PhantomData<&'dae mut &'dae ()>,
+}
+
+fn rumoca_ir_dae::ids::{ValueTypeId<'dae>}::from_raw<'dae>(raw: u32) -> ValueTypeId<'dae>
+{
+    let _0: ValueTypeId<'1>; // return
+    let raw: u32; // arg #1
+    let _2: u32; // anonymous local
+    let _3: PhantomData<&'7 mut &'8 ()>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = copy raw
+    storage_live(_3)
+    _3 = PhantomData {  }
+    _0 = ValueTypeId { raw: move _2, brand: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(raw)
+    return
+}
+
+fn rumoca_ir_dae::ids::{VariableId<'dae>}::from_raw<'dae>(raw: u32) -> VariableId<'dae>
+{
+    let _0: VariableId<'1>; // return
+    let raw: u32; // arg #1
+    let _2: u32; // anonymous local
+    let _3: PhantomData<&'7 mut &'8 ()>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = copy raw
+    storage_live(_3)
+    _3 = PhantomData {  }
+    _0 = VariableId { raw: move _2, brand: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(raw)
+    return
+}
+
+pub fn rumoca_ir_dae::ids::{VariableId<'dae>}::index<'dae>(self: VariableId<'dae>) -> u32
+{
+    let _0: u32; // return
+    let self: VariableId<'1>; // arg #1
+
+    storage_live(_0)
+    _0 = copy self.raw
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableMapBodyEntry
+struct CallableMapBodyEntry {
+  function: u32,
+  expression_use: u32,
+  domain: u32,
+  parent: u32,
+  body: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableFoldBodyEntry
+struct CallableFoldBodyEntry {
+  function: u32,
+  fold: u32,
+  parent: u32,
+  body: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableExpressionConditionalRegionsEntry
+struct CallableExpressionConditionalRegionsEntry {
+  function: u32,
+  expression_use: u32,
+  parent: u32,
+  guards: Box<[u32]>,
+  results: Box<[u32]>,
+  fallback: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableConditionalRegionsEntry
+struct CallableConditionalRegionsEntry {
+  function: u32,
+  conditional: u32,
+  parent: u32,
+  guards: Box<[u32]>,
+  results: Box<[u32]>,
+  fallback: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableExternalBodyEntry
+struct CallableExternalBodyEntry {
+  function: u32,
+  region: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableCaptureSourceEntry
+enum CallableCaptureSourceEntry {
+  Parameter { _0: u32 },
+  Definition { _0: u32 },
+  Binder { domain: u32, ordinal: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableCaptureEntry
+struct CallableCaptureEntry {
+  function: u32,
+  source_region: u32,
+  region: u32,
+  expression_use: u32,
+  source: CallableCaptureSourceEntry,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableCallProjectionUseEntry
+struct CallableCallProjectionUseEntry {
+  expression_use: u32,
+  output: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableCallUseEntry
+struct CallableCallUseEntry {
+  function: u32,
+  region: u32,
+  owner: u32,
+  projections: Box<[CallableCallProjectionUseEntry]>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableExpressionUseEntry
+struct CallableExpressionUseEntry {
+  function: u32,
+  region: u32,
+  expression: u32,
+  operands: Box<[u32]>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableConditionalRegionSourceEntry
+enum CallableConditionalRegionSourceEntry {
+  AssignmentGroup { _0: u32 },
+  ExpressionUse { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableRegionKindEntry
+enum CallableRegionKindEntry {
+  FunctionBody,
+  ConditionalGuard { source: CallableConditionalRegionSourceEntry, ordinal: u32 },
+  ConditionalResult { source: CallableConditionalRegionSourceEntry, ordinal: u32 },
+  ConditionalFallback { source: CallableConditionalRegionSourceEntry },
+  FoldBody { fold: u32, domain: u32 },
+  MapBody { expression_use: u32, domain: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableRegionActivationEntry
+enum CallableRegionActivationEntry {
+  Root,
+  Enter,
+  GuardTrue { _0: u32 },
+  GuardFalse { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableRegionEntry
+struct CallableRegionEntry {
+  function: u32,
+  parent: Option<u32>,
+  activation: CallableRegionActivationEntry,
+  kind: CallableRegionKindEntry,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_regions::CallableRegionInventory
+struct CallableRegionInventory {
+  regions: Box<[CallableRegionEntry]>,
+  expression_uses: Box<[CallableExpressionUseEntry]>,
+  call_uses: Box<[CallableCallUseEntry]>,
+  captures: Box<[CallableCaptureEntry]>,
+  external_bodies: Box<[CallableExternalBodyEntry]>,
+  conditional_groups: Box<[CallableConditionalRegionsEntry]>,
+  expression_conditionals: Box<[CallableExpressionConditionalRegionsEntry]>,
+  fold_bodies: Box<[CallableFoldBodyEntry]>,
+  map_bodies: Box<[CallableMapBodyEntry]>,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableFoldEntry
+struct CallableFoldEntry {
+  function: u32,
+  fold: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableCallProjectionEntry
+struct CallableCallProjectionEntry {
+  expression: u32,
+  output: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableCallEntry
+struct CallableCallEntry {
+  function: u32,
+  call: u32,
+  owner: u32,
+  projections: Box<[CallableCallProjectionEntry]>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableConditionalEntry
+struct CallableConditionalEntry {
+  function: u32,
+  conditional: u32,
+  definitions: Box<[u32]>,
+  conditions: Box<[u32]>,
+  branches: Box<[Box<[u32]>]>,
+  fallback: Box<[u32]>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableAssertionEntry
+struct CallableAssertionEntry {
+  function: u32,
+  assertion: u32,
+  condition: u32,
+  message: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableDefinitionEntry
+struct CallableDefinitionEntry {
+  function: u32,
+  definition: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableExpressionEntry
+struct CallableExpressionEntry {
+  function: u32,
+  expression: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableFunctionEntry
+struct CallableFunctionEntry {
+  function: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::callable_inventory::CallableSourceInventory
+struct CallableSourceInventory {
+  regions: CallableRegionInventory,
+  functions: Box<[CallableFunctionEntry]>,
+  expressions: Box<[CallableExpressionEntry]>,
+  definitions: Box<[CallableDefinitionEntry]>,
+  assertions: Box<[CallableAssertionEntry]>,
+  conditionals: Box<[CallableConditionalEntry]>,
+  calls: Box<[CallableCallEntry]>,
+  call_offsets: Box<[usize]>,
+  folds: Box<[CallableFoldEntry]>,
+}
+
+// Full name: rumoca_ir_dae::model::external_functions::FunctionPurity
+#[serde(rename_all = "snake_case")]
+pub enum FunctionPurity {
+  Pure,
+  Impure,
+}
+
+// Full name: rumoca_ir_dae::model::external_functions::ExternalLanguage
+#[serde(rename_all = "snake_case")]
+pub enum ExternalLanguage {
+  C,
+  Fortran77,
+  Builtin,
+}
+
+// Full name: rumoca_ir_dae::model::external_functions::ExternalLinkage
+#[serde(deny_unknown_fields)]
+pub struct ExternalLinkage {
+  libraries: Box<[String]>,
+  include: Option<String>,
+  include_directory: Option<String>,
+  library_directory: Option<String>,
+}
+
+// Full name: rumoca_ir_dae::model::external_functions::ExternalArgumentEntry
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum ExternalArgumentEntry {
+  Input { _0: u32 },
+  Output { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::external_functions::ExternalBodyEntry
+struct ExternalBodyEntry {
+  purity: FunctionPurity,
+  language: ExternalLanguage,
+  symbol: VarName,
+  arguments: Vec<ExternalArgumentEntry>,
+  result: Option<u32>,
+  linkage: ExternalLinkage,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::runtime_quotients::QuotientOwnerKind
+enum QuotientOwnerKind {
+  ModelEvent { generated: [u32; 6usize], relation: u32, activation: u32, root: u32 },
+  FunctionBody { function: u32 },
+}
+
+// Full name: rumoca_ir_dae::model::runtime_quotients::RuntimeQuotientOwnerEntry
+struct RuntimeQuotientOwnerEntry {
+  quotient: u32,
+  builtin: PureBuiltin,
+  kind: QuotientOwnerKind,
+}
+
+// Full name: rumoca_ir_dae::temporal::PositiveParameterEntry
+#[serde(deny_unknown_fields)]
+struct PositiveParameterEntry {
+  expression: u32,
+  value: f64,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::temporal::DelayKind
+#[serde(rename_all = "snake_case")]
+enum DelayKind {
+  ParameterDelay { delay_time: PositiveParameterEntry },
+  BoundedDelay { delay_time: u32, delay_max: PositiveParameterEntry },
+}
+
+// Full name: rumoca_ir_dae::temporal::DelayEntry
+#[serde(deny_unknown_fields)]
+struct DelayEntry {
+  source: u32,
+  kind: DelayKind,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::temporal::TerminalEntry
+#[serde(deny_unknown_fields)]
+struct TerminalEntry {
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::temporal::PreviousEntry
+#[serde(deny_unknown_fields)]
+struct PreviousEntry {
+  variable: u32,
+  clock: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model_event_transactions::ModelEventTargetEntry
+#[serde(rename_all = "snake_case", tag = "kind", content = "variable")]
+enum ModelEventTargetEntry {
+  DiscreteReal { _0: u32 },
+  DiscreteValue { _0: u32 },
+}
+
+// Full name: rumoca_ir_dae::model_event_transactions::ModelEventDefinitionEntry
+#[serde(deny_unknown_fields)]
+struct ModelEventDefinitionEntry {
+  target: ModelEventTargetEntry,
+  value: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model_event_transactions::ModelEventStepEntry
+#[serde(deny_unknown_fields)]
+struct ModelEventStepEntry {
+  trigger: u32,
+  guard: u32,
+  clock: Option<u32>,
+  definitions: Vec<ModelEventDefinitionEntry>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model_event_transactions::ModelEventTransactionEntry
+#[serde(deny_unknown_fields)]
+struct ModelEventTransactionEntry {
+  targets: Vec<ModelEventTargetEntry>,
+  steps: Vec<ModelEventStepEntry>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::DomainEntry
+#[serde(deny_unknown_fields)]
+struct DomainEntry {
+  parent: Option<u32>,
+  domain: StructuredIndexDomain,
+  extents: Box<[u32]>,
+  scalar_count: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionFoldEntry
+struct FunctionFoldEntry {
+  function: u32,
+  ordinal: u32,
+  parent: Option<u32>,
+  domain: u32,
+  targets: Vec<u32>,
+  iteration_locals: Vec<u32>,
+  parameter_definitions: Vec<u32>,
+  initial_definitions: Vec<u32>,
+  update_definitions: Vec<u32>,
+  output_definitions: Vec<u32>,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionDefinitionEntry
+struct FunctionDefinitionEntry {
+  target: u32,
+  rhs: u32,
+  provenance: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionValueRole
+#[serde(rename_all = "snake_case")]
+pub enum FunctionValueRole {
+  Output,
+  Local,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionValueEntry
+struct FunctionValueEntry {
+  name: VarName,
+  value_type: u32,
+  role: FunctionValueRole,
+  declaration: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionParameterEntry
+struct FunctionParameterEntry {
+  name: VarName,
+  value_type: u32,
+  declaration: DaeProvenance,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionConditionalWire
+struct FunctionConditionalWire {
+  conditions: Vec<u32>,
+  branches: Vec<Vec<u32>>,
+  fallback: Vec<u32>,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionStatementWire
+enum FunctionStatementWire {
+  Assignment { definition: u32 },
+  AssignmentGroup { definitions: Vec<u32>, conditional: Option<FunctionConditionalWire> },
+  Assertion { condition: u32, message: u32, provenance: DaeProvenance },
+  For { fold: u32, statements: Vec<FunctionStatementWire>, provenance: DaeProvenance },
+}
+
+// Full name: rumoca_ir_dae::model::FunctionBuildState
+struct FunctionBuildState {
+  current_values: Vec<Option<u32>>,
+  statements: Vec<FunctionStatementWire>,
+  carried_targets: HashSet<u32, FxBuildHasher, Global>,
+  iteration_local_targets: HashSet<u32, FxBuildHasher, Global>,
+  active_fold: Option<u32>,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionDefinitionWire
+struct FunctionDefinitionWire {
+  statements: Vec<FunctionStatementWire>,
+  results: Vec<u32>,
+}
+
+// Full name: rumoca_ir_dae::model::FunctionBodyEntry
+enum FunctionBodyEntry {
+  Modelica { _0: FunctionDefinitionWire },
+  External { _0: ExternalBodyEntry },
+}
+
+// Full name: rumoca_ir_dae::model::FunctionEntry
+struct FunctionEntry {
+  name: VarName,
+  parameters: Vec<u32>,
+  results: Vec<u32>,
+  parameter_values: Vec<FunctionParameterEntry>,
+  values: Vec<FunctionValueEntry>,
+  output_values: Vec<u32>,
+  definitions: Vec<FunctionDefinitionEntry>,
+  definition_scopes: Vec<Option<u32>>,
+  folds: Vec<u32>,
+  declaration: DaeProvenance,
+  inline: InlineAnnotation,
+  definition: Option<FunctionBodyEntry>,
+  build: Option<FunctionBuildState>,
+}
+
+// Full name: rumoca_ir_dae::model::VariableRole
+#[serde(rename_all = "snake_case")]
+pub enum VariableRole {
+  Parameter,
+  Constant,
+  Input,
+  State,
+  Algebraic,
+  Output,
+  DiscreteReal,
+  DiscreteValue,
+}
+
+// Full name: rumoca_ir_dae::model::VariableOrigin
+#[serde(rename_all = "snake_case")]
+pub enum VariableOrigin {
+  Source,
+  Generated,
+}
+
+// Full name: rumoca_ir_dae::model::VariableCausality
+#[serde(rename_all = "snake_case")]
+pub enum VariableCausality {
+  Input,
+  Output,
+  Parameter,
+  CalculatedParameter,
+  Independent,
+  Local,
+}
+
+// Full name: rumoca_ir_dae::model::VariableAttributesWire
+#[serde(deny_unknown_fields)]
+struct VariableAttributesWire {
+  component_ref: Option<ComponentReference>,
+  binding: Option<u32>,
+  start: Option<u32>,
+  fixed: Fixity,
+  min: Option<u32>,
+  max: Option<u32>,
+  nominal: Option<u32>,
+  unit: Option<String>,
+  state_select: StateSelect,
+  description: Option<String>,
+  causality: VariableCausality,
+  is_tunable: bool,
+  is_held: bool,
+  origin: VariableOrigin,
+}
+
+// Full name: rumoca_ir_dae::model::VariableEntry
+#[serde(deny_unknown_fields)]
+struct VariableEntry {
+  name: VarName,
+  source_occurrence: SourceOccurrenceId,
+  role: VariableRole,
+  variability: ExpressionVariability,
+  value_type: u32,
+  declaration: DaeProvenance,
+  attributes: Option<VariableAttributesWire>,
+}
+
+// Full name: rumoca_ir_dae::model::FrozenStorage
+struct FrozenStorage {
+  predefined_string_declaration: Option<DefId>,
+  value_types: Box<[ValueType]>,
+  flat_type_ids: Box<[Option<TypeId>]>,
+  value_type_provenance: Box<[DaeProvenance]>,
+  variables: Box<[VariableEntry]>,
+  functions: Box<[FunctionEntry]>,
+  function_folds: Box<[FunctionFoldEntry]>,
+  domains: Box<[DomainEntry]>,
+  expressions: FrozenExpressionArenaStorage,
+  continuous_equations: Box<[ResidualEquationEntry]>,
+  initialization_equations: Box<[ResidualEquationEntry]>,
+  initial_discrete_values: Box<[InitialDiscreteValueEntry]>,
+  discrete_real_equations: Box<[DiscreteRealEquationEntry]>,
+  discrete_value_owners: Box<[DiscreteValueOwnerEntry]>,
+  discrete_value_targets: Box<[u32]>,
+  discrete_value_branches: Box<[DiscreteValueBranchEntry]>,
+  discrete_value_branch_values: Box<[u32]>,
+  discrete_value_branch_value_provenance: Box<[DaeProvenance]>,
+  model_event_transactions: Box<[ModelEventTransactionEntry]>,
+  continuous_families: Box<[StructuredFamilyEntry]>,
+  initialization_families: Box<[StructuredFamilyEntry]>,
+  continuous_equation_owners: Box<[EquationOwnerEntry]>,
+  initialization_equation_owners: Box<[EquationOwnerEntry]>,
+  equation_family_bodies: Box<[u32]>,
+  relations: Box<[RelationEntry]>,
+  conditions: Box<[ConditionEntry]>,
+  roots: Box<[RootEntry]>,
+  runtime_quotient_owners: Box<[RuntimeQuotientOwnerEntry]>,
+  structured_roots: Box<[StructuredRootEntry]>,
+  time_events: Box<[TimeEventEntry]>,
+  event_actions: Box<[EventActionEntry]>,
+  clocks: Box<[ClockEntry]>,
+  clock_ownerships: Box<[ClockOwnershipEntry]>,
+  previous_values: Box<[PreviousEntry]>,
+  terminals: Box<[TerminalEntry]>,
+  delays: Box<[DelayEntry]>,
+  callable_inventory: CallableSourceInventory,
+}
+
+// Full name: rumoca_ir_dae::model::Dae
+pub struct Dae {
+  schema_version: u16,
+  source_map: SourceMap,
+  storage: FrozenStorage,
+  active_discrete_scalar_count: usize,
+}
+
+// Full name: rumoca_ir_dae::model::view::DaeView
+pub struct DaeView<mut 'dae>
+where
+    RegionOutlives0: 'dae: 'dae,
+{
+  dae: &'dae Dae,
+  marker: PhantomData<&'dae mut &'dae ()>,
+}
+
+// Full name: rumoca_ir_dae::model::view::DaeVariableRefinementEntry
+pub struct DaeVariableRefinementEntry {
+  source_occurrence: SourceOccurrenceId,
+  role: VariableRole,
+  fixed: Fixity,
+  variability: ExpressionVariability,
+  is_tunable: bool,
+  causality: VariableCausality,
+  scalar_type: ScalarType,
+  dimensions: Box<[u32]>,
+  scalar_count: usize,
+}
+
+// Full name: rumoca_ir_dae::model::view::DaeVariableRefinementView
+pub struct DaeVariableRefinementView {
+  entries: Box<[DaeVariableRefinementEntry]>,
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_count
+pub fn variable_count<'dae>(self: DaeView<'dae>) -> usize
+{
+    let _0: usize; // return
+    let self: DaeView<'1>; // arg #1
+    let _2: &'3 [VariableEntry]; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = &(*(*self.dae).storage.variables) with_metadata(copy (*self.dae).storage.variables.metadata)
+    _0 = core::slice::{[T]}::len<'7, VariableEntry>(move _2)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_2)
+    storage_dead(self)
+    return
+}
+
+struct rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1> {
+  _0: &'_1 u32,
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure::{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::drop_glue
+unsafe fn {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::drop_glue<'dae, '_1, '_2>(_1: &'_2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>)
+where
+    RegionOutlives0: 'dae: '_2,
+    RegionOutlives1: '_1: '_2,
+{
+    let _0: (); // return
+    let _1: &'2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure::{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}
+impl<'dae, '_1> Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1> {
+    fn drop_glue<'_0_1> = {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::drop_glue<'dae, '_1, '_0_1>
+    non-dyn-compatible
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::{impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::call_once
+fn {impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::call_once<'dae, '_1, '_2>(_1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>, tupled_args: ()) -> VariableId<'_2>
+{
+    let _0: VariableId<'1>; // return
+    let _1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>; // arg #1
+    let tupled_args: (); // arg #2
+    let _3: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = copy (*_1._0)
+    _0 = rumoca_ir_dae::ids::{VariableId<'dae>}::from_raw<'5>(move _3)
+    ↳⚡ storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::{impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}
+impl<'dae, '_1, '_2> FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1> {
+    fn call_once = {impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::call_once<'dae, '_1, '_2>
+    vtable: {impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}::{vtable}<'dae, '_1, '_2>
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id
+pub fn variable_id<'dae>(self: DaeView<'dae>, index: usize) -> Option<VariableId<'dae>>
+{
+    let _0: Option<VariableId<'2>>; // return
+    let self: DaeView<'4>; // arg #1
+    let index: usize; // arg #2
+    let raw: u32; // local
+    let _4: ControlFlow<Option<Infallible>, u32>; // anonymous local
+    let _5: Option<u32>; // anonymous local
+    let _6: Result<u32, TryFromIntError>; // anonymous local
+    let _7: usize; // anonymous local
+    let residual: Option<Infallible>; // local
+    let _9: Option<Infallible>; // anonymous local
+    let val: u32; // local
+    let _11: bool; // anonymous local
+    let _12: usize; // anonymous local
+    let _13: usize; // anonymous local
+    let _14: &'6 [VariableEntry]; // anonymous local
+    let _15: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'9, '10>; // anonymous local
+    let _16: &'12 u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(raw)
+    storage_live(_4)
+    storage_live(_5)
+    storage_live(_6)
+    storage_live(_7)
+    _7 = copy index
+    _6 = try_from(move _7)
+    ↳⚡ storage_dead(index)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_7)
+    _5 = ok<u32, TryFromIntError>[{built_in impl Destruct for u32}, impl_Destruct_for_TryFromIntError](move _6)
+    ↳⚡ storage_dead(index)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_6)
+    _4 = branch<u32>(move _5)
+    ↳⚡ storage_dead(index)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_5)
+    match _4 {
+        ControlFlow::Continue => {
+        },
+        ControlFlow::Break => {
+            storage_live(residual)
+            residual = copy (_4 as variant ControlFlow::Break)._0
+            storage_live(_9)
+            _9 = copy residual
+            _0 = from_residual<VariableId<'39>>(move _9)
+            ↳⚡ storage_dead(index)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_9)
+            storage_dead(residual)
+            storage_dead(_4)
+            storage_dead(raw)
+            storage_dead(index)
+            storage_dead(self)
+            return
+        },
+    }
+    storage_live(val)
+    val = copy (_4 as variant ControlFlow::Continue)._0
+    raw = copy val
+    storage_dead(val)
+    fake_read(raw)
+    storage_dead(_4)
+    storage_live(_11)
+    storage_live(_12)
+    _12 = copy index
+    storage_live(_13)
+    storage_live(_14)
+    _14 = &(*(*self.dae).storage.variables) with_metadata(copy (*self.dae).storage.variables.metadata)
+    _13 = core::slice::{[T]}::len<'16, VariableEntry>(move _14)
+    ↳⚡ storage_dead(index)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_14)
+    _11 = move _12 < move _13
+    storage_dead(_13)
+    storage_dead(_12)
+    storage_live(_15)
+    storage_live(_16)
+    _16 = &raw
+    _15 = rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure { _0: move _16 }
+    storage_dead(_16)
+    _0 = then<VariableId<'20>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'23, '24>>[{impl FnOnce<(), VariableId<'_>> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}<'23, '24, '31>, {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_id::closure<'dae, '_1>}<'23, '24>](move _11, move _15)
+    ↳⚡ storage_dead(index)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_15)
+    storage_dead(_11)
+    storage_dead(raw)
+    storage_dead(index)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::VariableView
+pub struct VariableView<mut 'dae>
+where
+    RegionOutlives0: 'dae: 'dae,
+{
+  id: VariableId<'dae>,
+  entry: &'dae VariableEntry,
+  value_type_id: ValueTypeId<'dae>,
+  value_type: &'dae ValueType,
+  marker: PhantomData<&'dae mut &'dae ()>,
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::source_occurrence
+pub fn source_occurrence<'dae>(self: VariableView<'dae>) -> SourceOccurrenceId
+{
+    let _0: SourceOccurrenceId; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    _0 = copy (*view.entry).source_occurrence
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::role
+pub fn role<'dae>(self: VariableView<'dae>) -> VariableRole
+{
+    let _0: VariableRole; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    _0 = copy (*view.entry).role
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::variability
+pub fn variability<'dae>(self: VariableView<'dae>) -> ExpressionVariability
+{
+    let _0: ExpressionVariability; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    _0 = copy (*view.entry).variability
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::value_type
+pub fn value_type<'dae>(self: VariableView<'dae>) -> &'dae ValueType
+{
+    let _0: &'1 ValueType; // return
+    let self: VariableView<'3>; // arg #1
+    let view: VariableView<'4>; // local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    _0 = copy view.value_type
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::attributes
+fn attributes<'dae>(self: VariableView<'dae>) -> &'dae VariableAttributesWire
+{
+    let _0: &'1 VariableAttributesWire; // return
+    let self: VariableView<'3>; // arg #1
+    let _2: Arguments<'5>; // anonymous local
+    let attributes: &'6 VariableAttributesWire; // local
+    let _4: &'8 Option<VariableAttributesWire>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_4)
+    _4 = &(*self.entry).attributes
+    match (*_4) {
+        Option::Some => {
+        },
+        _ => {
+            storage_dead(_4)
+            storage_live(_2)
+            _2 = from_str_nonconst<'11>(const "internal error: entered unreachable code: final DAE cannot contain an unfilled variable")
+            ↳⚡ storage_dead(_2)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_2)
+            storage_dead(self)
+            panic(core::panicking::panic_fmt)
+        },
+    }
+    storage_live(attributes)
+    attributes = &((*_4) as variant Option::Some)._0
+    storage_dead(_4)
+    _0 = &(*attributes)
+    storage_dead(attributes)
+    storage_dead(_2)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::fixed
+pub fn fixed<'dae>(self: VariableView<'dae>) -> Fixity
+{
+    let _0: Fixity; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+    let _3: &'4 VariableAttributesWire; // anonymous local
+    let _4: VariableView<'5>; // anonymous local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy view
+    _3 = attributes<'6>(move _4)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    _0 = copy (*_3).fixed
+    storage_dead(_3)
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::is_tunable
+pub fn is_tunable<'dae>(self: VariableView<'dae>) -> bool
+{
+    let _0: bool; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+    let _3: &'4 VariableAttributesWire; // anonymous local
+    let _4: VariableView<'5>; // anonymous local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy view
+    _3 = attributes<'6>(move _4)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    _0 = copy (*_3).is_tunable
+    storage_dead(_3)
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{VariableView<'dae>}::causality
+pub fn causality<'dae>(self: VariableView<'dae>) -> VariableCausality
+{
+    let _0: VariableCausality; // return
+    let self: VariableView<'1>; // arg #1
+    let view: VariableView<'2>; // local
+    let _3: &'4 VariableAttributesWire; // anonymous local
+    let _4: VariableView<'5>; // anonymous local
+
+    storage_live(_0)
+    storage_live(view)
+    view = copy self
+    fake_read(view)
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy view
+    _3 = attributes<'6>(move _4)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    _0 = copy (*_3).causality
+    storage_dead(_3)
+    storage_dead(view)
+    storage_dead(self)
+    return
+}
+
+struct rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1> {
+  _0: DaeView<'_1>,
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable
+pub fn variable<'dae>(self: DaeView<'dae>, id: VariableId<'dae>) -> Option<VariableView<'dae>>
+{
+    let _0: Option<VariableView<'2>>; // return
+    let self: DaeView<'4>; // arg #1
+    let id: VariableId<'6>; // arg #2
+    let value_type: u32; // local
+    let _4: &'8 VariableEntry; // anonymous local
+    let _5: ControlFlow<Option<Infallible>, &'10 VariableEntry>; // anonymous local
+    let _6: Option<&'12 VariableEntry>; // anonymous local
+    let _7: &'14 [VariableEntry]; // anonymous local
+    let _8: usize; // anonymous local
+    let _9: u32; // anonymous local
+    let _10: VariableId<'15>; // anonymous local
+    let residual_11: Option<Infallible>; // local
+    let _12: Option<Infallible>; // anonymous local
+    let val_13: &'16 VariableEntry; // local
+    let _14: VariableView<'17>; // anonymous local
+    let _15: VariableId<'18>; // anonymous local
+    let _16: &'19 VariableEntry; // anonymous local
+    let _17: &'20 VariableEntry; // anonymous local
+    let _18: ControlFlow<Option<Infallible>, &'21 VariableEntry>; // anonymous local
+    let _19: Option<&'22 VariableEntry>; // anonymous local
+    let _20: &'23 [VariableEntry]; // anonymous local
+    let _21: usize; // anonymous local
+    let _22: u32; // anonymous local
+    let _23: VariableId<'24>; // anonymous local
+    let residual_24: Option<Infallible>; // local
+    let _25: Option<Infallible>; // anonymous local
+    let val_26: &'25 VariableEntry; // local
+    let _27: ValueTypeId<'27>; // anonymous local
+    let _28: u32; // anonymous local
+    let _29: &'29 ValueType; // anonymous local
+    let _30: &'30 ValueType; // anonymous local
+    let _31: ControlFlow<Option<Infallible>, &'32 ValueType>; // anonymous local
+    let _32: Option<&'34 ValueType>; // anonymous local
+    let _33: &'36 [ValueType]; // anonymous local
+    let _34: usize; // anonymous local
+    let _35: u32; // anonymous local
+    let residual_36: Option<Infallible>; // local
+    let _37: Option<Infallible>; // anonymous local
+    let val_38: &'37 ValueType; // local
+    let _39: PhantomData<&'43 mut &'44 ()>; // anonymous local
+
+    storage_live(_0)
+    storage_live(value_type)
+    storage_live(_4)
+    storage_live(_5)
+    storage_live(_6)
+    storage_live(_7)
+    _7 = &(*(*self.dae).storage.variables) with_metadata(copy (*self.dae).storage.variables.metadata)
+    storage_live(_8)
+    storage_live(_9)
+    storage_live(_10)
+    _10 = copy id
+    _9 = rumoca_ir_dae::ids::{VariableId<'dae>}::index<'47>(move _10)
+    ↳⚡ storage_dead(id)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_10)
+    _8 = cast<u32, usize>(move _9)
+    storage_dead(_9)
+    _6 = core::slice::{[T]}::get<'49, VariableEntry, usize, VariableEntry>[impl_SliceIndex_slice_for_usize<VariableEntry>](move _7, move _8)
+    ↳⚡ storage_dead(id)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_8)
+    storage_dead(_7)
+    _5 = branch<&'51 VariableEntry>(move _6)
+    ↳⚡ storage_dead(id)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_6)
+    match _5 {
+        ControlFlow::Continue => {
+            storage_live(val_13)
+            val_13 = copy (_5 as variant ControlFlow::Continue)._0
+            _4 = copy val_13
+            storage_dead(val_13)
+            value_type = copy (*_4).value_type
+            fake_read(value_type)
+            storage_dead(_5)
+            storage_dead(_4)
+            storage_live(_14)
+            storage_live(_15)
+            _15 = copy id
+            storage_live(_16)
+            storage_live(_17)
+            storage_live(_18)
+            storage_live(_19)
+            storage_live(_20)
+            _20 = &(*(*self.dae).storage.variables) with_metadata(copy (*self.dae).storage.variables.metadata)
+            storage_live(_21)
+            storage_live(_22)
+            storage_live(_23)
+            _23 = copy id
+            _22 = rumoca_ir_dae::ids::{VariableId<'dae>}::index<'55>(move _23)
+            ↳⚡ storage_dead(id)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_23)
+            _21 = cast<u32, usize>(move _22)
+            storage_dead(_22)
+            _19 = core::slice::{[T]}::get<'57, VariableEntry, usize, VariableEntry>[impl_SliceIndex_slice_for_usize<VariableEntry>](move _20, move _21)
+            ↳⚡ storage_dead(id)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_21)
+            storage_dead(_20)
+            _18 = branch<&'62 VariableEntry>(move _19)
+            ↳⚡ storage_dead(id)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_19)
+            match _18 {
+                ControlFlow::Continue => {
+                    storage_live(val_26)
+                    val_26 = copy (_18 as variant ControlFlow::Continue)._0
+                    _17 = &(*val_26)
+                    storage_dead(val_26)
+                    _16 = &(*_17)
+                    storage_live(_27)
+                    storage_live(_28)
+                    _28 = copy value_type
+                    _27 = rumoca_ir_dae::ids::{ValueTypeId<'dae>}::from_raw<'65>(move _28)
+                    ↳⚡ storage_dead(id)
+                        storage_dead(self)
+                        unwind_continue
+                    storage_dead(_28)
+                    storage_live(_29)
+                    storage_live(_30)
+                    storage_live(_31)
+                    storage_live(_32)
+                    storage_live(_33)
+                    _33 = &(*(*self.dae).storage.value_types) with_metadata(copy (*self.dae).storage.value_types.metadata)
+                    storage_live(_34)
+                    storage_live(_35)
+                    _35 = copy value_type
+                    _34 = cast<u32, usize>(move _35)
+                    storage_dead(_35)
+                    _32 = core::slice::{[T]}::get<'68, ValueType, usize, ValueType>[impl_SliceIndex_slice_for_usize<ValueType>](move _33, move _34)
+                    ↳⚡ storage_dead(id)
+                        storage_dead(self)
+                        unwind_continue
+                    storage_dead(_34)
+                    storage_dead(_33)
+                    _31 = branch<&'73 ValueType>(move _32)
+                    ↳⚡ storage_dead(id)
+                        storage_dead(self)
+                        unwind_continue
+                    storage_dead(_32)
+                    match _31 {
+                        ControlFlow::Continue => {
+                            storage_live(val_38)
+                            val_38 = copy (_31 as variant ControlFlow::Continue)._0
+                            _30 = &(*val_38)
+                            storage_dead(val_38)
+                            _29 = &(*_30)
+                            storage_live(_39)
+                            _39 = PhantomData {  }
+                            _14 = VariableView { id: move _15, entry: move _16, value_type_id: move _27, value_type: move _29, marker: move _39 }
+                            storage_dead(_39)
+                            storage_dead(_29)
+                            storage_dead(_27)
+                            storage_dead(_16)
+                            storage_dead(_15)
+                            _0 = Option::Some { _0: move _14 }
+                            storage_dead(_31)
+                            storage_dead(_30)
+                            storage_dead(_18)
+                            storage_dead(_17)
+                            storage_dead(_14)
+                            storage_dead(value_type)
+                            storage_dead(id)
+                            storage_dead(self)
+                            return
+                        },
+                        ControlFlow::Break => {
+                            storage_live(residual_36)
+                            residual_36 = copy (_31 as variant ControlFlow::Break)._0
+                            storage_live(_37)
+                            _37 = copy residual_36
+                            _0 = from_residual<VariableView<'82>>(move _37)
+                            ↳⚡ storage_dead(id)
+                                storage_dead(self)
+                                unwind_continue
+                            storage_dead(_37)
+                            storage_dead(residual_36)
+                            storage_dead(_29)
+                            storage_dead(_27)
+                            storage_dead(_16)
+                            storage_dead(_15)
+                            storage_dead(_31)
+                            storage_dead(_30)
+                        },
+                    }
+                },
+                ControlFlow::Break => {
+                    storage_live(residual_24)
+                    residual_24 = copy (_18 as variant ControlFlow::Break)._0
+                    storage_live(_25)
+                    _25 = copy residual_24
+                    _0 = from_residual<VariableView<'71>>(move _25)
+                    ↳⚡ storage_dead(id)
+                        storage_dead(self)
+                        unwind_continue
+                    storage_dead(_25)
+                    storage_dead(residual_24)
+                    storage_dead(_16)
+                    storage_dead(_15)
+                },
+            }
+            storage_dead(_18)
+            storage_dead(_17)
+            storage_dead(_14)
+        },
+        ControlFlow::Break => {
+            storage_live(residual_11)
+            residual_11 = copy (_5 as variant ControlFlow::Break)._0
+            storage_live(_12)
+            _12 = copy residual_11
+            _0 = from_residual<VariableView<'60>>(move _12)
+            ↳⚡ storage_dead(id)
+                storage_dead(self)
+                unwind_continue
+            storage_dead(_12)
+            storage_dead(residual_11)
+            storage_dead(_5)
+            storage_dead(_4)
+        },
+    }
+    storage_dead(value_type)
+    storage_dead(id)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::{impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_mut
+fn {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_mut<'dae, '_1, '_2, '_3, '_4>(_1: &'_4 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>, tupled_args: (usize,)) -> (VariableId<'_2>, VariableView<'_3>)
+where
+    RegionOutlives0: '_2: '_3,
+    RegionOutlives1: '_2: '_1,
+    RegionOutlives2: '_3: '_2,
+    RegionOutlives3: '_3: '_1,
+    RegionOutlives4: '_1: '_2,
+    RegionOutlives5: '_1: '_3,
+    RegionOutlives6: 'dae: '_4,
+    RegionOutlives7: '_1: '_4,
+{
+    let _0: (VariableId<'4>, VariableView<'5>); // return
+    let _1: &'8 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>; // arg #1
+    let tupled_args: (usize,); // arg #2
+    let index: usize; // local
+    let id: VariableId<'9>; // local
+    let _5: Option<VariableId<'11>>; // anonymous local
+    let _6: DaeView<'13>; // anonymous local
+    let _7: usize; // anonymous local
+    let _8: &'15 str; // anonymous local
+    let _9: &'16 str; // anonymous local
+    let variable: VariableView<'17>; // local
+    let _11: Option<VariableView<'19>>; // anonymous local
+    let _12: DaeView<'20>; // anonymous local
+    let _13: VariableId<'21>; // anonymous local
+    let _14: &'22 str; // anonymous local
+    let _15: &'23 str; // anonymous local
+    let _16: VariableId<'24>; // anonymous local
+    let _17: VariableView<'25>; // anonymous local
+
+    storage_live(_0)
+    storage_live(index)
+    index = move tupled_args.0
+    storage_live(id)
+    storage_live(_5)
+    storage_live(_6)
+    _6 = copy (*_1)._0
+    storage_live(_7)
+    _7 = copy index
+    _5 = variable_id<'27>(move _6, move _7)
+    ↳⚡ storage_dead(index)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_7)
+    storage_dead(_6)
+    storage_live(_8)
+    storage_live(_9)
+    _9 = const "finalized dense variable index has a u32 identity"
+    _8 = &(*_9)
+    id = expect<'32, VariableId<'30>>(move _5, move _8)
+    ↳⚡ storage_dead(index)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_8)
+    storage_dead(_5)
+    fake_read(id)
+    storage_dead(_9)
+    storage_live(variable)
+    storage_live(_11)
+    storage_live(_12)
+    _12 = copy (*_1)._0
+    storage_live(_13)
+    _13 = copy id
+    _11 = variable<'34>(move _12, move _13)
+    ↳⚡ storage_dead(index)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_13)
+    storage_dead(_12)
+    storage_live(_14)
+    storage_live(_15)
+    _15 = const "finalized dense variable identity resolves"
+    _14 = &(*_15)
+    variable = expect<'39, VariableView<'37>>(move _11, move _14)
+    ↳⚡ storage_dead(index)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_14)
+    storage_dead(_11)
+    fake_read(variable)
+    storage_dead(_15)
+    storage_live(_16)
+    _16 = copy id
+    storage_live(_17)
+    _17 = copy variable
+    _0 = (move _16, move _17)
+    storage_dead(_17)
+    storage_dead(_16)
+    storage_dead(variable)
+    storage_dead(id)
+    storage_dead(index)
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure::{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::drop_glue
+unsafe fn {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::drop_glue<'dae, '_1, '_2>(_1: &'_2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>)
+where
+    RegionOutlives0: 'dae: '_2,
+    RegionOutlives1: '_1: '_2,
+{
+    let _0: (); // return
+    let _1: &'2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::{impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_once
+fn {impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_once<'dae, '_1, '_2, '_3>(_1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>, _2: (usize,)) -> (VariableId<'_2>, VariableView<'_3>)
+where
+    RegionOutlives0: '_2: '_3,
+    RegionOutlives1: '_2: '_1,
+    RegionOutlives2: '_3: '_2,
+    RegionOutlives3: '_3: '_1,
+    RegionOutlives4: '_1: '_2,
+    RegionOutlives5: '_1: '_3,
+{
+    let _0: (VariableId<'4>, VariableView<'5>); // return
+    let _1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>; // arg #1
+    let _2: (usize,); // arg #2
+    let _3: &'8 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = &mut _1
+    _0 = {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_mut<'dae, '_1, '_2, '_3, '13>(move _3, move _2)
+    ↳⚡ drop[{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::drop_glue<'dae, '_1, '16>] _1
+        ↳⚡ storage_dead(_3)
+            storage_dead(_2)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    drop[{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::drop_glue<'dae, '_1, '19>] _1
+    ↳⚡ storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::{impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}
+impl<'dae, '_1, '_2, '_3> FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>
+where
+    RegionOutlives0: '_2: '_3,
+    RegionOutlives1: '_2: '_1,
+    RegionOutlives2: '_3: '_2,
+    RegionOutlives3: '_3: '_1,
+    RegionOutlives4: '_1: '_2,
+    RegionOutlives5: '_1: '_3,
+{
+    fn call_once = {impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_once<'dae, '_1, '_2, '_3>
+    vtable: {impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::{vtable}<'dae, '_1, '_2, '_3>
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::{impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}
+impl<'dae, '_1, '_2, '_3> FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>
+where
+    RegionOutlives0: '_2: '_3,
+    RegionOutlives1: '_2: '_1,
+    RegionOutlives2: '_3: '_2,
+    RegionOutlives3: '_3: '_1,
+    RegionOutlives4: '_1: '_2,
+    RegionOutlives5: '_1: '_3,
+{
+    proof ImpliedClause0: (rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>: FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)>) = {impl FnOnce<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}<'dae, '_1, '_2, '_3>
+    fn call_mut<'_0_1> = {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::call_mut<'dae, '_1, '_2, '_3, '_0_1>
+    vtable: {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}::{vtable}<'dae, '_1, '_2, '_3>
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables
+pub fn variables<'dae>(self: DaeView<'dae>) -> Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, 'dae>>
+{
+    let _0: Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'4, '5>>; // return
+    let self: DaeView<'7>; // arg #1
+    let _2: Range<usize>; // anonymous local
+    let _3: usize; // anonymous local
+    let _4: DaeView<'8>; // anonymous local
+    let _5: rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'9, '10>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy self
+    _3 = variable_count<'11>(move _4)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    _2 = Range { start: const 0usize, end: move _3 }
+    storage_dead(_3)
+    storage_live(_5)
+    _5 = rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure { _0: copy self }
+    _0 = map<Range<usize>, (VariableId<'18>, VariableView<'19>), rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'22, '23>, usize>[impl_Iterator_for_Range<usize>[impl_Step_for_usize], {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}<'22, '23, '30, '31>](move _2, move _5)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_5)
+    storage_dead(_2)
+    storage_dead(self)
+    return
+}
+
+pub fn rumoca_ir_dae::model::view::{VariableView<'dae>}::scalar_count<'dae>(self: VariableView<'dae>) -> usize
+{
+    let _0: usize; // return
+    let self: VariableView<'1>; // arg #1
+    let _2: Option<usize>; // anonymous local
+    let _3: &'3 ValueType; // anonymous local
+    let _4: &'5 str; // anonymous local
+    let _5: &'6 str; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    storage_live(_3)
+    _3 = &(*self.value_type)
+    _2 = rumoca_ir_dae::expression::value_types::{ValueType}::scalar_count<'9>(move _3)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_3)
+    storage_live(_4)
+    storage_live(_5)
+    _5 = const "final DAE value type has a checked scalar capacity"
+    _4 = &(*_5)
+    _0 = expect<'12, usize>(move _2, move _4)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_2)
+    storage_dead(self)
+    return
+}
+
+struct rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae> {}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::{impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_mut
+fn {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_mut<'dae, '_1, '_2, '_3>(_1: &'_3 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>, tupled_args: ((VariableId<'_1>, VariableView<'_2>),)) -> DaeVariableRefinementEntry
+where
+    RegionOutlives0: 'dae: '_3,
+{
+    let _0: DaeVariableRefinementEntry; // return
+    let _1: &'2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>; // arg #1
+    let tupled_args: ((VariableId<'_1>, VariableView<'_2>),); // arg #2
+    let _3: (VariableId<'3>, VariableView<'4>); // anonymous local
+    let variable: VariableView<'5>; // local
+    let _5: SourceOccurrenceId; // anonymous local
+    let _6: VariableView<'6>; // anonymous local
+    let _7: VariableRole; // anonymous local
+    let _8: VariableView<'7>; // anonymous local
+    let _9: Fixity; // anonymous local
+    let _10: VariableView<'8>; // anonymous local
+    let _11: ExpressionVariability; // anonymous local
+    let _12: VariableView<'9>; // anonymous local
+    let _13: bool; // anonymous local
+    let _14: VariableView<'10>; // anonymous local
+    let _15: VariableCausality; // anonymous local
+    let _16: VariableView<'11>; // anonymous local
+    let _17: ScalarType; // anonymous local
+    let _18: &'13 ValueType; // anonymous local
+    let _19: &'14 ValueType; // anonymous local
+    let _20: VariableView<'15>; // anonymous local
+    let _21: Box<[u32]>; // anonymous local
+    let _22: &'17 [u32]; // anonymous local
+    let _23: &'18 [u32]; // anonymous local
+    let _24: &'19 ValueType; // anonymous local
+    let _25: &'20 ValueType; // anonymous local
+    let _26: VariableView<'21>; // anonymous local
+    let _27: usize; // anonymous local
+    let _28: VariableView<'22>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = move tupled_args.0
+    storage_live(variable)
+    variable = copy _3.1
+    storage_live(_5)
+    storage_live(_6)
+    _6 = copy variable
+    _5 = source_occurrence<'24>(move _6)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_6)
+    storage_live(_7)
+    storage_live(_8)
+    _8 = copy variable
+    _7 = role<'25>(move _8)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_8)
+    storage_live(_9)
+    storage_live(_10)
+    _10 = copy variable
+    _9 = fixed<'26>(move _10)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_10)
+    storage_live(_11)
+    storage_live(_12)
+    _12 = copy variable
+    _11 = variability<'27>(move _12)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_12)
+    storage_live(_13)
+    storage_live(_14)
+    _14 = copy variable
+    _13 = is_tunable<'28>(move _14)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_14)
+    storage_live(_15)
+    storage_live(_16)
+    _16 = copy variable
+    _15 = causality<'29>(move _16)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_16)
+    storage_live(_17)
+    storage_live(_18)
+    storage_live(_19)
+    storage_live(_20)
+    _20 = copy variable
+    _19 = value_type<'30>(move _20)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    _18 = &(*_19)
+    storage_dead(_20)
+    _17 = scalar_type<'32>(move _18)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_18)
+    storage_live(_21)
+    storage_live(_22)
+    storage_live(_23)
+    storage_live(_24)
+    storage_live(_25)
+    storage_live(_26)
+    _26 = copy variable
+    _25 = value_type<'33>(move _26)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    _24 = &(*_25)
+    storage_dead(_26)
+    _23 = dimensions<'35>(move _24)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    _22 = &(*_23) with_metadata(copy _23.metadata)
+    storage_dead(_24)
+    _21 = into<&'37 [u32], Box<[u32]>>[impl_From_for_Box_slice_Global<'37, u32>[impl_Clone_for_u32]](move _22)
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_22)
+    storage_live(_27)
+    storage_live(_28)
+    _28 = copy variable
+    _27 = rumoca_ir_dae::model::view::{VariableView<'dae>}::scalar_count<'41>(move _28)
+    ↳⚡ conditional_drop[impl_Destruct_for_Box::drop_glue<'42, [u32], Global>] _21
+        ↳⚡ storage_dead(_3)
+            storage_dead(tupled_args)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_28)
+    _0 = DaeVariableRefinementEntry { source_occurrence: move _5, role: move _7, fixed: move _9, variability: move _11, is_tunable: move _13, causality: move _15, scalar_type: move _17, dimensions: move _21, scalar_count: move _27 }
+    storage_dead(_27)
+    conditional_drop[impl_Destruct_for_Box::drop_glue<'43, [u32], Global>] _21
+    ↳⚡ storage_dead(_3)
+        storage_dead(tupled_args)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_25)
+    storage_dead(_23)
+    storage_dead(_21)
+    storage_dead(_19)
+    storage_dead(_17)
+    storage_dead(_15)
+    storage_dead(_13)
+    storage_dead(_11)
+    storage_dead(_9)
+    storage_dead(_7)
+    storage_dead(_5)
+    storage_dead(variable)
+    storage_dead(_3)
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure::{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::drop_glue
+unsafe fn {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::drop_glue<'dae, '_1>(_1: &'_1 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>)
+where
+    RegionOutlives0: 'dae: '_1,
+{
+    let _0: (); // return
+    let _1: &'2 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::{impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_once
+fn {impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_once<'dae, '_1, '_2>(_1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>, _2: ((VariableId<'_1>, VariableView<'_2>),)) -> DaeVariableRefinementEntry
+{
+    let _0: DaeVariableRefinementEntry; // return
+    let _1: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>; // arg #1
+    let _2: ((VariableId<'1>, VariableView<'2>),); // arg #2
+    let _3: &'4 mut rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = &mut _1
+    _0 = {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_mut<'dae, '_1, '_2, '17>(move _3, move _2)
+    ↳⚡ drop[{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::drop_glue<'dae, '20>] _1
+        ↳⚡ storage_dead(_3)
+            storage_dead(_2)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    drop[{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::drop_glue<'dae, '23>] _1
+    ↳⚡ storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::{impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}
+impl<'dae, '_1, '_2> FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae> {
+    fn call_once = {impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_once<'dae, '_1, '_2>
+    vtable: {impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::{vtable}<'dae, '_1, '_2>
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::{impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}
+impl<'dae, '_1, '_2> FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae> {
+    proof ImpliedClause0: (rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>: FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry>) = {impl FnOnce<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}<'dae, '_1, '_2>
+    fn call_mut<'_0_1> = {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::call_mut<'dae, '_1, '_2, '_0_1>
+    vtable: {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::{vtable}<'dae, '_1, '_2>
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement
+pub fn variable_refinement<'dae>(self: DaeView<'dae>) -> DaeVariableRefinementView
+{
+    let _0: DaeVariableRefinementView; // return
+    let self: DaeView<'1>; // arg #1
+    let entries: Box<[DaeVariableRefinementEntry]>; // local
+    let _3: Vec<DaeVariableRefinementEntry>; // anonymous local
+    let _4: Map<Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'10, '11>>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'12>>; // anonymous local
+    let _5: Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'13, '14>>; // anonymous local
+    let _6: DaeView<'15>; // anonymous local
+    let _7: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'16>; // anonymous local
+    let _8: Box<[DaeVariableRefinementEntry]>; // anonymous local
+
+    storage_live(_0)
+    storage_live(entries)
+    storage_live(_3)
+    storage_live(_4)
+    storage_live(_5)
+    storage_live(_6)
+    _6 = copy self
+    _5 = variables<'17>(move _6)
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(_6)
+    storage_live(_7)
+    _7 = rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure {  }
+    _4 = map<Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'23, '24>>, DaeVariableRefinementEntry, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'26>, (VariableId<'37>, VariableView<'38>)>[impl_Iterator_for_Map<(VariableId<'37>, VariableView<'38>), Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'23, '24>, usize>[impl_Iterator_for_Range<usize>[impl_Step_for_usize], {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}<'23, '24, '47, '48>], {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}<'26, '60, '61>](move _5, move _7)
+    ↳⚡ conditional_drop[impl_Destruct_for_Map::drop_glue<'70, Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'68, '69>>] _5
+        ↳⚡ storage_dead(self)
+            unwind_terminate
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_7)
+    storage_dead(_5)
+    _3 = collect<Map<Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'79, '80>>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'81>>, Vec<DaeVariableRefinementEntry>, DaeVariableRefinementEntry>[impl_Iterator_for_Map<DaeVariableRefinementEntry, Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'79, '80>>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'81>, (VariableId<'106>, VariableView<'107>)>[impl_Iterator_for_Map<(VariableId<'106>, VariableView<'107>), Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'79, '80>, usize>[impl_Iterator_for_Range<usize>[impl_Step_for_usize], {impl FnMut<(usize,), (VariableId<'_>, VariableView<'_>)> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'dae, '_1>}<'79, '80, '116, '117>], {impl FnMut<((VariableId<'_>, VariableView<'_>),), DaeVariableRefinementEntry> for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}<'81, '129, '130>], impl_FromIterator_for_Vec_Global<DaeVariableRefinementEntry>](move _4)
+    ↳⚡ conditional_drop[impl_Destruct_for_Map::drop_glue<'145, Map<Range<usize>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variables::closure<'142, '143>>, rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'144>>] _4
+        ↳⚡ storage_dead(self)
+            unwind_terminate
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    entries = into_boxed_slice<DaeVariableRefinementEntry, Global>(move _3)
+    ↳⚡ conditional_drop[impl_Destruct_for_Vec::drop_glue<'146, DaeVariableRefinementEntry, Global>] _3
+        ↳⚡ storage_dead(self)
+            unwind_terminate
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_3)
+    fake_read(entries)
+    storage_live(_8)
+    _8 = move entries
+    _0 = DaeVariableRefinementView { entries: move _8 }
+    conditional_drop[impl_Destruct_for_Box::drop_glue<'147, [DaeVariableRefinementEntry], Global>] _8
+    ↳⚡ conditional_drop[impl_Destruct_for_Box::drop_glue<'149, [DaeVariableRefinementEntry], Global>] entries
+        ↳⚡ storage_dead(self)
+            unwind_terminate
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_8)
+    conditional_drop[impl_Destruct_for_Box::drop_glue<'148, [DaeVariableRefinementEntry], Global>] entries
+    ↳⚡ storage_dead(self)
+        unwind_continue
+    storage_dead(entries)
+    storage_dead(self)
+    return
+}
+
+// Full name: rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure::{impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}
+impl<'dae> Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae> {
+    fn drop_glue<'_0_1> = {impl Destruct for rumoca_ir_dae::model::view::{DaeView<'dae>}::variable_refinement::closure<'dae>}::drop_glue<'dae, '_0_1>
+    non-dyn-compatible
+}
+
+
+
+    Finished `dev` profile [optimized + debuginfo] target(s) in 17.76s

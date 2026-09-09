@@ -1,0 +1,87 @@
+   Compiling regex-syntax v0.8.5
+   Compiling aho-corasick v1.1.3
+   Compiling crossbeam-utils v0.8.21
+   Compiling same-file v1.0.6
+   Compiling snapbox-macros v0.3.10
+   Compiling similar v2.7.0
+   Compiling normalize-line-endings v0.3.0
+   Compiling escape8259 v0.5.3
+   Compiling walkdir v2.5.0
+   Compiling libtest-mimic v0.8.1
+   Compiling snapbox v0.6.21
+   Compiling crossbeam-epoch v0.9.18
+   Compiling crossbeam-deque v0.8.6
+   Compiling regex-automata v0.4.9
+   Compiling regex v1.11.1
+   Compiling bstr v1.12.0
+   Compiling tracing-subscriber v0.3.19
+   Compiling env_filter v0.1.3
+   Compiling env_logger v0.11.8
+   Compiling assert_cmd v2.0.17
+   Compiling globset v0.4.16
+   Compiling ignore v0.4.23
+   Compiling tracing-tree v0.4.0 (https://github.com/Nadrieril/tracing-tree#841286bf)
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti3-charon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.34s
+     Running tests/box_copy.rs (target/debug/build/charon/a45115c7c9ad973b/out/box_copy-a45115c7c9ad973b)
+
+running 24 tests
+test foreign_metadata_is_unchanged ... ok
+test dropped_box_pointer_is_not_discarded ... ok
+test indexed_raw_pointer_is_unchanged ... ok
+test storage_end_between_copy_and_borrow_is_unchanged ... ok
+test indexed_storage_end_between_copy_and_use_is_unchanged ... ok
+test projected_box_assignment_is_not_discarded ... ok
+test unused_box_pointer_copy_is_discarded ... ok
+test two_indexed_rewrites_compose ... ok
+test mutable_borrow_is_unchanged ... ok
+test adjacent_box_copy_projects_original_owner_and_metadata ... ok
+test retagged_copy_is_unchanged ... ok
+test adjacent_indexed_copy_projects_original_owner_and_index ... ok
+test owner_replacement_between_copy_and_borrow_is_unchanged ... ok
+test adjacent_indexed_borrow_projects_original_owner_and_index ... ok
+test unused_box_copy_into_argument_is_unchanged ... ok
+test indexed_additional_temporary_read_is_unchanged ... ok
+test indexed_mutable_borrow_is_unchanged ... ok
+test indexed_non_unit_metadata_is_unchanged ... ok
+test additional_temporary_read_is_unchanged ... ok
+test indexed_owner_replacement_between_copy_and_use_is_unchanged ... ok
+test extra_box_pointer_use_is_not_discarded ... ok
+test raw_pointer_is_unchanged ... ok
+test indexed_copy_retag_is_preserved ... ok
+test unused_retagged_box_copy_is_unchanged ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/box_metadata.rs (target/debug/build/charon/831d5ce319be8a5e/out/box_metadata-831d5ce319be8a5e)
+
+running 7 tests
+test adjacent_borrow_preserves_pointee_and_metadata ... ok
+test nonadjacent_borrow_is_unchanged ... ok
+test owner_replacement_before_borrow_is_unchanged ... ok
+test terminator_metadata_use_is_unchanged ... ok
+test cross_block_borrow_is_unchanged ... ok
+test multiple_statement_uses_are_unchanged ... ok
+test raw_pointer_construction_is_unchanged ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/cyclic_retention.rs (target/debug/build/charon/08f87e38951045cc/out/cyclic_retention-08f87e38951045cc)
+
+running 3 tests
+test unrelated_active_cycle_is_not_used_as_the_retention_owner ... ok
+test recursive_associated_type_owner_does_not_retain_acyclic_parameters ... ok
+test reversed_declarations_still_use_one_recursive_boundary ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+     Running tests/specialized_traits.rs (target/debug/build/charon/afecafe421d6a1bb/out/specialized_traits-afecafe421d6a1bb)
+
+running 4 tests
+test cyclic_lifting_preserves_distinct_associated_types ... ok
+test specialization_preserves_closed_cyclic_parent_contracts ... ok
+test specialization_preserves_typechecked_parent_trait_contracts ... ok
+test specialization_preserves_noninverse_cyclic_parent_contracts ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+

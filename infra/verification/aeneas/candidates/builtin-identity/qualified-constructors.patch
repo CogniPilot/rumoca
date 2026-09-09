@@ -1,0 +1,25 @@
+--- a/extract/ExtractBase.ml
++++ b/extract/ExtractBase.ml
+@@ -1196,5 +1196,7 @@
+-        (TResult, result_ok_id, "ok");
+-        (TResult, result_fail_id, "fail");
+-        (TError, error_failure_id, "panic");
+-        (TLoopResult, loop_result_continue_id, "cont");
+-        (TLoopResult, loop_result_break_id, "done");
++        (TResult, result_ok_id, "_root_.Aeneas.Std.Result.ok");
++        (TResult, result_fail_id, "_root_.Aeneas.Std.Result.fail");
++        (TError, error_failure_id, "_root_.Aeneas.Std.Error.panic");
++        ( TLoopResult,
++          loop_result_continue_id,
++          "_root_.Aeneas.Std.ControlFlow.cont" );
++        (TLoopResult, loop_result_break_id, "_root_.Aeneas.Std.ControlFlow.done");
+--- a/extract/Extract.ml
++++ b/extract/Extract.ml
+@@ -3613,6 +3613,2 @@
+-            let ok =
+-              match backend () with
+-              | Lean -> "ok"
+-              | _ -> "Ok"
+-            in
++            let ok = ctx_get_variant span (TBuiltin TResult) result_ok_id ctx in
+             F.pp_print_string fmt ok;

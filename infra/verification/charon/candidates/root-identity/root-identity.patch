@@ -1,0 +1,1230 @@
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/ast/krate.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/ast/krate.rs
+--- a/src/ast/krate.rs	2026-09-07 13:15:29.287813940 -0400
++++ b/src/ast/krate.rs	2026-09-08 17:53:58.151546388 -0400
+@@ -96,6 +96,48 @@
+     /// `Some` after translation unless `--no-reorder-decls` is passed.
+     #[serde_state(stateless)]
+     pub ordered_decls: Option<Vec<DeclarationGroup>>,
++
++    /// The selected roots: the items the selection named or that lie under a selected container,
++    /// and the copies partial monomorphization made of them. They seed the declaration order and
++    /// cross the multi-target merge by identity, remapped like every other reference.
++    pub roots: Vec<ItemId>,
++    /// The roots the selection named exactly. A pass that removes one of these without recording
++    /// its disposition in `consumed_roots` is an error.
++    pub explicit_roots: Vec<ItemId>,
++    /// The dispositions of selected roots a pass consumed: which pass took the item and, when the
++    /// item lives on inside another, which one.
++    pub consumed_roots: Vec<ConsumedRoot>,
++}
++
++/// The disposition of a selected root a pass consumed rather than kept, issued at the site that
++/// consumed it, so that the absence of the item from the artifact is accounted for. Each variant
++/// names the identities its consumption involves.
++#[derive(
++    Debug, Clone, PartialEq, Eq, Hash, Drive, DriveMut, DriveTwo, SerializeState, DeserializeState,
++)]
++#[serde_state(state_implements = HashConsSerializerState)]
++pub enum ConsumedRoot {
++    /// A promoted constant whose uses became calls to its initializer (`anon_const_to_call`).
++    AnonConstToCall {
++        root: GlobalDeclId,
++        init_fun: FunDeclId,
++    },
++    /// A function body inlined into a host function (`inline_selected_functions`); one record per
++    /// host it was inlined into.
++    Inlined { root: FunDeclId, into: FunDeclId },
++    /// An exactly selected item the opacity rules make invisible; never translated.
++    Invisible { root: ItemId },
++}
++
++impl ConsumedRoot {
++    /// The root this disposition accounts for.
++    pub fn root(&self) -> ItemId {
++        match self {
++            ConsumedRoot::AnonConstToCall { root, .. } => ItemId::Global(*root),
++            ConsumedRoot::Inlined { root, .. } => ItemId::Fun(*root),
++            ConsumedRoot::Invisible { root } => *root,
++        }
++    }
+ }
+ 
+ /// A (group of) top-level declaration(s), properly reordered.
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/ast/visitor.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/ast/visitor.rs
+--- a/src/ast/visitor.rs	2026-09-07 13:15:29.288397433 -0400
++++ b/src/ast/visitor.rs	2026-09-08 16:19:35.938048628 -0400
+@@ -78,7 +78,7 @@
+         SizeExpr, OffsetExpr, SizeGuarantee, OffsetGuarantee,
+         PtrMetadata,
+         SpanData,
+-        ItemByVal, VTableField, AssocItemNames,
++        ItemByVal, VTableField, AssocItemNames, ConsumedRoot,
+         for<Id: AstVisitable> DeclRef<Id>, ItemId,
+         for<T: AstVisitable> Box<T>,
+         for<T: AstVisitable> Option<T>,
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/bin/charon/main.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/charon/main.rs
+--- a/src/bin/charon/main.rs	2026-09-07 21:06:32.749718845 -0400
++++ b/src/bin/charon/main.rs	2026-09-08 16:19:05.476117370 -0400
+@@ -188,6 +188,10 @@
+         .serialize_to_files(targets)
+         .map_err(|()| anyhow::anyhow!("failed to serialize merged crate"))?;
+ 
++    if merged.has_errors {
++        // The merge and its cleanup report errors like a single-target translation does.
++        anyhow::bail!("the merged crate has errors");
++    }
+     Ok(ExitStatus::default())
+ }
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/bin/charon-driver/translate/translate_crate.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/charon-driver/translate/translate_crate.rs
+--- a/src/bin/charon-driver/translate/translate_crate.rs	2026-09-07 19:09:15.802263170 -0400
++++ b/src/bin/charon-driver/translate/translate_crate.rs	2026-09-08 16:32:16.158060228 -0400
+@@ -330,16 +330,14 @@
+     /// recursively register the items it refers to. We call this on the crate root and end up
+     /// exploring the whole crate.
+     #[tracing::instrument(skip(self))]
+-    pub fn enqueue_module_item(&mut self, def_id: &hax::DefId) {
++    /// Returns the id of the item registered for `def_id`, if any.
++    pub fn enqueue_module_item(&mut self, def_id: &hax::DefId) -> Option<ItemId> {
+         if let Some(trait_def_id) = self.is_method_decl_without_default(def_id) {
+             // Don't translate the method itself as it doesn't correspond to an item, translate the
+             // trait instead.
+-            self.enqueue_module_item(&trait_def_id);
+-            return;
++            return self.enqueue_module_item(&trait_def_id);
+         }
+-        let Some(kind) = self.base_kind_for_item(def_id) else {
+-            return;
+-        };
++        let kind = self.base_kind_for_item(def_id)?;
+         let item_src = if self.options.monomorphize_with_hax {
+             if let Ok(def) = self.poly_hax_def(def_id)
+                 && !def.has_any_generics()
+@@ -348,12 +346,43 @@
+                 TransItemSource::monomorphic(def.this(), kind)
+             } else {
+                 // Skip polymorphic items and items that cause errors.
+-                return;
++                return None;
+             }
+         } else {
+             TransItemSource::polymorphic(def_id, kind)
+         };
+-        let _: Option<ItemId> = self.register_and_enqueue(&None, item_src);
++        self.register_and_enqueue(&None, item_src)
++    }
++
++    /// Enqueue an item selected by `start_from` and record its identity as a root.
++    pub fn enqueue_root(&mut self, def_id: &hax::DefId) {
++        // A pattern naming a required trait method enqueues the trait for translation but does
++        // not select it: the method is not an item of its own.
++        if self.is_method_decl_without_default(def_id).is_some() {
++            self.enqueue_module_item(def_id);
++            return;
++        }
++        if let Some(id) = self.enqueue_module_item(def_id) {
++            if !self.roots.contains(&id) {
++                self.roots.push(id);
++            }
++            if !self.explicit_roots.contains(&id) {
++                self.explicit_roots.push(id);
++            }
++        }
++    }
++
++    /// Whether a definition is owned, transitively, by one of the definitions a `start_from`
++    /// pattern resolved to.
++    fn is_under_selection(&self, def_id: &hax::DefId) -> bool {
++        let mut current = Some(def_id.clone());
++        while let Some(id) = current {
++            if self.selected_def_ids.contains(&id) {
++                return true;
++            }
++            current = id.parent(&self.hax_state);
++        }
++        false
+     }
+ 
+     pub(crate) fn register_no_enqueue<T: TryFrom<ItemId>>(
+@@ -384,6 +413,20 @@
+                 // Add the id to the queue of declarations to translate
+                 self.id_map.insert(src.clone(), trans_id);
+                 self.reverse_id_map.insert(trans_id, src.clone());
++                let selected_exactly = self.selected_exact_def_ids.contains(src.def_id());
++                if (selected_exactly || self.is_under_selection(src.def_id()))
++                    && !self.roots.contains(&trans_id)
++                {
++                    self.roots.push(trans_id);
++                }
++                // The selection named the item of the definition's own kind; the other items
++                // made from the same definition (a vtable, a drop shim) are roots under it, not
++                // the selection itself.
++                let exact = selected_exactly
++                    && self.base_kind_for_item(src.def_id()).as_ref() == Some(&src.kind);
++                if exact && !self.explicit_roots.contains(&trans_id) {
++                    self.explicit_roots.push(trans_id);
++                }
+                 // Store the name early so the name matcher can identify paths.
+                 if let Ok(name) = self.translate_name(src) {
+                     self.translated.item_names.insert(trans_id, name);
+@@ -1113,6 +1156,11 @@
+         cached_names: Default::default(),
+         cached_item_metas: Default::default(),
+         lt_mutability_computer: Default::default(),
++        roots: Vec::new(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        selected_def_ids: Default::default(),
++        selected_exact_def_ids: Default::default(),
+     };
+     ctx.register_target_info();
+     ctx.reserve_unit_decl();
+@@ -1124,7 +1172,8 @@
+                 if let Ok(def_ids) = ctx.resolve_path(Span::dummy(), &pattern, strict) {
+                     for def_id in def_ids {
+                         let def_id: hax::DefId = def_id.sinto(&ctx.hax_state);
+-                        ctx.enqueue_module_item(&def_id);
++                        ctx.selected_def_ids.insert(def_id.clone());
++                        ctx.enqueue_root(&def_id);
+                     }
+                 }
+             }
+@@ -1138,7 +1187,8 @@
+                     if !matches!(def_id.kind, hax::DefKind::Mod)
+                         && def_id.attrs(tcx).iter().any(|a| a.path_matches(&attr_path))
+                     {
+-                        ctx.enqueue_module_item(&def_id);
++                        ctx.selected_exact_def_ids.insert(def_id.clone());
++                        ctx.enqueue_root(&def_id);
+                     }
+                 };
+                 for ldid in tcx.hir_crate_items(()).definitions() {
+@@ -1151,7 +1201,8 @@
+                     if !matches!(def_id.kind, hax::DefKind::Mod)
+                         && def_id.visibility(tcx) == Some(true)
+                     {
+-                        ctx.enqueue_module_item(&def_id);
++                        ctx.selected_exact_def_ids.insert(def_id.clone());
++                        ctx.enqueue_root(&def_id);
+                     }
+                 };
+                 for ldid in tcx.hir_crate_items(()).definitions() {
+@@ -1195,5 +1246,8 @@
+         options: ctx.options,
+         translated: ctx.translated,
+         errors: ctx.errors,
++        roots: ctx.roots,
++        explicit_roots: ctx.explicit_roots,
++        consumed_roots: ctx.consumed_roots,
+     })
+ }
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/bin/charon-driver/translate/translate_ctx.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/charon-driver/translate/translate_ctx.rs
+--- a/src/bin/charon-driver/translate/translate_ctx.rs	2026-09-07 20:45:36.208986524 -0400
++++ b/src/bin/charon-driver/translate/translate_ctx.rs	2026-09-08 16:28:07.028080275 -0400
+@@ -57,6 +57,22 @@
+     pub assoc_item_id_map: HashMap<hax::DefId, AssocItemId>,
+     /// The reverse filename map.
+     pub file_to_id: HashMap<FileName, FileId>,
++    /// The items the `start_from` selection resolved to, in registration order, together with
++    /// every item registered under them (see `selected_def_ids`).
++    pub roots: Vec<ItemId>,
++    /// The items the selection named directly. Their absence at ordering is refused; a derived
++    /// root removed by a pass is simply not ordered.
++    pub explicit_roots: Vec<ItemId>,
++    /// Dispositions of selected roots the translation itself did not produce: an item the
++    /// opacity rules make invisible.
++    pub consumed_roots: Vec<ConsumedRoot>,
++    /// The definitions a `start_from` pattern resolved to. Every registered item whose owner
++    /// chain reaches one of them belongs to the selection: module contents, nested definitions,
++    /// closures and the items synthesized for them, which is what a path pattern denotes.
++    pub selected_def_ids: std::collections::HashSet<hax::DefId>,
++    /// The definitions a `Pub` or attribute selection named. Every registered instance of one
++    /// of them (a monomorphization included) is a root; nothing under them is.
++    pub selected_exact_def_ids: std::collections::HashSet<hax::DefId>,
+ 
+     /// Context for tracking and reporting errors.
+     pub errors: RefCell<ErrorCtx>,
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/bin/charon-driver/translate/translate_items.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/charon-driver/translate/translate_items.rs
+--- a/src/bin/charon-driver/translate/translate_items.rs	2026-09-07 13:15:29.290567722 -0400
++++ b/src/bin/charon-driver/translate/translate_items.rs	2026-09-08 17:45:53.993809436 -0400
+@@ -59,6 +59,18 @@
+         self.translate_stack.pop();
+     }
+ 
++    /// A selected root the opacity rules make invisible is not translated; the selection's
++    /// disposition is recorded so its absence from the artifact is accounted for.
++    fn record_invisible_root(&mut self, trans_id: Option<ItemId>) {
++        if let Some(id) = trans_id
++            && self.explicit_roots.contains(&id)
++            && !self.consumed_roots.iter().any(|c| c.root() == id)
++        {
++            self.consumed_roots
++                .push(ConsumedRoot::Invisible { root: id });
++        }
++    }
++
+     pub(crate) fn translate_item_aux(
+         &mut self,
+         item_src: &TransItemSource,
+@@ -72,11 +84,13 @@
+         let opacity = self.opacity_for_name(&name);
+         if opacity.is_invisible() {
+             // Don't even start translating the item. In particular don't call `hax_def` on it.
++            self.record_invisible_root(trans_id);
+             return Ok(());
+         }
+         let def = self.hax_def_for_item(&item_src.item)?;
+         let item_meta = self.translate_item_meta(&def, item_src, name, opacity);
+         if item_meta.opacity.is_invisible() {
++            self.record_invisible_root(trans_id);
+             return Ok(());
+         }
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/export/multi_target.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/export/multi_target.rs
+--- a/src/export/multi_target.rs	2026-09-07 13:15:29.291876477 -0400
++++ b/src/export/multi_target.rs	2026-09-08 21:33:47.415885773 -0400
+@@ -22,17 +22,31 @@
+     let mut error_ctx = ErrorCtx::new();
+     let tr_options = TranslateOptions::new(&mut error_ctx, &options);
+ 
+-    let mut merged = CrateMerger::process(options, krates);
++    let (mut merged, mut roots, mut explicit_roots, mut consumed_roots) =
++        CrateMerger::process(options, krates);
+ 
+-    ItemDeduplicator::dedup(&mut merged.translated, &mut error_ctx);
++    ItemDeduplicator::dedup(
++        &mut merged.translated,
++        &mut [&mut roots, &mut explicit_roots],
++        &mut consumed_roots,
++        &mut error_ctx,
++    );
+ 
+     let mut ctx = TransformCtx {
+         options: tr_options,
+         translated: merged.translated,
+         errors: RefCell::new(error_ctx),
++        roots,
++        explicit_roots,
++        consumed_roots,
+     };
+     cleanup_post_merge(&mut ctx);
++    // The merged artifact reports the errors of its own cleanup, not only those of its inputs.
++    merged.has_errors |= ctx.has_errors();
+     merged.translated = ctx.translated;
++    merged.translated.roots = ctx.roots;
++    merged.translated.explicit_roots = ctx.explicit_roots;
++    merged.translated.consumed_roots = ctx.consumed_roots;
+ 
+     merged
+ }
+@@ -44,10 +58,20 @@
+ struct CrateMerger {
+     merged: CrateData,
+     file_name_to_id: HashMap<FileName, FileId>,
++    /// The roots each input crate carried, remapped into the merged crate; they seed the
++    /// recomputed declaration order.
++    roots: Vec<ItemId>,
++    /// The exactly selected roots each input crate carried, remapped the same way.
++    explicit_roots: Vec<ItemId>,
++    /// The consumed-root dispositions each input crate carried, remapped the same way.
++    consumed_roots: Vec<ConsumedRoot>,
+ }
+ 
+ impl CrateMerger {
+-    fn process(options: CliOpts, krates: Vec<CrateData>) -> CrateData {
++    fn process(
++        options: CliOpts,
++        krates: Vec<CrateData>,
++    ) -> (CrateData, Vec<ItemId>, Vec<ItemId>, Vec<ConsumedRoot>) {
+         let mut translated = TranslatedCrate::default();
+         translated.options = options;
+         let mut merger = CrateMerger {
+@@ -57,12 +81,20 @@
+                 has_errors: false,
+             },
+             file_name_to_id: HashMap::new(),
++            roots: Vec::new(),
++            explicit_roots: Vec::new(),
++            consumed_roots: Vec::new(),
+         };
+         for krate in krates {
+             merger.add_one(krate);
+         }
+ 
+-        merger.merged
++        (
++            merger.merged,
++            merger.roots,
++            merger.explicit_roots,
++            merger.consumed_roots,
++        )
+     }
+ 
+     fn add_one(&mut self, krate: CrateData) {
+@@ -159,8 +191,27 @@
+             global_decls,
+             trait_decls,
+             trait_impls,
+-            ordered_decls: _, // Recomputed on the merged crate
++            ordered_decls: _, // Recomputed on the merged crate, seeded from the carried roots
++            roots,
++            explicit_roots,
++            consumed_roots,
+         } = krate;
++        // The remap above visited the carried roots like every other reference.
++        for id in roots {
++            if !self.roots.contains(&id) {
++                self.roots.push(id);
++            }
++        }
++        for id in explicit_roots {
++            if !self.explicit_roots.contains(&id) {
++                self.explicit_roots.push(id);
++            }
++        }
++        for consumed in consumed_roots {
++            if !self.consumed_roots.contains(&consumed) {
++                self.consumed_roots.push(consumed);
++            }
++        }
+         if self.merged.translated.crate_name.is_empty() {
+             self.merged.translated.crate_name = crate_name;
+         }
+@@ -542,14 +593,55 @@
+ 
+ impl<'a> ItemDeduplicator<'a> {
+     /// Entrypoint: deduplicate items that are the same across targets.
+-    pub fn dedup(krate: &'a mut TranslatedCrate, errors: &mut ErrorCtx) {
++    pub fn dedup(
++        krate: &'a mut TranslatedCrate,
++        root_lists: &mut [&mut Vec<ItemId>],
++        consumed_roots: &mut Vec<ConsumedRoot>,
++        errors: &mut ErrorCtx,
++    ) {
+         let groups = Self::discover_groups(krate, errors);
+         if groups.is_empty() {
+             return;
+         }
+         let mut this = Self { krate, groups };
+         let decisions = this.decide_group_mergings();
+-        this.apply_merge_decisions(decisions);
++        let remap = this.apply_merge_decisions(decisions);
++        // Roots follow the same identity remap as every reference inside the crate.
++        for roots in root_lists.iter_mut() {
++            for id in roots.iter_mut() {
++                if let Some(canonical) = remap.get(id) {
++                    *id = *canonical;
++                }
++            }
++            let mut seen = HashSet::new();
++            roots.retain(|id| seen.insert(*id));
++        }
++        for consumed in consumed_roots.iter_mut() {
++            let remap_fun = |id: &mut FunDeclId| {
++                if let Some(ItemId::Fun(canonical)) = remap.get(&ItemId::Fun(*id)) {
++                    *id = *canonical;
++                }
++            };
++            match consumed {
++                ConsumedRoot::AnonConstToCall { root, init_fun } => {
++                    if let Some(ItemId::Global(canonical)) = remap.get(&ItemId::Global(*root)) {
++                        *root = *canonical;
++                    }
++                    remap_fun(init_fun);
++                }
++                ConsumedRoot::Inlined { root, into } => {
++                    remap_fun(root);
++                    remap_fun(into);
++                }
++                ConsumedRoot::Invisible { root } => {
++                    if let Some(canonical) = remap.get(root) {
++                        *root = *canonical;
++                    }
++                }
++            }
++        }
++        let mut seen = HashSet::new();
++        consumed_roots.retain(|consumed| seen.insert(consumed.clone()));
+     }
+ 
+     /// Group items by (base_name, item_kind). Each group contains the versions of that item
+@@ -651,9 +743,13 @@
+             .collect()
+     }
+ 
+-    fn apply_merge_decisions(&mut self, decisions: Vec<(TargetGroupId, MergeDecision)>) {
++    /// Returns the identity remap that was applied.
++    fn apply_merge_decisions(
++        &mut self,
++        decisions: Vec<(TargetGroupId, MergeDecision)>,
++    ) -> HashMap<ItemId, ItemId> {
+         if decisions.is_empty() {
+-            return;
++            return HashMap::new();
+         }
+ 
+         let mut remap = HashMap::new();
+@@ -702,6 +798,7 @@
+             self.krate
+                 .set_new_item_slot(ItemId::Fun(decl.def_id), ItemByVal::Fun(decl));
+         }
++        remap
+     }
+ 
+     fn dedup_group(&mut self, idx: TargetGroupId) {
+@@ -752,7 +849,7 @@
+ /// Recompute declaration order and run final whole-crate cleanup on the merged crate.
+ fn cleanup_post_merge(ctx: &mut TransformCtx) {
+     if !ctx.options.translate_all_methods {
+-        remove_unmentioned_methods(&mut ctx.translated);
++        remove_unmentioned_methods(&mut ctx.translated, &ctx.explicit_roots);
+     }
+     crate::transform::add_missing_info::reorder_decls::Transform.transform_ctx(ctx);
+     if ctx.options.unbind_item_vars {
+@@ -762,7 +859,7 @@
+ 
+ /// Emulate the behavior of our lazy method translation scheme by removing default trait methods
+ /// that aren't usefully mentioned anywhere.
+-fn remove_unmentioned_methods(krate: &mut TranslatedCrate) {
++fn remove_unmentioned_methods(krate: &mut TranslatedCrate, roots: &[ItemId]) {
+     type MethodKey = (TraitDeclId, TraitMethodId);
+ 
+     use ReachabilityNode::*;
+@@ -840,6 +937,15 @@
+             }
+         }
+ 
++        // A root the selection named exactly is reachable by selection, whatever its source: a
++        // selected default method is kept even if nothing mentions it. Roots by ancestry are not
++        // seeded: the lazy scheme keeps only the default methods something mentions.
++        for &root in roots {
++            if let ItemId::Fun(fun_id) = root {
++                graph.add_edge(Root, Fun(fun_id), ());
++            }
++        }
++
+         graph
+     };
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/export.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/export.rs
+--- a/src/export.rs	2026-09-07 13:15:29.291934857 -0400
++++ b/src/export.rs	2026-09-08 16:19:05.324274976 -0400
+@@ -74,10 +74,16 @@
+ 
+ impl CrateData {
+     pub fn new(ctx: TransformCtx) -> Self {
++        let has_errors = ctx.has_errors();
++        let mut translated = ctx.translated;
++        // The artifact carries the selection by identity.
++        translated.roots = ctx.roots;
++        translated.explicit_roots = ctx.explicit_roots;
++        translated.consumed_roots = ctx.consumed_roots;
+         CrateData {
+             charon_version: CharonVersion(crate::VERSION.to_owned()),
+-            has_errors: ctx.has_errors(),
+-            translated: ctx.translated,
++            has_errors,
++            translated,
+         }
+     }
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/options.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/options.rs
+--- a/src/options.rs	2026-09-07 13:15:29.292239538 -0400
++++ b/src/options.rs	2026-09-08 10:47:49.774378876 -0400
+@@ -625,21 +625,6 @@
+     Pub,
+ }
+ 
+-impl StartFrom {
+-    pub fn matches(&self, ctx: &TranslatedCrate, item_meta: &ItemMeta) -> bool {
+-        match self {
+-            StartFrom::Pattern { pattern, .. } => pattern.matches(ctx, &item_meta.name),
+-            StartFrom::Attribute(attr) => item_meta
+-                .attr_info
+-                .attributes
+-                .iter()
+-                .filter_map(|a| a.as_unknown())
+-                .any(|raw_attr| raw_attr.path == *attr),
+-            StartFrom::Pub => item_meta.attr_info.public && item_meta.is_local,
+-        }
+-    }
+-}
+-
+ /// The options that control translation and transformation.
+ pub struct TranslateOptions {
+     /// Items from which to start translation.
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/transform/add_missing_info/reorder_decls.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/add_missing_info/reorder_decls.rs
+--- a/src/transform/add_missing_info/reorder_decls.rs	2026-09-07 13:15:29.292974051 -0400
++++ b/src/transform/add_missing_info/reorder_decls.rs	2026-09-08 17:45:53.996401925 -0400
+@@ -7,6 +7,7 @@
+ //! to be explicit about mutual recursion. This should come useful for translation to any other
+ //! language with these properties.
+ use crate::options::TranslateOptions;
++use crate::register_error;
+ use crate::transform::TransformCtx;
+ use crate::ullbc_ast::*;
+ use crate::utils::*;
+@@ -373,19 +374,38 @@
+ 
+ fn compute_declarations_graph(ctx: &TransformCtx) -> DiGraphMap<ItemId, ()> {
+     let mut deps = Deps::default();
+-    // Start from the items included in `start_from`. We've mostly only translated items accessible
+-    // from that, but some passes render items inaccessible again, which we filter out here.
++    // Start from the identities the `start_from` selection resolved to at translation time, plus
++    // builtins. Items reachable only from a selection are filtered by the walk below. A selected
++    // root that an earlier pass removed is refused rather than dropped: ordering must not lose
++    // what was asked for silently.
++    // A root the selection named directly must still exist; a root derived from it (an item
++    // registered under it, such as a promoted constant) may have been consumed by a pass and is
++    // then simply not ordered.
++    for &id in &ctx.explicit_roots {
++        // An absent selected root is accounted for only by the disposition the consuming pass
++        // recorded.
++        let consumed = ctx.consumed_roots.iter().any(|c| c.root() == id);
++        if !consumed && ctx.translated.get_item(id).is_none() {
++            register_error!(
++                ctx,
++                Span::dummy(),
++                "selected root {id:?} was removed by an earlier pass before declaration ordering"
++            );
++        }
++    }
++    let roots: Vec<ItemId> = ctx
++        .roots
++        .iter()
++        .copied()
++        .filter(|id| ctx.translated.get_item(*id).is_some())
++        .collect();
++    // Seed in item-id order, as the name-based seed did, so that the computed order does not
++    // depend on the order in which roots were registered.
++    let roots: HashSet<ItemId> = roots.into_iter().collect();
+     deps.unprocessed = ctx
+         .translated
+         .all_items()
+-        .filter(|item| {
+-            item.item_meta().name.is_builtin()
+-                || ctx
+-                    .options
+-                    .start_from
+-                    .iter()
+-                    .any(|pat| pat.matches(&ctx.translated, item.item_meta()))
+-        })
++        .filter(|item| item.item_meta().name.is_builtin() || roots.contains(&item.id()))
+         .map(|item| item.id())
+         .collect();
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/transform/ctx.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/ctx.rs
+--- a/src/transform/ctx.rs	2026-09-07 13:15:29.293263563 -0400
++++ b/src/transform/ctx.rs	2026-09-08 17:45:53.958159274 -0400
+@@ -18,6 +18,28 @@
+     pub translated: TranslatedCrate,
+     /// Context for tracking and reporting errors.
+     pub errors: RefCell<ErrorCtx>,
++    /// The items the `start_from` selection resolved to, in registration order. Declaration
++    /// ordering seeds reachability from these identities; it does not re-match the selection
++    /// against translated names.
++    pub roots: Vec<ItemId>,
++    /// The roots the selection named directly; their absence at ordering is refused unless a
++    /// pass recorded their disposition.
++    pub explicit_roots: Vec<ItemId>,
++    /// The dispositions of selected roots that passes consumed.
++    pub consumed_roots: Vec<ConsumedRoot>,
++}
++
++impl TransformCtx {
++    /// Record the disposition of a selected root a pass consumed, so its absence from the
++    /// artifact is accounted for. Dispositions of items that are not roots are dropped.
++    pub fn consume_root(&mut self, disposition: ConsumedRoot) {
++        let root = disposition.root();
++        if (self.roots.contains(&root) || self.explicit_roots.contains(&root))
++            && !self.consumed_roots.contains(&disposition)
++        {
++            self.consumed_roots.push(disposition);
++        }
++    }
+ }
+ 
+ /// A pass that modifies ullbc bodies and can be fused with previous passes so that we run all of
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/transform/normalize/partial_monomorphization.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/normalize/partial_monomorphization.rs
+--- a/src/transform/normalize/partial_monomorphization.rs	2026-09-07 13:15:29.293742064 -0400
++++ b/src/transform/normalize/partial_monomorphization.rs	2026-09-08 14:14:58.284004799 -0400
+@@ -455,6 +455,13 @@
+ 
+         let name_ref = &mut decl_mut.item_meta().name;
+         *name_ref = mem::take::<crate::ast::Name>(name_ref).instantiate(shape.clone());
++        // A copy of a root is a root: the selection is carried by identity through the pass.
++        if self.ctx.roots.contains(orig_id) && !self.ctx.roots.contains(&new_id) {
++            self.ctx.roots.push(new_id);
++        }
++        if self.ctx.explicit_roots.contains(orig_id) && !self.ctx.explicit_roots.contains(&new_id) {
++            self.ctx.explicit_roots.push(new_id);
++        }
+         self.ctx
+             .translated
+             .item_names
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/transform/simplify_output/anon_const_to_call.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/simplify_output/anon_const_to_call.rs
+--- a/src/transform/simplify_output/anon_const_to_call.rs	2026-09-07 13:15:29.294235446 -0400
++++ b/src/transform/simplify_output/anon_const_to_call.rs	2026-09-08 17:53:58.145748557 -0400
+@@ -34,14 +34,14 @@
+             block.dyn_visit_in_body_mut(|op: &mut Operand| {
+                 if let Operand::Const(c) = op
+                     && let ConstantExprKind::Global(gref) = c.kind()
+-                    && let Some(initializer) = self.anon_consts.get(&gref.id)
++                    && let Some(init_fun) = self.anon_consts.get(&gref.id)
+                 {
+                     let return_place = body.locals.new_var(None, c.ty().clone());
+                     new_calls.push((
+                         return_place.as_local().unwrap(),
+                         Call {
+                             func: FnOperand::Regular(FnPtr::new(
+-                                FnPtrKind::Fun(FunId::Regular(*initializer)),
++                                FnPtrKind::Fun(FunId::Regular(*init_fun)),
+                                 gref.generics.clone(),
+                             )),
+                             args: vec![],
+@@ -80,8 +80,12 @@
+         }
+     }
+     fn finalize(&self, ctx: &mut TransformCtx) {
+-        for gid in self.anon_consts.keys() {
++        for (gid, init) in &self.anon_consts {
+             ctx.translated.global_decls.remove(*gid);
++            ctx.consume_root(ConsumedRoot::AnonConstToCall {
++                root: *gid,
++                init_fun: *init,
++            });
+         }
+     }
+ }
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/rumoca-charon-captures-5tXAoU/src/transform/simplify_output/inline_selected_functions.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/simplify_output/inline_selected_functions.rs
+--- a/src/transform/simplify_output/inline_selected_functions.rs	2026-09-07 13:15:29.294441887 -0400
++++ b/src/transform/simplify_output/inline_selected_functions.rs	2026-09-08 17:45:53.984687755 -0400
+@@ -58,7 +58,23 @@
+             }
+         }
+     }
+-    fn transform_body(&self, _ctx: &mut TransformCtx, outer_body: &mut ullbc_ast::ExprBody) {
++    fn transform_function(&self, ctx: &mut TransformCtx, decl: &mut FunDecl) {
++        let host = decl.def_id;
++        if let Some(body) = decl.body.as_unstructured_mut() {
++            self.inline_into(ctx, host, body)
++        }
++    }
++}
++
++impl Transform {
++    /// Inline the selected functions into `outer_body`, the body of `host`, recording the
++    /// disposition of each selected root inlined at the site it is inlined.
++    fn inline_into(
++        &self,
++        ctx: &mut TransformCtx,
++        host: FunDeclId,
++        outer_body: &mut ullbc_ast::ExprBody,
++    ) {
+         for block_id in outer_body.body.indices() {
+             let Some(block) = outer_body.body.get_mut(block_id) else {
+                 continue;
+@@ -84,6 +100,10 @@
+             let Some(initializer) = self.to_inline.get(fun_id) else {
+                 continue;
+             };
++            ctx.consume_root(ConsumedRoot::Inlined {
++                root: *fun_id,
++                into: host,
++            });
+             let span = initializer.item_meta.span;
+             let Some(inner_body) = initializer.body.as_unstructured() else {
+                 continue;
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/tests/box_copy.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/box_copy.rs
+--- a/tests/box_copy.rs	2026-09-07 19:22:59.785179459 -0400
++++ b/tests/box_copy.rs	2026-09-08 16:24:45.376064220 -0400
+@@ -37,10 +37,15 @@
+         .unwrap()
+         .clone();
+     let mut errors = ErrorCtx::new();
++    // No ordering runs here; every item is a root of this replay.
++    let roots = translated.all_items().map(|item| item.id()).collect();
+     let ctx = TransformCtx {
+         options: TranslateOptions::new(&mut errors, &translated.options),
+         translated,
+         errors: errors.into(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        roots,
+     };
+     let mut captures = Vec::new();
+     for (block, data) in body.body.iter_enumerated() {
+@@ -404,10 +409,15 @@
+         .unwrap()
+         .clone();
+     let mut errors = ErrorCtx::new();
++    // No ordering runs here; every item is a root of this replay.
++    let roots = translated.all_items().map(|item| item.id()).collect();
+     let ctx = TransformCtx {
+         options: TranslateOptions::new(&mut errors, &translated.options),
+         translated,
+         errors: errors.into(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        roots,
+     };
+ 
+     let captures = indexed_captures(&body);
+@@ -729,10 +739,15 @@
+         .unwrap()
+         .clone();
+     let mut errors = ErrorCtx::new();
++    // No ordering runs here; every item is a root of this replay.
++    let roots = translated.all_items().map(|item| item.id()).collect();
+     let ctx = TransformCtx {
+         options: TranslateOptions::new(&mut errors, &translated.options),
+         translated,
+         errors: errors.into(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        roots,
+     };
+ 
+     let captures = indexed_captures(&body);
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/tests/box_metadata.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/box_metadata.rs
+--- a/tests/box_metadata.rs	2026-09-07 19:22:59.785128109 -0400
++++ b/tests/box_metadata.rs	2026-09-08 16:24:45.376319031 -0400
+@@ -36,10 +36,15 @@
+         .unwrap()
+         .clone();
+     let mut errors = ErrorCtx::new();
++    // No ordering runs here; every item is a root of this replay.
++    let roots = translated.all_items().map(|item| item.id()).collect();
+     let ctx = TransformCtx {
+         options: TranslateOptions::new(&mut errors, &translated.options),
+         translated,
+         errors: errors.into(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        roots,
+     };
+     assert!(Transform.should_run(&ctx.options));
+ 
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/tests/merge_roots.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/merge_roots.rs
+--- a/tests/merge_roots.rs	1969-12-31 19:00:00.000000000 -0500
++++ b/tests/merge_roots.rs	2026-09-08 21:36:03.491274527 -0400
+@@ -0,0 +1,314 @@
++//! Selected roots cross the multi-target merge path by identity: the artifact carries them, the
++//! merge remaps them like every other reference, and the merged order is seeded from them. A
++//! mutually recursive pair of selected functions has no vertex with zero incoming edges, so an
++//! order inferred from the dependency graph would lose both; the carried identities keep them.
++
++use assert_cmd::cargo::CommandCargoExt;
++use charon_lib::ast::*;
++use charon_lib::export::CrateData;
++use charon_lib::options::SerializationFormat;
++use std::path::Path;
++use std::process::Command;
++
++const CYCLE: &str = r#"
++pub fn even(value: u32) -> bool {
++    if value == 0 { true } else { odd(value - 1) }
++}
++
++pub fn odd(value: u32) -> bool {
++    if value == 0 { false } else { even(value - 1) }
++}
++"#;
++
++const CHAIN: &str = r#"
++pub fn leaf(value: u32) -> u32 {
++    value + 1
++}
++
++pub fn top(value: u32) -> u32 {
++    leaf(value) * 2
++}
++"#;
++
++struct Emitted {
++    functions: Vec<String>,
++    globals: Vec<String>,
++    roots: Vec<String>,
++    explicit_roots: Vec<String>,
++    consumed_roots: Vec<String>,
++    dispositions: Vec<String>,
++}
++
++fn ident(krate: &TranslatedCrate, id: ItemId) -> String {
++    match krate.item_name(id).as_slice_uninstantiated().last() {
++        Some(PathElem::Ident(s, _)) => s.clone(),
++        other => format!("{other:?}"),
++    }
++}
++
++fn run(dir: &Path, name: &str, code: &str, extra: &[&str]) -> Emitted {
++    let source = dir.join(format!("{name}.rs"));
++    std::fs::write(&source, code).unwrap();
++    let out = dir.join(format!("{name}.llbc"));
++    let mut cmd = Command::cargo_bin("charon").unwrap();
++    cmd.arg("rustc")
++        .arg("--preset=aeneas")
++        .arg("--error-on-warnings")
++        .args(extra)
++        .arg(format!("--dest-file={}", out.display()))
++        .arg("--")
++        .arg("--edition=2024")
++        .arg("--crate-name")
++        .arg("cycle")
++        .arg("--crate-type")
++        .arg("lib")
++        .arg(&source);
++    let status = cmd.status().unwrap();
++    assert!(status.success(), "charon failed for {name}");
++    let krate: TranslatedCrate = CrateData::deserialize_from_file(&out, SerializationFormat::Json)
++        .unwrap()
++        .translated;
++    let mut functions: Vec<String> = krate
++        .fun_decls
++        .iter()
++        .map(|f| ident(&krate, ItemId::Fun(f.def_id)))
++        .collect();
++    functions.sort();
++    let mut globals: Vec<String> = krate
++        .global_decls
++        .iter()
++        .map(|g| ident(&krate, ItemId::Global(g.def_id)))
++        .collect();
++    globals.sort();
++    let mut consumed_roots: Vec<String> = krate
++        .consumed_roots
++        .iter()
++        .map(|c| ident(&krate, c.root()))
++        .collect();
++    consumed_roots.sort();
++    let mut dispositions: Vec<String> = krate
++        .consumed_roots
++        .iter()
++        .map(|c| match c {
++            ConsumedRoot::AnonConstToCall { root, init_fun } => format!(
++                "AnonConstToCall {} -> {}",
++                ident(&krate, ItemId::Global(*root)),
++                ident(&krate, ItemId::Fun(*init_fun))
++            ),
++            ConsumedRoot::Inlined { root, into } => format!(
++                "Inlined {} -> {}",
++                ident(&krate, ItemId::Fun(*root)),
++                ident(&krate, ItemId::Fun(*into))
++            ),
++            ConsumedRoot::Invisible { root } => format!("Invisible {}", ident(&krate, *root)),
++        })
++        .collect();
++    dispositions.sort();
++    let mut roots: Vec<String> = krate.roots.iter().map(|&id| ident(&krate, id)).collect();
++    roots.sort();
++    let mut explicit_roots: Vec<String> = krate
++        .explicit_roots
++        .iter()
++        .map(|&id| ident(&krate, id))
++        .collect();
++    explicit_roots.sort();
++    Emitted {
++        functions,
++        globals,
++        roots,
++        explicit_roots,
++        consumed_roots,
++        dispositions,
++    }
++}
++
++const MERGE: &[&str] = &["--targets=x86_64-unknown-linux-gnu"];
++
++#[test]
++fn mutually_recursive_roots_survive_the_merge() {
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let single = run(&dir, "single", CYCLE, &[]);
++    let merged = run(&dir, "merged", CYCLE, MERGE);
++    assert_eq!(single.functions, ["even", "odd"]);
++    assert_eq!(
++        merged.functions, single.functions,
++        "the merge path lost selected roots"
++    );
++    assert_eq!(
++        single.roots,
++        ["even", "odd"],
++        "both public functions are roots"
++    );
++    assert_eq!(
++        merged.roots, single.roots,
++        "the merge changed the carried roots"
++    );
++    assert!(
++        single.explicit_roots.is_empty(),
++        "no exact selection was named"
++    );
++    assert!(merged.explicit_roots.is_empty());
++}
++
++#[test]
++fn nonrecursive_roots_survive_the_merge() {
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let single = run(&dir, "single", CHAIN, &[]);
++    let merged = run(&dir, "merged", CHAIN, MERGE);
++    assert_eq!(single.functions, ["leaf", "top"]);
++    assert_eq!(merged.functions, single.functions);
++    assert_eq!(single.roots, ["leaf", "top"]);
++    assert_eq!(merged.roots, single.roots);
++}
++
++#[test]
++fn explicit_selection_is_carried_and_its_dependency_is_not_a_root() {
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let select = ["--start-from=cycle::even"];
++    let single = run(&dir, "single", CYCLE, &select);
++    let merged = run(&dir, "merged", CYCLE, &[&select[..], MERGE].concat());
++    assert_eq!(
++        single.functions,
++        ["even", "odd"],
++        "odd is reachable from even"
++    );
++    assert_eq!(
++        single.roots,
++        ["even"],
++        "only the selected function is a root"
++    );
++    assert_eq!(single.explicit_roots, ["even"]);
++    assert_eq!(merged.functions, single.functions);
++    assert_eq!(merged.roots, single.roots);
++    assert_eq!(merged.explicit_roots, single.explicit_roots);
++}
++
++const DEFAULT_METHOD: &str = r#"
++pub trait T {
++    fn value() -> u32 {
++        7
++    }
++}
++"#;
++
++/// A selected default trait method is a root by selection: post-merge cleanup must keep it even
++/// though nothing mentions it, and both routes must carry it.
++#[test]
++fn selected_default_method_survives_the_merge() {
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let select = ["--start-from=cycle::T::value"];
++    let single = run(&dir, "single", DEFAULT_METHOD, &select);
++    let merged = run(
++        &dir,
++        "merged",
++        DEFAULT_METHOD,
++        &[&select[..], MERGE].concat(),
++    );
++    assert_eq!(single.functions, ["value"]);
++    assert_eq!(single.roots, ["value"]);
++    assert_eq!(single.explicit_roots, ["value"]);
++    assert_eq!(
++        merged.functions, single.functions,
++        "the merge cleanup dropped the selected method"
++    );
++    assert_eq!(merged.roots, single.roots);
++    assert_eq!(merged.explicit_roots, single.explicit_roots);
++}
++
++/// The merge reports the errors of its own cleanup: an explicitly selected root that the merged
++/// crate no longer holds, with no recorded disposition, makes the merged artifact erroneous.
++#[test]
++fn merge_reports_a_lost_selected_root() {
++    use charon_lib::export::multi_target::merge;
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let source = dir.join("single.rs");
++    std::fs::write(&source, CHAIN).unwrap();
++    let out = dir.join("single.llbc");
++    let mut cmd = Command::cargo_bin("charon").unwrap();
++    cmd.args([
++        "rustc",
++        "--preset=aeneas",
++        "--targets=x86_64-unknown-linux-gnu",
++    ])
++    .arg(format!("--dest-file={}", out.display()))
++    .args([
++        "--",
++        "--edition=2024",
++        "--crate-name",
++        "cycle",
++        "--crate-type",
++        "lib",
++    ])
++    .arg(&source);
++    assert!(cmd.status().unwrap().success());
++    let mut krate = CrateData::deserialize_from_file(&out, SerializationFormat::Json).unwrap();
++    assert!(!krate.has_errors);
++    let options = krate.translated.options.clone();
++    // Name an absent function as the exact selection, with no disposition recorded.
++    let absent = FunDeclId::from_raw(krate.translated.fun_decls.slot_count() + 7);
++    krate.translated.explicit_roots.push(ItemId::Fun(absent));
++    let merged = merge(options, vec![krate]);
++    assert!(merged.has_errors, "the lost selected root was not reported");
++}
++
++/// A root a pass consumed is accounted for by its recorded disposition, on both routes: the
++/// promoted constant under the selected function is taken by the constant-to-call pass into its
++/// init_fun, and the init_fun by inlining.
++#[test]
++fn consumed_roots_carry_their_disposition() {
++    let code = r#"
++pub fn bound() -> &'static u32 {
++    &7
++}
++"#;
++    let dir = tempfile::tempdir().unwrap();
++    let dir = dir.path().to_path_buf();
++    let select = ["--start-from=cycle::bound"];
++    let single = run(&dir, "single", code, &select);
++    let merged = run(&dir, "merged", code, &[&select[..], MERGE].concat());
++    for (name, emitted) in [("single", &single), ("merged", &merged)] {
++        assert_eq!(emitted.functions, ["bound"], "{name}");
++        assert!(
++            emitted.globals.is_empty(),
++            "{name}: the promoted constant was consumed"
++        );
++        assert!(
++            !emitted.consumed_roots.is_empty(),
++            "{name}: no disposition recorded"
++        );
++        for root in &emitted.roots {
++            let present = emitted.functions.contains(root) || emitted.globals.contains(root);
++            let consumed = emitted.consumed_roots.contains(root);
++            assert!(
++                present || consumed,
++                "{name}: root {root} is neither present nor accounted for"
++            );
++        }
++    }
++    // The dispositions name their identities: the promoted constant went into its init_fun,
++    // and the initializer was inlined into the selected function.
++    let init_fun = single
++        .dispositions
++        .iter()
++        .find_map(|d| {
++            d.strip_prefix("AnonConstToCall ")
++                .and_then(|s| s.split(" -> ").nth(1))
++        })
++        .expect("the promoted constant's disposition names its initializer")
++        .to_owned();
++    assert!(
++        single
++            .dispositions
++            .contains(&format!("Inlined {init_fun} -> bound")),
++        "{:?}",
++        single.dispositions
++    );
++    assert_eq!(merged.roots, single.roots);
++    assert_eq!(merged.consumed_roots, single.consumed_roots);
++    assert_eq!(merged.dispositions, single.dispositions);
++}
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/tests/specialized_traits.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/specialized_traits.rs
+--- a/tests/specialized_traits.rs	2026-09-08 04:39:25.345975824 -0400
++++ b/tests/specialized_traits.rs	2026-09-08 16:24:45.376445522 -0400
+@@ -62,10 +62,15 @@
+     assert!(!translated.options.unbind_item_vars);
+     let mut errors = ErrorCtx::new();
+     let options = TranslateOptions::new(&mut errors, &translated.options);
++    // No ordering runs here; every item is a root of this replay.
++    let roots = translated.all_items().map(|item| item.id()).collect();
+     let mut ctx = TransformCtx {
+         options,
+         translated,
+         errors: errors.into(),
++        explicit_roots: Vec::new(),
++        consumed_roots: Vec::new(),
++        roots,
+     };
+     Check::PostTransformation.transform_ctx(&mut ctx);
+     assert_eq!(
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/tests/ui/filtering/start_from.out /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/ui/filtering/start_from.out
+--- a/tests/ui/filtering/start_from.out	2026-09-07 13:56:22.112800126 -0400
++++ b/tests/ui/filtering/start_from.out	2026-09-08 14:20:45.525680753 -0400
+@@ -1,11 +1,81 @@
+ # Final LLBC before serialization:
+ 
++struct () {}
++
++// Full name: core::marker::Destruct
++#[lang_item(Destruct)]
++pub trait Destruct<Self>
++{
++    fn drop_glue<'_0_1>;
++    non-dyn-compatible
++}
++
+ // Full name: core::marker::MetaSized
+ #[fundamental]
+ #[lang_item(MetaSized)]
+ pub trait MetaSized<Self>
+ 
+-struct () {}
++// Full name: core::marker::Sized
++#[fundamental]
++#[lang_item(Sized)]
++pub trait Sized<Self>
++{
++    proof ImpliedClause0: (Self: MetaSized)
++    non-dyn-compatible
++}
++
++// Full name: core::clone::Clone
++#[lang_item(Clone)]
++#[diagnostic_item("Clone")]
++pub trait Clone<Self>
++{
++    proof ImpliedClause0: (Self: Sized)
++    fn clone<'_0_1>;
++    fn clone_from<'_0_1, '_1_1, TraitClause0_1: (Self: Destruct)> = clone_from<'_0_1, '_1_1, Self>[Self, TraitClause0_1]
++    non-dyn-compatible
++}
++
++// Full name: core::clone::Clone::clone_from
++pub fn clone_from<'_0, '_1, Self>(_1: &'_0 mut Self, _2: &'_1 Self)
++where
++    TraitClause0: (Self: Clone),
++    TraitClause1: (Self: Destruct),
++    TypeOutlives0: Self: '_0,
++    TypeOutlives1: Self: '_1,
++= <opaque>
++
++// Full name: core::iter::sources::once::Once
++#[diagnostic_item("IterOnce")]
++pub opaque type Once<T>
++where
++    TraitClause0: (T: Sized),
++
++// Full name: core::iter::sources::once::once
++pub fn once<T>(_1: T) -> Once<T>[TraitClause0]
++where
++    TraitClause0: (T: Sized),
++= <opaque>
++
++// Full name: core::num::{u32}::wrapping_add
++pub fn wrapping_add(_1: u32, _2: u32) -> u32
++= <opaque>
++
++// Full name: core::slice::iter::Iter
++#[diagnostic_item("SliceIter")]
++pub opaque type Iter<'a, T>
++where
++    TraitClause0: (T: Sized),
++    TypeOutlives0: T: 'a,
++    TypeOutlives1: T: 'a,
++
++// Full name: core::slice::iter::{Iter<'a, T>[TraitClause0]}::as_slice
++pub fn as_slice<'a, '_1, T>(_1: &'_1 Iter<'a, T>[TraitClause0]) -> &'a [T]
++where
++    TraitClause0: (T: Sized),
++    TypeOutlives0: T: 'a,
++    TypeOutlives1: T: '_1,
++    RegionOutlives0: 'a: '_1,
++= <opaque>
+ 
+ fn test_crate::module1::do_translate()
+ {

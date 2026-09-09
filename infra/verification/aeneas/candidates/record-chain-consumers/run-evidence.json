@@ -1,0 +1,996 @@
+{
+   "base" : "aeneas/candidates/loop-return-order/package.nix (Aeneas), charon flake input charon-ml (patched), trait-identity explicit-role Charon (frozen cargo build; the nix Charon package has no store path until the ui expectations lane lands)",
+   "packet" : "record-chain-consumers",
+   "patches" : {
+      "aeneas.patch" : {
+         "files" : [
+            "extract/ExtractBase.ml",
+            "extract/ExtractName.ml",
+            "llbc/LlbcAstUtils.ml"
+         ],
+         "lines" : 47,
+         "sha256" : "e9f3030e54ddb25dbe2f1ba49748bb5f5addb2d2488331f5311cdffb001a7375"
+      },
+      "charon-ml.patch" : {
+         "files" : [
+            "charon-ml/src/generated/Generated_OfJson.ml",
+            "charon-ml/src/generated/Generated_OfPostcard.ml",
+            "charon-ml/src/generated/Generated_Types.ml",
+            "charon-ml/src/NameMatcher.ml",
+            "charon-ml/src/PrintFmt.ml",
+            "charon-ml/src/Substitute.ml"
+         ],
+         "lines" : 355,
+         "sha256" : "a175f7e28e79dfd2d8d27a038d3d7b13536fad9676ef54c089280d6f3f62b669"
+      }
+   },
+   "rows" : [
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./charon-ml-only.nix"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/nix-charon-ml.log",
+         "log_sha256" : "7c7f69dd5690c983d8ff28595b67e35fd30f14b891f836c224c4be932b6546db",
+         "name" : "nix-charon-ml",
+         "observed" : "/nix/store/0fp6lh6iyyb0rqyxzbfvx98b8fkk85il-ocaml5.2.1-charon-0.1.0 (first charon-ml.patch revision, Charon flake nixpkgs; compiles and passes dune fmt)"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "red_recipe",
+         "exit" : 1,
+         "log" : "logs/nix-replay-attempt1-ocaml-conflict.log",
+         "log_sha256" : "97d839b5d67e21d2ed7a28d2c4d9bf3078ac242e0ebc89697b124fc4aaffa422",
+         "name" : "nix-replay-attempt1",
+         "observed" : "charon-ml built from the Charon flake's nixpkgs met the Aeneas flake's OCaml packages: duplicate package definitions, conflict check fails; fixed by building charon-ml with the Aeneas flake's ocamlPackages_5_2"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt2-specialized-impl-names-base/nix-replay.log",
+         "log_sha256" : "e1f400fff7f48fb782c59e864feb9aee1a8c63f2c08ea1077cd46870f5ffa69d",
+         "name" : "nix-replay-attempt2",
+         "observed" : "/nix/store/jhal6hhf1yawi5vdidqbky5jp2mh873i-ocaml5.2.1-aeneas-0.1.0 on the specialized-impl-names base; its failures on the law file and the composition are the base's own (rows attribution-*), and the base predates the loop patch the M0 measurement used"
+      },
+      {
+         "argv" : [
+            "/nix/store/z9hbl0yq1i95nn7cc799amidwxmsclhn-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti6-mono.llbc"
+         ],
+         "classification" : "attribution",
+         "exit" : 2,
+         "log" : "logs/attribution/specialized-impl-names-on-law-mono.log",
+         "log_sha256" : "10d0895869ab93e10f5d8c230c2d047ab628efd0aa7581bf528d3488502e4bab",
+         "name" : "attribution-specialized-impl-names-law-mono",
+         "observed" : "unpatched specialized-impl-names package: Failure Unexpected in TypesUtils.as_ident from ctx_compute_var_basename on a monomorphized Result type; identical to attempt 2's failure, so not the consumer patches"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti6-mono.llbc"
+         ],
+         "classification" : "attribution",
+         "exit" : 0,
+         "log" : "logs/attribution/f64-type-binding-on-law-mono.log",
+         "log_sha256" : "5018f3b7e1eec32266f180977c9b6aeae5ac47cecb6f374a9e62faa89cfa7198",
+         "name" : "attribution-f64-type-binding-law-mono",
+         "observed" : "the chain head past specialized-name-presentation names the copies ResultU32U8 and ResultU64U16 and emits"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti4-m0b/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "attribution",
+         "exit" : 1,
+         "log" : "logs/attribution/f64-type-binding-on-replace-composition.log",
+         "log_sha256" : "89ec4af8bc4831fbedcd0952fb0819c2375389b29e1e7204a12cc32b52e36d58",
+         "name" : "attribution-f64-type-binding-replace-composition",
+         "observed" : "Early returns inside of loops on check_projected_variable_catalog_refinement, 19 of 130: the sibling without the loop patch fails the composition"
+      },
+      {
+         "argv" : [
+            "/nix/store/i4zjqxd5wnc37a59g6m0k105d853ghas-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti4-m0b/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "baseline",
+         "exit" : 0,
+         "log" : "logs/attribution/loop-return-order-on-replace-composition.log",
+         "log_sha256" : "8d9a738fdd2968b01a87952397a36431cb04100f7b32b4d61aac50402ebf3465",
+         "name" : "attribution-loop-return-order-replace-composition",
+         "observed" : "24 of 140 opaque, the M0 count: this is the base the consumer candidate chains on"
+      },
+      {
+         "argv" : [
+            "/nix/store/jhal6hhf1yawi5vdidqbky5jp2mh873i-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti6-m0/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "counterexample_retained",
+         "exit" : 2,
+         "log" : "logs/attribution/attempt2-consumers-on-chain-composition.log",
+         "log_sha256" : "37d1aa3b11c3e63a60ea6bf158e7c5ea64decc92a42968ab84fc6c49a4e1b0c0",
+         "name" : "attempt2-consumers-on-chain-composition",
+         "observed" : "name clash core.ops.function.FnOnce between trait decl 6 (extended original) and 31 (copy): folding every record for naming lost the lifted-position argument that distinguishes the copy; fixed by folding copy records only in charon-ml name_with_generics_to_pattern_aux (naming), while match_name_with_generics folds every record (identity)"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/nix-replay.log",
+         "log_sha256" : "9663915cd02ad1f2b73076cacfe172f6bbcf4297a4c8dd15e75b9fb01b25e17d",
+         "name" : "nix-replay-attempt3",
+         "observed" : "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0 on the loop-return-order base with the final charon-ml.patch and aeneas.patch"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=ti7-poly.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/law/poly-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "law-poly",
+         "observed" : "trait-identity explicit-role frozen cargo build: charon 694ecefb, charon-driver 0a80828e"
+      },
+      {
+         "argv" : [
+            "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "ti7-poly-out",
+            "ti7-poly.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/law/poly-aeneas.log",
+         "log_sha256" : "312a32a73da379058c4ce54c4e60d034bbf2d89208ebbe390a30daa1efc98beb",
+         "name" : "law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch (Std); zero errors; 0 of 4 opaque (logs/law/poly-translation.json)"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--monomorphize",
+            "--dest-file=ti7-mono.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/law/mono-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "law-mono",
+         "observed" : "trait-identity explicit-role frozen cargo build: charon 694ecefb, charon-driver 0a80828e"
+      },
+      {
+         "argv" : [
+            "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "ti7-mono-out",
+            "ti7-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/law/mono-aeneas.log",
+         "log_sha256" : "93588a65eedbb8a863c4562d8a3536f3127d1db9c5918ddb4cb303c4278ea2da",
+         "name" : "law-mono-aeneas",
+         "observed" : "two distinct copies named ResultU32U8 and ResultU64U16 bind their own branch; 4 of 8 opaque: the pre-existing copies-never-bind-at-declared-arity boundary, unchanged"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--monomorphize-mut",
+            "--dest-file=ti7-mut.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "law",
+            "--crate-type",
+            "lib",
+            "law.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/law/mut-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "law-mut",
+         "observed" : "trait-identity explicit-role frozen cargo build: charon 694ecefb, charon-driver 0a80828e"
+      },
+      {
+         "argv" : [
+            "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "ti7-mut-out",
+            "ti7-mut.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/law/mut-aeneas.log",
+         "log_sha256" : "9f04a89438cfc076bbddb254ebbc6b0bcd83928addb1395cdf266c166197e818",
+         "name" : "law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti7-m0/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "counterexample_retained",
+         "exit" : 1,
+         "log" : "logs/attempt3-naming-fold/composition-aeneas.log",
+         "log_sha256" : "bc90b62dd5d784794b3b6064168cfdc0b2128602b6b42ef81c75ff5b6fd0d27c",
+         "name" : "attempt3-composition",
+         "observed" : "copy-only naming fold applied to every pattern: 22 impl methods of lifted traits dropped with Could not convert the name to a pattern (10 of 118 opaque); cause below"
+      },
+      {
+         "argv" : [
+            "/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-abort-on-error",
+            "-print-error-emitters",
+            "-dest",
+            "out",
+            "fx.llbc"
+         ],
+         "classification" : "counterexample_retained",
+         "exit" : 2,
+         "log" : "logs/attempt3-naming-fold/fx6-abort-on-error.log",
+         "log_sha256" : "b5dc69c50d34ce110cfbee6a7796b60a9d611c2462ed155b1ff0f3758f6825c3",
+         "name" : "attempt3-fnonce-chain-abort",
+         "observed" : "Assert_failure NameMatcher.ml:1137: the sanity check re-matches a generated pattern against its name with the full-fold matcher, and a pattern built with the copy-only fold does not match; fixed by folding per target kind: names (TkName, TkPretty) copy-only, patterns (TkPattern) every record (fnonce-chain.rs)"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "red_recipe",
+         "exit" : 1,
+         "log" : "logs/attempt3-naming-fold/nix-replay-attempt4-nonexhaustive.log",
+         "log_sha256" : "74f1aef3c1bd3c5545c32f01472f96b658505e502d1907a62b8d394df1a60e1f",
+         "name" : "attempt4-nix",
+         "observed" : "non-exhaustive match on the target kind (TkPretty); fixed"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/nix-replay.log",
+         "log_sha256" : "e3b3e6700ace344e66d39fab8d10aab89210948eafb7cdd6d8fe69563709b328",
+         "name" : "attempt5-nix",
+         "observed" : "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0 (charon-ml.patch before the root-carrier fields)"
+      },
+      {
+         "argv" : [
+            "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "out5",
+            "fx.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/fx6-aeneas.log",
+         "log_sha256" : "570fdf7aa13251bd27153e56ebc6585ade5b5347466699d5fce40528292a6aa6",
+         "name" : "attempt5-fnonce-chain",
+         "observed" : "zero errors; the copied FnOnce is named core.ops.function.FnOnceMut0T0T1T2 beside FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti7-poly.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/law-poly-aeneas.log",
+         "log_sha256" : "487ec46b04b8f74de7bb33445eea11ed2f2347e7f14713ed276b0b58d87249f6",
+         "name" : "attempt5-law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti7-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/law-mono-aeneas.log",
+         "log_sha256" : "5f058678be91504ae8f3050fe0a8d1480cc2e718d282af3d8c11f0772cc5ffc9",
+         "name" : "attempt5-law-mono-aeneas",
+         "observed" : "ResultU32U8 and ResultU64U16 bind their own branch; 4 of 8 opaque, unchanged boundary"
+      },
+      {
+         "argv" : [
+            "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "...",
+            "ti7-mut.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/law-mut-aeneas.log",
+         "log_sha256" : "b1f98a5510006a59d64f90bfad56c1f6e3f87f4832897a22aa1e1cb41e40f91d",
+         "name" : "attempt5-law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/v6ssas7rvmk3973hird7v3wq08c4w8q6-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement",
+            "-keep-function",
+            "rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement",
+            "-keep-function",
+            "rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement",
+            "-dest",
+            "r5-lean",
+            "ti7-m0/Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/attempt5-before-root-carrier/composition-aeneas.log",
+         "log_sha256" : "eeee310f81ca422cdcf9b740b67ddf48b149cf6b6bcdbd9dc274c50fd971a3fb",
+         "name" : "attempt5-composition",
+         "observed" : "zero errors; 24 of 140 opaque, the loop-return-order baseline count on the replace-semantics composition (row attribution-loop-return-order-replace-composition); composition made by the explicit-role Charon (charon 694ecefb) with chains on FnOnce copies 30 and 31"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/nix-replay.log",
+         "log_sha256" : "1c8f8531f432f116143321b46b7c37267f64935ae435fa4a481f4cd188778c60",
+         "name" : "attempt6-nix",
+         "observed" : "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0: loop-return-order base, final charon-ml.patch (PeExtended, roots and explicit_roots readers, fold helpers, per-target-kind fold) and aeneas.patch"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--remove-associated-types=*",
+            "--monomorphize-mut",
+            "--include=core::ops::function::impls::*::call_once",
+            "--dest-file=fx8.llbc",
+            "--",
+            "--edition=2021",
+            "--crate-name",
+            "test_crate",
+            "--crate-type",
+            "lib",
+            "fnonce-chain.rs"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/fnonce-chain-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "attempt6-fnonce-chain-charon",
+         "observed" : "explicit-role tree on root-identity candidate11, frozen cargo build: charon 92abbbfd, charon-driver ea59c3a1; trait_decls#3 ext,copy FnOnce; artifact roots [Fun 0, Fun 1, Fun 3]"
+      },
+      {
+         "argv" : [
+            "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "out6",
+            "fx8.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/fnonce-chain-aeneas.log",
+         "log_sha256" : "b78815e6b984f01b3614f5644031bf4911ef2e6a432d58fccc2b69fa73362156",
+         "name" : "attempt6-fnonce-chain-aeneas",
+         "observed" : "zero errors; the copy is named core.ops.function.FnOnceMut0T0T1T2 beside FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r6-poly-out",
+            "ti8-poly.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/law-poly-aeneas.log",
+         "log_sha256" : "473d0d3603dd2d2edf253f3f701e70f4e017e720459dd5ae2a6ef2a790714f06",
+         "name" : "attempt6-law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r6-mono-out",
+            "ti8-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/law-mono-aeneas.log",
+         "log_sha256" : "3a0f5c0cf887bd3a54d8d6eeac83a33f55ab017db2062a32833537f2706c6c0b",
+         "name" : "attempt6-law-mono-aeneas",
+         "observed" : "ResultU32U8 and ResultU64U16 bind their own branch; 4 of 8 opaque, the unchanged boundary"
+      },
+      {
+         "argv" : [
+            "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r6-mut-out",
+            "ti8-mut.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/law-mut-aeneas.log",
+         "log_sha256" : "d140ba73b9a9df6a7f95daf0e335608adc007487a9c03a98d7412ea42f80e8a0",
+         "name" : "attempt6-law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : "logs/final/composition-charon-argv.txt (the rebased-composition argv with the candidate11 explicit-role binaries)",
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/composition-charon-argv.txt",
+         "log_sha256" : "900bc688676fe9da51f2b92b64662738c5af461887f5fba3614f7e29e3ce2d1b",
+         "name" : "attempt6-composition-charon",
+         "observed" : "explicit-role tree on root-identity candidate11, frozen cargo build: charon 92abbbfd, charon-driver ea59c3a1; LLBC sha256 d4e30681 with carried roots"
+      },
+      {
+         "argv" : [
+            "/nix/store/z3fvchc69r1zl3h92ic6man0y2bmayff-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement",
+            "-keep-function",
+            "rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement",
+            "-keep-function",
+            "rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement",
+            "-dest",
+            "combined-lean",
+            "Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt6-before-consumed-roots/composition-aeneas.log",
+         "log_sha256" : "ebf7fa219fd080a2c24cb9f024a8771f801cbd0541f8233b56d0dc756510a15b",
+         "name" : "attempt6-composition-aeneas",
+         "observed" : "zero errors; 24 of 140 opaque, equal to the loop-return-order baseline on the replace-semantics composition; the two FnOnce copies are named apart"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/nix-replay.log",
+         "log_sha256" : "1b69bcc72130f9c83a6d3b5d3d4a9dbaaf8e4694ecdc17e400ee8a3b4ee185ab",
+         "name" : "attempt7-nix",
+         "observed" : "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0: loop-return-order base, final charon-ml.patch (PeExtended; roots, explicit_roots and consumed_roots readers; fold helpers; per-target-kind fold) and aeneas.patch"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--remove-associated-types=*",
+            "--monomorphize-mut",
+            "--include=core::ops::function::impls::*::call_once",
+            "--dest-file=fx10.llbc",
+            "--",
+            "--edition=2021",
+            "--crate-name",
+            "test_crate",
+            "--crate-type",
+            "lib",
+            "fnonce-chain.rs"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/fnonce-chain-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "attempt7-fnonce-chain-charon",
+         "observed" : "explicit-role tree on root-identity candidate12, frozen cargo build: charon 807c2574, charon-driver 4606bbc2; trait_decls#3 ext,copy FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "out7",
+            "fx10.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/fnonce-chain-aeneas.log",
+         "log_sha256" : "d140b4f4ed19d6ed7e2cbd7ab015a63d63f693f4d14d001244b2a8f9fed0333d",
+         "name" : "attempt7-fnonce-chain-aeneas",
+         "observed" : "zero errors; the copy is named core.ops.function.FnOnceMut0T0T1T2 beside FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r7-poly-out",
+            "ti10-poly.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/law-poly-aeneas.log",
+         "log_sha256" : "ebdb666cb6bc9a87bd65ac8e49d75c629ea7230748a7c15bbfa58c06b10059e3",
+         "name" : "attempt7-law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r7-mono-out",
+            "ti10-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/law-mono-aeneas.log",
+         "log_sha256" : "6d1578215d3e86622b4a703a9b51bcea7cf3d16cd688e2dce5ecb6d52599c289",
+         "name" : "attempt7-law-mono-aeneas",
+         "observed" : "ResultU32U8 and ResultU64U16 bind their own branch; 4 of 8 opaque, the unchanged boundary"
+      },
+      {
+         "argv" : [
+            "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r7-mut-out",
+            "ti10-mut.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/law-mut-aeneas.log",
+         "log_sha256" : "dc4aa70f1e10000008991fd068ea3a0aecd343449903617db38204672f8b202b",
+         "name" : "attempt7-law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : "logs/final/composition-charon-argv.txt (the rebased-composition argv with the candidate12 explicit-role binaries)",
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/composition-charon-argv.txt",
+         "log_sha256" : "f301167367fcf915a7bd68ef180fa1a264e562b6729f0b80f0c4d0ab5b62ff26",
+         "name" : "attempt7-composition-charon",
+         "observed" : "explicit-role tree on root-identity candidate12, frozen cargo build: charon 807c2574, charon-driver 4606bbc2; LLBC sha256 c51bffad with carried roots, explicit roots and (empty) consumed roots"
+      },
+      {
+         "argv" : [
+            "/nix/store/rkblkk43zpr9dzsqv018f0lvijnqgvb1-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement",
+            "-keep-function",
+            "rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement",
+            "-keep-function",
+            "rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement",
+            "-dest",
+            "combined-lean",
+            "Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "superseded",
+         "exit" : 0,
+         "log" : "logs/attempt7-before-closed-dispositions/composition-aeneas.log",
+         "log_sha256" : "7e054e40e9c8156212219bd4ca6d064845aa75699e32869776a165ae57f2251a",
+         "name" : "attempt7-composition-aeneas",
+         "observed" : "zero errors; 24 of 140 opaque, equal to the loop-return-order baseline; the two FnOnce copies named apart"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "red_schema",
+         "exit" : 1,
+         "log" : "logs/attempt8-ocaml-keyword/nix-replay.log",
+         "log_sha256" : "9a136ceeb617258b3edf8fa6755bb491e9dbb035ed094a9d0881d4f62f79bf9b",
+         "name" : "attempt8-nix",
+         "observed" : "charon-ml generated readers unparsable: the candidate13 field name initializer is an OCaml keyword (charon-ml-syntax-error.log); renamed init_fun on the Charon side, candidate13 refrozen"
+      },
+      {
+         "argv" : [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--cores",
+            "4",
+            "--max-jobs",
+            "1",
+            "--file",
+            "./replay.nix"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/nix-replay.log",
+         "log_sha256" : "fa7c3601d2ea4a158fabc0c12e3bdc9ad1432a32e2abbd02bb3fa94a48177cfd",
+         "name" : "final-nix",
+         "observed" : "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0: loop-return-order base, final charon-ml.patch (PeExtended; roots, explicit_roots and the closed consumed_roots variants AnonConstToCall, Inlined, Invisible; fold helpers; per-target-kind fold) and aeneas.patch"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--remove-associated-types=*",
+            "--monomorphize-mut",
+            "--include=core::ops::function::impls::*::call_once",
+            "--dest-file=fx12.llbc",
+            "--",
+            "--edition=2021",
+            "--crate-name",
+            "test_crate",
+            "--crate-type",
+            "lib",
+            "fnonce-chain.rs"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/fnonce-chain-charon.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "final-fnonce-chain-charon",
+         "observed" : "explicit-role tree on root-identity candidate13, frozen cargo build: charon 2fee9358, charon-driver 51385045; trait_decls#3 ext,copy FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "out9",
+            "fx12.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/fnonce-chain-aeneas.log",
+         "log_sha256" : "bf2cd0e91ac3e70413b0b5e5f0976ccfe9ebbc70e5400873091cf33d58049e23",
+         "name" : "final-fnonce-chain-aeneas",
+         "observed" : "zero errors; the copy is named core.ops.function.FnOnceMut0T0T1T2 beside FnOnce"
+      },
+      {
+         "argv" : [
+            "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r9-poly-out",
+            "ti12-poly.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/law-poly-aeneas.log",
+         "log_sha256" : "2a8f5897e11903688c72fc44d8408c6195c8ccdd984078d144bdc73ecaddf561",
+         "name" : "final-law-poly-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : [
+            "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r9-mono-out",
+            "ti12-mono.llbc"
+         ],
+         "classification" : "green_boundary",
+         "exit" : 0,
+         "log" : "logs/final/law-mono-aeneas.log",
+         "log_sha256" : "9c6196a6af7e63026f1f2fad5af4152b93e27dba282b14f0e76281556836bbf0",
+         "name" : "final-law-mono-aeneas",
+         "observed" : "ResultU32U8 and ResultU64U16 bind their own branch; 4 of 8 opaque, the unchanged boundary"
+      },
+      {
+         "argv" : [
+            "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-dest",
+            "r9-mut-out",
+            "ti12-mut.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/law-mut-aeneas.log",
+         "log_sha256" : "1c9021a5ca1cbbf04ce34a4819a907f56905985c991f4cd1cca0c3c8d92f9fcd",
+         "name" : "final-law-mut-aeneas",
+         "observed" : "binds core.result.Result.Insts.CoreOpsTry.branch; zero errors; 0 of 4 opaque"
+      },
+      {
+         "argv" : "logs/final/composition-charon-argv.txt (the rebased-composition argv with the candidate13 explicit-role binaries)",
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/composition-charon-argv.txt",
+         "log_sha256" : "821ce96228e54da5ff71cbb11692491712ebbc9c1ac255854e49ef967678dad3",
+         "name" : "final-composition-charon",
+         "observed" : "explicit-role tree on root-identity candidate13, frozen cargo build: charon 2fee9358, charon-driver 51385045; LLBC sha256 36c941fb with carried roots, explicit roots and (empty) consumed roots"
+      },
+      {
+         "argv" : [
+            "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-split-files",
+            "-keep-function",
+            "rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement",
+            "-keep-function",
+            "rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement",
+            "-keep-function",
+            "rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement",
+            "-dest",
+            "combined-lean",
+            "Ud07CatalogComposition.llbc"
+         ],
+         "classification" : "green",
+         "exit" : 0,
+         "log" : "logs/final/composition-aeneas.log",
+         "log_sha256" : "51c04ba8b8b4e4da44f2cfa1a5d70240fa674840a1ae64c08b00c61097573c02",
+         "name" : "final-composition-aeneas",
+         "observed" : "zero errors; 24 of 140 opaque, equal to the loop-return-order baseline; the two FnOnce copies named apart"
+      }
+   ],
+   "status" : "measured (final rows final-*, on root-identity candidate13)",
+   "tool" : {
+      "aeneas" : "/nix/store/gsd89987qskvh2b2rp8d5swzfiadxgjx-ocaml5.2.1-aeneas-0.1.0",
+      "aeneas_sha256" : "d7a98b90b0c75af3698c5e87c05a2ec0d17421de21d07e4500b059a6387a2143",
+      "charon" : "see trait-identity run-evidence.json tool.explicit_role"
+   }
+}

@@ -1,0 +1,175 @@
+--- a/crates/xtask/src/verify_cmd/lean_pilot/external_inventory.rs
++++ b/crates/xtask/src/verify_cmd/lean_pilot/external_inventory.rs
+@@ -44,10 +44,18 @@
+ /// External definitions this replay is permitted to model, by category, Rust
+ /// path, and the template file the translator must list them in.
+ ///
+-/// `f64`'s storage primitive is **not** here: it is supplied as a missing
+-/// Aeneas standard-library type rather than listed as an external definition,
+-/// so this list does not inventory it. See the cut packet's trusted-model
+-/// decision.
++/// `f64`'s storage primitive is not an external definition and is not here:
++/// the translator names it `Aeneas.Std.F64` and defines it nowhere, and the
++/// manifest's `float_dependencies` member lists each width it references.
++/// `PERMITTED_FLOAT` below carries the reviewed trusted-model decision for
++/// exactly that width; see the cut packet's trusted-model decision.
++/// Floating-point widths this replay is permitted to model, by width, the Lean
++/// name the translator emits for it, and the template file that must list it.
++/// One width only: the reviewed model is storage-only binary64, and any other
++/// width would enlarge the trusted base without review.
++const PERMITTED_FLOAT: &[(u32, &str, &str)] =
++    &[(64, "Aeneas.Std.F64", "TypesExternal_Template.lean")];
++
+ const PERMITTED_EXTERNAL: &[(Category, &str, &str)] = &[
+     (
+         Category::Function,
+@@ -99,6 +107,20 @@
+     globals: Vec<Entry>,
+     trait_decls: Vec<Entry>,
+     trait_impls: Vec<Entry>,
++    /// Required: a manifest without it comes from a translator that does not
++    /// declare its float dependencies, and cannot be checked.
++    float_dependencies: Vec<FloatDependency>,
++}
++
++/// One floating-point width the translated crate references. The translator
++/// names it and never defines it, so it is a dependency on the external-types
++/// model exactly like an opaque type, kept distinct from Rust declarations.
++#[derive(Debug, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct FloatDependency {
++    width: u32,
++    lean_name: String,
++    lean_file: String,
+ }
+ 
+ #[derive(Debug, Deserialize)]
+@@ -230,6 +252,47 @@
+         );
+     }
+ 
++    // Floating-point widths: each listed width must be the one reviewed, under
++    // the name the translator emits, in the template the model replaces; and
++    // the reviewed width must be listed, or its model would apply to nothing.
++    let mut float_seen: BTreeSet<u32> = BTreeSet::new();
++    for dependency in &manifest.float_dependencies {
++        ensure!(
++            float_seen.insert(dependency.width),
++            "float width {} is listed more than once",
++            dependency.width
++        );
++        let Some((_, name, file)) = PERMITTED_FLOAT
++            .iter()
++            .find(|(width, _, _)| *width == dependency.width)
++        else {
++            bail!(
++                "float width {} has no reviewed storage model; a model for it \
++                 would enlarge the trusted base without review",
++                dependency.width
++            );
++        };
++        ensure!(
++            *name == dependency.lean_name,
++            "float width {} is named `{}`, expected `{name}`",
++            dependency.width,
++            dependency.lean_name
++        );
++        ensure!(
++            *file == dependency.lean_file,
++            "float width {} moved to {}, expected {file}",
++            dependency.width,
++            dependency.lean_file
++        );
++    }
++    for (width, name, file) in PERMITTED_FLOAT {
++        ensure!(
++            float_seen.contains(width),
++            "permitted float width {width} (`{name}`) is missing from {file}; the \
++             model would apply to nothing"
++        );
++    }
++
+     // Opacity is a function-only property in this schema, and an opaque
+     // first-party function would need a hand-written model exactly like an
+     // external one.
+@@ -326,6 +389,9 @@
+                 }
+             ],
+             "trait_decls": [],
++            "float_dependencies": [
++                { "width": 64, "lean_name": "Aeneas.Std.F64", "lean_file": "TypesExternal_Template.lean" }
++            ],
+             "trait_impls": []
+         })
+     }
+@@ -563,4 +629,70 @@
+             "a missing opacity flag must not read as false"
+         );
+     }
++
++    #[test]
++    fn a_manifest_without_float_dependencies_cannot_be_checked() {
++        let mut manifest = accepted();
++        manifest
++            .as_object_mut()
++            .expect("object")
++            .remove("float_dependencies");
++        assert!(serde_json::from_value::<Manifest>(manifest).is_err());
++    }
++
++    #[test]
++    fn the_reviewed_float_width_must_be_listed() {
++        let mut manifest = accepted();
++        manifest["float_dependencies"] = serde_json::json!([]);
++        let error = verdict(manifest).expect_err("an unlisted reviewed width must refuse");
++        assert!(error.to_string().contains("Aeneas.Std.F64"), "{error}");
++    }
++
++    #[test]
++    fn a_duplicate_float_width_refuses() {
++        let mut manifest = accepted();
++        let first = manifest["float_dependencies"][0].clone();
++        manifest["float_dependencies"]
++            .as_array_mut()
++            .expect("floats")
++            .push(first);
++        let error = verdict(manifest).expect_err("a duplicate width must refuse");
++        assert!(error.to_string().contains("more than once"), "{error}");
++    }
++
++    #[test]
++    fn an_unreviewed_float_width_refuses() {
++        let mut manifest = accepted();
++        manifest["float_dependencies"].as_array_mut().expect("floats").push(serde_json::json!({
++            "width": 32, "lean_name": "Aeneas.Std.F32", "lean_file": "TypesExternal_Template.lean"
++        }));
++        let error = verdict(manifest).expect_err("f32 has no reviewed model");
++        assert!(error.to_string().contains("32"), "{error}");
++    }
++
++    #[test]
++    fn a_renamed_float_refuses() {
++        let mut manifest = accepted();
++        manifest["float_dependencies"][0]["lean_name"] = serde_json::json!("Float");
++        let error = verdict(manifest).expect_err("the emitted name is part of the decision");
++        assert!(error.to_string().contains("Aeneas.Std.F64"), "{error}");
++    }
++
++    #[test]
++    fn a_relocated_float_refuses() {
++        let mut manifest = accepted();
++        manifest["float_dependencies"][0]["lean_file"] = serde_json::json!("Types.lean");
++        let error = verdict(manifest).expect_err("the template file is part of the decision");
++        assert!(
++            error.to_string().contains("TypesExternal_Template.lean"),
++            "{error}"
++        );
++    }
++
++    #[test]
++    fn an_unknown_float_field_refuses() {
++        let mut manifest = accepted();
++        manifest["float_dependencies"][0]["semantics"] = serde_json::json!("ieee754");
++        assert!(serde_json::from_value::<Manifest>(manifest).is_err());
++    }
+ }

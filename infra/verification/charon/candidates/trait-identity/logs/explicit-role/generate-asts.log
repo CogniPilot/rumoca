@@ -1,0 +1,3 @@
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running `target/release/generate-asts`
+generate exit=0

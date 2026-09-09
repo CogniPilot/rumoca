@@ -1,0 +1,6 @@
+warning: selected root Fun(0) was removed by an earlier pass before declaration ordering
+ --> trait-root.rs:5:3
+  |
+5 | }
+  |  ^
+

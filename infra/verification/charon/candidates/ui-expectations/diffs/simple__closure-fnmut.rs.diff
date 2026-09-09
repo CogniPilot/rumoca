@@ -1,0 +1,44 @@
+---- simple/closure-fnmut.rs ----
+
+---- expected: tests/ui/simple/closure-fnmut.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 217  217 | fn main()
+ 218  218 | {
+ 219  219 |     let _0: (); // return
+ 220  220 |     let z: u8; // local
+ 221  221 |     let _2: u8; // anonymous local
+ 222      -     let _3: closure<'2>; // anonymous local
+      222 +     let _3: closure<'1>; // anonymous local
+ 223  223 |     let _4: &'3 mut u8; // anonymous local
+ 224  224 | 
+ 225  225 |     storage_live(_0)
+ 226  226 |     _0 = ()
+ 227  227 |     storage_live(z)
+          ⋮
+ 231  231 |     storage_live(_3)
+ 232  232 |     storage_live(_4)
+ 233  233 |     _4 = &mut z
+ 234  234 |     _3 = closure { _0: move _4 }
+ 235  235 |     storage_dead(_4)
+ 236      -     _2 = apply_to_zero_mut<closure<'7>>[{built_in impl Sized for closure<'7>}, impl_FnMut_tuple_for_closure<'7>](move _3)
+      236 +     _2 = apply_to_zero_mut<closure<'6>>[{built_in impl Sized for closure<'6>}, impl_FnMut_tuple_for_closure<'6>](move _3)
+ 237  237 |     ↳⚡ unwind_continue
+ 238  238 |     storage_dead(_3)
+ 239  239 |     storage_dead(_2)
+ 240  240 |     _0 = ()
+ 241  241 |     storage_dead(z)
+          ⋮
+ 248  248 |     non-dyn-compatible
+ 249  249 | }
+ 250  250 | 
+ 251  251 | 
+ 252  252 | 
+
+
+

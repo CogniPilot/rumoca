@@ -1,0 +1,41 @@
+these 2 derivations will be built:
+  /nix/store/985ppdxl61ddqnrhksh4b1612zq2nyg1-ocaml5.2.1-charon-0.1.0.drv
+  /nix/store/mg036wfi4bv9k4xcxj1gslmsrg91gn2w-ocaml5.2.1-aeneas-0.1.0.drv
+building '/nix/store/985ppdxl61ddqnrhksh4b1612zq2nyg1-ocaml5.2.1-charon-0.1.0.drv'...
+error: Cannot build '/nix/store/985ppdxl61ddqnrhksh4b1612zq2nyg1-ocaml5.2.1-charon-0.1.0.drv'.
+       Reason: builder failed with exit code 1.
+       Output paths:
+         /nix/store/dvsxppjwd9hyap2dvj2s82k702y21x50-ocaml5.2.1-charon-0.1.0
+       Last 25 log lines:
+       > patching file charon-ml/src/generated/Generated_OfJson.ml
+       > patching file charon-ml/src/generated/Generated_OfPostcard.ml
+       > patching file charon-ml/src/generated/Generated_Types.ml
+       > patching file charon-ml/src/NameMatcher.ml
+       > patching file charon-ml/src/PrintFmt.ml
+       > patching file charon-ml/src/Substitute.ml
+       > Running phase: updateAutotoolsGnuConfigScriptsPhase
+       > Running phase: configurePhase
+       > no configure script, doing nothing
+       > Running phase: buildPhase
+       > Warning: Cache directories could not be created: Permission denied; disabling
+       > cache
+       > Hint: Make sure the directory /homeless-shelter/.cache/dune/db/temp can be
+       > created
+       > (cd _build/.sandbox/c0a82f4a1ddf3be22adf6ae47a19d51b/default && .ppx/432981b1a59bb6f4913fcd3ce596f9c5/ppx.exe --cookie 'library-name="charon"' -o charon-ml/src/generated/Generated_OfJson.pp.ml --impl charon-ml/src/generated/Generated_OfJson.ml -corrected-suffix .ppx-corrected -diff-cmd - -dump-ast)
+       > File "charon-ml/src/generated/Generated_OfJson.ml", line 1370, characters 98-109:
+       > 1370 |             (match js with| `Assoc [ ("AnonConstToCall", `Assoc [ ("root", root); ("initializer", initializer); ]) ] -> let* root = (global_decl_id_of_json) ctx root in
+       >                                                                                                          ^^^^^^^^^^^
+       > Error: Syntax error: pattern expected.
+       > (cd _build/.sandbox/f1fbb89b49285c715b7e6ca2d639a5a2/default && .ppx/432981b1a59bb6f4913fcd3ce596f9c5/ppx.exe --cookie 'library-name="charon"' -o charon-ml/src/generated/Generated_OfPostcard.pp.ml --impl charon-ml/src/generated/Generated_OfPostcard.ml -corrected-suffix .ppx-corrected -diff-cmd - -dump-ast)
+       > File "charon-ml/src/generated/Generated_OfPostcard.ml", line 1650, characters 5-16:
+       > 1650 | let* initializer = (fun_decl_id_of_postcard) ctx st in
+       >             ^^^^^^^^^^^
+       > Error: Syntax error
+       >
+       For full logs, run:
+         nix log /nix/store/985ppdxl61ddqnrhksh4b1612zq2nyg1-ocaml5.2.1-charon-0.1.0.drv
+error: Cannot build '/nix/store/mg036wfi4bv9k4xcxj1gslmsrg91gn2w-ocaml5.2.1-aeneas-0.1.0.drv'.
+       Reason: 1 dependency failed.
+       Output paths:
+         /nix/store/qlimz15m6ds3gb5ia0j3ywj6cvh72g79-ocaml5.2.1-aeneas-0.1.0
+exit=1

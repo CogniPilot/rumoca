@@ -1,0 +1,11 @@
+--- a/branded-equality.rs
++++ b/branded-equality.rs
+@@ -6,7 +6,7 @@
+     brand: PhantomData<&'brand mut &'brand ()>,
+ }
+ 
+-pub fn same<'brand>(left: &Id<'brand>, right: &Id<'brand>) -> bool {
++pub fn same(left: &Id<'_>, right: &Id<'_>) -> bool {
+     left == right
+ }
+ 

@@ -1,0 +1,56 @@
+--- a/src/transform/normalize/expand_associated_types.rs
++++ b/src/transform/normalize/expand_associated_types.rs
+@@ -857,6 +857,41 @@
+         modifications
+     }
+ 
++    /// Find the active recursive entry reached by this demand, excluding unrelated active cycles.
++    fn active_cycle_entry(&self, root: &TraitDecl, path: &AssocTypePath) -> Option<TraitDeclId> {
++        let mut id = match path.tref.base {
++            BaseClause::SelfClause => root.def_id,
++            BaseClause::Local(var) => {
++                root.generics
++                    .trait_clauses
++                    .get(var.bound_at_depth(DeBruijnId::zero())?)?
++                    .trait_
++                    .skip_binder
++                    .id
++            }
++        };
++        let mut clauses = path.tref.parent_path.iter();
++        loop {
++            if matches!(
++                self.trait_modifications.get(id),
++                Some(CycleDetector::Cyclic)
++            ) {
++                return Some(id);
++            }
++            let clause = clauses.next()?;
++            id = self
++                .ctx
++                .translated
++                .trait_decls
++                .get(id)?
++                .implied_clauses
++                .get(*clause)?
++                .trait_
++                .skip_binder
++                .id;
++        }
++    }
++
+     /// Compute the modifications needed for this trait.
+     fn compute_trait_modifications(
+         &mut self,
+@@ -941,7 +976,10 @@
+                 let Some(canonical) =
+                     cyclic_demands::normalize_path(&self.ctx.translated, tr, &path)
+                 else {
+-                    self.retained_traits.insert(id);
++                    // Reuse one recursive entry while the current schedule unwinds. Independent
++                    // consumer decisions would retain every trait on the same unresolved cycle.
++                    let entry = self.active_cycle_entry(tr, &path).unwrap_or(id);
++                    self.retained_traits.insert(entry);
+                     self.unresolved_trait.get_or_insert(id);
+                     continue;
+                 };

@@ -1,0 +1,53 @@
+$ nix develop .#default --command cargo test -p xtask -- external_inventory --test-threads=2
+warning: Git tree '/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt' is dirty
+   Compiling xtask v0.10.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt/crates/xtask)
+    Finished `test` profile [optimized + debuginfo] target(s) in 10.68s
+     Running unittests src/lib.rs (target/debug/deps/xtask-6537c3e3c7bc3c25)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running unittests src/bin/rumoca-traversal-policy-check.rs (target/debug/deps/rumoca_traversal_policy_check-90b566cfda5b1e1b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/xtask-e333b6ec902a3e3d)
+
+running 24 tests
+test verify_cmd::lean_pilot::external_inventory::tests::a_duplicate_float_width_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_definition_without_a_source_binding_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_duplicated_external_definition_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_missing_category_array_refuses_instead_of_defaulting_empty ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_manifest_without_float_dependencies_cannot_be_checked ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_missing_opacity_flag_refuses_instead_of_defaulting_false ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_permitted_definition_in_the_wrong_category_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_relocated_cross_crate_first_party_type_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_relocated_external_definition_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_relocated_float_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_renamed_float_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_translated_first_party_global_is_not_rejected ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::admitted_storage_types_do_not_admit_their_operations ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::an_external_global_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::an_opaque_first_party_function_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::an_unknown_external_definition_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::an_unknown_float_field_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::a_missing_permitted_definition_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::an_unreviewed_float_width_refuses ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::recorded_mutant_manifest_is_rejected ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::every_root_storage_type_is_required ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::the_actual_full_caller_translation_is_admitted ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::the_reviewed_float_width_must_be_listed ... ok
+test verify_cmd::lean_pilot::external_inventory::tests::translated_marker_requires_its_exact_bound_source ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 0.01s
+
+   Doc-tests xtask
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit=0

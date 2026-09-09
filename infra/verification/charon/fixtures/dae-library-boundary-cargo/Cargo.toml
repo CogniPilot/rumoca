@@ -1,0 +1,14 @@
+[package]
+name = "dae-library-boundary"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "../dae-library-boundary.rs"
+
+[[test]]
+name = "iterator-specialization"
+path = "../iterator-specialization.rs"
+
+[workspace]

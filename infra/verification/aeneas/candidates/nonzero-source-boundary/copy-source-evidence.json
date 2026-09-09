@@ -1,0 +1,651 @@
+{
+  "schema": 1,
+  "created_at": "2026-09-09T00:26:16Z",
+  "status": "REVIEW REQUESTED; not accepted or adopted",
+  "branch": "msl-trace-parity-50",
+  "baseline": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "anchors": [
+    "SPEC_0033 sections 2a/4/6",
+    "SPEC_0037 sections 2/6 (experimental DRAFT)"
+  ],
+  "invariant": "Original inner and outer Clone and the Option caller preserve the complete input value, without inspecting the existing storage model's numeric payload.",
+  "earliest_owner": "Original Rust library source retention; no new translator patch or operation model",
+  "writer": "Codex",
+  "independent_reviewer": "Claude (requested, no verdict yet)",
+  "predecessors": {
+    "charon": "Frozen candidate4 launcher29d5b284 / driver962d8536",
+    "aeneas": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+    "aeneas_sha256": "32a6f865af0014a0b17412e8ff3cd91f9c3f1aa87a6e7a17a40e35090d31280e",
+    "adoption": "Parent naming and predecessor stack are experimental and not adopted"
+  },
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Original unchanged fixture source emits five transparent functions and no opaque function; generated Types and Funs compile using the unchanged pilot storage model, not the generated external-template axioms."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Four universal identity/dispatch laws pass with exactly zero axioms. All model fields remain unobserved by these copy functions."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The real Rust caller mutation retains its Clone call but discards its result. It emits the same five transparent entries and compiles; the unchanged Some-case law rejects it. The wrong-outcome witness passes and rejects positive output."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Native original2/2, mutant1/2 with expected rejection, strict Clippy, formatting, patch and whitespace checks pass their declared expectations."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Actual production source include reduces opaque libraries4 to3 with127 entries, identical retained function-name set, zero opaque first-party functions and byte-identical type declarations."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The actual newly emitted inner Clone declaration text equals the declaration in the proved reducer."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "Conditional on the explicitly named storage correspondence and pinned translation stack, the identity result applies without learning or erasing the Rust nonzero range. Compiler execution cost is unaffected because no Rumoca source or runtime representation changes."
+    }
+  ],
+  "trusted_boundary": [
+    "The existing pilot models/TypesExternal.lean storage correspondence is reused byte-for-byte. Its broadened Lean domain does not establish Rust constructibility.",
+    "No numeric NonZero.get/equality contract is admitted; source-level TPattern translation remains unimplemented.",
+    "Pinned Rust/Charon/Aeneas translation and Lean kernel remain trusted; these laws are not a proof of translator correctness.",
+    "The private stdlib Clone body was not mutated. The executed source mutation targets the public Option caller only."
+  ],
+  "body_comparison": {
+    "equal": true,
+    "bodies": [
+      {
+        "path": "/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean",
+        "body": "def core.num.niche_types.NonZeroU32Inner.Insts.CoreCloneClone.clone\n  (self : core.num.niche_types.NonZeroU32Inner) :\n  Result core.num.niche_types.NonZeroU32Inner\n  := do\n  _root_.Aeneas.Std.Result.ok self\n"
+      },
+      {
+        "path": "/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean",
+        "body": "def core.num.niche_types.NonZeroU32Inner.Insts.CoreCloneClone.clone\n  (self : core.num.niche_types.NonZeroU32Inner) :\n  Result core.num.niche_types.NonZeroU32Inner\n  := do\n  _root_.Aeneas.Std.Result.ok self\n"
+      }
+    ]
+  },
+  "hashes": {
+    "name": "NonZero copy source/model/tool/artifact bindings",
+    "command": "sha256sum /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/copy-wrong-disposition.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/README.md /home/jgoppert/git/rumoca/infra/verification/lean-pilot/models/TypesExternal.lean /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary.llbc /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Types.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/TypesExternal.olean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.olean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/translation.json /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary.llbc /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.olean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/TypesExternal.olean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/translation.json /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Types.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/translation.json",
+    "cwd": "/home/jgoppert/git/rumoca",
+    "expected_exit": 0,
+    "observations": [],
+    "initial": {
+      "chunk_id": "f203ab",
+      "wall_time_seconds": 0.00000365,
+      "exit_code": 0,
+      "original_token_count": 925,
+      "output": "2291009033a959450b2e9980c32ebc4b91d79e4d1997a210103d4ba26470f664  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs\n8c39736a98416b2442d16fded058796f0978dfe351528d6c53998982f9a1da0d  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean\n97d2165443df0bc31d484c8c049a6e4a5acb31f8aae20983a55af85c89077f89  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean\nfa5a4e373e4bb12ca4cc8abf958a898b061d11f1225e5145dde10dcae1027562  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/copy-wrong-disposition.patch\n3ce6d541f406282dafe9f7059b3544df417b459f161886df44363f54625716de  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/README.md\naca34ac8af279bc2dd8c8be22644309b26d4fc8997169458078ab5fd6669c845  /home/jgoppert/git/rumoca/infra/verification/lean-pilot/models/TypesExternal.lean\n32a6f865af0014a0b17412e8ff3cd91f9c3f1aa87a6e7a17a40e35090d31280e  /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\n875addd585b4a99aaabb673a6220137ae53a08f29244236d7a16ec9491682280  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary.llbc\nd9078e409eded4c0826f5e0d049dcbe7800c267cffb3d7fe733222a0678271bc  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean\nabb4c241bd99ab7ffcd1284c28643b1ebd1ad0912940bfcb33f264934b685a44  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Types.lean\n497f16c49d31b7362aad7405214c56ab00fd453d58754a6209c6a4bb669a1769  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/TypesExternal.olean\n521ae2f1d1cedbd7a4c3e329166eb782ab4eb8efd3220afca6a09b08097ed746  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.olean\n3dc03f1134e55054c25d94fd61bad9e5062e9e715fa668e85670498b13567193  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/translation.json\nc27cf07978cf65251de4197cec9fa0e60a938d6e9e97cd72948f62d0627d94da  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs\n2b4f4a15b8f3e1fde75aff97eced39bf13b7885d6867df67732264d835db00eb  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary.llbc\n7aed2eb1a9ffaac5e3c1605681f8f494194b49212a0a2f44de0583847afc9b85  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.lean\n90ac6cf42ae57dedac6b5c6ffdac691c9016928973e77c001c7ff2adcd334eea  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.olean\n497f16c49d31b7362aad7405214c56ab00fd453d58754a6209c6a4bb669a1769  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/TypesExternal.olean\n10c37e77ed0dc8a5e810a3a556d877f2de8ae56532dc9c6cdd89bca727adaab2  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/translation.json\nf71424dab48b332d8f17d004c6b8a2a7ea0bbaf2a1a4aa0ffd8ac31944312a17  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc\nbd1893b97a78306df7109d6a3e9b7db38254b43d2891515ab0bbd9f2cd407d80  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Types.lean\n118aca0bf0a36ed7c94814bae3846c38082d3c8300f65e26c13be566c7fdec38  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean\nc873f4ef98776a0443919e0f52fa6952a910fcec75a1485ba9303962d6c56d88  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/translation.json\n"
+    }
+  },
+  "runs": [
+    {
+      "key": "nonzero_copy_charon",
+      "name": "original clone-caller source selection",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=nonzero_source_boundary::clone_optional --include='core::num::nonzero::*::clone' --include='core::num::niche_types::*::clone' --include='core::option::*::clone' --dest-file=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary.llbc -- --edition=2024 --crate-name nonzero_source_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "4c70cb",
+        "wall_time_seconds": 0.413304346,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_aeneas",
+      "name": "original NonZero clone source Aeneas emission",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "9350ab",
+        "wall_time_seconds": 0.463814212,
+        "exit_code": 0,
+        "original_token_count": 654,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/5 ⠋\r\rTranslated transparent functions:  [#######------------------------------] 1/5 ⠙\r\rTranslated transparent functions:  [######################---------------] 3/5 ⠙\rTranslated transparent functions:  [#####################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/7 ⠋\rTranslated trait impls:  [###############################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/5 ⠋\r\rPost-processed translated transparent functions:  [####------------------] 1/5 ⠋\rPost-processed translated transparent functions:  [######################] 5/5 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.402358 seconds\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_storage_lean",
+      "name": "unchanged pilot storage model compilation for copy proof",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/lean-pilot/models/TypesExternal.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/TypesExternal.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "4c0830",
+          "wall_time_seconds": 0.00000151,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "417e42",
+        "wall_time_seconds": 1.000612795,
+        "session_id": 29209,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_types_lean",
+      "name": "original-source copy type module with unchanged storage model",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Types.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Types.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "67a216",
+          "wall_time_seconds": 0.00000186,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "c0e9c4",
+        "wall_time_seconds": 1.001293076,
+        "session_id": 18734,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_funs_lean",
+      "name": "original-source copy function module",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "d96334",
+          "wall_time_seconds": 0.0000011,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "12b28f",
+        "wall_time_seconds": 1.000892665,
+        "session_id": 2110,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_laws",
+      "name": "four original-source NonZero copy laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "2bef1f",
+          "wall_time_seconds": 0.00000126,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "b572c1",
+        "wall_time_seconds": 1.000306668,
+        "session_id": 49563,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_charon",
+      "name": "nonzero copy source mutation Charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=nonzero_source_boundary::clone_optional --include='core::num::nonzero::*::clone' --include='core::num::niche_types::*::clone' --include='core::option::*::clone' --dest-file=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary.llbc -- --edition=2024 --crate-name nonzero_source_boundary --crate-type lib /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "e1be9e",
+        "wall_time_seconds": 0.442708334,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_aeneas",
+      "name": "original-source copy mutant Aeneas",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "ab0a5f",
+        "wall_time_seconds": 0.491222956,
+        "exit_code": 0,
+        "original_token_count": 667,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/5 ⠋\r\rTranslated transparent functions:  [#######------------------------------] 1/5 ⠙\r\rTranslated transparent functions:  [######################---------------] 3/5 ⠙\rTranslated transparent functions:  [#####################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/7 ⠋\rTranslated trait impls:  [###############################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/5 ⠋\r\rPost-processed translated transparent functions:  [####------------------] 1/5 ⠋\rPost-processed translated transparent functions:  [######################] 5/5 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.416999 seconds\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_storage_lean",
+      "name": "unchanged storage model for source-mutant copy proof",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/lean-pilot/models/TypesExternal.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/TypesExternal.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "0c4d2c",
+          "wall_time_seconds": 0.000001,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "5ac08a",
+        "wall_time_seconds": 1.000498395,
+        "session_id": 28032,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_types_lean",
+      "name": "copy mutant source type module",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Types.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Types.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "b02dc7",
+          "wall_time_seconds": 0.00000195,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "a66b35",
+        "wall_time_seconds": 1.000764086,
+        "session_id": 63844,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_funs_lean",
+      "name": "copy mutant source functions compile",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.lean -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/Funs.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "0deeb7",
+          "wall_time_seconds": 9.7e-7,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "590385",
+        "wall_time_seconds": 1.001375523,
+        "session_id": 67436,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_laws",
+      "name": "nonzero_copy_mutant_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "5ac2f8",
+        "wall_time_seconds": 0.0000063,
+        "exit_code": 1,
+        "original_token_count": 201,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean:27:18: error: Tactic `rfl` failed: The left-hand side\n  clone_optional (some val✝)\nis not definitionally equal to the right-hand side\n  Result.ok (some val✝)\n\ncase some\nval✝ : core.num.nonzero.NonZero U32 core.num.niche_types.NonZeroU32Inner\n⊢ clone_optional (some val✝) = Result.ok (some val✝)\n'NonzeroCopyLaws.optional_identity' depends on axioms: [sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean:39:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'NonzeroCopyLaws.optional_identity' does not depend on any axioms\n+ info: 'NonzeroCopyLaws.optional_identity' depends on axioms: [sorryAx]\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_witness",
+      "name": "nonzero_copy_mutant_witness",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b4965a",
+        "wall_time_seconds": 0.00000279,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_positive_rejects_witness",
+      "name": "nonzero_copy_positive_rejects_witness",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "0d294a",
+        "wall_time_seconds": 0.943526917,
+        "exit_code": 1,
+        "original_token_count": 207,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean:11:18: error: Tactic `rfl` failed: The left-hand side\n  clone_optional (some val✝)\nis not definitionally equal to the right-hand side\n  Result.ok none\n\ncase some\nval✝ : core.num.nonzero.NonZero U32 core.num.niche_types.NonZeroU32Inner\n⊢ clone_optional (some val✝) = Result.ok none\n'NonzeroCopyMutation.discards_every_input' depends on axioms: [sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean:14:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'NonzeroCopyMutation.discards_every_input' does not depend on any axioms\n+ info: 'NonzeroCopyMutation.discards_every_input' depends on axioms: [sorryAx]\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_native_compile",
+      "name": "nonzero_copy_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/native-tests",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "6e9b3a",
+        "wall_time_seconds": 0.00000609,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_native_tests",
+      "name": "nonzero_copy_native_tests",
+      "command": "/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/native-tests --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b2cc74",
+        "wall_time_seconds": 0.00000389,
+        "exit_code": 0,
+        "original_token_count": 56,
+        "output": "\nrunning 2 tests\ntest tests::equality_distinguishes_identity ... ok\ntest tests::cloning_preserves_payload_and_absence ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_native_compile",
+      "name": "nonzero_copy_mutant_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --test /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/native-tests",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "f09a42",
+        "wall_time_seconds": 0.00000414,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_native_tests",
+      "name": "nonzero_copy_mutant_native_tests",
+      "command": "/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/native-tests --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 101,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b1b5cf",
+        "wall_time_seconds": 0.00000377,
+        "exit_code": 101,
+        "original_token_count": 165,
+        "output": "\nrunning 2 tests\ntest tests::cloning_preserves_payload_and_absence ... FAILED\ntest tests::equality_distinguishes_identity ... ok\n\nfailures:\n\n---- tests::cloning_preserves_payload_and_absence stdout ----\n\nthread 'tests::cloning_preserves_payload_and_absence' (488866) panicked at /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs:36:9:\nassertion `left == right` failed\n  left: None\n right: Some(17)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::cloning_preserves_payload_and_absence\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_clippy",
+      "name": "nonzero_copy_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs --emit=metadata -o /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/native.rmeta -Dwarnings",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "8c239a",
+        "wall_time_seconds": 0.0000019,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_format",
+      "name": "nonzero_copy_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --check --edition 2024 /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "565cf2",
+        "wall_time_seconds": 0.00000359,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_mutant_patch_check",
+      "name": "nonzero_copy_mutant_patch_check",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/copy-wrong-disposition.patch",
+      "cwd": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "ef6747",
+        "wall_time_seconds": 0.00000315,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_fixture_metadata",
+      "name": "nonzero_copy_fixture_metadata",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '[.[]|{crate,functions:(.functions|length),opaque:([.functions[]|select(.is_opaque)]|length)}]' /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/translation.json /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/mutation/NonzeroCopyBoundary/translation.json",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "51e004",
+        "wall_time_seconds": 0.00000326,
+        "exit_code": 0,
+        "original_token_count": 44,
+        "output": "[\n  {\n    \"crate\": \"nonzero_source_boundary\",\n    \"functions\": 5,\n    \"opaque\": 0\n  },\n  {\n    \"crate\": \"nonzero_source_boundary\",\n    \"functions\": 5,\n    \"opaque\": 0\n  }\n]\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_production_charon",
+      "name": "actual production retains original inner clone source",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 300 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon cargo --preset=aeneas --sysroot=default --error-on-warnings --start-from=rumoca_ir_dae::model::view::DaeView::variable_refinement --start-from=rumoca_ir_solve::model::SolveModel::variable_refinement --start-from=rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement --include=rumoca_ir_dae --include=rumoca_ir_solve --include=rumoca_core --include='core::bool::*::then' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --include='core::iter::adapters::map::Map' --include='core::iter::adapters::map::*::new' --include='core::iter::traits::iterator::Iterator::map' --include='core::iter::traits::iterator::Iterator::sum' --include='core::iter::traits::accum::*::sum' --include='core::iter::adapters::map::*::next' --include='core::option::*::map' --include='core::ops::function::impls::*::call_once' --include='core::option::*::expect' --include='core::result::*::branch' --include='core::option::*::copied' --include='core::option::*::flatten' --include='core::result::*::ok' --include='core::option::*::clone' --include='core::num::niche_types::*::clone' --monomorphize-mut --dest-file=/home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc -- --locked -Zbuild-std=std,panic_abort --target=x86_64-unknown-linux-gnu --target-dir=/tmp/rumoca-stdlib-source-facts-j7Drx7/dae-build -p rumoca-phase-solve --lib",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "1fba8f",
+          "wall_time_seconds": 0.00000243,
+          "exit_code": 0,
+          "original_token_count": 198,
+          "output": "   Compiling rumoca-core v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-core)\n   Compiling rumoca-ir-dae v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-dae)\n   Compiling rumoca-ir-galec v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-galec)\n   Compiling rumoca-ir-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-solve)\n   Compiling rumoca-eval-dae v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-eval-dae)\n   Compiling rumoca-phase-structural v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-phase-structural)\n   Compiling rumoca-eval-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-eval-solve)\n   Compiling rumoca-phase-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-phase-solve)\n    Finished `dev` profile [optimized + debuginfo] target(s) in 51.74s\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "3e0ae7",
+        "wall_time_seconds": 1.001758922,
+        "session_id": 80652,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzero_copy_production_aeneas",
+      "name": "actual production original-source inner Clone Aeneas",
+      "command": "timeout 180 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -keep-function \"rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement\" -keep-function 'rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement' -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "974874",
+          "wall_time_seconds": 0.00000157,
+          "exit_code": 0,
+          "original_token_count": 1582,
+          "output": "\rTranslated transparent functions:  [##-------------------------------]   8/109 ⠸\r\rTranslated transparent functions:  [##-------------------------------]   9/109 ⠼\r\rTranslated transparent functions:  [###------------------------------]  10/109 ⠴\r\rTranslated transparent functions:  [###------------------------------]  13/109 ⠴\r\rTranslated transparent functions:  [####-----------------------------]  15/109 ⠦\r\rTranslated transparent functions:  [###########----------------------]  37/109 ⠦\r\rTranslated transparent functions:  [###############------------------]  50/109 ⠧\r\rTranslated transparent functions:  [################-----------------]  53/109 ⠇\r\rTranslated transparent functions:  [################-----------------]  55/109 ⠇\r\rTranslated transparent functions:  [################-----------------]  56/109 ⠏\r\rTranslated transparent functions:  [##################---------------]  62/109 ⠏\r\rTranslated transparent functions:  [####################-------------]  69/109 ⠋\r\rTranslated transparent functions:  [#####################------------]  71/109 ⠋\r\rTranslated transparent functions:  [######################-----------]  73/109 ⠋\r\rTranslated transparent functions:  [#######################----------]  76/109 ⠋\r\rTranslated transparent functions:  [########################---------]  82/109 ⠙\r\rTranslated transparent functions:  [#########################--------]  84/109 ⠹\r\rTranslated transparent functions:  [############################-----]  93/109 ⠹\r\rTranslated transparent functions:  [############################-----]  94/109 ⠹\r\rTranslated transparent functions:  [#############################----]  97/109 ⠸\r\rTranslated transparent functions:  [##############################---] 100/109 ⠸\r\rTranslated transparent functions:  [################################-] 108/109 ⠸\rTranslated transparent functions:  [#################################] 109/109 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/33 ⠋\rTranslated trait declarations:  [#################---------------------] 15/33 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/69 ⠋\rTranslated trait impls:  [########################---------------------] 37/69 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/51 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/51 ⠋\rPost-processed translated opaque functions:  [#########################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [------------------]   0/109 ⠋\r\rPost-processed translated transparent functions:  [------------------]   1/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   7/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   8/109 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]   9/109 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]  10/109 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  14/109 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  16/109 ⠹\r\rPost-processed translated transparent functions:  [######------------]  37/109 ⠹\r\rPost-processed translated transparent functions:  [########----------]  50/109 ⠸\r\rPost-processed translated transparent functions:  [########----------]  53/109 ⠸\r\rPost-processed translated transparent functions:  [#########---------]  56/109 ⠼\r\rPost-processed translated transparent functions:  [###########-------]  69/109 ⠼\r\rPost-processed translated transparent functions:  [############------]  76/109 ⠼\r\rPost-processed translated transparent functions:  [#############-----]  84/109 ⠴\r\rPost-processed translated transparent functions:  [################--]  97/109 ⠴\r\rPost-processed translated transparent functions:  [#################-] 106/109 ⠴\rPost-processed translated transparent functions:  [##################] 109/109 ✔️\r\n\u001b[?25h[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 6.952402 seconds\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "6f9ff8",
+        "wall_time_seconds": 1.001382531,
+        "session_id": 1380,
+        "original_token_count": 335,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/188 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/188 ⠙\r\rApplied prepasses:  [###---------------------------------------------]  13/188 ⠙\r\rApplied prepasses:  [######################--------------------------]  89/188 ⠙\r\rApplied prepasses:  [#########################################-------] 164/188 ⠙\rApplied prepasses:  [################################################] 188/188 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/51 ⠋\rTranslated opaque functions:  [########################################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [---------------------------------]   0/109 ⠋\r\rTranslated transparent functions:  [---------------------------------]   1/109 ⠙\r\rTranslated transparent functions:  [---------------------------------]   3/109 ⠙\r\rTranslated transparent functions:  [##-------------------------------]   7/109 ⠹\r"
+      }
+    },
+    {
+      "key": "nonzero_copy_production_census",
+      "name": "production source-retained clone before/after census",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '{before:{entries:(.[0].functions|length),opaque:([.[0].functions[]|select(.is_opaque)]|length)},after:{entries:(.[1].functions|length),opaque:([.[1].functions[]|select(.is_opaque)]|length)},opaque_first_party:([.[1].functions[]|select(.is_local and .is_opaque)]|length),remaining:[.[1].functions[]|select(.is_opaque)|.rust_name],all_function_names_retained:(([.[0].functions[].rust_name]|sort)==([.[1].functions[].rust_name]|sort))}' /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/translation.json /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/translation.json",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "dd5f4f",
+        "wall_time_seconds": 0.0000035,
+        "exit_code": 0,
+        "original_token_count": 132,
+        "output": "{\n  \"before\": {\n    \"entries\": 127,\n    \"opaque\": 4\n  },\n  \"after\": {\n    \"entries\": 127,\n    \"opaque\": 3\n  },\n  \"opaque_first_party\": 0,\n  \"remaining\": [\n    \"core::num::nonzero::{impl core::cmp::PartialEq<core::num::nonzero::NonZero<T, Clause0_NonZeroInner>> for core::num::nonzero::NonZero<T, Clause0_NonZeroInner>}::eq\",\n    \"alloc::boxed::convert::{impl core::convert::From<&'_0 [T]> for alloc::boxed::Box<[T]>}::from\",\n    \"alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\"\n  ],\n  \"all_function_names_retained\": true\n}\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_production_delta",
+      "name": "actual production inner Clone producer delta",
+      "command": "diff -u /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "9832de",
+        "wall_time_seconds": 0.00000315,
+        "exit_code": 1,
+        "original_token_count": 310,
+        "output": "--- /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean\t2026-09-08 19:53:22.998627131 -0400\n+++ /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean\t2026-09-08 20:19:10.343180538 -0400\n@@ -162,6 +162,18 @@\n     collectFromIteratorInst\n }\n \n+/-- [core::num::niche_types::{impl core::clone::Clone for core::num::niche_types::NonZeroU32Inner}::clone]:\n+    Source: '/rustc/library/core/src/num/niche_types.rs', lines 17:17-17:22\n+    Name pattern: [core::num::niche_types::{core::clone::Clone<core::num::niche_types::NonZeroU32Inner>}::clone]\n+    Visibility: public -/\n+@[rust_fun\n+  \"core::num::niche_types::{core::clone::Clone<core::num::niche_types::NonZeroU32Inner>}::clone\"]\n+def core.num.niche_types.NonZeroU32Inner.Insts.CoreCloneClone.clone\n+  (self : core.num.niche_types.NonZeroU32Inner) :\n+  Result core.num.niche_types.NonZeroU32Inner\n+  := do\n+  _root_.Aeneas.Std.Result.ok self\n+\n /-- Trait implementation: [core::num::niche_types::{impl core::clone::Clone for core::num::niche_types::NonZeroU32Inner}]\n     Source: '/rustc/library/core/src/num/niche_types.rs', lines 17:17-17:22\n     Name pattern: [core::clone::Clone<core::num::niche_types::NonZeroU32Inner>] -/\n"
+      }
+    },
+    {
+      "key": "nonzero_copy_production_types_equal",
+      "name": "actual production type declarations unchanged by clone retention",
+      "command": "cmp /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Types.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Types.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "f813ae",
+        "wall_time_seconds": 0.00000313,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "nonzeroCopyTracer",
+      "name": "production UnitDerivative after NonZero copy cut",
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "63fb7d",
+        "wall_time_seconds": 0.919405905,
+        "exit_code": 0,
+        "original_token_count": 185,
+        "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.68s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.01s\n\n"
+      }
+    },
+    {
+      "name": "actual and reduced original inner Clone declarations match",
+      "command": "diff -u <(sed -n '/^def core\\.num\\.niche_types\\.NonZeroU32Inner\\.Insts\\.CoreCloneClone\\.clone$/,/^  _root_\\.Aeneas\\.Std\\.Result\\.ok self$/p' /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/NonzeroCopyBoundary/Funs.lean) <(sed -n '/^def core\\.num\\.niche_types\\.NonZeroU32Inner\\.Insts\\.CoreCloneClone\\.clone$/,/^  _root_\\.Aeneas\\.Std\\.Result\\.ok self$/p' /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean)",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "d4eb62",
+        "wall_time_seconds": 0.00000284,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "whitespace_checks": [
+    {
+      "name": "copy proof whitespace CopyLaws.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "68be36",
+        "wall_time_seconds": 0.00000305,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "copy proof whitespace CopyMutationWitness.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/CopyMutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "474dc1",
+        "wall_time_seconds": 0.00000283,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "copy proof whitespace README.md",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/nonzero-source-boundary/README.md",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "b0b23c",
+        "wall_time_seconds": 0.00000289,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "production_remaining": [
+    "NonZero PartialEq.eq",
+    "Box<[T]>::from(&[T])",
+    "Vec<T>::into_boxed_slice"
+  ],
+  "not_run": [
+    "Complete actual production Lean modules: remaining operations, storage/map and iterator-interface boundaries remain open.",
+    "Canonical cargo xtask verify lean-pilot/quick/full: tool adoption and required dependencies are not closed.",
+    "Full MSL sweep or remote CI; five UnitDerivative production tests are a tracer, not cohort parity.",
+    "Private stdlib body source mutation, numeric equality/get proof, new range semantics, complete UD07 theorem."
+  ],
+  "completion": "Still1/18 accepted UnitDerivative relations and1/8 near-term milestones; no M1 closure, golden admission or live tool/compiler change."
+}

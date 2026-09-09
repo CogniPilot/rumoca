@@ -1,0 +1,18 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋Applied prepasses:  [##########################--------------------------] 1/2 ⠙Applied prepasses:  [####################################################] 2/2 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋Translated transparent functions:  [##################-------------------] 1/2 ⠋Translated transparent functions:  [#####################################] 2/2 ⠙Translated transparent functions:  [#####################################] 2/2 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋Translated trait declarations:  [----------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋Translated trait impls:  [-----------------------------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋Post-processed translated transparent functions:  [###########-----------] 1/2 ⠋Post-processed translated transparent functions:  [######################] 2/2 ✔️
+[?25h[[92mInfo[39m ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-f64_binding
+[[91mError[39m] The crate references floating-point widths (F64) whose model must be supplied by a TypesExternal module; single-file output has no such module to import. Use -split-files and provide the model, or remove the dependency.
+Uncaught exception:
+  
+  Aeneas.Errors.CFailure(_)
+
+Raised at Aeneas__Errors.craise_opt_span in file "Errors.ml", line 123, characters 4-46
+Called from Aeneas__Translate.extract_translated_crate in file "Translate.ml", lines 1887-1892, characters 4-44
+Called from Dune__exe__Main in file "Main.ml", lines 767-768, characters 8-37

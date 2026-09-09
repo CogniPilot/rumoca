@@ -1,0 +1,44 @@
+---- monomorphization/issue-708-from-str-mismatched-generics.rs ----
+Command: `charon ui_test tests/ui/monomorphization/issue-708-from-str-mismatched-generics.rs`
+Compilation failed:
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-07da9a9804d761db.rmeta")
+ --> /rustc/library/alloc/src/raw_vec/mod.rs:901:44
+
+note: the error occurred when translating `alloc::raw_vec::layout_array::{impl#23}`, which is (transitively) used at the following location(s):
+ --> tests/ui/monomorphization/issue-708-from-str-mismatched-generics.rs:7:13
+  |
+7 |     let _ = std::path::PathBuf::from("foo");
+  |             -------------------------------
+8 |     let _ = String::from("Hello, world!");
+  |             -----------------------------
+error: Item `alloc::raw_vec::layout_array::{closure#0}` caused errors; ignoring.
+ --> /rustc/library/alloc/src/raw_vec/mod.rs:901:44
+
+ERROR Charon failed to translate this code (2 errors)
+
+
+
+failures:
+    simple/issue-988-closure-outlives.rs
+    closures.rs
+    simple/nested-closure-lifetime.rs
+    simple/closure-with-remove-adt-clauses.rs
+    simple/lending-iterator-gat.rs
+    simple/closure-fn.rs
+    simple/closure-capture-ref-by-move.rs
+    simple/closure-with-non-upvar-lifetime.rs
+    simple/foreign-inline-const.rs
+    simple/issue-1040-closure-upvar-lifetime.rs
+    simple/closure-fnmut.rs
+    simple/nested-closure.rs
+    no-gen-tuple-structs.rs
+    issue-323-closure-borrow.rs
+    monomorphization/closure-fn.rs
+    monomorphization/closures.rs
+    issue-394-rpit-with-lifetime.rs
+    monomorphization/issue-708-from-str-mismatched-generics.rs
+
+test result: FAILED. 422 passed; 18 failed; 2 ignored; 0 measured; 0 filtered out; finished in 14.25s
+
+error: test failed, to rerun pass `--test ui`
+exit=101

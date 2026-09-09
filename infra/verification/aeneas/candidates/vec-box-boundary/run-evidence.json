@@ -1,0 +1,1115 @@
+{
+  "schema": 1,
+  "created_at": "2026-09-09T01:09:18Z",
+  "status": "REVIEW REQUESTED; not accepted or adopted",
+  "branch": "msl-trace-parity-50",
+  "baseline": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "anchors": [
+    "SPEC_0033 sections 2/2a/4/6",
+    "SPEC_0037 sections 2/6 (experimental DRAFT)"
+  ],
+  "invariant": "The original Rust Vec.into_boxed_slice and From<Vec> callers preserve the complete ordered sequence under the explicitly stated existing Vec/Box library abstraction.",
+  "earliest_owner": "Aeneas Std operation model and its officially generated identity registry",
+  "writer": "Codex",
+  "reviewer": "Claude, requested; no verdict",
+  "reservation_until": "2026-09-09T02:00Z",
+  "predecessors": {
+    "charon": "frozen candidate4; complete hashes below",
+    "aeneas": "parent-clause-names32a6f865; complete hash below",
+    "adoption": "experimental and not adopted"
+  },
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Both original and real Rust-mutant reducers emit two transparent functions, no opaque functions, and compile without generated-source edits."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Three universal original-caller preservation/agreement laws pass with exactly propext; no native-decision or semantic axiom is used."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The unchanged laws reject real Rust sequence loss; the unchanged From control passes. Guarded fault witness succeeds on mutation and rejects original output."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "A separate library-model mutation is rejected by the unchanged From preservation theorem, after the mutated definition itself typechecks."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Native original3/3; mutation0/3 with expected failures. Strict Rust Clippy, format, all four patch checks, new-file whitespace and tracked diff checks meet declared expectations."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Seven previous Option laws pass on fresh candidate-generated source."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Actual production on identical LLBC changes127/3 to126/2 emitted function/opaque counts. The newly bound Vec external is the only removed entry; every retained function metadata record and all type declarations are identical. The actual call remains, with its abstracted allocator argument removed."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Production UnitDerivative tracer passes5/5 at unchanged compiler HEAD."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "The two Rust public APIs share the sequence behavior because the pinned From implementation directly delegates to into_boxed_slice. Correctness of unsafe allocation itself remains a named library contract, not a source theorem."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "Compiler runtime cost and safety are unaffected because no Rumoca code, type representation, tensor layout or live pin changed."
+    }
+  ],
+  "trusted_boundary": [
+    "Lean kernel and pinned Rust/Charon/Aeneas translation are trusted; these laws do not prove translator correctness.",
+    "Existing Vec/Box sequence correspondence is reused. Allocation failure/abort, custom allocator effects, pointer identity, capacity observations and destructor effects are outside the model. Native evidence exercises the default allocator.",
+    "propext already occurs in unchanged Vec, Slice, Usize.max and FromBoxSliceVec.from; vec_box_original_storage_axioms independently checks those original compiled definitions.",
+    "Only the public caller's Rust source and the authored library body are mutated; private Rust allocator internals are not source-mutated or proved.",
+    "Box.from(shared slice) and NonZero.eq are not admitted by this cut. HashMap/HashSet storage, iterator interfaces and full production Lean remain open."
+  ],
+  "not_run": [
+    "Full production generated Lean compilation/proofs: remaining library/storage/iterator obligations are open.",
+    "Canonical tool/pilot adoption: this candidate and its predecessor stack await dependency-closed review.",
+    "cargo xtask verify quick/full and remote CI: no dependency-closed adoption milestone is claimed; existing broader gate failures remain in the roadmaps.",
+    "No full Charon Cargo rebuild here: the actual production LLBC from the preceding cut is intentionally byte-identical and SHA-bound.",
+    "Non-default allocator native behavior and allocator-failure semantics are outside the declared observation contract."
+  ],
+  "historical_failures": {
+    "vec_box_std_compile": "Resolved: consecutive attribute blocks were invalid Lean syntax; the canonical model compiles in vec_box_std_canonical.",
+    "vec_box_registry": "Resolved: official registry interpreter exceeded 4096 MiB; the existing bounded 12288 MiB setting succeeds in vec_box_registry_canonical.",
+    "vec_box_registry_fmt": "Resolved: this attempted formatting before the failed registry run had produced a file; canonical generation and formatting subsequently succeed.",
+    "vec_box_positive": "Rejected direct many-to-one naming design; final distinct model/API identities succeed in vec_box_final_positive.",
+    "vec_box_mutation": "Rejected direct many-to-one naming design; final distinct model/API identities succeed in vec_box_final_mutation.",
+    "vec_box_laws": "Resolved incorrect zero-axiom expectation: unchanged Vec/Slice/Usize storage already depends on propext. Exact propext guards succeed in vec_box_laws_final."
+  },
+  "operational_notes": [
+    "Initial production tool output truncated some progress text; vec_box_production_complete_log repeats the identical command with a sufficient output budget and retains complete output, including four existing iterator-model warnings.",
+    "Official registry generation uses the unchanged predecessor initializer-API repair and bounded 12288 MiB interpreter budget; ordinary proof compilation uses4096 MiB and four threads.",
+    "The registry patch consists of one function binding and mechanically shifted source-position comments. The Std patch is applied to isolated source and compiled to a regular Vec.olean; unchanged modules are read-only symlinks.",
+    "The .nix recipe builds the registry candidate only; the Std source patch is a separate verification-library input, not automatically adopted.",
+    "git diff --no-index --check for each newly added text file exits1 with empty output; this denotes a new file, not a whitespace defect."
+  ],
+  "hashes": {
+    "command": "sha256sum /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/stdlib.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/binding-registry.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/package.nix /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-result.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-model.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/README.md /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon-driver /home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib/Aeneas/Std/Vec.olean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean /nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Types.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.olean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Types.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.olean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Types.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/FunsExternal_Template.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/OptionSourceBoundaryClosed.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/rejected-direct-binding/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/rejected-direct-binding/binding-registry.patch",
+    "expected_exit": 0,
+    "initial": {
+      "chunk_id": "710ae7",
+      "wall_time_seconds": 0.678039714,
+      "exit_code": 0,
+      "original_token_count": 1630,
+      "output": "645579da3380cc46ee6bace4c88ca52c25af39cd58893d0ae7454c0706c04379  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs\n3ee941cadfce44e0c5bc6a7f54d7339b1ad053beb0a9349ac69773d38e83c72d  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean\n9358d1172caa902c3ca48af6b15a56121e2c55cafb5f0521f0bbfceef926e0a4  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean\nb1e13b70c8bb393d7636292cf6214f7cc3b31eb68c440e180dac71b1c03710e3  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/stdlib.patch\n5235bad54dde3a9635517999b99fffd5f769d8af22e134d8e087ee0bdfb994e1  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/binding-registry.patch\n93e7c54f45e60a78178077f4fc3310817cad56ae709c61167dab690a2b0b5262  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/package.nix\n8eee5954a9a1f25092d1a9fd5f42ddfdde54fc7ba40ecac7bb019cadb320e662  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-result.patch\n3d6db563f97a00b18335bfe7099f874db11331d719026adec1297e6451c08ab7  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-model.patch\nc330618d417204f3eb7b8ca8ef5a928ffed223f6d3059a71cb4d8e0a3e056be3  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/README.md\n4b802364fa7371a1cb37091b997722937b4d215eeb4f9bf2954e49a8b9af7be7  /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n32a6f865af0014a0b17412e8ff3cd91f9c3f1aa87a6e7a17a40e35090d31280e  /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\n29d5b284bdc09dbca1851eb87f55e44f9586cbbfb6b6a2fdda18b84a3f34defc  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon\n962d85360637dbf2976443f6c23b51793f687ca285288ab95dcd082fda7d586c  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon-driver\n9e046806582cc32e95aaef1d13bce0ab6f0a7b3f2de8c4adfea79b523379bc90  /home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/Aeneas/Std/Vec.lean\ncb47419c272d562e2d3fb078d82d89b1ebfd3008eb73b244c7b3ca5c5e739d2d  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean\n7ec8f8b3964a82377b50070dbc5b7e95d7420ec9ff3f916fbb9e5f9fbee5efc0  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib/Aeneas/Std/Vec.olean\nf56fb52853cd63c21f50ddcb48bce3740ce7fab338886dea9964645b20739031  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml\n75f3291c63ff602f6e0ec4f9853fcd936108088e131c094c307a91894e182ba4  /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean\n161d97d3549abee6416787475f3da48780f70a34065b333478e2b1f629fff2e9  /nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs\n4bf979b11e11b8307abc92baa98166e890e2aa56384fba157b625899bdfdc7fd  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc\n2fc2a550aaccbeb28a4e26794a02d82229bfe48ca80bd57807b8140a0ead6233  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs\nfbeee3121615624fbc36a459624ceb742dac1a8479467413a2852e2211c3a9ae  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc\n9855c98e4d78326490b4bbc71e18f34cb318c0b924a959730a38aa083fd46425  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Types.lean\n4fe031aa75d60f5c38a2a5346b0eaa94405939af911ec12d58bfc3c1f410b2ce  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.lean\n0959862cf7501d361fe023159a0902d5c870bae1d711f9c965ead30082255603  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.olean\n40511af6b6e7c148070ec1fadc404001f92f8dd65ee1a7eab65162fb7b5a3f65  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/translation.json\n9855c98e4d78326490b4bbc71e18f34cb318c0b924a959730a38aa083fd46425  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Types.lean\naa6516586347239fb06ff2402d1203c8492f10bbd7e3d5f2a1b6d80c25e2b435  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.lean\nf0ddbae83ec22242c9d3595c1056758e868894f4f6f6de23aa50ccf2ab8faef7  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.olean\nd1b0d03d9c0bed2da1244656da64a61b0c7414ec92b0b17bc3f9995efe7b8c91  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/translation.json\n48c4dd167292c34fe1ba40378d442248f907dc5156de9a92502196351b652b42  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean/Aeneas/Std/Vec.lean\nf71424dab48b332d8f17d004c6b8a2a7ea0bbaf2a1a4aa0ffd8ac31944312a17  /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc\nbd1893b97a78306df7109d6a3e9b7db38254b43d2891515ab0bbd9f2cd407d80  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Types.lean\nc3b3ec79e9c51c07225ef87d1fab968c25c56f17828276bacd71a1b5d3c1cfdd  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean\n532cefc6e259d1eae92431671f9d3686211d8134ef0a1be10378c7a023267c4e  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/FunsExternal_Template.lean\neb56217c518657cee8178fd6b2d4b65f2f41cb81758efd1b50c3f2703432aee3  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json\n3897ad888818eef19875e79da7fa249e33d14094861c5dfd32d2808a75e80b4b  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/OptionSourceBoundaryClosed.lean\nb60cea007df96b3151b484b544ff36213d348c33015a742f35d9837d53a9112a  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/translation.json\n409ed01690cbc98f742143c7999af28384bc2d560564c4937800d502f43cfb2d  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/rejected-direct-binding/Vec.lean\n841075e0d1f91fb282884fd57f94b5761fc1a79b5ca6e090124c47b29aaf2ee1  /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/rejected-direct-binding/binding-registry.patch\n"
+    },
+    "observations": []
+  },
+  "whitespace_checks": [
+    {
+      "file": "fixture.rs",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "8b483c",
+        "wall_time_seconds": 0.00000288,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "file": "Laws.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "aa1876",
+        "wall_time_seconds": 0.00000333,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "file": "MutationWitness.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "1df8df",
+        "wall_time_seconds": 0.00000317,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "file": "package.nix",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/package.nix",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "c8364f",
+        "wall_time_seconds": 0.0000031,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "file": "README.md",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/README.md",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "4e346d",
+        "wall_time_seconds": 0.00000269,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    }
+  ],
+  "runs": [
+    {
+      "key": "vec_box_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=vec_box_boundary::move_values --start-from=vec_box_boundary::from_values --dest-file=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc -- --edition=2024 --crate-name vec_box_boundary --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "b51b2e",
+        "wall_time_seconds": 0.388546718,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_before",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "b9d28d",
+        "wall_time_seconds": 0.346873478,
+        "exit_code": 0,
+        "original_token_count": 621,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/5 ⠋\r\rApplied prepasses:  [##########------------------------------------------] 1/5 ⠙\rApplied prepasses:  [####################################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/2 ⠋\rTranslated opaque functions:  [##########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/2 ⠋\r\rPost-processed translated opaque functions:  [#############--------------] 1/2 ⠋\rPost-processed translated opaque functions:  [###########################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.293433 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_before_census",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq '{functions: (.functions|length), opaque: [.functions[]|select(.is_opaque)|.rust_name]}' /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/before/translation.json",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "a322e8",
+        "wall_time_seconds": 0.00000366,
+        "exit_code": 0,
+        "original_token_count": 25,
+        "output": "{\n  \"functions\": 3,\n  \"opaque\": [\n    \"alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\"\n  ]\n}\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_compile",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib/Aeneas/Std/Vec.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "b5d4b1",
+        "wall_time_seconds": 1.001907235,
+        "session_id": 13520,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "80482e",
+          "wall_time_seconds": 0.0000014,
+          "exit_code": 1,
+          "original_token_count": 38,
+          "output": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean:506:95: error: unexpected token '@['; expected 'lemma'\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_compile_fixed",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib/Aeneas/Std/Vec.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "ff153f",
+        "wall_time_seconds": 1.000932205,
+        "session_id": 10463,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "7a0fc0",
+          "wall_time_seconds": 0.00000125,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_registry",
+      "command": "env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "57c1aa",
+        "wall_time_seconds": 1.001562583,
+        "session_id": 72361,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "5f486d",
+          "wall_time_seconds": 0.00000223,
+          "exit_code": 1,
+          "original_token_count": 34,
+          "output": "excessive memory consumption detected at 'interpreter' (potential solution: increase memory consumption threshold)\nStarting extraction\n"
+        }
+      ]
+    },
+    {
+      "key": "vec_box_registry_retry",
+      "command": "env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "94367e",
+        "wall_time_seconds": 1.001362243,
+        "session_id": 37228,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "d18e2d",
+          "wall_time_seconds": 0.00000154,
+          "exit_code": 0,
+          "original_token_count": 9,
+          "output": "Starting extraction\nExtraction done\n"
+        }
+      ]
+    },
+    {
+      "key": "vec_box_registry_fmt",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --profile default --margin 80 --break-cases fit-or-vertical --doc-comments before --exp-grouping preserve --parens-tuple always --parens-tuple-patterns multi-line-only --inplace /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "d07d20",
+        "wall_time_seconds": 0.00000306,
+        "exit_code": 1,
+        "original_token_count": 63,
+        "output": "ocamlformat: SRC… arguments: no\n             '/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml'\n             file\nUsage: ocamlformat [OPTION]… [SRC]…\nTry 'ocamlformat --help' for more information.\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_registry_fmt_final",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --profile default --margin 80 --break-cases fit-or-vertical --doc-comments before --exp-grouping preserve --parens-tuple always --parens-tuple-patterns multi-line-only --inplace /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "237382",
+        "wall_time_seconds": 0.00000291,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_patch",
+      "command": "diff -u --label a/backends/lean/Aeneas/Std/Vec.lean --label b/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "08b67d",
+        "wall_time_seconds": 0.00000365,
+        "exit_code": 1,
+        "original_token_count": 161,
+        "output": "--- a/backends/lean/Aeneas/Std/Vec.lean\n+++ b/backends/lean/Aeneas/Std/Vec.lean\n@@ -506,6 +506,9 @@\n @[rust_fun \"alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from\" (keepParams := [true,false])]\n def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) := ok v.slice\n \n+attribute [rust_fun \"alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice\" (keepParams := [true, false])]\n+  alloc.vec.FromBoxSliceVec.from\n+\n @[step]\n theorem alloc.vec.FromBoxSliceVec.from_spec {T : Type} (v : alloc.vec.Vec T) :\n   alloc.vec.FromBoxSliceVec.from v ⦃ s => s.length = v.length ∧ s.val = v.val⦄ := by\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_patch",
+      "command": "diff -u --label a/fixture.rs --label b/fixture.rs infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "4d4f19",
+        "wall_time_seconds": 0.00000308,
+        "exit_code": 1,
+        "original_token_count": 67,
+        "output": "--- a/fixture.rs\n+++ b/fixture.rs\n@@ -1,5 +1,6 @@\n pub fn move_values<T>(values: Vec<T>) -> Box<[T]> {\n-    values.into_boxed_slice()\n+    let _ = values.into_boxed_slice();\n+    Vec::new().into_boxed_slice()\n }\n \n pub fn from_values<T>(values: Vec<T>) -> Box<[T]> {\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_registry_delta",
+      "command": "diff -u --label a/extract/ExtractBuiltinLean.ml --label b/extract/ExtractBuiltinLean.ml /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "83f8ba",
+        "wall_time_seconds": 0.000003339,
+        "exit_code": 1,
+        "original_token_count": 983,
+        "output": "--- a/extract/ExtractBuiltinLean.ml\n+++ b/extract/ExtractBuiltinLean.ml\n@@ -235,13 +235,13 @@\n        @A>, @T>}::next\"\n       \"alloc.vec.into_iter.IteratorIntoIter.next\"\n       ~keep_params:(Some [ true; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 605 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 608 *)\n     mk_fun\n       \"alloc::vec::partial_eq::{core::cmp::PartialEq<alloc::vec::Vec<@T>, \\\n        alloc::vec::Vec<@U>>}::eq\"\n       \"alloc.vec.partial_eq.PartialEqVec.eq\"\n       ~keep_params:(Some [ true; true; false; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 615 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 618 *)\n     mk_fun\n       \"alloc::vec::partial_eq::{core::cmp::PartialEq<alloc::vec::Vec<@T>, \\\n        alloc::vec::Vec<@U>>}::ne\"\n@@ -254,6 +254,10 @@\n     (* file: \"Aeneas/Std/Vec.lean\", line: 167 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::insert\" \"alloc.vec.Vec.insert\"\n       ~keep_params:(Some [ true; false ]);\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 509 *)\n+    mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice\"\n+      \"alloc.vec.FromBoxSliceVec.from\"\n+      ~keep_params:(Some [ true; false ]);\n     (* file: \"Aeneas/Std/Vec.lean\", line: 85 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::len\" \"alloc.vec.Vec.len\"\n       ~keep_params:(Some [ true; false ])\n@@ -270,7 +274,7 @@\n     (* file: \"Aeneas/Std/Vec.lean\", line: 396 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::with_capacity\"\n       \"alloc.vec.Vec.with_capacity\" ~can_fail:false ~lift:false;\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 591 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 594 *)\n     mk_fun \"alloc::vec::{core::clone::Clone<alloc::vec::Vec<@T>>}::clone\"\n       \"alloc.vec.CloneVec.clone\"\n       ~keep_params:(Some [ true; false ])\n@@ -284,7 +288,7 @@\n     mk_fun\n       \"alloc::vec::{core::convert::From<alloc::vec::Vec<@T>, [@T; @N]>}::from\"\n       \"alloc.vec.FromVecArray.from\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 636 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 639 *)\n     mk_fun \"alloc::vec::{core::fmt::Debug<alloc::vec::Vec<@T>>}::fmt\"\n       \"alloc.vec.DebugVec.fmt\"\n       ~keep_params:(Some [ true; false ]);\n@@ -1492,7 +1496,7 @@\n     (* file: \"Aeneas/Std/Core/Core.lean\", line: 35 *)\n     mk_trait_impl \"core::clone::Clone<alloc::alloc::Global>\"\n       \"core.core.clone.CloneGlobal\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 598 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 601 *)\n     mk_trait_impl \"core::clone::Clone<alloc::vec::Vec<@T>>\"\n       \"core.clone.CloneallocvecVec\"\n       ~keep_params:(Some [ true; false ])\n@@ -1508,7 +1512,7 @@\n     mk_trait_impl \"core::cmp::PartialEq<Box<@T>, Box<@T>>\"\n       \"core.cmp.PartialEqBox\"\n       ~keep_params:(Some [ true; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 626 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 629 *)\n     mk_trait_impl\n       \"core::cmp::PartialEq<alloc::vec::Vec<@T>, alloc::vec::Vec<@U>>\"\n       \"core.cmp.PartialEqVec\"\n@@ -1525,7 +1529,7 @@\n       \"Array.Insts.CoreConvertAsRefSlice\";\n     (* file: \"Aeneas/Std/Core/Convert.lean\", line: 35 *)\n     mk_trait_impl \"core::convert::From<@Self, @Self>\" \"core.convert.FromSame\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 514 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 517 *)\n     mk_trait_impl \"core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>\"\n       \"core.convert.FromBoxSliceVec\"\n       ~keep_params:(Some [ true; false ]);\n@@ -1556,7 +1560,7 @@\n     mk_trait_impl \"core::fmt::Debug<()>\" \"core.fmt.DebugUnit\";\n     (* file: \"Aeneas/Std/Array/ArrayDebug.lean\", line: 16 *)\n     mk_trait_impl \"core::fmt::Debug<[@T; @N]>\" \"Array.Insts.CoreFmtDebug\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 647 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 650 *)\n     mk_trait_impl \"core::fmt::Debug<alloc::vec::Vec<@T>>\" \"core.fmt.DebugVec\"\n       ~keep_params:(Some [ true; false ]);\n     (* file: \"Aeneas/Std/Core/Fmt.lean\", line: 188 *)\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_build",
+      "command": "nix build --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/vec-box-boundary/package.nix'",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "750b64",
+        "wall_time_seconds": 1.001894896,
+        "session_id": 76398,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "08cd24",
+          "wall_time_seconds": 5.001305224,
+          "session_id": 76398,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/d9xk0qypx8kgslmpivkxpiylslyyasnd-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/d9xk0qypx8kgslmpivkxpiylslyyasnd-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "88cdbf",
+          "wall_time_seconds": 0.00000158,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/zgw7ih78g1lm1prgck781a9ak4w3d8yn-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_positive",
+      "command": "timeout 90 /nix/store/zgw7ih78g1lm1prgck781a9ak4w3d8yn-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/positive/VecBoxBoundary /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "2cec5c",
+        "wall_time_seconds": 0.00000257,
+        "exit_code": 1,
+        "original_token_count": 967,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/5 ⠋\r\rApplied prepasses:  [##########------------------------------------------] 1/5 ⠙\rApplied prepasses:  [####################################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/2 ⠋\rTranslated opaque functions:  [##########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/2 ⠋\r\rPost-processed translated opaque functions:  [#############--------------] 1/2 ⠋\rPost-processed translated opaque functions:  [###########################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[91mError\u001b[39m] Name clash detected: the following identifiers are bound to the same name \"alloc.vec.FromBoxSliceVec.from\" (the generated code will be incorrect):\n- alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\n  Source: '/rustc/library/alloc/src/vec/mod.rs', lines 1723:4-1723:52\n- alloc::vec::{impl core::convert::From<alloc::vec::Vec<T>> for alloc::boxed::Box<[T]>}::from\n  Source: '/rustc/library/alloc/src/vec/mod.rs', lines 4553:4-4553:33\n\nYou may want to rename some of your definitions, or report an issue.\nNote that you can change the name used in the generated code by using the attribute #[aeneas::rename(\"NAME\")] or #[charon::rename(\"NAME\")]. For instance:\n\n```\n#![feature(register_tool)]\n#![register_tool(aeneas)]\n\n#[aeneas::rename(\"Bar\")]\ntype Foo = i32;\n```\n\nThose attributes can be applied to type definitions, functions, methods, trait\ndeclarations or trait implementations. For more examples, see:\nhttps://github.com/AeneasVerif/aeneas/blob/main/tests/src/rename_attribute.rs\n\n\n\n[\u001b[91mError\u001b[39m] Error when registering the name for id: alloc::vec::{impl core::convert::From<alloc::vec::Vec<T>> for alloc::boxed::Box<[T]>}::from:\nThe chosen name is already in the names set: alloc.vec.FromBoxSliceVec.from\nSource: '/rustc/library/alloc/src/vec/mod.rs', lines 4553:4-4553:33\n[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/positive/VecBoxBoundary\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 2 unique errors): /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/positive/VecBoxBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 2 unique errors): /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/positive/VecBoxBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/positive/VecBoxBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.307033 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation",
+      "command": "timeout 90 /nix/store/zgw7ih78g1lm1prgck781a9ak4w3d8yn-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "aef47f",
+        "wall_time_seconds": 0.0000055,
+        "exit_code": 1,
+        "original_token_count": 969,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[91mError\u001b[39m] Name clash detected: the following identifiers are bound to the same name \"alloc.vec.FromBoxSliceVec.from\" (the generated code will be incorrect):\n- alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\n  Source: '/rustc/library/alloc/src/vec/mod.rs', lines 1723:4-1723:52\n- alloc::vec::{impl core::convert::From<alloc::vec::Vec<T>> for alloc::boxed::Box<[T]>}::from\n  Source: '/rustc/library/alloc/src/vec/mod.rs', lines 4553:4-4553:33\n\nYou may want to rename some of your definitions, or report an issue.\nNote that you can change the name used in the generated code by using the attribute #[aeneas::rename(\"NAME\")] or #[charon::rename(\"NAME\")]. For instance:\n\n```\n#![feature(register_tool)]\n#![register_tool(aeneas)]\n\n#[aeneas::rename(\"Bar\")]\ntype Foo = i32;\n```\n\nThose attributes can be applied to type definitions, functions, methods, trait\ndeclarations or trait implementations. For more examples, see:\nhttps://github.com/AeneasVerif/aeneas/blob/main/tests/src/rename_attribute.rs\n\n\n\n[\u001b[91mError\u001b[39m] Error when registering the name for id: alloc::vec::{impl core::convert::From<alloc::vec::Vec<T>> for alloc::boxed::Box<[T]>}::from:\nThe chosen name is already in the names set: alloc.vec.FromBoxSliceVec.from\nSource: '/rustc/library/alloc/src/vec/mod.rs', lines 4553:4-4553:33\n[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 2 unique errors): /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 2 unique errors): /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.318313 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_canonical",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib/Aeneas/Std/Vec.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "c92908",
+        "wall_time_seconds": 1.000990025,
+        "session_id": 97867,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "e8fe9d",
+          "wall_time_seconds": 0.0000011,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_registry_canonical",
+      "command": "env PATH=/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin:$PATH LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M12288 -DwarningAsError=true --run /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/backends/lean/AeneasExtract.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "4df4e1",
+        "wall_time_seconds": 1.000195069,
+        "session_id": 72871,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "1dfeff",
+          "wall_time_seconds": 0.00000195,
+          "exit_code": 0,
+          "original_token_count": 9,
+          "output": "Starting extraction\nExtraction done\n"
+        }
+      ]
+    },
+    {
+      "key": "vec_box_registry_canonical_format",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --profile default --margin 80 --break-cases fit-or-vertical --doc-comments before --exp-grouping preserve --parens-tuple always --parens-tuple-patterns multi-line-only --inplace /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "29d4cd",
+        "wall_time_seconds": 0.0000033,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_canonical_delta",
+      "command": "diff -u --label a/backends/lean/Aeneas/Std/Vec.lean --label b/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "cbee03",
+        "wall_time_seconds": 0.00000326,
+        "exit_code": 1,
+        "original_token_count": 314,
+        "output": "--- a/backends/lean/Aeneas/Std/Vec.lean\n+++ b/backends/lean/Aeneas/Std/Vec.lean\n@@ -502,14 +502,18 @@\n   «from» := alloc.vec.FromVecArray.from\n }\n \n-/- Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3967:4-3967:33 -/\n+@[rust_fun \"alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice\" (keepParams := [true, false])]\n+def alloc.vec.Vec.into_boxed_slice {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=\n+  ok v.slice\n+\n @[rust_fun \"alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from\" (keepParams := [true,false])]\n-def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) := ok v.slice\n+def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=\n+  alloc.vec.Vec.into_boxed_slice v\n \n @[step]\n theorem alloc.vec.FromBoxSliceVec.from_spec {T : Type} (v : alloc.vec.Vec T) :\n   alloc.vec.FromBoxSliceVec.from v ⦃ s => s.length = v.length ∧ s.val = v.val⦄ := by\n-  simp [Vec.val, alloc.vec.FromBoxSliceVec.from]\n+  simp [Vec.val, alloc.vec.FromBoxSliceVec.from, alloc.vec.Vec.into_boxed_slice]\n \n @[reducible, rust_trait_impl \"core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>\" (keepParams := [true, false])]\n def core.convert.FromBoxSliceVec (T : Type) :\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_registry_canonical_delta",
+      "command": "diff -u --label a/extract/ExtractBuiltinLean.ml --label b/extract/ExtractBuiltinLean.ml /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/src/extract/ExtractBuiltinLean.ml",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "fa7bb1",
+        "wall_time_seconds": 0.00000298,
+        "exit_code": 1,
+        "original_token_count": 1054,
+        "output": "--- a/extract/ExtractBuiltinLean.ml\n+++ b/extract/ExtractBuiltinLean.ml\n@@ -235,13 +235,13 @@\n        @A>, @T>}::next\"\n       \"alloc.vec.into_iter.IteratorIntoIter.next\"\n       ~keep_params:(Some [ true; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 605 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 609 *)\n     mk_fun\n       \"alloc::vec::partial_eq::{core::cmp::PartialEq<alloc::vec::Vec<@T>, \\\n        alloc::vec::Vec<@U>>}::eq\"\n       \"alloc.vec.partial_eq.PartialEqVec.eq\"\n       ~keep_params:(Some [ true; true; false; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 615 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 619 *)\n     mk_fun\n       \"alloc::vec::partial_eq::{core::cmp::PartialEq<alloc::vec::Vec<@T>, \\\n        alloc::vec::Vec<@U>>}::ne\"\n@@ -254,6 +254,10 @@\n     (* file: \"Aeneas/Std/Vec.lean\", line: 167 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::insert\" \"alloc.vec.Vec.insert\"\n       ~keep_params:(Some [ true; false ]);\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 505 *)\n+    mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice\"\n+      \"alloc.vec.Vec.into_boxed_slice\"\n+      ~keep_params:(Some [ true; false ]);\n     (* file: \"Aeneas/Std/Vec.lean\", line: 85 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::len\" \"alloc.vec.Vec.len\"\n       ~keep_params:(Some [ true; false ])\n@@ -270,12 +274,12 @@\n     (* file: \"Aeneas/Std/Vec.lean\", line: 396 *)\n     mk_fun \"alloc::vec::{alloc::vec::Vec<@T>}::with_capacity\"\n       \"alloc.vec.Vec.with_capacity\" ~can_fail:false ~lift:false;\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 591 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 595 *)\n     mk_fun \"alloc::vec::{core::clone::Clone<alloc::vec::Vec<@T>>}::clone\"\n       \"alloc.vec.CloneVec.clone\"\n       ~keep_params:(Some [ true; false ])\n       ~keep_trait_clauses:(Some [ true; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 506 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 509 *)\n     mk_fun\n       \"alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from\"\n       \"alloc.vec.FromBoxSliceVec.from\"\n@@ -284,7 +288,7 @@\n     mk_fun\n       \"alloc::vec::{core::convert::From<alloc::vec::Vec<@T>, [@T; @N]>}::from\"\n       \"alloc.vec.FromVecArray.from\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 636 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 640 *)\n     mk_fun \"alloc::vec::{core::fmt::Debug<alloc::vec::Vec<@T>>}::fmt\"\n       \"alloc.vec.DebugVec.fmt\"\n       ~keep_params:(Some [ true; false ]);\n@@ -1492,7 +1496,7 @@\n     (* file: \"Aeneas/Std/Core/Core.lean\", line: 35 *)\n     mk_trait_impl \"core::clone::Clone<alloc::alloc::Global>\"\n       \"core.core.clone.CloneGlobal\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 598 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 602 *)\n     mk_trait_impl \"core::clone::Clone<alloc::vec::Vec<@T>>\"\n       \"core.clone.CloneallocvecVec\"\n       ~keep_params:(Some [ true; false ])\n@@ -1508,7 +1512,7 @@\n     mk_trait_impl \"core::cmp::PartialEq<Box<@T>, Box<@T>>\"\n       \"core.cmp.PartialEqBox\"\n       ~keep_params:(Some [ true; false ]);\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 626 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 630 *)\n     mk_trait_impl\n       \"core::cmp::PartialEq<alloc::vec::Vec<@T>, alloc::vec::Vec<@U>>\"\n       \"core.cmp.PartialEqVec\"\n@@ -1525,7 +1529,7 @@\n       \"Array.Insts.CoreConvertAsRefSlice\";\n     (* file: \"Aeneas/Std/Core/Convert.lean\", line: 35 *)\n     mk_trait_impl \"core::convert::From<@Self, @Self>\" \"core.convert.FromSame\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 514 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 518 *)\n     mk_trait_impl \"core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>\"\n       \"core.convert.FromBoxSliceVec\"\n       ~keep_params:(Some [ true; false ]);\n@@ -1556,7 +1560,7 @@\n     mk_trait_impl \"core::fmt::Debug<()>\" \"core.fmt.DebugUnit\";\n     (* file: \"Aeneas/Std/Array/ArrayDebug.lean\", line: 16 *)\n     mk_trait_impl \"core::fmt::Debug<[@T; @N]>\" \"Array.Insts.CoreFmtDebug\";\n-    (* file: \"Aeneas/Std/Vec.lean\", line: 647 *)\n+    (* file: \"Aeneas/Std/Vec.lean\", line: 651 *)\n     mk_trait_impl \"core::fmt::Debug<alloc::vec::Vec<@T>>\" \"core.fmt.DebugVec\"\n       ~keep_params:(Some [ true; false ]);\n     (* file: \"Aeneas/Std/Core/Fmt.lean\", line: 188 *)\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_build_canonical",
+      "command": "nix build --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/vec-box-boundary/package.nix'",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "c7ac8b",
+        "wall_time_seconds": 1.000400048,
+        "session_id": 20316,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "7cf160",
+          "wall_time_seconds": 5.001049649,
+          "session_id": 20316,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/cg3di91724b7sqffi6wqs4hsmnzfbm60-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/cg3di91724b7sqffi6wqs4hsmnzfbm60-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "f1817f",
+          "wall_time_seconds": 0.00000185,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/native-tests",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "27c0ff",
+        "wall_time_seconds": 0.00000279,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_native",
+      "command": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/native-tests --test-threads=4",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "0fb8a3",
+        "wall_time_seconds": 0.0000044,
+        "exit_code": 0,
+        "original_token_count": 67,
+        "output": "\nrunning 3 tests\ntest tests::empty_and_zero_sized_elements ... ok\ntest tests::move_only_elements_need_no_clone ... ok\ntest tests::ordered_values_and_spare_capacity ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/clippy-tests -D warnings",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "3cec02",
+        "wall_time_seconds": 0.00000322,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=vec_box_boundary::move_values --start-from=vec_box_boundary::from_values --dest-file=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc -- --edition=2024 --crate-name vec_box_boundary --crate-type lib /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "177963",
+        "wall_time_seconds": 0.381235386,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 --test /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/native-tests",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "fc32ca",
+        "wall_time_seconds": 0.00000273,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_native",
+      "command": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/native-tests --test-threads=4",
+      "expected_exit": 101,
+      "initial": {
+        "chunk_id": "91f872",
+        "wall_time_seconds": 0.0000032,
+        "exit_code": 101,
+        "original_token_count": 333,
+        "output": "\nrunning 3 tests\ntest tests::empty_and_zero_sized_elements ... FAILED\ntest tests::move_only_elements_need_no_clone ... FAILED\ntest tests::ordered_values_and_spare_capacity ... FAILED\n\nfailures:\n\n---- tests::empty_and_zero_sized_elements stdout ----\n\nthread 'tests::empty_and_zero_sized_elements' (494700) panicked at /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs:27:9:\nassertion `left == right` failed\n  left: 0\n right: 4\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- tests::move_only_elements_need_no_clone stdout ----\n\nthread 'tests::move_only_elements_need_no_clone' (494701) panicked at /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs:35:9:\nassertion `left == right` failed\n  left: []\n right: [MoveOnly(8), MoveOnly(3)]\n\n---- tests::ordered_values_and_spare_capacity stdout ----\n\nthread 'tests::ordered_values_and_spare_capacity' (494702) panicked at /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs:19:9:\nassertion `left == right` failed\n  left: []\n right: [7, 0, 42]\n\n\nfailures:\n    tests::empty_and_zero_sized_elements\n    tests::move_only_elements_need_no_clone\n    tests::ordered_values_and_spare_capacity\n\ntest result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --check --edition 2024 infra/verification/aeneas/candidates/vec-box-boundary/fixture.rs /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/fixture.rs",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "ffa6c8",
+        "wall_time_seconds": 0.00000282,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_final_positive",
+      "command": "timeout 90 /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "1e50f9",
+        "wall_time_seconds": 0.00000583,
+        "exit_code": 0,
+        "original_token_count": 615,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/VecBoxBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/5 ⠋\r\rApplied prepasses:  [##########------------------------------------------] 1/5 ⠙\rApplied prepasses:  [####################################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/2 ⠋\rTranslated opaque functions:  [##########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/2 ⠋\r\rPost-processed translated opaque functions:  [#############--------------] 1/2 ⠋\rPost-processed translated opaque functions:  [###########################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.316903 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_final_mutation",
+      "command": "timeout 90 /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "1fd06e",
+        "wall_time_seconds": 0.00000508,
+        "exit_code": 0,
+        "original_token_count": 617,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/mutation/VecBoxBoundary.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/1 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/1 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.321796 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_final_production",
+      "command": "timeout 180 /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -keep-function \"rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement\" -keep-function 'rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement' -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "522926",
+        "wall_time_seconds": 1.000408151,
+        "session_id": 85770,
+        "original_token_count": 377,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/188 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/188 ⠙\r\rApplied prepasses:  [###---------------------------------------------]  13/188 ⠙\r\rApplied prepasses:  [######################--------------------------]  89/188 ⠙\r\rApplied prepasses:  [#########################################-------] 163/188 ⠙\rApplied prepasses:  [################################################] 188/188 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/51 ⠋\rTranslated opaque functions:  [########################################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [---------------------------------]   0/109 ⠋\r\rTranslated transparent functions:  [---------------------------------]   1/109 ⠙\r\rTranslated transparent functions:  [---------------------------------]   3/109 ⠙\r\rTranslated transparent functions:  [##-------------------------------]   7/109 ⠹\r\rTranslated transparent functions:  [##-------------------------------]   8/109 ⠸\r\rTranslated transparent functions:  [##-------------------------------]   9/109 ⠼\r"
+      },
+      "observations": [
+        {
+          "chunk_id": "bea63f",
+          "wall_time_seconds": 0.00000194,
+          "exit_code": 0,
+          "original_token_count": 1498,
+          "output": "Warning: truncated output (original token count: 1498)\nTotal output lines: 28\n\n\rTranslated transparent functions:  [###------------------------------]  10/109 ⠴\r\rTranslated transparent functions:  [###------------------------------]  13/109 ⠴\r\rTranslated transparent functions:  [####-----------------------------]  15/109 ⠦\r\rTranslated transparent functions:  [###########----------------------]  37/109 ⠦\r\rTranslated transparent functions:  [###############------------------]  50/109 ⠧\r\rTranslated transparent functions:  [################-----------------]  53/109 ⠇\r\rTranslated transparent functions:  [################-----------------]  56/109 ⠏\r\rTranslated transparent functions:  [##################---------------]  62/109 ⠏\r\rTranslated transparent functions:  [####################-------------]  69/109 ⠋\r\rTranslated transparent functions:  [#####################------------]  71/109 ⠋\r\rTranslated transparent functions:  [######################-----------]  73/109 ⠋\r\rTranslated transparent functions:  [#######################----------]  76/109 ⠋\r\rTranslated transparent functions:  [########################---------]  82/109 ⠙\r\rTranslated transparent functions:  [#########################--------]  84/109 ⠹\r\rTranslated transparent functions:  [############################-----]  94/109 ⠹\r\rTranslated transparent functions:  [#############################----]  97/109 ⠹\r\rTranslated transparent functions:  [##############################---] 100/109 ⠸\r\rTranslated transparent functions:  [################################-] 108/109 ⠸\rTranslated transparent functions:  [#################################] 109/109 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/33 ⠋\rTranslated trait declarations:  [#################---------------------] 15/33 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/69 ⠋\rTranslated trait impls:  [########################---------------------] 37/69 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/51 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/51 ⠋\rPost-processed translated opaque functions:  [#########################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [------------------]   0/109 ⠋\r\rPost-processed translated transparent functions:  [------------------]   1/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   7/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   8/109 ⠙\r\rPost-processed translat…198 tokens truncated…#####------]  76/109 ⠼\r\rPost-processed translated transparent functions:  [#############-----]  84/109 ⠴\r\rPost-processed translated transparent functions:  [################--]  97/109 ⠴\r\rPost-processed translated transparent functions:  [#################-] 106/109 ⠴\rPost-processed translated transparent functions:  [##################] 109/109 ✔️\r\n\u001b[?25h[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 6.765040 seconds\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_positive_Types",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Types.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Types.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "4db31a",
+        "wall_time_seconds": 1.870808411,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_positive_Funs",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/Funs.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "87de17",
+        "wall_time_seconds": 1.825828165,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_Types",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Types.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Types.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "adf63e",
+        "wall_time_seconds": 0.548507899,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_Funs",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/Funs.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "bc4bc6",
+        "wall_time_seconds": 0.674828131,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "770e9d",
+        "wall_time_seconds": 0.00000467,
+        "exit_code": 1,
+        "original_token_count": 286,
+        "output": "'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:20:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.move_preserves_sequence' does not depend on any axioms\n+ info: 'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext]\n'VecBoxLaws.from_preserves_sequence' depends on axioms: [propext]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:23:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.from_preserves_sequence' does not depend on any axioms\n+ info: 'VecBoxLaws.from_preserves_sequence' depends on axioms: [propext]\n'VecBoxLaws.both_routes_agree' depends on axioms: [propext]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:26:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.both_routes_agree' does not depend on any axioms\n+ info: 'VecBoxLaws.both_routes_agree' depends on axioms: [propext]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "e8e606",
+        "wall_time_seconds": 0.000002651,
+        "exit_code": 1,
+        "original_token_count": 454,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:9:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  Result.ok values.slice\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = Result.ok values.slice\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:17:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  from_values values\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = from_values values\n'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext, sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:20:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.move_preserves_sequence' does not depend on any axioms\n+ info: 'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext, sorryAx]\n'VecBoxLaws.from_preserves_sequence' depends on axioms: [propext]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:23:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.from_preserves_sequence' does not depend on any axioms\n+ info: 'VecBoxLaws.from_preserves_sequence' depends on axioms: [propext]\n'VecBoxLaws.both_routes_agree' depends on axioms: [propext, sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:26:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.both_routes_agree' does not depend on any axioms\n+ info: 'VecBoxLaws.both_routes_agree' depends on axioms: [propext, sorryAx]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_witness",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "9137c2",
+        "wall_time_seconds": 0.528202834,
+        "exit_code": 0,
+        "original_token_count": 18,
+        "output": "'VecBoxMutation.moved_sequence_is_empty' depends on axioms: [propext]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_positive_rejects_mutation",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "e05cd3",
+        "wall_time_seconds": 0.0000027,
+        "exit_code": 1,
+        "original_token_count": 111,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean:9:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  Result.ok (alloc.vec.Vec.new T).slice\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = Result.ok (alloc.vec.Vec.new T).slice\n'VecBoxMutation.moved_sequence_is_empty' depends on axioms: [propext, sorryAx]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_original_storage_axioms",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/StorageAxiomProbe.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "66c434",
+        "wall_time_seconds": 1.609592659,
+        "exit_code": 0,
+        "original_token_count": 58,
+        "output": "'Aeneas.Std.alloc.vec.Vec' depends on axioms: [propext]\n'Aeneas.Std.Slice' depends on axioms: [propext]\n'Aeneas.Std.Usize.max' depends on axioms: [propext]\n'Aeneas.Std.alloc.vec.FromBoxSliceVec.from' depends on axioms: [propext]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_laws_final",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "5a4240",
+        "wall_time_seconds": 0.00000568,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_laws_final",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "537c4f",
+        "wall_time_seconds": 0.000004,
+        "exit_code": 1,
+        "original_token_count": 357,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:9:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  Result.ok values.slice\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = Result.ok values.slice\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:17:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  from_values values\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = from_values values\n'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext, sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:20:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext]\n+ info: 'VecBoxLaws.move_preserves_sequence' depends on axioms: [propext, sorryAx]\n'VecBoxLaws.both_routes_agree' depends on axioms: [propext, sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/Laws.lean:26:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxLaws.both_routes_agree' depends on axioms: [propext]\n+ info: 'VecBoxLaws.both_routes_agree' depends on axioms: [propext, sorryAx]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_mutation_witness_final",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "d46428",
+        "wall_time_seconds": 0.00000168,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_positive_rejects_mutation_final",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "ef5872",
+        "wall_time_seconds": 0.580053633,
+        "exit_code": 1,
+        "original_token_count": 198,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean:9:2: error: Tactic `rfl` failed: The left-hand side\n  move_values values\nis not definitionally equal to the right-hand side\n  Result.ok (alloc.vec.Vec.new T).slice\n\nT : Type\nvalues : alloc.vec.Vec T\n⊢ move_values values = Result.ok (alloc.vec.Vec.new T).slice\n'VecBoxMutation.moved_sequence_is_empty' depends on axioms: [propext, sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/MutationWitness.lean:12:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'VecBoxMutation.moved_sequence_is_empty' depends on axioms: [propext]\n+ info: 'VecBoxMutation.moved_sequence_is_empty' depends on axioms: [propext, sorryAx]\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_final_census",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq '{functions: (.functions|length), opaque: [.functions[]|select(.is_opaque)|.rust_name]}' /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-positive/VecBoxBoundary/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-mutation/VecBoxBoundary/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "f516f3",
+        "wall_time_seconds": 0.00000314,
+        "exit_code": 0,
+        "original_token_count": 97,
+        "output": "{\n  \"functions\": 2,\n  \"opaque\": []\n}\n{\n  \"functions\": 2,\n  \"opaque\": []\n}\n{\n  \"functions\": 126,\n  \"opaque\": [\n    \"core::num::nonzero::{impl core::cmp::PartialEq<core::num::nonzero::NonZero<T, Clause0_NonZeroInner>> for core::num::nonzero::NonZero<T, Clause0_NonZeroInner>}::eq\",\n    \"alloc::boxed::convert::{impl core::convert::From<&'_0 [T]> for alloc::boxed::Box<[T]>}::from\"\n  ]\n}\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_production_delta",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '.[0].functions as $a | .[1].functions as $b | {before: ($a|length), after: ($b|length), removed: ([$a[].rust_name]-[$b[].rust_name]), added: ([$b[].rust_name]-[$a[].rust_name]), retained_metadata_equal: ([$a[]|select(.rust_name != \"alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\")] == $b), first_party_opaque: [$b[]|select(.is_opaque and (.rust_name|startswith(\"rumoca_\")))|.rust_name]}' /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/translation.json /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "3d96bf",
+        "wall_time_seconds": 0.00000421,
+        "exit_code": 0,
+        "original_token_count": 48,
+        "output": "{\n  \"before\": 127,\n  \"after\": 126,\n  \"removed\": [\n    \"alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\"\n  ],\n  \"added\": [],\n  \"retained_metadata_equal\": true,\n  \"first_party_opaque\": []\n}\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_production_types_equal",
+      "command": "cmp /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Types.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Types.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "8d7d8c",
+        "wall_time_seconds": 0.00000294,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_production_funs_delta",
+      "command": "diff -u /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "2d3174",
+        "wall_time_seconds": 0.00000305,
+        "exit_code": 1,
+        "original_token_count": 186,
+        "output": "--- /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/generated/Funs.lean\t2026-09-08 20:19:10.343180538 -0400\n+++ /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean\t2026-09-08 20:57:56.635199964 -0400\n@@ -1274,7 +1274,7 @@\n       (core.iter.traits.collect.FromIteratorVec\n       rumoca_ir_dae.model.view.DaeVariableRefinementEntry)\n       { iter := { m1.iter with f := { dv1 with marker := () } }, f := () }\n-  let entries ← alloc.vec.Vec.into_boxed_slice Global v\n+  let entries ← alloc.vec.Vec.into_boxed_slice v\n   _root_.Aeneas.Std.Result.ok { entries }\n \n /-- [rumoca_ir_dae::model::{impl core::cmp::PartialEq<rumoca_ir_dae::model::VariableRole> for rumoca_ir_dae::model::VariableRole}::eq]:\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_production_complete_log",
+      "command": "timeout 180 /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -keep-function \"rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement\" -keep-function 'rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement' -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "ca47e3",
+        "wall_time_seconds": 1.001225659,
+        "session_id": 74610,
+        "original_token_count": 335,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-copy-IuyLJJ/production/Ud07CatalogComposition.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/188 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/188 ⠙\r\rApplied prepasses:  [###---------------------------------------------]  13/188 ⠙\r\rApplied prepasses:  [######################--------------------------]  89/188 ⠙\r\rApplied prepasses:  [#########################################-------] 164/188 ⠙\rApplied prepasses:  [################################################] 188/188 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/51 ⠋\rTranslated opaque functions:  [########################################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [---------------------------------]   0/109 ⠋\r\rTranslated transparent functions:  [---------------------------------]   1/109 ⠙\r\rTranslated transparent functions:  [---------------------------------]   3/109 ⠙\r\rTranslated transparent functions:  [##-------------------------------]   7/109 ⠹\r"
+      },
+      "observations": [
+        {
+          "chunk_id": "a9338b",
+          "wall_time_seconds": 0.00000222,
+          "exit_code": 0,
+          "original_token_count": 1511,
+          "output": "\rTranslated transparent functions:  [##-------------------------------]   8/109 ⠸\r\rTranslated transparent functions:  [##-------------------------------]   9/109 ⠼\r\rTranslated transparent functions:  [###------------------------------]  10/109 ⠴\r\rTranslated transparent functions:  [###------------------------------]  13/109 ⠴\r\rTranslated transparent functions:  [####-----------------------------]  15/109 ⠦\r\rTranslated transparent functions:  [###########----------------------]  37/109 ⠦\r\rTranslated transparent functions:  [###############------------------]  50/109 ⠧\r\rTranslated transparent functions:  [################-----------------]  53/109 ⠇\r\rTranslated transparent functions:  [################-----------------]  56/109 ⠏\r\rTranslated transparent functions:  [##################---------------]  62/109 ⠏\r\rTranslated transparent functions:  [####################-------------]  69/109 ⠋\r\rTranslated transparent functions:  [#####################------------]  71/109 ⠋\r\rTranslated transparent functions:  [######################-----------]  73/109 ⠋\r\rTranslated transparent functions:  [#######################----------]  76/109 ⠋\r\rTranslated transparent functions:  [########################---------]  82/109 ⠙\r\rTranslated transparent functions:  [#########################--------]  84/109 ⠹\r\rTranslated transparent functions:  [############################-----]  94/109 ⠹\r\rTranslated transparent functions:  [#############################----]  97/109 ⠹\r\rTranslated transparent functions:  [##############################---] 100/109 ⠸\r\rTranslated transparent functions:  [################################-] 108/109 ⠸\rTranslated transparent functions:  [#################################] 109/109 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/33 ⠋\rTranslated trait declarations:  [#################---------------------] 15/33 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/69 ⠋\rTranslated trait impls:  [########################---------------------] 37/69 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/51 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/51 ⠋\rPost-processed translated opaque functions:  [#########################] 51/51 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [------------------]   0/109 ⠋\r\rPost-processed translated transparent functions:  [------------------]   1/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   7/109 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   8/109 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]   9/109 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]  10/109 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  14/109 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  16/109 ⠹\r\rPost-processed translated transparent functions:  [######------------]  38/109 ⠹\r\rPost-processed translated transparent functions:  [########----------]  50/109 ⠸\r\rPost-processed translated transparent functions:  [########----------]  53/109 ⠸\r\rPost-processed translated transparent functions:  [#########---------]  56/109 ⠸\r\rPost-processed translated transparent functions:  [###########-------]  69/109 ⠼\r\rPost-processed translated transparent functions:  [############------]  76/109 ⠼\r\rPost-processed translated transparent functions:  [#############-----]  84/109 ⠴\r\rPost-processed translated transparent functions:  [################--]  97/109 ⠴\r\rPost-processed translated transparent functions:  [#################-] 106/109 ⠴\rPost-processed translated transparent functions:  [##################] 109/109 ✔️\r\n\u001b[?25h[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/final-production/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 6.628586 seconds\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_bad_model_compile",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean/Aeneas/Std/Vec.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/Vec.olean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "3a00a1",
+        "wall_time_seconds": 1.000681328,
+        "session_id": 49281,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "6ff071",
+          "wall_time_seconds": 0.00000138,
+          "exit_code": 1,
+          "original_token_count": 62,
+          "output": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean/Aeneas/Std/Vec.lean:515:82: error: unsolved goals\nT : Type\nv : Vec T\n⊢ (↑(Vec.new T).slice).length = (↑v.slice).length ∧ ↑(Vec.new T).slice = ↑v.slice\n"
+        }
+      ],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_model_delta",
+      "command": "diff -u --label a/backends/lean/Aeneas/Std/Vec.lean --label b/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source/backends/lean/Aeneas/Std/Vec.lean /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/model-mutation/backends/lean/Aeneas/Std/Vec.lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "9e05a6",
+        "wall_time_seconds": 0.00000368,
+        "exit_code": 1,
+        "original_token_count": 161,
+        "output": "--- a/backends/lean/Aeneas/Std/Vec.lean\n+++ b/backends/lean/Aeneas/Std/Vec.lean\n@@ -503,8 +503,8 @@\n }\n \n @[rust_fun \"alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice\" (keepParams := [true, false])]\n-def alloc.vec.Vec.into_boxed_slice {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=\n-  ok v.slice\n+def alloc.vec.Vec.into_boxed_slice {T : Type} (_v : alloc.vec.Vec T) : Result (Slice T) :=\n+  ok (alloc.vec.Vec.new T).slice\n \n @[rust_fun \"alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from\" (keepParams := [true,false])]\n def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_option_regression_extract",
+      "command": "timeout 90 /nix/store/yacyw20n96l0sfs0lzv84mjq75ipl18h-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/OptionSourceBoundaryClosed.llbc",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "009f15",
+        "wall_time_seconds": 0.513014745,
+        "exit_code": 0,
+        "original_token_count": 584,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/OptionSourceBoundaryClosed.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/6 ⠋\r\rTranslated transparent functions:  [######-------------------------------] 1/6 ⠙\r\rTranslated transparent functions:  [########################-------------] 4/6 ⠙\rTranslated transparent functions:  [#####################################] 6/6 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/2 ⠋\rTranslated trait declarations:  [########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/2 ⠋\rTranslated trait impls:  [###############################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/6 ⠋\r\rPost-processed translated transparent functions:  [###-------------------] 1/6 ⠋\rPost-processed translated transparent functions:  [######################] 6/6 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/OptionSourceBoundaryClosed.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.445770 seconds\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_option_regression_lean",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/OptionSourceBoundaryClosed.lean -o /home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression/OptionSourceBoundaryClosed.olean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "649fa6",
+        "wall_time_seconds": 1.7351279929999999,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_option_regression_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/option-regression:/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/stdlib:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-source-boundary/Laws.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "ef6599",
+        "wall_time_seconds": 1.743581394,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_std_patch_check_final",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/stdlib.patch",
+      "cwd": "/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "ebb0c3",
+        "wall_time_seconds": 0.00000338,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "key": "vec_box_registry_patch_check_final",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/binding-registry.patch",
+      "cwd": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "f581c3",
+        "wall_time_seconds": 0.00000359,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "key": "vec_box_source_patch_check_final",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-result.patch",
+      "cwd": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "24b9fc",
+        "wall_time_seconds": 0.00000378,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "key": "vec_box_model_patch_check",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/vec-box-boundary/wrong-model.patch",
+      "cwd": "/home/jgoppert/git/rumoca/dev/vec-box-boundary-2sELs6/source",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "e08e1c",
+        "wall_time_seconds": 0.0000027,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "key": "vec_box_tracked_diff_check",
+      "command": "git diff --check",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "6b666c",
+        "wall_time_seconds": 0.00000294,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    },
+    {
+      "key": "vec_box_tracer",
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "380e9b",
+        "wall_time_seconds": 0.561920319,
+        "exit_code": 0,
+        "original_token_count": 185,
+        "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.41s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.01s\n\n"
+      },
+      "observations": [],
+      "cwd": "/home/jgoppert/git/rumoca"
+    }
+  ]
+}

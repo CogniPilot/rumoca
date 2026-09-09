@@ -1,0 +1,10 @@
+--- a/iterator-specialization.rs
++++ b/iterator-specialization.rs
+@@ -21,6 +21,6 @@
+     let mut calls = initial_calls;
+     let mut iter = values.iter().map(move |value| {
+-        calls += 1;
++        calls += 2;
+         (*value, calls)
+     });
+     (iter.next(), iter.next())

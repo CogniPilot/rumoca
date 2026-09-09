@@ -1,0 +1,11 @@
+# Final LLBC before serialization:
+
+opaque type ()
+
+// Full name: rootid::View
+pub struct View<'a> {
+  data: &'a [u32],
+}
+
+
+

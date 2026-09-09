@@ -1,0 +1,10 @@
+--- a/fixture.rs
++++ b/fixture.rs
+@@ -1,5 +1,6 @@
+ pub fn box_values<T: Clone>(values: &[T]) -> Box<[T]> {
+-    Box::from(values)
++    let _ = Box::<[T]>::from(values);
++    Box::from(&[][..])
+ }
+
+ pub fn into_values<T: Clone>(values: &[T]) -> Box<[T]> {

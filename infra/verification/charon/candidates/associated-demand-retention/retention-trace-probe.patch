@@ -1,0 +1,10 @@
+--- a/src/transform/normalize/expand_associated_types.rs
++++ b/src/transform/normalize/expand_associated_types.rs
+@@ -941,6 +941,7 @@
+                 let Some(canonical) =
+                     cyclic_demands::normalize_path(&self.ctx.translated, tr, &path)
+                 else {
++                    eprintln!("RETENTION_PROBE consumer={id:?} owner={:?} path={path}", path.tref.trait_decl_id);
+                     self.retained_traits.insert(id);
+                     self.unresolved_trait.get_or_insert(id);
+                     continue;

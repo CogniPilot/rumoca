@@ -1,0 +1,1338 @@
+{
+  "scope": "Unadopted tuple-alias generic inferability repair. Focused extracted laws pass; actual DAE Lean admission remains rejected. No new UnitDerivative relation or golden admission.",
+  "recorded_at": "2026-09-08T13:29:00Z",
+  "precursor_commit": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "branch": "msl-trace-parity-50",
+  "governing_specs": [
+    "SPEC_0033 sections 2a,4,6",
+    "SPEC_0037 section6 (DRAFT)"
+  ],
+  "review": {
+    "reviewer": "independent review lane",
+    "disposition": "PRODUCER_LOGIC_ACCEPT_PACKET_CORRECTIONS_PENDING",
+    "adopted": false,
+    "reference": "dev/comm_channel.md 2026-09-08T13:19:34Z"
+  },
+  "candidate_binary": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+  "predecessor_binary": "/nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+  "candidate_derivation": "/nix/store/x96razsla6g1kwp3gnkdxw8aw7w7hc3f-ocaml5.2.1-aeneas-0.1.0.drv",
+  "artifact_root": "/tmp/rumoca-implicit-alias-XohoYP",
+  "edited_source_root": "/tmp/rumoca-aeneas-implicit-alias-jAs9WL",
+  "charon_environment": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 ",
+  "lean_path": "/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean",
+  "source_history": "Initial reducer/proof runs precede the strict-Clippy correction putting the invariant brand in the public input. Final-source evidence uses clean_build/native/charon/aeneas/predecessor; mutant_build, mutant_native_2, mutant_charon_2, mutant_aeneas_2; final_clean_lean, final_mutant_lean, final_clean_before_lean; final_clean_laws, final_mutant_laws, final_mutant_witness, final_original_wrong_witness; final_alias_lint and final_alias_format. Earlier reducer runs are diagnostic history, not claims over later bytes. Independent equality/constructor controls retain their own unchanged source bindings. An initial cmp used a nonexistent path; previous_impl_byte_control is the successful corrected comparison. Repeated names have ordinal suffixes.",
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Final native-valid type/const/nested/product alias source is rejected by predecessor Lean and accepted by candidate Lean."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Eight final source-extracted preservation laws pass with empty axiom inventories; derived branded equality law passes with exactly propext."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Actual Rust zero-result mutation fails native test and unchanged theorem; generated mutant is well typed, and guarded wrong-answer witness passes only on mutant."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Nominal typed input, payload wrapper, ordinary identity and array controls remain implicit/inferable; prior branded-impl output is byte-identical."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Malformed generic arity and mixed Rust brands remain rejected."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Independent nominal record-constructor inference failure persists with byte-identical before/after Lean, and is retained as a red control."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Actual DAE completes Aeneas emission; Lean rejects 20 diagnostic headers, with predecessor's phantom StateId error removed."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Nix build, five installed-source byte comparisons, zero-fuzz own patch application, final Rust/OCaml formatting, strict fixture lint, and five UnitDerivative tests pass."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "Following nonrecursive tuple aliases preserves generic inferability generally. No general normalization, inference completeness, semantic preservation, or cost theorem is claimed."
+    }
+  ],
+  "not_run": [
+    "Broad upstream Aeneas suite and non-Lean backend verification",
+    "General recursive normalization/inferability proof and performance benchmark",
+    "Tuple-representation CLI counterfactual: no corresponding option exposed by candidate help; nominal typed-input and payload-alias controls used instead",
+    "Canonical live tool adoption and signed commit: independent dependency reviews remain pending",
+    "cargo xtask verify quick/full and remote CI: no dependency-closed adoption milestone"
+  ],
+  "inputs": [
+    {
+      "sha256": "770185106733d85c13bd3b2079b740f2754ba38e795d74cf4a040aae135b1336",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/README.md"
+    },
+    {
+      "sha256": "c02b9e5a33c0db60beaf48ac837d7edb229a32e82f67fb00902e669d0d6fe20b",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/package.nix"
+    },
+    {
+      "sha256": "487ef0120e152757801612bcedcdd3c5035023eb9d993c32157b7e8707a12e98",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/alias-inference.patch"
+    },
+    {
+      "sha256": "d5ceb5a3a07649f719d6c97f6f73861a1a0951c3f438208d901e66caa7e81f1f",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs"
+    },
+    {
+      "sha256": "b21f7e0b8dff8b659fd3faf3b85bd0a163aa6cd8a8d3eb3ab5685b8b60b8d2a6",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/constructor-inference.rs"
+    },
+    {
+      "sha256": "93cec79fafd021188f0a76b86decea08b465b780bb4ffd6cb32a7ed59bd2f7d6",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean"
+    },
+    {
+      "sha256": "8327b74a48675c5bd02c258be0682b9678858bee9bea2a5173f46d1f1de0f711",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/EqualityLaws.lean"
+    },
+    {
+      "sha256": "66210ed7e339b7a8d6f808e3ad43e3157d1068bf83dcbe75318ad433bc69b999",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean"
+    },
+    {
+      "sha256": "7b279183cdbbca236c2199cc5c57a6ee0c0c8cc21b3fb10b2e8f1458b5dabeca",
+      "path": "infra/verification/aeneas/candidates/implicit-alias/wrong-const-result.patch"
+    },
+    {
+      "sha256": "b5dedd1127fb9ef6dadada0b4342dbb13133ac8efa798c60f70d49a997c63dc7",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/pure/PureUtils.ml"
+    },
+    {
+      "sha256": "a0e85e4a6a8b7b0115505250f3a9a95e5a51195b57a327f07ef27bf767452e7e",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/pure/PureMicroPassesLoops.ml"
+    },
+    {
+      "sha256": "2660b3ed3cd4a69189f9700cb849d30465d8751e6effad3c8c9fe1c3c4eabf8e",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPureTypes.ml"
+    },
+    {
+      "sha256": "31db6907ab6b4f93a4e042d6ba5519255167a442de18e285efc04014ec8d0cb4",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPure.ml"
+    },
+    {
+      "sha256": "0e7f51445f38547bef535da588d3348d7e66c5ed168f1bed6e33d7e6791f102b",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPureExpressions.ml"
+    },
+    {
+      "sha256": "10916246796f8fb7360a4eeebf440b85ff154699392ef9651bc799fae2e0798f",
+      "path": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas"
+    },
+    {
+      "sha256": "63e1c7db3e7fff34b1066017f290839b3efa6d91a58de45ec89d35487ee7900d",
+      "path": "/nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas"
+    },
+    {
+      "sha256": "10ca62cdad3f2804801e5b8a7b8e96b4eba76c2242663c508a9205f8f0fe2a9d",
+      "path": "/tmp/rumoca-demand-retention-QVu1kr/charon"
+    },
+    {
+      "sha256": "d9ae2041e32e62e0eb08a91acda7b30be0c4c3eb6ab0484f52cf405000dbfa11",
+      "path": "/tmp/rumoca-demand-retention-QVu1kr/charon-driver"
+    },
+    {
+      "sha256": "9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac",
+      "path": "/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean"
+    },
+    {
+      "sha256": "efac0b94923b2d8b6840cd35be9177ad0fc5ab2332f4f4311c98712cee92fdee",
+      "path": "infra/verification/lean-pilot/lean-toolchain"
+    },
+    {
+      "sha256": "5758f4512755b9a4feeed22126f9d750c2edf1b87a631fb2fad569e1208550ae",
+      "path": "infra/verification/lean-pilot/lake-manifest.json"
+    },
+    {
+      "sha256": "cc0ed858203261884b506e1d779a1e9a4aa03b7800d41765495b3807707e0658",
+      "path": "infra/verification/lean-pilot/lakefile.toml"
+    },
+    {
+      "sha256": "527bb939e5534b15f90e4f684b5cfc382754ef54d2802d01265e1c4e30d72422",
+      "path": "/tmp/rumoca-demand-retention-QVu1kr/SpecializedDaeSource.llbc"
+    },
+    {
+      "sha256": "d1b1ee06750565c24a91bdb74e33d8c9d89587f9a58c998c588b709329dbb03d",
+      "path": "/tmp/rumoca-specialized-impl-names-gtOU75/BrandedEquality.llbc"
+    },
+    {
+      "sha256": "e6ab1276e1e3d64a1ce76b8da2bff68a898bc420bad9b4a27b062ab95c2123a9",
+      "path": "infra/verification/aeneas/candidates/specialized-impl-names/branded-equality.rs"
+    },
+    {
+      "sha256": "94d1cec3a2780446b746ed525d9b509389be2c53057285eee5c7720f4b301210",
+      "path": "/tmp/rumoca-specialized-impl-names-gtOU75/MalformedTrait.llbc"
+    },
+    {
+      "sha256": "9c1bd08a77e536eb38485912a7752c1a1a2c2e631e0d96484e49f353ab816697",
+      "path": "/tmp/rumoca-specialized-impl-names-gtOU75/mutant/independent-brands.rs"
+    },
+    {
+      "sha256": "efc463192d61be3700ea99afc529109189d9aeacd0b4641d7811873ba0f03660",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final/FinalAliasParameters.llbc"
+    },
+    {
+      "sha256": "a359a593c7107b17b80805bd20c34aa3e02fec7e96a02576ee196b42116e84c2",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final/lean/FinalAliasParameters.lean"
+    },
+    {
+      "sha256": "d4b52f9516707559e67b5e611b2316349bf6f168b0ad5d6ae256d91d00a7196f",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final/before/FinalAliasParameters.lean"
+    },
+    {
+      "sha256": "c4146de4243e4540f37d2e5f05b25e2167cfffdc172223ab4d62d4a9a805ea98",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final-mutant/alias-parameters.rs"
+    },
+    {
+      "sha256": "d509e4f4f58e860b5183d30b19bbcfb17caec1a054aaba49c666af18c5b08711",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final-mutant/FinalAliasParameters.llbc"
+    },
+    {
+      "sha256": "fc6cd9d4f19d816adae23f05049dabb880d9974ff62fbb1ac35e715aa714f5b6",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final-mutant/lean/FinalAliasParameters.lean"
+    },
+    {
+      "sha256": "d4056c3f983feba89068f3875a63c9c6ab04238ba54860b62ddfc743b853058e",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/equality/BrandedEquality.lean"
+    },
+    {
+      "sha256": "cb9ed1c3de2d7813bdd80ec24f57a31186c7c2576110b79ed7ae11cd66363bc4",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/actual-dae/SpecializedDaeSource.lean"
+    },
+    {
+      "sha256": "72df78cdbcdbadd77673a262301a28980fa0a27754db48e8b7ef40c549d91253",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/actual-dae/translation.json"
+    },
+    {
+      "sha256": "893210da22b92fd84b3e59bb16e389873672859a83666ae3c80c654c9dc0e5a2",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/actual-dae-lean.log"
+    },
+    {
+      "sha256": "fca47e852a671b34176108200b88b3993733caf32fafaf1aa5ed19a345d3372d",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/actual-dae.log"
+    },
+    {
+      "sha256": "e095747ae0e418cda1e9ecae5b84d16f81ed8c13d64a43a60cbc1d58bfb1ac44",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/nix-build.log"
+    },
+    {
+      "sha256": "a7db302a5ade325e6eed764b4fcc54ca299c86342c82ba7f19c1e246d242b66f",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final_clean_before_lean.log"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final_clean_laws.log"
+    },
+    {
+      "sha256": "6f848f812252ad14b77c3505d20a181f4826f215a5db49dc7c5ae8cd28b2871c",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final_mutant_laws.log"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final_mutant_witness.log"
+    },
+    {
+      "sha256": "bedf78f2c5c771154b6193e085d7e377a9b6c769c22d9e589c89729e5859caf7",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final_original_wrong_witness.log"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/guarded_equality_laws.log"
+    },
+    {
+      "sha256": "e815c85c98645efeecf71ef09fe8c9a09a5ab5edb76ba0ea7dab9c3510b01553",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/constructor-before/ConstructorInference.lean"
+    },
+    {
+      "sha256": "e815c85c98645efeecf71ef09fe8c9a09a5ab5edb76ba0ea7dab9c3510b01553",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/constructor-after/ConstructorInference.lean"
+    },
+    {
+      "sha256": "c25d9531f339b0cbf4b701e37faa0ab994e9da9372aaaaf85e8da8e8b6c0e814",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/constructor-lean.log"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final/charon.log"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/final-mutant/charon.log"
+    },
+    {
+      "sha256": "e8f0618dee9c54907b6285b687e5ea46913b174ea16b39411936b5ef3f47b834",
+      "path": "/tmp/rumoca-implicit-alias-XohoYP/malformed.log"
+    }
+  ],
+  "runs": [
+    {
+      "name": "charon_alias",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/AliasParameters.llbc -- --edition=2024 --crate-type=rlib infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs >/tmp/rumoca-implicit-alias-XohoYP/charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "1f7c73",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "native_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --test infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/native",
+      "results": [
+        {
+          "chunk_id": "2c7868",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "native",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/native",
+      "results": [
+        {
+          "chunk_id": "c59979",
+          "exit_code": 0,
+          "output": "\nrunning 1 test\ntest tests::erased_marker_parameters_still_select_the_result ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "aeneas_before",
+      "command": "timeout 90 /nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/before /tmp/rumoca-implicit-alias-XohoYP/AliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/before.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "ef9e0f",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "lean_before",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/before:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true AliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/before-lean.log 2>&1",
+      "workdir": "/tmp/rumoca-implicit-alias-XohoYP/before",
+      "results": [
+        {
+          "chunk_id": "56820e",
+          "output": ""
+        },
+        {
+          "chunk_id": "8a8ecf",
+          "exit_code": 1
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Predecessor omitted generic arguments; historical reducer, not final source.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "nix_build",
+      "command": "nix-build infra/verification/aeneas/candidates/implicit-alias/package.nix --no-out-link --cores 4 --max-jobs 1 >/tmp/rumoca-implicit-alias-XohoYP/nix-build.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "f82ba8",
+          "output": ""
+        },
+        {
+          "chunk_id": "1641d4",
+          "exit_code": 0
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "rust_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --edition 2024 --check infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs infra/verification/aeneas/candidates/implicit-alias/constructor-inference.rs",
+      "results": [
+        {
+          "chunk_id": "b49639",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "charon_final_alias",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/FinalAliasParameters.llbc -- --edition=2024 --crate-type=rlib --crate-name=alias_parameters infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs >/tmp/rumoca-implicit-alias-XohoYP/final-charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "ff4867",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "final_native_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --test infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/final-native",
+      "results": [
+        {
+          "chunk_id": "2a09e2",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "final_native",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/final-native",
+      "results": [
+        {
+          "chunk_id": "1c2196",
+          "exit_code": 0,
+          "output": "\nrunning 1 test\ntest tests::erased_marker_parameters_still_select_the_result ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "final_predecessor",
+      "command": "timeout 90 /nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/final-before /tmp/rumoca-implicit-alias-XohoYP/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/final-before.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "73fc8b",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "candidate_alias",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/after /tmp/rumoca-implicit-alias-XohoYP/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/after.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "22d871",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "candidate_equality",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/equality /tmp/rumoca-specialized-impl-names-gtOU75/BrandedEquality.llbc >/tmp/rumoca-implicit-alias-XohoYP/equality.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "5268e3",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "lean_final_before",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final-before:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/lean_final_before.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "dfe9e7",
+          "output": ""
+        },
+        {
+          "chunk_id": "bd76f8",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Predecessor omitted generic arguments; superseded reducer shape.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "lean_alias",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/lean_alias.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "607402",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "lean_equality",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/equality:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o BrandedEquality.olean BrandedEquality.lean >/tmp/rumoca-implicit-alias-XohoYP/lean_equality.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "1ee83a",
+          "output": ""
+        },
+        {
+          "chunk_id": "4f2e9c",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "actual_dae",
+      "command": "timeout 180 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/actual-dae /tmp/rumoca-demand-retention-QVu1kr/SpecializedDaeSource.llbc >/tmp/rumoca-implicit-alias-XohoYP/actual-dae.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "e86f94",
+          "output": ""
+        },
+        {
+          "chunk_id": "d0d997",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "alias_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/alias_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "4c2488",
+          "output": ""
+        },
+        {
+          "chunk_id": "8e30ac",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "equality_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/equality:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/EqualityLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/equality_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "50a90b",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "actual_dae_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/actual-dae:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 120 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true SpecializedDaeSource.lean >/tmp/rumoca-implicit-alias-XohoYP/actual-dae-lean.log 2>&1",
+      "workdir": "/tmp/rumoca-implicit-alias-XohoYP/actual-dae",
+      "results": [
+        {
+          "chunk_id": "855233",
+          "output": ""
+        },
+        {
+          "chunk_id": "852a38",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Known whole-DAE Lean rejection; not supported whole-DAE capability.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_native_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --test /tmp/rumoca-implicit-alias-XohoYP/mutant/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/mutant/native",
+      "results": [
+        {
+          "chunk_id": "e11ec1",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "mutant_native_1",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/mutant/native",
+      "results": [
+        {
+          "chunk_id": "14fd86",
+          "exit_code": 101,
+          "output": "\nrunning 1 test\ntest tests::erased_marker_parameters_still_select_the_result ... FAILED\n\nfailures:\n\n---- tests::erased_marker_parameters_still_select_the_result stdout ----\n\nthread 'tests::erased_marker_parameters_still_select_the_result' (3391558) panicked at /tmp/rumoca-implicit-alias-XohoYP/mutant/alias-parameters.rs:69:9:\nassertion `left == right` failed\n  left: 0\n right: 7\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::erased_marker_parameters_still_select_the_result\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 101,
+      "expectation": "Intentional zero-result Rust mutation; earlier reducer.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "mutant_charon_1",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/mutant/FinalAliasParameters.llbc -- --edition=2024 --crate-type=rlib --crate-name=alias_parameters /tmp/rumoca-implicit-alias-XohoYP/mutant/alias-parameters.rs >/tmp/rumoca-implicit-alias-XohoYP/mutant/charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "5d1e1b",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "mutant_aeneas_1",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/mutant/lean /tmp/rumoca-implicit-alias-XohoYP/mutant/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/mutant/aeneas.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "befa86",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "mutant_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/mutant/lean.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "231dbc",
+          "output": ""
+        },
+        {
+          "chunk_id": "d42c7e",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "constructor_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/ConstructorInference.llbc -- --edition=2024 --crate-type=rlib infra/verification/aeneas/candidates/implicit-alias/constructor-inference.rs >/tmp/rumoca-implicit-alias-XohoYP/constructor-charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "ed94d6",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "constructor_before",
+      "command": "timeout 90 /nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/constructor-before /tmp/rumoca-implicit-alias-XohoYP/ConstructorInference.llbc >/tmp/rumoca-implicit-alias-XohoYP/constructor-before.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "af98bb",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "constructor_after",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/constructor-after /tmp/rumoca-implicit-alias-XohoYP/ConstructorInference.llbc >/tmp/rumoca-implicit-alias-XohoYP/constructor-after.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "4acd9b",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "constructor_unchanged",
+      "command": "cmp /tmp/rumoca-implicit-alias-XohoYP/constructor-before/ConstructorInference.lean /tmp/rumoca-implicit-alias-XohoYP/constructor-after/ConstructorInference.lean",
+      "results": [
+        {
+          "chunk_id": "16a777",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/mutant_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "389fdd",
+          "output": ""
+        },
+        {
+          "chunk_id": "a7b0a8",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Unchanged preservation theorem rejects earlier mutant; superseded final rerun exists.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "mutant_witness",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean >/tmp/rumoca-implicit-alias-XohoYP/mutant_witness.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "21fcf6",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "original_wrong_witness",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean >/tmp/rumoca-implicit-alias-XohoYP/original_wrong_witness.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "bcf08e",
+          "output": ""
+        },
+        {
+          "chunk_id": "dcf943",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Wrong-answer theorem rejects clean candidate; earlier reducer.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "guarded_equality_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/equality:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/EqualityLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/guarded_equality_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "4b4cd2",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "constructor_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/constructor-after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true ConstructorInference.lean >/tmp/rumoca-implicit-alias-XohoYP/constructor-lean.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "bdfd12",
+          "output": ""
+        },
+        {
+          "chunk_id": "f414ba",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Known independent record-constructor inference rejection, not a deliberate typed unsupported diagnostic.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "alias_lint",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --test -D warnings -D clippy::too_many_lines -D clippy::excessive_nesting infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/alias-lint",
+      "results": [
+        {
+          "chunk_id": "7a5229",
+          "exit_code": 1,
+          "output": "error: this lifetime isn't used in the function definition\n  --> infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs:47:22\n   |\n47 | pub fn branded_value<'brand>(value: u32) -> u32 {\n   |                      ^^^^^^\n   |\n   = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#extra_unused_lifetimes\n   = note: `-D clippy::extra-unused-lifetimes` implied by `-D warnings`\n   = help: to override `-D warnings` add `#[allow(clippy::extra_unused_lifetimes)]`\n\nerror: aborting due to 1 previous error\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Historical unexpected Clippy error, corrected before final-source reruns.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "constructor_lint",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --test -D warnings -D clippy::too_many_lines -D clippy::excessive_nesting infra/verification/aeneas/candidates/implicit-alias/constructor-inference.rs -o /tmp/rumoca-implicit-alias-XohoYP/constructor-lint",
+      "results": [
+        {
+          "chunk_id": "b00467",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_alias_lint",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --test -D warnings -D clippy::too_many_lines -D clippy::excessive_nesting infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/final-alias-lint",
+      "results": [
+        {
+          "chunk_id": "3b7519",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_alias_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --edition 2024 --check infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs infra/verification/aeneas/candidates/implicit-alias/constructor-inference.rs",
+      "results": [
+        {
+          "chunk_id": "917c97",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "clean_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --test infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/final/native",
+      "results": [
+        {
+          "chunk_id": "f1fa83",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "clean_native",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/final/native",
+      "results": [
+        {
+          "chunk_id": "db106d",
+          "exit_code": 0,
+          "output": "\nrunning 1 test\ntest tests::erased_marker_parameters_still_select_the_result ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "clean_charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/final/FinalAliasParameters.llbc -- --edition=2024 --crate-type=rlib --crate-name=alias_parameters infra/verification/aeneas/candidates/implicit-alias/alias-parameters.rs >/tmp/rumoca-implicit-alias-XohoYP/final/charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "ba3a38",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "clean_aeneas",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/final/lean /tmp/rumoca-implicit-alias-XohoYP/final/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/final/aeneas.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "6d4f95",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --test /tmp/rumoca-implicit-alias-XohoYP/final-mutant/alias-parameters.rs -o /tmp/rumoca-implicit-alias-XohoYP/final-mutant/native",
+      "results": [
+        {
+          "chunk_id": "62191d",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_native_2",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/final-mutant/native",
+      "results": [
+        {
+          "chunk_id": "1807df",
+          "exit_code": 101,
+          "output": "\nrunning 1 test\ntest tests::erased_marker_parameters_still_select_the_result ... FAILED\n\nfailures:\n\n---- tests::erased_marker_parameters_still_select_the_result stdout ----\n\nthread 'tests::erased_marker_parameters_still_select_the_result' (3392516) panicked at /tmp/rumoca-implicit-alias-XohoYP/final-mutant/alias-parameters.rs:69:9:\nassertion `left == right` failed\n  left: 0\n right: 7\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::erased_marker_parameters_still_select_the_result\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 101,
+      "expectation": "Intentional zero-result Rust mutation of final source.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_charon_2",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --dest-file=/tmp/rumoca-implicit-alias-XohoYP/final-mutant/FinalAliasParameters.llbc -- --edition=2024 --crate-type=rlib --crate-name=alias_parameters /tmp/rumoca-implicit-alias-XohoYP/final-mutant/alias-parameters.rs >/tmp/rumoca-implicit-alias-XohoYP/final-mutant/charon.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "93638f",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutant_aeneas_2",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/final-mutant/lean /tmp/rumoca-implicit-alias-XohoYP/final-mutant/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/final-mutant/aeneas.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "6c6f23",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "clean_predecessor",
+      "command": "timeout 90 /nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/final/before /tmp/rumoca-implicit-alias-XohoYP/final/FinalAliasParameters.llbc >/tmp/rumoca-implicit-alias-XohoYP/final/before.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "3c283e",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_clean_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/final_clean_lean.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "95a6ec",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_mutant_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final-mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/final_mutant_lean.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "c32830",
+          "output": ""
+        },
+        {
+          "chunk_id": "73abca",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_clean_before_lean",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final/before:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o FinalAliasParameters.olean FinalAliasParameters.lean >/tmp/rumoca-implicit-alias-XohoYP/final_clean_before_lean.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "e4b61b",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Predecessor rejects omitted generic arguments on final source.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "constructor_native",
+      "command": "/tmp/rumoca-implicit-alias-XohoYP/constructor-lint",
+      "results": [
+        {
+          "chunk_id": "2155cb",
+          "exit_code": 0,
+          "output": "\nrunning 1 test\ntest tests::nominal_constructor_carries_its_const_parameter ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "mutation_patch_applies",
+      "command": "patch --dry-run --fuzz=0 -p1 -d infra/verification/aeneas/candidates/implicit-alias -i /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/wrong-const-result.patch",
+      "results": [
+        {
+          "chunk_id": "689b9d",
+          "exit_code": 0,
+          "output": "checking file alias-parameters.rs\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "producer_format",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --check /tmp/rumoca-aeneas-implicit-alias-jAs9WL/pure/PureUtils.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/pure/PureMicroPassesLoops.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPureTypes.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPure.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPureExpressions.ml",
+      "results": [
+        {
+          "chunk_id": "628b91",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_clean_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/final_clean_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "87de50",
+          "output": ""
+        },
+        {
+          "chunk_id": "a5c73b",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_mutant_laws",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final-mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean >/tmp/rumoca-implicit-alias-XohoYP/final_mutant_laws.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "0bc610",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Unchanged preservation theorem rejects final Rust mutation.",
+      "source_phase": "final_or_independent_control",
+      "retained_diagnostic": {
+        "path": "/tmp/rumoca-implicit-alias-XohoYP/final_mutant_laws.log",
+        "sha256": "6f848f812252ad14b77c3505d20a181f4826f215a5db49dc7c5ae8cd28b2871c",
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean:8:2: error: Tactic `rfl` failed: The left-hand side\n  read_tag n\nis not definitionally equal to the right-hand side\n  Result.ok n\n\nn : Usize\n⊢ read_tag n = Result.ok n\n'AliasLaws.tag_preserves_parameter' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/AliasLaws.lean:36:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'AliasLaws.tag_preserves_parameter' does not depend on any axioms\n+ info: 'AliasLaws.tag_preserves_parameter' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+      }
+    },
+    {
+      "name": "final_mutant_witness",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final-mutant/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean >/tmp/rumoca-implicit-alias-XohoYP/final_mutant_witness.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "b358a2",
+          "output": ""
+        },
+        {
+          "chunk_id": "ffd9f9",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "final_original_wrong_witness",
+      "command": "env LEAN_PATH='/tmp/rumoca-implicit-alias-XohoYP/final/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean >/tmp/rumoca-implicit-alias-XohoYP/final_original_wrong_witness.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "7d3877",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Wrong-answer theorem rejects clean final candidate translation, not predecessor.",
+      "source_phase": "final_or_independent_control",
+      "retained_diagnostic": {
+        "path": "/tmp/rumoca-implicit-alias-XohoYP/final_original_wrong_witness.log",
+        "sha256": "bedf78f2c5c771154b6193e085d7e377a9b6c769c22d9e589c89729e5859caf7",
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean:8:2: error: Tactic `rfl` failed: The left-hand side\n  read_tag n\nis not definitionally equal to the right-hand side\n  Result.ok 0#usize\n\nn : Usize\n⊢ read_tag n = Result.ok 0#usize\n'MutationWitness.tag_discards_parameter' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/MutationWitness.lean:11:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'MutationWitness.tag_discards_parameter' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'MutationWitness.tag_discards_parameter' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+      }
+    },
+    {
+      "name": "arity_refusal",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/malformed /tmp/rumoca-specialized-impl-names-gtOU75/MalformedTrait.llbc >/tmp/rumoca-implicit-alias-XohoYP/malformed.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "02c3ac",
+          "exit_code": 2,
+          "output": ""
+        }
+      ],
+      "expected_exit": 2,
+      "expectation": "Malformed LLBC triggers uncaught arity exception; rejection evidence, not a clean typed diagnostic.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "brand_refusal",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 -D warnings --crate-type=rlib /tmp/rumoca-specialized-impl-names-gtOU75/mutant/independent-brands.rs -o /tmp/rumoca-implicit-alias-XohoYP/independent-brands.rlib",
+      "results": [
+        {
+          "chunk_id": "29d56c",
+          "exit_code": 1,
+          "output": "error: lifetime may not live long enough\n  --> /tmp/rumoca-specialized-impl-names-gtOU75/mutant/independent-brands.rs:10:5\n   |\n 9 | pub fn same(left: &Id<'_>, right: &Id<'_>) -> bool {\n   |             ----           ----- has type `&Id<'2>`\n   |             |\n   |             has type `&Id<'1>`\n10 |     left == right\n   |     ^^^^^^^^^^^^^ requires that `'1` must outlive `'2`\n   |\nhelp: consider introducing a named lifetime parameter\n   |\n 9 - pub fn same(left: &Id<'_>, right: &Id<'_>) -> bool {\n 9 + pub fn same<'a>(left: &Id<'a>, right: &Id<'a>) -> bool {\n   |\n\nerror: lifetime may not live long enough\n  --> /tmp/rumoca-specialized-impl-names-gtOU75/mutant/independent-brands.rs:10:5\n   |\n 9 | pub fn same(left: &Id<'_>, right: &Id<'_>) -> bool {\n   |             ----           ----- has type `&Id<'2>`\n   |             |\n   |             has type `&Id<'1>`\n10 |     left == right\n   |     ^^^^^^^^^^^^^ requires that `'2` must outlive `'1`\n   |\nhelp: consider introducing a named lifetime parameter\n   |\n 9 - pub fn same(left: &Id<'_>, right: &Id<'_>) -> bool {\n 9 + pub fn same<'a>(left: &Id<'a>, right: &Id<'a>) -> bool {\n   |\n\nerror: aborting due to 2 previous errors\n\n"
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "Rust rejects independent brands; this tests Rust construction safety, not translator preservation of brands.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "previous_impl_control",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-implicit-alias-XohoYP/impl-control /tmp/rumoca-specialized-impl-names-gtOU75/BrandedTrait.llbc >/tmp/rumoca-implicit-alias-XohoYP/impl-control.log 2>&1",
+      "results": [
+        {
+          "chunk_id": "540b3e",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "previous_impl_unchanged",
+      "command": "cmp /tmp/rumoca-implicit-alias-XohoYP/impl-control/BrandedTrait.lean /tmp/rumoca-specialized-name-presentation-JrEIxl/prior-impl/BrandedTrait.lean",
+      "results": [
+        {
+          "chunk_id": "de84ab",
+          "exit_code": 2,
+          "output": "cmp: /tmp/rumoca-specialized-name-presentation-JrEIxl/prior-impl/BrandedTrait.lean: No such file or directory\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Historical unexpected cmp error on nonexistent path; superseded by previous_impl_byte_control.",
+      "source_phase": "superseded_development_history"
+    },
+    {
+      "name": "unit_derivative_final",
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "results": [
+        {
+          "chunk_id": "8e8bcd",
+          "exit_code": 0,
+          "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.39s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.01s\n\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "previous_impl_byte_control",
+      "command": "cmp /tmp/rumoca-implicit-alias-XohoYP/impl-control/BrandedTrait.lean /tmp/rumoca-specialized-name-presentation-JrEIxl/impl-regression/BrandedTrait.lean",
+      "results": [
+        {
+          "chunk_id": "e43c8f",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "producer_patch_exact",
+      "command": "patch --dry-run --fuzz=0 -p1 -d /nix/store/66jps4cgpa6xzvj7iqcr16hrzbg8i4ym-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas -i /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/implicit-alias/alias-inference.patch",
+      "results": [
+        {
+          "chunk_id": "9aa8eb",
+          "exit_code": 0,
+          "output": "File pure/PureUtils.ml is read-only; trying to patch anyway\nchecking file pure/PureUtils.ml\nFile symbolic/SymbolicToPureTypes.ml is read-only; trying to patch anyway\nchecking file symbolic/SymbolicToPureTypes.ml\nFile symbolic/SymbolicToPure.ml is read-only; trying to patch anyway\nchecking file symbolic/SymbolicToPure.ml\nFile symbolic/SymbolicToPureExpressions.ml is read-only; trying to patch anyway\nchecking file symbolic/SymbolicToPureExpressions.ml\nFile pure/PureMicroPassesLoops.ml is read-only; trying to patch anyway\nchecking file pure/PureMicroPassesLoops.ml\n"
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "installed_source_PureUtils.ml",
+      "command": "cmp /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/pure/PureUtils.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/pure/PureUtils.ml",
+      "results": [
+        {
+          "chunk_id": "de0b23",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "installed_source_PureMicroPassesLoops.ml",
+      "command": "cmp /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/pure/PureMicroPassesLoops.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/pure/PureMicroPassesLoops.ml",
+      "results": [
+        {
+          "chunk_id": "96aeb5",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "installed_source_SymbolicToPureTypes.ml",
+      "command": "cmp /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPureTypes.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPureTypes.ml",
+      "results": [
+        {
+          "chunk_id": "54cab2",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "installed_source_SymbolicToPure.ml",
+      "command": "cmp /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPure.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPure.ml",
+      "results": [
+        {
+          "chunk_id": "ecd0b2",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "installed_source_SymbolicToPureExpressions.ml",
+      "command": "cmp /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/symbolic/SymbolicToPureExpressions.ml /tmp/rumoca-aeneas-implicit-alias-jAs9WL/symbolic/SymbolicToPureExpressions.ml",
+      "results": [
+        {
+          "chunk_id": "3dca48",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "scope_whitespace",
+      "command": "rg -n '[[:blank:]]+$' infra/verification/aeneas/candidates/implicit-alias --glob '*.rs' --glob '*.lean' --glob '*.nix'",
+      "results": [
+        {
+          "chunk_id": "99e6a8",
+          "exit_code": 1,
+          "output": ""
+        }
+      ],
+      "expected_exit": 1,
+      "expectation": "rg no-match is the intended clean-whitespace result.",
+      "source_phase": "final_or_independent_control"
+    },
+    {
+      "name": "diff_check",
+      "command": "git diff --check",
+      "results": [
+        {
+          "chunk_id": "0dc720",
+          "exit_code": 0,
+          "output": ""
+        }
+      ],
+      "expected_exit": 0,
+      "expectation": "Command is intended to succeed.",
+      "source_phase": "final_or_independent_control"
+    }
+  ],
+  "expectation_note": "Expected exits are retrospective labels from each check's declared purpose, not changes to observations. Historical mistakes retain expected zero versus observed nonzero. Tool observation wait times/session IDs/token counts are removed; they were not command durations."
+}

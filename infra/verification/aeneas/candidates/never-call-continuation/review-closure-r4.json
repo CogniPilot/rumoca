@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "updated": "2026-09-08T20:18:00Z",
+  "candidate": "Never R4 accepted packet supplement",
+  "receipt_sha256": "a8524ab6cd5b8d72fb30da2f00a72e6d6ba5fdafe82083263fed7616e9042102",
+  "claude_review": "dev/comm_channel.md:2026-09-08T20:14:17Z",
+  "verdict": "BOUNDED ACCEPT relayed from independent review; no live adoption",
+  "additional_input_hashes": {
+    "chunk_id": "ea0099",
+    "wall_time_seconds": 0.000003581,
+    "exit_code": 0,
+    "original_token_count": 88,
+    "output": "e4baaf09544e8ba2be2e3d1f6395868600c8d697b804134ed9338281cf0b31b7  dev/never-call-review-9p1kiK/mutant/NeverCall.llbc\nfc0b4771db640124621edda5ac6967d1d64007a705678a7c6f8116d087bdb6dc  dev/never-call-review-9p1kiK/panic-mutant/NeverCall.llbc\n516dd396a3678c1e163755a74f3c3291e390e4ea1079b7cd7423d5b482f41c90  dev/never-call-review-9p1kiK/NeverCall.llbc\n"
+  },
+  "note": "Append-only hash supplement requested by reviewer. Accepted patch, Laws, README and R4 receipt bytes unchanged."
+}

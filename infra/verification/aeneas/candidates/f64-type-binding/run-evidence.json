@@ -1,0 +1,1061 @@
+{
+   "inputs" : {
+      "consumer_tests_log" : {
+         "path" : "logs/consumer-tests.log",
+         "sha256" : "215f45806afdb96af22e1320e151276b55311dbdbd3e77356d3fb45347621c9e",
+         "tests_passed" : 23
+      },
+      "external-inventory-consumer.patch" : "660cd06a15435a75ee766069daa7b3464535f239e321ca374a54e9c9994e159c",
+      "f32-width.rs" : "597f08af2b095c79936b18f347b3cc9d341761a93e4dcb76afb616b8e569d90e",
+      "f64-binding-with-external.rs" : "64a18be5bccccde80229958e65d6b88efd13e1dd999ca0781ca3df8ab0005621",
+      "f64-binding.rs" : "7fb84e2cbf0b84ee463984f2324897ed074762efd85ecffd1a051c370bfd8882",
+      "float-dependencies.patch" : "9042edc1175daf1ff4cf3221baff37856e5364a2d09ff77649cca57174b4d632",
+      "integer-only.rs" : "26c601c7e9b6299bd338516a72a838cfa7f129a144e02fcb8f4c5e266f58e693",
+      "llbc_f32_width" : "a3aea369746fbb8adbd0145bd5f7926ff8ffcad1cb4deaf3ea1f3d4cf5aabd88",
+      "llbc_f64_binding" : "ebf3c0115f9873f98ff4a0a12632b34fe2ba2699b2d3c0569d3275b60cc8aba2",
+      "llbc_f64_binding_ext" : "e1f207a230b63ed4ccb1b918d101564368003a2f6795f63e3d5bba019f0faee8",
+      "llbc_integer_only" : "aa448cd4857317411e553f7e10b1baf7e408bfa962cd316f2187e55bf871ae89",
+      "mutations/drop-manifest-record.patch" : "ff1310fb672567205b541cbca67b3a8f4d4423fe8f845be34d2dd2e7f054be5a",
+      "mutations/ignore-float-seam.patch" : "28af75b78eecacd8d9ff80ca0194148a3fc53a66b3e96f4f8a37f6e3d4b086c8",
+      "package.nix" : "d24b647533c11e1d3ed464b9de03850c6acc8e51ff4c53b90933e457d6c819b0",
+      "pilot_model_placed" : {
+         "path" : "infra/verification/lean-pilot/models/TypesExternal.lean",
+         "sha256" : "aca34ac8af279bc2dd8c8be22644309b26d4fc8997169458078ab5fd6669c845"
+      }
+   },
+   "observations" : {
+      "lean_f32_pilot_model_error" : "Constructor field value of f32_width.Sample.mk contains universe level metavariables (the pilot model defines only F64)",
+      "lean_no_model_error" : "Types.lean:3:0: error: object file .../TypesExternal.olean of module <Crate>.TypesExternal does not exist",
+      "mutant_drop_manifest_record_split_f64" : {
+         "killed_by" : "consumer test the_reviewed_float_width_must_be_listed, which refuses an empty float_dependencies array",
+         "manifest_float_dependencies_count" : 0,
+         "template" : true,
+         "types_imports_TypesExternal" : true
+      },
+      "mutant_ignore_float_seam_split_f64" : {
+         "killed_by" : "split_f64 positive control",
+         "manifest_float_dependencies_count" : 0,
+         "template" : false,
+         "types_imports_TypesExternal" : false
+      },
+      "single_file_refusal_message" : "The crate references floating-point widths (F64) whose model must be supplied by a TypesExternal module; single-file output has no such module to import. Use -split-files and provide the model, or remove the dependency.",
+      "split_f32" : {
+         "manifest_float_dependencies" : [
+            {
+               "lean_file" : "TypesExternal_Template.lean",
+               "lean_name" : "Aeneas.Std.F32",
+               "width" : 32
+            }
+         ],
+         "template" : true,
+         "template_names_F32" : true,
+         "types_imports_TypesExternal" : true
+      },
+      "split_f64" : {
+         "manifest_float_dependencies" : [
+            {
+               "lean_file" : "TypesExternal_Template.lean",
+               "lean_name" : "Aeneas.Std.F64",
+               "width" : 64
+            }
+         ],
+         "template" : true,
+         "template_names_F64" : true,
+         "types_imports_TypesExternal" : true
+      },
+      "split_integer_only" : {
+         "manifest_float_dependencies" : [],
+         "predecessor_byte_identity_nonversion_diff_lines" : {
+            "Funs.lean" : 0,
+            "IntegerOnly.lean" : 0,
+            "Types.lean" : 0
+         },
+         "template" : false,
+         "types_imports_TypesExternal" : false
+      },
+      "split_mixed" : {
+         "manifest_float_dependencies_count" : 1,
+         "template" : true,
+         "template_names_F64_and_Arc" : true,
+         "types_imports_TypesExternal" : true
+      }
+   },
+   "r2_note" : "Records under r2_records were produced with float-dependencies-r2.patch and the r2 binary; the original records and their tool identities are retained unchanged above.",
+   "r2_records" : [
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "f64_binding",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_f64-binding.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_f64-binding",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-f64_binding",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_f64-binding.log",
+         "log_sha256" : "35fbda2abadd5fa90b4fec6a9b63e20add5dbde7d4633a23fb3f40c4bded002f",
+         "name" : "split_f64-binding",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-f64_binding",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding.llbc"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "single-file Lean output refuses a crate with float widths: no TypesExternal module to import",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 2,
+         "log" : "logs/r2/single_f64-binding.log",
+         "log_sha256" : "39b10676e57b100331241804ec3651f97339a1dff573bcc3faac1c2b01028833",
+         "name" : "single_f64-binding",
+         "observed_exit" : 2,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding_with_external.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "f64_binding_with_external",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding-with-external.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_f64-binding-with-external.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_f64-binding-with-external",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-f64_binding_with_external",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding_with_external.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_f64-binding-with-external.log",
+         "log_sha256" : "cff6e4701f853d0bcb9205c29afa49f4a1dcd28072e578f0b0b76e886a4b2ba4",
+         "name" : "split_f64-binding-with-external",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-f64_binding_with_external",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f64_binding_with_external.llbc"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "single-file Lean output refuses a crate with float widths: no TypesExternal module to import",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 2,
+         "log" : "logs/r2/single_f64-binding-with-external.log",
+         "log_sha256" : "6b5cbdc1c1ded923a3e88c46796a2dd989c373691ad66d4cbbd1d68c6cb9b473",
+         "name" : "single_f64-binding-with-external",
+         "observed_exit" : 2,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/integer_only.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "integer_only",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/integer-only.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_integer-only.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_integer-only",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-integer_only",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/integer_only.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_integer-only.log",
+         "log_sha256" : "eb7f880d7568e44b8714ca40acb3dbd1520ecde52d0ca84076fbb49f41e41dd9",
+         "name" : "split_integer-only",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-integer_only",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/integer_only.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "integer-only single-file output passes: no float width",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/single_integer-only.log",
+         "log_sha256" : "00599799085d0ac6db2a2dcfd3cbdbedd99d8ca3b92e02047c3325e13b644c3b",
+         "name" : "single_integer-only",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f32_width.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "f32_width",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f32-width.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_f32-width.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_f32-width",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-f32_width",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f32_width.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_f32-width.log",
+         "log_sha256" : "9ccbaf24c5738d4eb9684cabc11b67429886eb89010f203c8a1d17ae0cb71a89",
+         "name" : "split_f32-width",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-f32_width",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/f32_width.llbc"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "single-file Lean output refuses a crate with float widths: no TypesExternal module to import",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 2,
+         "log" : "logs/r2/single_f32-width.log",
+         "log_sha256" : "051423b6e3e8d1bd47a5f69a046beaa99c28cac89b7b403e6fa0b901b4bde997",
+         "name" : "single_f32-width",
+         "observed_exit" : 2,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "associated_float",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/associated-float.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_associated-float.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_associated-float",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-associated_float",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_associated-float.log",
+         "log_sha256" : "1ca67eace9a7d5ff12c3032424a3f1bc6920c4dd54cb102c0264d2abaf8b9677",
+         "name" : "split_associated-float",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-associated_float",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "single-file Lean output refuses a crate with float widths: no TypesExternal module to import",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 2,
+         "log" : "logs/r2/single_associated-float.log",
+         "log_sha256" : "b26bd62ca47d608a600579340cfb7ccff3c9f522c7a17c312266d56b36f0e0bc",
+         "name" : "single_associated-float",
+         "observed_exit" : 2,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "float_field",
+            "--crate-type",
+            "lib",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/float-field.rs"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Charon on the fixture through the r2 package wrapper",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/charon_float-field.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "charon_float-field",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/split-float_field",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on r2; manifest float_dependencies and template checked in the README table",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/split_float-field.log",
+         "log_sha256" : "483ca501b2e12c4c76ef65fa33fd0a6f2569e6704708d10e8736a29f528c0125",
+         "name" : "split_float-field",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-emit-json",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/single-float_field",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "single-file Lean output refuses a crate with float widths: no TypesExternal module to import",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 2,
+         "log" : "logs/r2/single_float-field.log",
+         "log_sha256" : "4242af5725fab5e04032a124c7d297ee217dd26926111bc8e23831bd61c01780",
+         "name" : "single_float-field",
+         "observed_exit" : 2,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "coq",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-pred-associated_float",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Coq split on the predecessor (implicit-alias), baseline for backend identity",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/coq_pred_associated-float.log",
+         "log_sha256" : "c0f390d379ea7db1029499bd6edf645d7f9e66dd3feaf56c54f5e83f05cf31f3",
+         "name" : "coq_pred_associated-float",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "coq",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-r2-associated_float",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Coq split on r2; directory compared byte-for-byte with the predecessor run",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/coq_r2_associated-float.log",
+         "log_sha256" : "74f23b09d40ceed7969e946248c6b0bd3441ec984e8f5cc969a90ad6b90a8104",
+         "name" : "coq_r2_associated-float",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-associated_float",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/associated_float.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on the predecessor: no float_dependencies key, no template; negative baseline",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/lean_pred_associated-float.log",
+         "log_sha256" : "7691cc1f38dd687650368bbb69d8584c2565868950b8768d19726d6eb0ebfa1b",
+         "name" : "lean_pred_associated-float",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "coq",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-pred-float_field",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Coq split on the predecessor (implicit-alias), baseline for backend identity",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/coq_pred_float-field.log",
+         "log_sha256" : "c47694c792f901a7603faef504537e0bd093898c50e863ceed167dd29a0f250d",
+         "name" : "coq_pred_float-field",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "coq",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-r2-float_field",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Coq split on r2; directory compared byte-for-byte with the predecessor run",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/coq_r2_float-field.log",
+         "log_sha256" : "25c7aa0d111887924b04581a74d5a3816f63904f282aa5a18c5da30cbbbd17a6",
+         "name" : "coq_r2_float-field",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-split-files",
+            "-emit-json",
+            "-gen-lib-entry",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/lean-pred-float_field",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "Lean split on the predecessor: no float_dependencies key, no template; negative baseline",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding",
+         "expected_exit" : 0,
+         "log" : "logs/r2/lean_pred_float-field.log",
+         "log_sha256" : "f01caffddbe99e87a393d19527562f811e11d85adb294ef800c63fc0ee7907a1",
+         "name" : "lean_pred_float-field",
+         "observed_exit" : 0,
+         "tool" : "r2"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-DwarningAsError=true",
+            "-R",
+            "<check dir>",
+            "-o",
+            "<module>.olean",
+            "<module>.lean",
+            "(TypesExternal, Types, Funs in that order; then: lean -R <check dir> Inspect.lean)"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "template installed as TypesExternal.lean; Inspect prints ScalarKind RealKind Aeneas.Std.F64 with no implicit",
+         "cwd" : "<check dir>: the split output copied as AssociatedFloat/*.lean plus Inspect.lean",
+         "env" : {
+            "LEAN_PATH" : "<check dir>:$(lake env printenv LEAN_PATH in infra/verification/lean-pilot)",
+            "lean" : "Lean (version 4.31.0, x86_64-unknown-linux-gnu, commit 68218e876d2a38b1985b8590fff244a83c321783, Release)"
+         },
+         "expected_exit" : 0,
+         "log" : "logs/r2/lean_check_r2_with_template.log",
+         "log_sha256" : "a49a13d839ad6a5cfe4ca86204cdf47df2d1f70cd4984ffef970d3c4e81e612b",
+         "name" : "lean_check_r2_with_template",
+         "observed_exit" : 0,
+         "tool" : "lean"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-DwarningAsError=true",
+            "-R",
+            "<check dir>",
+            "-o",
+            "<module>.olean",
+            "<module>.lean",
+            "(TypesExternal, Types, Funs in that order; then: lean -R <check dir> Inspect.lean)"
+         ],
+         "classification" : "intended_refusal",
+         "classification_note" : "no model module: Types.lean fails at import AssociatedFloat.TypesExternal; the missing model is a missing module, not an inferred implicit",
+         "cwd" : "<check dir>: the split output copied as AssociatedFloat/*.lean plus Inspect.lean",
+         "env" : {
+            "LEAN_PATH" : "<check dir>:$(lake env printenv LEAN_PATH in infra/verification/lean-pilot)",
+            "lean" : "Lean (version 4.31.0, x86_64-unknown-linux-gnu, commit 68218e876d2a38b1985b8590fff244a83c321783, Release)"
+         },
+         "expected_exit" : 1,
+         "log" : "logs/r2/lean_check_r2_no_template.log",
+         "log_sha256" : "891a8112017cffc103b2c6c46aabd2fad64a99a3505d865e2fc5735b88fffdbd",
+         "name" : "lean_check_r2_no_template",
+         "observed_exit" : 1,
+         "tool" : "lean"
+      },
+      {
+         "argv" : [
+            "lean",
+            "-DwarningAsError=true",
+            "-R",
+            "<check dir>",
+            "-o",
+            "<module>.olean",
+            "<module>.lean",
+            "(TypesExternal, Types, Funs in that order; then: lean -R <check dir> Inspect.lean)"
+         ],
+         "classification" : "baseline_red",
+         "classification_note" : "predecessor output typechecks without any model and Inspect prints {F64 : Type} -> ...: the inferred implicit that hides the missing binding",
+         "cwd" : "<check dir>: the split output copied as AssociatedFloat/*.lean plus Inspect.lean",
+         "env" : {
+            "LEAN_PATH" : "<check dir>:$(lake env printenv LEAN_PATH in infra/verification/lean-pilot)",
+            "lean" : "Lean (version 4.31.0, x86_64-unknown-linux-gnu, commit 68218e876d2a38b1985b8590fff244a83c321783, Release)"
+         },
+         "expected_exit" : 0,
+         "log" : "logs/r2/lean_check_pred_no_template.log",
+         "log_sha256" : "365d6aa2f9527b1d8e4ba48751f5f764a4df33daef9e11b1bae39fc14f4bd888",
+         "name" : "lean_check_pred_no_template",
+         "observed_exit" : 0,
+         "tool" : "lean"
+      },
+      {
+         "argv" : [
+            "git",
+            "worktree",
+            "add",
+            "--detach",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+            "a1daf475"
+         ],
+         "classification" : "setup",
+         "classification_note" : "detached worktree at the checkpoint the consumer patch targets",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "expected_exit" : 0,
+         "name" : "consumer_setup_worktree",
+         "observed_exit" : 0
+      },
+      {
+         "argv" : [
+            "git",
+            "apply",
+            "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/external-inventory-consumer-r2.patch"
+         ],
+         "classification" : "setup",
+         "classification_note" : "applies the r2 consumer patch; the mutant manifest fixture logs/mutant-drop-manifest-record.translation.json is copied to the same relative path in the worktree",
+         "cwd" : "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+         "expected_exit" : 0,
+         "name" : "consumer_setup_apply",
+         "observed_exit" : 0
+      },
+      {
+         "argv" : [
+            "nix",
+            "develop",
+            ".#default",
+            "--command",
+            "cargo",
+            "fmt",
+            "-p",
+            "xtask"
+         ],
+         "classification" : "setup",
+         "classification_note" : "formats the patched crate before the checks; log consumer-0.log",
+         "cwd" : "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+         "expected_exit" : 0,
+         "name" : "consumer_fmt_apply",
+         "observed_exit" : 0
+      },
+      {
+         "argv" : [
+            "nix",
+            "develop",
+            ".#default",
+            "--command",
+            "cargo",
+            "fmt",
+            "--check",
+            "-p",
+            "xtask"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "rustfmt clean",
+         "cwd" : "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+         "expected_exit" : 0,
+         "log" : "logs/r2/consumer-1.log",
+         "log_sha256" : "661a27ce023fe15ecde2747d9ddc8ceef4b554552aaf605f6133d61f993bbe93",
+         "name" : "consumer_fmt_check",
+         "observed_exit" : 0
+      },
+      {
+         "argv" : [
+            "nix",
+            "develop",
+            ".#default",
+            "--command",
+            "cargo",
+            "clippy",
+            "-p",
+            "xtask",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "strict clippy clean (the first candidate failed too_many_lines on check_manifest; r2 splits it)",
+         "cwd" : "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+         "expected_exit" : 0,
+         "log" : "logs/r2/consumer-2.log",
+         "log_sha256" : "932a7bcd4851197b20f6939dc6ba4026c5489209cdcea8d84a49dbd1eb9c13eb",
+         "name" : "consumer_clippy_strict",
+         "observed_exit" : 0
+      },
+      {
+         "argv" : [
+            "nix",
+            "develop",
+            ".#default",
+            "--command",
+            "cargo",
+            "test",
+            "-p",
+            "xtask",
+            "--",
+            "external_inventory",
+            "--test-threads=2"
+         ],
+         "classification" : "intended_pass",
+         "classification_note" : "24 passed, 0 failed, including recorded_mutant_manifest_is_rejected, which feeds the production check_manifest the bytes the drop-manifest-record mutant actually wrote",
+         "cwd" : "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt",
+         "expected_exit" : 0,
+         "log" : "logs/r2/consumer-3.log",
+         "log_sha256" : "c59818c35ef950eed6ded42047e80d6bef90f85f52a1d137946f763d5e9ab4fe",
+         "name" : "consumer_tests",
+         "observed_exit" : 0
+      }
+   ],
+   "r2_tool" : {
+      "aeneas" : "/nix/store/zi0l1v4nhprxpcylxz3y6y3vsc08l2nd-ocaml5.2.1-aeneas-0.1.0",
+      "aeneas_sha256" : "3ef79bacf151eb3492be37e4da8351149edd25e8a0580c63d2fa427ac5821928",
+      "patch" : "float-dependencies-r2.patch"
+   },
+   "receipt_note" : "Each record carries the observed exit_code of the actual process with its literal command and cwd, and its retained log under logs/candidate/. expected_exit is the outcome the run was meant to produce: single-file translations of float-bearing crates are expected to refuse (Aeneas exits 2 on a raised translation error), Lean cells without any external module are expected to fail on the missing module, and the f32 crate with the pilot model placed is expected to fail because the reviewed model defines only F64. Template-as-is cells pass because the template declares each float as an axiom placeholder, the same shape it uses for opaque types; admitting an unfilled template is the consumer decision, which the consumer patch refuses through the existing template check. No timing fields.",
+   "recorded_at" : "2026-09-08T14:26:28Z",
+   "records" : [
+      {
+         "command" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/charon rustc --preset=aeneas --error-on-warnings --dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding.llbc -- --edition=2024 --crate-name f64_binding --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/charon_f64-binding.log",
+         "name" : "charon_f64-binding"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/split-f64_binding /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/split_f64-binding.log",
+         "name" : "split_f64-binding"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/single-f64_binding /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding.llbc",
+         "exit_code" : 2,
+         "expected_exit" : 2,
+         "log" : "logs/candidate/single_f64-binding.log",
+         "name" : "single_f64-binding"
+      },
+      {
+         "command" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/charon rustc --preset=aeneas --error-on-warnings --dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding_ext.llbc -- --edition=2024 --crate-name f64_binding_ext --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding-with-external.rs",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/charon_f64-binding-with-external.log",
+         "name" : "charon_f64-binding-with-external"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/split-f64_binding_ext /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding_ext.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/split_f64-binding-with-external.log",
+         "name" : "split_f64-binding-with-external"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/single-f64_binding_ext /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding_ext.llbc",
+         "exit_code" : 2,
+         "expected_exit" : 2,
+         "log" : "logs/candidate/single_f64-binding-with-external.log",
+         "name" : "single_f64-binding-with-external"
+      },
+      {
+         "command" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/charon rustc --preset=aeneas --error-on-warnings --dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/integer_only.llbc -- --edition=2024 --crate-name integer_only --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/integer-only.rs",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/charon_integer-only.log",
+         "name" : "charon_integer-only"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/split-integer_only /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/integer_only.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/split_integer-only.log",
+         "name" : "split_integer-only"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/single-integer_only /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/integer_only.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/single_integer-only.log",
+         "name" : "single_integer-only"
+      },
+      {
+         "command" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/charon rustc --preset=aeneas --error-on-warnings --dest-file=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f32_width.llbc -- --edition=2024 --crate-name f32_width --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f32-width.rs",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/charon_f32-width.log",
+         "name" : "charon_f32-width"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/split-f32_width /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f32_width.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/split_f32-width.log",
+         "name" : "split_f32-width"
+      },
+      {
+         "command" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/single-f32_width /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f32_width.llbc",
+         "exit_code" : 2,
+         "expected_exit" : 2,
+         "log" : "logs/candidate/single_f32-width.log",
+         "name" : "single_f32-width"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_no_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_no_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_no_model/F64Binding/Types.olean F64Binding/Types.lean",
+         "exit_code" : 1,
+         "expected_exit" : 1,
+         "log" : "logs/candidate/lean_f64_no_model.log",
+         "name" : "lean_f64_no_model"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_template:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_template -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_template/F64Binding/Types.olean F64Binding/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_f64_template.log",
+         "name" : "lean_f64_template"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_pilot_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_pilot_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f64_pilot_model/F64Binding/Types.olean F64Binding/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_f64_pilot_model.log",
+         "name" : "lean_f64_pilot_model"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_no_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_no_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_no_model/F64BindingExt/Types.olean F64BindingExt/Types.lean",
+         "exit_code" : 1,
+         "expected_exit" : 1,
+         "log" : "logs/candidate/lean_mixed_no_model.log",
+         "name" : "lean_mixed_no_model"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_template:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_template -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_template/F64BindingExt/Types.olean F64BindingExt/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_mixed_template.log",
+         "name" : "lean_mixed_template"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_pilot_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_pilot_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_mixed_pilot_model/F64BindingExt/Types.olean F64BindingExt/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_mixed_pilot_model.log",
+         "name" : "lean_mixed_pilot_model"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_integer_only:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_integer_only -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_integer_only/IntegerOnly/Types.olean IntegerOnly/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_integer_only.log",
+         "name" : "lean_integer_only"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_no_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_no_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_no_model/F32Width/Types.olean F32Width/Types.lean",
+         "exit_code" : 1,
+         "expected_exit" : 1,
+         "log" : "logs/candidate/lean_f32_no_model.log",
+         "name" : "lean_f32_no_model"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_template:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_template -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_template/F32Width/Types.olean F32Width/Types.lean",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/lean_f32_template.log",
+         "name" : "lean_f32_template"
+      },
+      {
+         "command" : "env LEAN_PATH=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_pilot_model:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -DwarningAsError=true -R /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_pilot_model -o /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/lean-lean_f32_pilot_model/F32Width/Types.olean F32Width/Types.lean",
+         "exit_code" : 1,
+         "expected_exit" : 1,
+         "log" : "logs/candidate/lean_f32_pilot_model.log",
+         "name" : "lean_f32_pilot_model"
+      },
+      {
+         "command" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/pred-integer_only /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/integer_only.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/pred_split_integer_only.log",
+         "name" : "pred_split_integer_only"
+      },
+      {
+         "command" : "/nix/store/7rcd1l92qjf78d5pfwy0w3jywvxh62kk-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/mut-seam /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/mutant_ignore_float_seam_split_f64.log",
+         "name" : "mutant_ignore_float_seam_split_f64"
+      },
+      {
+         "command" : "/nix/store/qddcp2735y89xb82gfkpl008ha8nb0gp-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -split-files -emit-json -gen-lib-entry -dest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/mut-manifest /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/receipt/f64_binding.llbc",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/mutant_drop_manifest_record_split_f64.log",
+         "name" : "mutant_drop_manifest_record_split_f64"
+      },
+      {
+         "command" : "nix develop .#default --command cargo test -p xtask -- external_inventory --test-threads=2 (worktree at a1daf475 with external-inventory-consumer.patch applied); 23 passed 0 failed",
+         "exit_code" : 0,
+         "expected_exit" : 0,
+         "log" : "logs/candidate/consumer_tests_xtask.log",
+         "name" : "consumer_tests_xtask"
+      }
+   ],
+   "scope" : "Candidate: typed float dependency registration in the Aeneas Lean backend plus its forced consumer patch. Diagnostic evidence; not adoption, no live pin, no model or proof change, no float semantics.",
+   "tools" : {
+      "candidate" : "/nix/store/yvc00rzxfxvs7fi5vvnsr9jk6rakh8gf-ocaml5.2.1-aeneas-0.1.0",
+      "candidate_aeneas_sha256" : "135c9df753ea52d6927c5cf50e97082facf5ec72b0d5fe2066032caaef049a9e",
+      "candidate_version_tag" : "float-dependencies-9042edc1175daf1ff4cf3221baff37856e5364a2d09ff77649cca57174b4d632",
+      "charon_sha256" : "123a408fd30cfe4d26371535182043693b4dbfb41c5fe7ebafc0cf24316de685",
+      "lean" : "/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean",
+      "lean_path" : "<lake env printenv LEAN_PATH from infra/verification/lean-pilot>, prefixed by the cell directory",
+      "lean_sha256" : "9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac",
+      "mutant_drop_manifest_record" : "/nix/store/qddcp2735y89xb82gfkpl008ha8nb0gp-ocaml5.2.1-aeneas-0.1.0",
+      "mutant_ignore_float_seam" : "/nix/store/7rcd1l92qjf78d5pfwy0w3jywvxh62kk-ocaml5.2.1-aeneas-0.1.0",
+      "predecessor" : "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0",
+      "predecessor_aeneas_sha256" : "10916246796f8fb7360a4eeebf440b85ff154699392ef9651bc799fae2e0798f"
+   }
+}

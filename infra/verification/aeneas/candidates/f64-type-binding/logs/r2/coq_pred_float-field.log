@@ -1,0 +1,17 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/float_field.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/0 ⠋Applied prepasses:  [----------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/0 ⠋Translated transparent functions:  [-------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋Translated trait declarations:  [----------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋Translated trait impls:  [-----------------------------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/0 ⠋Post-processed translated transparent functions:  [----------------------] 0/0 ✔️
+[?25h[[92mInfo[39m ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-pred-float_field
+[[93mWarn[39m ] Could not copy the primitives file: /backends/coq/Primitives.v.
+You will have to copy it/set up the project by hand.
+Compiler source: Translate.ml, line 1821
+
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-pred-float_field/FloatField_Types.v
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/coq-pred-float_field/FloatField_Funs.v
+[[92mInfo[39m ] Total execution time: 0.071072 seconds

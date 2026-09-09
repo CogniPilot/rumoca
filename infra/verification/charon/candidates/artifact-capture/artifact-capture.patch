@@ -1,0 +1,86 @@
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/closure-region-facts/src/artifact.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/closure-region-facts/src/artifact.rs
+--- a/closure-region-facts/src/artifact.rs	2026-09-07 21:17:53.062223532 -0400
++++ b/closure-region-facts/src/artifact.rs	2026-09-08 12:32:07.319520952 -0400
+@@ -155,6 +155,22 @@
+         .collect()
+ }
+ 
++/// What a successful compiler run publishes. Only `PendingArtifact::capture`
++/// can issue one: the state is private, so no other module can declare that a
++/// crate has nothing to publish. A crate that emits metadata, an rlib or a
++/// dylib carries its pending artifact; a crate that emits nothing a dependent
++/// could consume, such as an executable, carries no artifact and no identity.
++pub(crate) struct Capture(Option<PendingArtifact>);
++
++impl Capture {
++    pub(crate) fn publish(self) -> Result<(), TransportError> {
++        match self.0 {
++            Some(pending) => pending.publish(),
++            None => Ok(()),
++        }
++    }
++}
++
+ /// This type is private to the session implementation; analysis alone cannot
+ /// give an external callback authority to publish a successful-compilation file.
+ pub(crate) struct PendingArtifact {
+@@ -168,10 +184,22 @@
+         tcx: TyCtxt<'_>,
+         collection: &Collection,
+         driver_digest: &str,
+-    ) -> Result<Self, TransportError> {
++    ) -> Result<Capture, TransportError> {
+         if tcx.dcx().has_errors().is_some() {
+             return Err(TransportError::RustcRejected);
+         }
++        // Decide what there is to publish before stating any identity: an
++        // executable has no consumer-facing artifact, and rustc computes no
++        // crate hash for it unless incremental compilation asks for one.
++        let paths = emitted_artifacts(tcx)?;
++        if paths.is_empty() {
++            return Ok(Capture(None));
++        }
++        if !tcx.needs_hir_hash() {
++            return Err(TransportError::InvalidArtifact(
++                "rustc computed no crate hash for an artifact that publishes facts",
++            ));
++        }
+         let mut records = Vec::new();
+         for owner in tcx.hir_body_owners() {
+             if tcx.def_kind(owner) != DefKind::Closure {
+@@ -186,11 +214,11 @@
+             });
+         }
+         records.sort_by_key(|record| record.owner);
+-        Ok(Self {
++        Ok(Capture(Some(Self {
+             identity: Identity::current(tcx, LOCAL_CRATE, driver_digest),
+             records,
+-            paths: emitted_artifacts(tcx)?,
+-        })
++            paths,
++        })))
+     }
+ 
+     pub(crate) fn publish(self) -> Result<(), TransportError> {
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/closure-region-facts/src/session.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-charon/closure-region-facts/src/session.rs
+--- a/closure-region-facts/src/session.rs	2026-09-07 21:17:10.908062294 -0400
++++ b/closure-region-facts/src/session.rs	2026-09-08 12:05:31.239040820 -0400
+@@ -9,7 +9,7 @@
+ use rustc_middle::ty::TyCtxt;
+ 
+ use crate::ClosureRegionFacts;
+-use crate::artifact::{LoadedArtifact, PendingArtifact, executing_driver_digest};
++use crate::artifact::{Capture, LoadedArtifact, PendingArtifact, executing_driver_digest};
+ use crate::collection::{Collection, CollectionError};
+ 
+ #[derive(Debug)]
+@@ -131,7 +131,7 @@
+     inner: &'a mut (dyn Callbacks + Send),
+     session: &'a FactSession,
+     emit_artifacts: bool,
+-    pending: Option<Result<PendingArtifact, TransportError>>,
++    pending: Option<Result<Capture, TransportError>>,
+ }
+ 
+ impl Callbacks for CollectingCallbacks<'_> {

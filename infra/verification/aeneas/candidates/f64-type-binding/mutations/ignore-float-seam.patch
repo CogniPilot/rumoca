@@ -1,0 +1,12 @@
+diff -ru b/Translate.ml m/Translate.ml
+--- a/Translate.ml	2026-09-08 10:20:32.471547601 -0400
++++ b/Translate.ml	2026-09-08 10:20:57.796766883 -0400
+@@ -1908,7 +1908,7 @@
+      (* If there are opaque types, we extract in an interface *)
+      (* Extract the opaque type declarations, if needed *)
+      let opaque_types_module =
+-       if has_opaque_types || has_float_types then (
++       if has_opaque_types then (
+          (* For F*, we generate an .fsti, and let the user write the .fst.
+             For the other backends, we generate a template file as a model
+             for the file the user has to provide. *)

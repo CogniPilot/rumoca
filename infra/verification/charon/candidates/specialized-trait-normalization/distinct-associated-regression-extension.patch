@@ -1,0 +1,22 @@
+--- a/tests/specialized_traits.rs
++++ b/tests/specialized_traits.rs
+@@ -25,6 +25,19 @@
+     assert_parent_contracts(include_str!("fixtures/cyclic-noninverse-source.rs"))
+ }
+ 
++#[test]
++fn cyclic_lifting_preserves_distinct_associated_types() -> anyhow::Result<()> {
++    util::translate_rust_text(
++        include_str!("fixtures/cyclic-distinct-associated-source.rs"),
++        &[
++            "--error-on-warnings",
++            "--lift-associated-types=*",
++            "--hide-marker-traits",
++        ],
++    )?;
++    Ok(())
++}
++
+ fn assert_parent_contracts(source: &str) -> anyhow::Result<()> {
+     let translated = util::translate_rust_text(
+         source,

@@ -1,0 +1,158 @@
+{
+   "branch" : "msl-trace-parity-50",
+   "claims" : [
+      {
+         "claim" : "Native Rust accepts two distinct TryLike implementations sharing Output and Residual, with one reverse TryType.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "The generic revisit_residual return type normalizes from declared Output/Residual equalities without assuming arbitrary TryLike identity. This is Rust type-checking evidence, not a Lean theorem.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Adding a universal TryType=Self inverse law rejects the otherwise valid Alternative implementation with E0271.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "All three actual phase-isolated source cases pass the predecessor checker, then fail parent-trait agreement only after partial specialization; the checker is unchanged.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Constraint-aware canonicalization of repeated residual predicates is a candidate ingredient of a finite lifting repair. No canonicalizer, termination argument, producer implementation or preservation proof has been completed.",
+         "status" : "INFERRED"
+      }
+   ],
+   "classification_note" : "Per-record expected_exit is the outcome the run was meant to produce; for discovery_failure records that is 0 and the observed nonzero exit stands as a mismatch; for every other class the intended outcome is the one observed; classification states why that exit is the intended outcome: intended_pass (a gate that passed), intended_refusal (a refusal that is the test: predecessor reproducer, mutation kill, negative control), known_boundary (a documented next refusal outside this change), discovery_failure (an investigation run that is not a gate), superseded (replaced by a later record and not part of the package), baseline_red (a full UI run whose nonzero exit is the pre-existing failure set), informational (exit 0 but not evidence for a claim). These fields were added as a metadata correction; commands, exits, observations and hashes are unchanged.",
+   "head" : "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+   "not_run" : [
+      "No producer patch, candidate build, live tool adoption or full upstream suite for this test-only extension.",
+      "No Aeneas/Lean on rejected LLBC; no added formal relation or golden admission.",
+      "No Rumoca quick/full or GitHub CI: no compiler capability change or dependency-closed adoption milestone."
+   ],
+   "predecessor_receipt" : "run-evidence.json",
+   "recorded_at" : "2026-09-08T07:41:32Z",
+   "review_verdict" : null,
+   "reviewer" : "Claude",
+   "runs" : [
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition 2024 --test -D warnings infra/verification/charon/candidates/specialized-trait-normalization/cyclic-noninverse-source.rs -o /tmp/rumoca-specialized-traits-IylSqI/noninverse-tests",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "noninverse_native_compile",
+         "result" : "263e35"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "/tmp/rumoca-specialized-traits-IylSqI/noninverse-tests --test-threads=4",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "noninverse_native_behavior",
+         "observation" : "1/1; returned Carrier keeps the mutable borrow and mutation changes 6 to 7.",
+         "result" : "c4ecef"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --check --edition 2024 infra/verification/charon/candidates/specialized-trait-normalization/cyclic-noninverse-source.rs",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "noninverse_source_format",
+         "result" : "6e6804"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition 2024 --crate-type rlib --emit metadata -D warnings infra/verification/charon/candidates/specialized-trait-normalization/cyclic-noninverse-source.rs -o /tmp/rumoca-specialized-traits-IylSqI/noninverse-lint.rmeta",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "noninverse_source_clippy",
+         "result" : "9dafd5"
+      },
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Source-only probe: shows the stronger inverse law is false in Rust; not a producer property.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition 2024 --crate-type rlib --emit metadata -D warnings /tmp/rumoca-specialized-traits-IylSqI/assume-inverse.rs -o /tmp/rumoca-specialized-traits-IylSqI/assume-inverse.rmeta",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 1,
+         "expected_exit" : 1,
+         "modification" : "assume-inverse-probe.patch applied to a separate source copy",
+         "name" : "false_inverse_refusal",
+         "observation" : "E0271: Carrier<T> cannot satisfy equality with Alternative<T>. The retained source is unmodified.",
+         "result" : "881dd5"
+      },
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Deliberate 0/3 on the original producer.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  cargo test --offline --locked --test specialized_traits -- --test-threads=4 --nocapture",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "three_phase_isolated_regressions",
+         "observation" : "0 pass/3 fail deliberately. Optional source: one mismatch (3,2,5); inverse cycle: one (3,5,4); noninverse cycle: two (6,1,3),(7,1,3). IDs are observations, not fixed expected data.",
+         "result" : "14de28"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  cargo clippy --offline --locked --no-deps --test specialized_traits -- -D warnings",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "native_regression_clippy",
+         "result" : "88dee9"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --check --edition 2024 tests/specialized_traits.rs",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "native_regression_format",
+         "result" : "9b6603"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "git apply --reverse --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/specialized-trait-normalization/native-regression-extension.patch",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "extension_patch_reverse_check",
+         "observation" : "Reversing the patch reconstructs the historical single-case fixture; independent reconstructed hash f33abc equals bd118dcb.",
+         "result" : "5a585b"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "git apply --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/specialized-trait-normalization/assume-inverse-probe.patch",
+         "cwd" : "/home/jgoppert/git/rumoca/infra/verification/charon/candidates/specialized-trait-normalization",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "inverse_patch_apply_check",
+         "result" : "4c828e"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "nix develop .#default --command env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "unit_derivative",
+         "observation" : "5/5 compile-to-Solve, closed-form simulation, receipt and typed-refusal tests.",
+         "result" : "8a7762"
+      }
+   ],
+   "source_bindings" : {
+      "assume_inverse_mutant_sha256" : "c1634b5b0ba680b9f0c82c83f984abcb8303bf0463b91716cccdecaa6d297e86",
+      "assume_inverse_patch_sha256" : "c3b2abe4207f0d81fdc2ac081b35d3508cf08ac2d46bddbd398ce4b4ed7a72db",
+      "native_extension_patch_sha256" : "a3a0913bfb0d8eb41bd5d965c6198dc7ade79d43a927df680b087e01f02b3ae9",
+      "native_regression_sha256" : "89841b04ce0a8e837078d34d47becedbd764d7d5574115e0ce063127d1d6a2e7",
+      "noninverse_source_sha256" : "1eb01188cdbea2ab1404861e43fa4ddab548424bd40bbc5a2e33e1a5b25ade60",
+      "original_single_test_sha256" : "bd118dcbd35fb265eea599542518720684d2367a4a04d106fa300d1d4c688b5e",
+      "unchanged_associated_type_expansion_sha256" : "d2aff0cac3e9a4cff7968a726b34233bad78b6a92f73737d172e1ff8e3959a14",
+      "unchanged_explicit_self_predecessor_sha256" : "2e840082ab0f44ebba5612e59752f97532ff069a51e02a74da00ff08fd26fa2a",
+      "unchanged_partial_mono_sha256" : "2be728d9b088c244fb418c92d8cbbe7e3548cfa24dc2ffb154b30f4d4fc03258"
+   },
+   "status" : "DIAGNOSTIC_EXTENSION_NO_PRODUCER_FIX",
+   "writer" : "Codex"
+}

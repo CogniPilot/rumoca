@@ -1,0 +1,13 @@
+--- a/backends/lean/Aeneas/Std/Core/CoreOption.lean
++++ b/backends/lean/Aeneas/Std/Core/CoreOption.lean
+@@ -33,4 +33,10 @@
+ theorem core.option.Option.ok_or_none {T E : Type} (error : E) :
+   core.option.Option.ok_or (none : Option T) error = ok (.Err error) := rfl
+ 
++/-- Panic boundary used by source-retained Option.expect. As in the Option.expect
++    model above, message formatting and unwinding are outside this abstraction. -/
++@[rust_fun "core::option::expect_failed"]
++def core.option.expect_failed (_msg : Str) : Result Never :=
++  .fail .panic
++
+ end Aeneas.Std

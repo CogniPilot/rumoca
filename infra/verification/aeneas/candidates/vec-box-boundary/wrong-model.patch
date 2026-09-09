@@ -1,0 +1,13 @@
+--- a/backends/lean/Aeneas/Std/Vec.lean
++++ b/backends/lean/Aeneas/Std/Vec.lean
+@@ -503,8 +503,8 @@
+ }
+ 
+ @[rust_fun "alloc::vec::{alloc::vec::Vec<@T>}::into_boxed_slice" (keepParams := [true, false])]
+-def alloc.vec.Vec.into_boxed_slice {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=
+-  ok v.slice
++def alloc.vec.Vec.into_boxed_slice {T : Type} (_v : alloc.vec.Vec T) : Result (Slice T) :=
++  ok (alloc.vec.Vec.new T).slice
+ 
+ @[rust_fun "alloc::vec::{core::convert::From<Box<[@T]>, alloc::vec::Vec<@T>>}::from" (keepParams := [true,false])]
+ def alloc.vec.FromBoxSliceVec.from {T : Type} (v : alloc.vec.Vec T) : Result (Slice T) :=

@@ -1,0 +1,24 @@
+[[92mInfo[39m ] Imported: /tmp/rumoca-option-library-boundary-E7TrsA/OptionBoundarySource.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/8 ⠋Applied prepasses:  [######----------------------------------------------] 1/8 ⠙Applied prepasses:  [####################################################] 8/8 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/6 ⠋Translated transparent functions:  [######-------------------------------] 1/6 ⠙Translated transparent functions:  [############-------------------------] 2/6 ⠙[[91mError[39m] There should be no bottoms in the value
+Source: '/rustc/library/core/src/result.rs', lines 718:4-718:5
+[[93mWarn[39m ] Could not translate the body of function 'core::result::{core::result::Result<T, E>}::ok because of previous error
+Name pattern: 'core::result::{core::result::Result<@T, @E>}::ok'
+Definition span: '/rustc/library/core/src/result.rs', lines 709:4-712:28
+
+This definition is (transitively) used at the following locations:
+Source: 'infra/verification/charon/fixtures/option-library-boundary.rs', lines 6:16-6:26
+
+Source: '/rustc/library/core/src/result.rs', lines 718:4-718:5
+Compiler source: interp/Interp.ml, line 621
+
+Translated transparent functions:  [##################-------------------] 3/6 ⠹Translated transparent functions:  [#####################################] 6/6 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋Translated trait declarations:  [----------------------------------------] 0/4 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋Translated trait impls:  [-----------------------------------------------] 0/4 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/6 ⠋Post-processed translated transparent functions:  [###-------------------] 1/6 ⠋Post-processed translated transparent functions:  [######################] 6/6 ✔️
+[?25h[[92mInfo[39m ] Generated the partial file (because of 1 errors, including 1 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/p-ok/OptionBoundarySource.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/p-ok/translation.json
+[[92mInfo[39m ] Total execution time: 0.471299 seconds

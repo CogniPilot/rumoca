@@ -1,0 +1,7 @@
+935 |         let n, _ = Substitute.split_name_records n in
+936 |         (n, generics)
+937 |     | TkPattern -> Substitute.fold_name_records n generics
+Error (warning 8 [partial-match]): this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+TkPretty
+Done: 91% (411/448, 37 left) (jobs: 3)                                      Done: 91% (411/448, 37 left, 1 failed) (jobs: 2)                                                Done: 92% (413/448, 35 left, 1 failed) (jobs: 4)                                                Done: 92% (415/448, 33 left, 1 failed) (jobs: 3)                                                Done: 93% (417/448, 31 left, 1 failed) (jobs: 4)                                                Done: 93% (419/448, 29 left, 1 failed) (jobs: 4)                                                Done: 93% (421/448, 27 left, 1 failed) (jobs: 4)                                                Done: 94% (423/448, 25 left, 1 failed) (jobs: 4)                                                Done: 94% (425/448, 23 left, 1 failed) (jobs: 3)                                                Done: 95% (427/448, 21 left, 1 failed) (jobs: 3)                                                Done: 95% (429/448, 19 left, 1 failed) (jobs: 2)                                                Done: 96% (431/448, 17 left, 1 failed) (jobs: 1)                                                Done: 96% (433/448, 15 left, 1 failed) (jobs: 1)                                                

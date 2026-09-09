@@ -1,0 +1,166 @@
+--- a/extract/ExtractBase.ml
++++ b/extract/ExtractBase.ml
+@@ -1491,7 +1491,7 @@
+ 
+ (** Helper *)
+ let name_last_elem_as_ident (span : Meta.span) (n : llbc_name) : string =
+-  let n = LlbcAstUtils.strip_target_suffix n in
++  let n = LlbcAstUtils.strip_target_or_instantiated_suffix n in
+   match Collections.List.last n with
+   | PeIdent (s, _) -> s
+   | _ -> [%craise] span "Unexpected"
+@@ -1626,12 +1626,10 @@
+   let tname = ctx_compute_type_name def.item_meta ctx basename in
+   ExtractBuiltin.mk_struct_constructor tname
+ 
+-(** Small helper to convert a function/const name to a name used at extraction.
+-
+-    In practice we need to preprocess the name *before* giving it to this
+-    function. *)
+-let ctx_fun_global_name_to_extract_string (meta : T.item_meta)
+-    (ctx : extraction_ctx) (fname : llbc_name) : string =
++(** Convert the complete function/const identity before adding synthetic
++    presentation components, so specialization binders remain visible. *)
++let ctx_fun_global_name_to_extract_name (meta : T.item_meta)
++    (ctx : extraction_ctx) (fname : llbc_name) : string list =
+   (* Check if the function is a method implementation for a blanket impl.
+      If it is the case, add a path element to avoid name collisions *)
+   let rec is_blanket_method (name : llbc_name) : bool =
+@@ -1655,12 +1653,12 @@
+   [%ldebug "fname: " ^ name_to_string ctx fname];
+   let fname = ctx_compute_simple_name meta ctx fname in
+   (* Add the blanket path elem if the method is a blanket method *)
+-  let fname =
+-    if is_blanket then
+-      let fname, last = Collections.List.pop_last fname in
+-      fname @ [ "Blanket"; last ]
+-    else fname
+-  in
++  if is_blanket then
++    let fname, last = Collections.List.pop_last fname in
++    fname @ [ "Blanket"; last ]
++  else fname
++
++let fun_global_name_to_string (fname : string list) : string =
+   let fname = flatten_name fname in
+   match backend () with
+   | FStar | Coq | HOL4 -> StringUtils.lowercase_first_letter fname
+@@ -1713,7 +1711,10 @@
+ let ctx_compute_fun_name_base (meta : T.item_meta) (ctx : extraction_ctx)
+     (fname : llbc_name) (num_loops : int) (loop_id : (LoopId.id * bool) option)
+     (loop_pos : int list) : string =
+-  let fname = ctx_fun_global_name_to_extract_string meta ctx fname in
++  let fname =
++    ctx_fun_global_name_to_extract_name meta ctx fname
++    |> fun_global_name_to_string
++  in
+   (* Compute the suffix *)
+   let suffix = default_fun_suffix num_loops loop_id loop_pos in
+   (* Concatenate *)
+@@ -2047,11 +2048,8 @@
+               (* Derive the var name from the last ident of the type name
+                  Ex.: ["hashmap"; "HashMap"] ~~> "HashMap" -> "hash_map" -> "hm"
+               *)
+-              (* The name shouldn't be empty, and its last element (after we remove
+-                 the target architecture suffix) should be an ident *)
+-              let name = LlbcAstUtils.strip_target_suffix def.item_meta.name in
+-              let cl = Collections.List.last name in
+-              name_from_type_ident (TypesUtils.as_ident cl))
++              name_from_type_ident
++                (name_last_elem_as_ident def.item_meta.span def.item_meta.name))
+       | TVar _ -> (
+           (* TODO: use "t" also for F* *)
+           match backend () with
+@@ -2321,7 +2319,6 @@
+ let ctx_compute_fun_global_name_no_suffix (item_meta : T.item_meta)
+     (src : extractable_item_source) ~(is_trait_decl_field : bool)
+     (ctx : extraction_ctx) : string =
+-  let span = item_meta.span in
+   (* Extract target suffix from the function's own name before any overriding *)
+   let _, target_suffix = LlbcAstUtils.extract_target_suffix item_meta.name in
+   (* Rename the declaration if the user added a [rename] attribute.
+@@ -2384,60 +2381,33 @@
+   | _ ->
+       let llbc_name = opt_rename_llbc_name item_meta.attr_info item_meta.name in
+       [%ldebug "llbc_name after renaming: " ^ name_to_string ctx llbc_name];
+-      (* We add the suffix "constructor" if the function was synthesized by rustc
+-         from an ADT constructor used as a function *)
+-      let llbc_name =
++      let suffix =
+         match src with
+-        | AdtConstructorSource ->
+-            llbc_name @ [ PeIdent ("constructor", Disambiguator.zero) ]
+-        | _ -> llbc_name
++        | AdtConstructorSource -> [ "constructor" ]
++        | TraitDefaultSource when not is_trait_decl_field -> [ "default" ]
++        | _ -> []
+       in
+-      (* When a trait method/const has a default implementation, this becomes a [fun_decl]
+-         that we may want to extract. By default, its name is [Trait::method], which
+-         for lean creates a name clash with the method name as a field in the trait
+-         struct. We therefore rename these function items to avoid the name clash by
+-         adding the "default" suffix.
+-      *)
+-      let llbc_name =
+-        (* A default implementation is a declaration that does not define a trait decl field
+-           (remember that we use opaque fun declarations for the method of trait declarations)
+-           and yet belongs to a trait *decl* block. *)
+-        if is_trait_decl_field then llbc_name
+-        else
+-          match src with
+-          | TraitDefaultSource ->
+-              llbc_name @ [ PeIdent ("default", Disambiguator.zero) ]
+-          | _ -> llbc_name
++      (* Default bodies need a distinct name from trait record fields.
++         Append this distinction after converting the complete Rust name. *)
++      let name =
++        ctx_fun_global_name_to_extract_name item_meta ctx llbc_name @ suffix
+       in
+-      [%ldebug
+-        "llbc_name after adding 'default' suffix (for default methods): "
+-        ^ name_to_string ctx llbc_name];
+-
+-      (* If the option is on, always put the method in the [impl] subnamespace
+-         to prevent collision with field projectors. *)
+-      if !Config.method_names_in_impl_namespace then
+-        let llbc_name =
+-          match List.rev llbc_name with
+-          | e :: (PeImpl _ :: _ as name) ->
+-              List.rev (e :: PeIdent ("impl", Disambiguator.of_int 0) :: name)
+-          | _ -> llbc_name
+-        in
+-        ctx_fun_global_name_to_extract_string item_meta ctx llbc_name
+-      else
+-        (* Generate a name and check whether it collides with a field projector *)
+-        let name =
+-          ctx_fun_global_name_to_extract_string item_meta ctx llbc_name
+-        in
+-        if StringSet.mem name ctx.names_maps.adt_projectors then
+-          (* Add an name elem "impl" just before the last *)
+-          let llbc_name =
+-            match List.rev llbc_name with
+-            | e :: name ->
+-                List.rev (e :: PeIdent ("impl", Disambiguator.of_int 0) :: name)
+-            | _ -> [%internal_error] span
+-          in
+-          ctx_fun_global_name_to_extract_string item_meta ctx llbc_name
+-        else name
++      let rendered = fun_global_name_to_string name in
++      let insert_impl =
++        if !Config.method_names_in_impl_namespace then
++          match
++            ( suffix,
++              List.rev
++                (LlbcAstUtils.strip_target_or_instantiated_suffix llbc_name) )
++          with
++          | [], _ :: PeImpl _ :: _ -> true
++          | _ -> false
++        else StringSet.mem rendered ctx.names_maps.adt_projectors
++      in
++      if insert_impl then
++        let prefix, last = Collections.List.pop_last name in
++        fun_global_name_to_string (prefix @ [ "impl"; last ])
++      else rendered
+ 
+ let ctx_compute_fun_name_no_suffix (item_meta : T.item_meta) (src : fun_source)
+     ~(is_trait_decl_field : bool) (ctx : extraction_ctx) : string =

@@ -1,0 +1,194 @@
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.07s
+     Running tests/cargo.rs (target/debug/build/charon/02bc60fe9fd09816/out/cargo-02bc60fe9fd09816)
+
+running 11 tests
+     Removed     Removed     Removed     Removed 0 files
+ 0 files
+ 0 files
+ 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+test unsafe_                                      ... FAILED
+test toml                                         ... FAILED
+test build-script                                 ... FAILED
+test issue-1298-absolute-path-for-generated-files ... ok
+test test-attributes                              ... FAILED
+test workspace                                    ... ok
+test error-dependencies                           ... FAILED
+test issue-412-dup-deps                           ... FAILED
+test issue-396-lib-bin                            ... FAILED
+test dependencies                                 ... FAILED
+test multi-targets                                ... ok
+
+failures:
+
+---- unsafe_ ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/unsafe_.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling unsafe v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/unsafe_)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `unsafe` (bin "unsafe")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018508-1788891802377822852 rustc --crate-name unsafe --edition=2021 src/bin/unsafe.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=614d7cbdd625dc4b --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/unsafe_/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/unsafe/01c522ecf95120c4/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/unsafe_/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/unsafe/01c522ecf95120c4/out` (exit status: 101)
+
+
+---- toml ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/toml.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-cargo-toml v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/toml)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `test-cargo-toml` (bin "test-cargo-toml")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018510-1788891802377940253 rustc --crate-name test_cargo_toml --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=6966a613af18aebe --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/toml/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/test-cargo-toml/8b31337228b48657/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/toml/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/test-cargo-toml/8b31337228b48657/out` (exit status: 101)
+
+
+---- build-script ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/build-script.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-cargo-build-script v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/build-script)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `test-cargo-build-script` (bin "test-cargo-build-script")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018503-1788891802377869852 rustc --crate-name test_cargo_build_script --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=1c4f9e12570ae3a9 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/build-script/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/test-cargo-build-script/3be78a93ff8500a1/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/build-script/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/test-cargo-build-script/3be78a93ff8500a1/out --cfg abc` (exit status: 101)
+
+
+---- test-attributes ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/test-attributes.llbc -- --tests`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling test-attributes v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/test-attributes)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `test-attributes` (lib test)
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018509-1788891802377922473 rustc --crate-name test_attributes --edition=2021 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ceab1f02b50c5d7b -C extra-filename=-046aa502222c7a6e --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/test-attributes/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/test-attributes/046aa502222c7a6e/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/test-attributes/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/test-attributes/046aa502222c7a6e/out` (exit status: 101)
+
+
+---- error-dependencies ----
+
+---- expected: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/error-dependencies.out
+++++ actual:   charon output
+   1    1 | error: Error parsing attribute: Unrecognized attribute: `charon::error`
+   2    2 |  --> src/module.rs:5:1
+   3    3 |   |
+   4    4 | 5 | #[charon::error]
+   5    5 |   | ^^^^^^^^^^^^^^^^
+          ⋮
+  15   15 | 8 |     let _y = error_crate::CausesError;
+  16   16 |   |              ------------------------
+  17   17 | error: Error parsing attribute: Unrecognized attribute: `charon::error`
+  18   18 |  --> error-crate/src/lib.rs:4:1
+  19   19 | 
+  20      - ERROR Charon failed to translate this code (3 errors)
+       20 + 
+       21 + thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+       22 + called `Option::unwrap()` on a `None` value
+       23 + note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+       24 + ERROR Compilation panicked
+  21   25 | error: could not compile `test-cargo` (bin "test-cargo")
+  22   26 | 
+  23   27 | Caused by:∅
+
+
+
+---- issue-412-dup-deps ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps.llbc --include=mydup --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling mydup v0.2.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/dep-v2)
+   Compiling mydup v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/dep-v1)
+   Compiling issue-412-dup-deps v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `issue-412-dup-deps` (bin "issue-412-dup-deps")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018501-1788891802377870062 rustc --crate-name issue_412_dup_deps --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=4371294d19e67597 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/issue-412-dup-deps/e1fd9923ee017f10/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/mydup/78ed1cd3c4be2913/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/mydup/985357d2cba54cbb/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/issue-412-dup-deps/e1fd9923ee017f10/out --extern mydup1=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/mydup/78ed1cd3c4be2913/out/libmydup-78ed1cd3c4be2913.rlib --extern mydup2=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-412-dup-deps/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/mydup/985357d2cba54cbb/out/libmydup-985357d2cba54cbb.rlib` (exit status: 101)
+
+
+---- issue-396-lib-bin ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin.llbc --`
+Compilation failed:     Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling issue-396-lib-bin v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `issue-396-lib-bin` (bin "issue-396-lib-bin")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018507-1788891802377869812 rustc --crate-name issue_396_lib_bin --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=f821385a8848fdfe --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/bf46d90ae6d47fea/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/953bc8beceec51c6/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/issue-396-lib-bin/bf46d90ae6d47fea/out --extern issue_396_lib_bin=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/issue-396-lib-bin/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/issue-396-lib-bin/953bc8beceec51c6/out/libissue_396_lib_bin-953bc8beceec51c6.rlib` (exit status: 101)
+
+
+---- dependencies ----
+Command: `charon cargo --error-on-warnings --print-llbc --dest-file /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies.llbc -- --features=test_feature`
+Compilation failed:    Compiling take_mut v0.2.2
+   Compiling test-cargo-dependencies v0.1.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies)
+
+thread 'rustc' panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ERROR Compilation panicked
+error: could not compile `test-cargo-dependencies` (bin "test-cargo-dependencies")
+
+Caused by:
+  process didn't exit successfully: `/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/target/debug/charon-driver charon-dont-cache-this-4018504-1788891802387100981 rustc --crate-name test_cargo_dependencies --edition=2021 src/main.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --cfg 'feature="default"' --cfg 'feature="test_feature"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "test_feature"))' -C metadata=c81aca51cfa4b048 --out-dir /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/test-cargo-dependencies/58d485bf6aa3cfc8/out --target x86_64-unknown-linux-gnu -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/take_mut/e7b7ca690e5a19ed/out -L dependency=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/debug/build/test-cargo-dependencies/58d485bf6aa3cfc8/out --extern take_mut=/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/cargo/dependencies/target/charon-closure-facts/32820a338d8addd00cc58059e741542d13aa2c6df3f41d2487b58f6d8f942213/x86_64-unknown-linux-gnu/debug/build/take_mut/e7b7ca690e5a19ed/out/libtake_mut-e7b7ca690e5a19ed.rlib` (exit status: 101)
+
+
+
+failures:
+    unsafe_
+    toml
+    build-script
+    test-attributes
+    error-dependencies
+    issue-412-dup-deps
+    issue-396-lib-bin
+    dependencies
+
+test result: FAILED. 3 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+
+error: test failed, to rerun pass `--test cargo`

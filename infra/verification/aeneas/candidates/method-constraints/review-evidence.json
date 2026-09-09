@@ -1,0 +1,227 @@
+{
+   "binaries" : {
+      "candidate" : {
+         "path" : "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+         "sha256" : "aae9f01b197bff88deab2082c84d07949e054574d3cdca125d6e6eefeba19d49"
+      },
+      "predecessor" : {
+         "path" : "/nix/store/5hfqp8q0vx2pk77r6f4mm99a615kjvwj-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+         "sha256" : "94513da766e4708429f17874b2330129295d9e0314449a354bda8dfdcaf39c3d"
+      }
+   },
+   "inputs" : {
+      "NamedClosure-forward.llbc" : "2277d414419c1d06fd59237ef28aa358a81e56f999b9f49b1cc54d88c75b605b",
+      "NamedClosure-reverse.llbc" : "779a2a4964062dcdb88df5aa2b31971afdb96f6c910cca484938bb6861d7770f",
+      "NamedClosure.llbc" : "197d398d6b9a40a2ba92ed5f86062df5f8d7faf4299e5a16d4ea525c709eff48",
+      "note" : "the forward and reverse files are the jq intervention outputs (pretty-printed, hence larger) retained under /tmp/rumoca-closure-collection-jUn7qq; a first-pass reproduction from the base with the retained named-outlives-diagnostic.jq gave byte-identical files (sha256 above)",
+      "two_region_iterator.llbc" : "abae485bd56586e2a936e8e1f31e9e4af19e37cf46b007e1a89f1a0c0b6b1239"
+   },
+   "patch_sha256" : "80955670afb1f8e66fbb69850db5154536365354a21ccbbb6238a2e94fcad996",
+   "recorded_at" : "2026-09-09T02:00:53Z",
+   "regression" : {
+      "also_reported_by_first_pass" : "captured_move 0 to 1 (known to the author at the 12:02Z verdict), unrelated_outer now translates; other retained closure and static-regions fixtures identical",
+      "candidate" : "exit 1, one error at InterpBorrows.ml line 1206, two_regions_ref_item::call_mut emitted as sorry",
+      "fixture" : "infra/verification/charon/fixtures/closure-lifetimes/two-region-iterator.rs (accepted at comm_channel L118140 and L119499 as translating with no errors)",
+      "predecessor" : "exit 0, zero errors"
+   },
+   "reviewer_role" : "independent reviewer",
+   "runs" : [
+      {
+         "argv" : [
+            "/nix/store/5hfqp8q0vx2pk77r6f4mm99a615kjvwj-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/pred-absent",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "197d398d6b9a40a2ba92ed5f86062df5f8d7faf4299e5a16d4ea525c709eff48",
+         "log_sha256" : "46f8395cf402914d65c85dacafc9e13f4acdadf69f2c27a131114d4b5f48bcc7",
+         "name" : "cell-pred-absent",
+         "observed" : "one error at InterpBorrows.ml line 1206, generated file carries sorry"
+      },
+      {
+         "argv" : [
+            "/nix/store/5hfqp8q0vx2pk77r6f4mm99a615kjvwj-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/pred-forward",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure-forward.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "2277d414419c1d06fd59237ef28aa358a81e56f999b9f49b1cc54d88c75b605b",
+         "log_sha256" : "c7704967fd3cd201797b64071bc95a6ffa5a709a8da19344a88844faf92b4656",
+         "name" : "cell-pred-forward",
+         "observed" : "one error at InterpBorrows.ml line 1206, generated file carries sorry"
+      },
+      {
+         "argv" : [
+            "/nix/store/5hfqp8q0vx2pk77r6f4mm99a615kjvwj-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/pred-reverse",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure-reverse.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "779a2a4964062dcdb88df5aa2b31971afdb96f6c910cca484938bb6861d7770f",
+         "log_sha256" : "5c9928837547ccea4aa473ee25512068a30e56625219aacbca6ff3e495976889",
+         "name" : "cell-pred-reverse",
+         "observed" : "one error at InterpBorrows.ml line 1206, generated file carries sorry"
+      },
+      {
+         "argv" : [
+            "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/cand-absent",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "197d398d6b9a40a2ba92ed5f86062df5f8d7faf4299e5a16d4ea525c709eff48",
+         "log_sha256" : "c3e37b4bb30a559255dea1a3c27a93c1f5eaf90caee6275789e59c092590108e",
+         "name" : "cell-cand-absent",
+         "observed" : "one error at InterpBorrows.ml line 1206, generated file carries sorry"
+      },
+      {
+         "argv" : [
+            "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/cand-forward",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure-forward.llbc"
+         ],
+         "exit" : 0,
+         "llbc_sha256" : "2277d414419c1d06fd59237ef28aa358a81e56f999b9f49b1cc54d88c75b605b",
+         "log_sha256" : "d1c5115dce05bcf831ba3be1ef83bc6d821d7183f15b0fb027be749f6af8ebdd",
+         "name" : "cell-cand-forward",
+         "observed" : "zero errors"
+      },
+      {
+         "argv" : [
+            "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-cells/cand-reverse",
+            "/tmp/rumoca-closure-collection-jUn7qq/NamedClosure-reverse.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "779a2a4964062dcdb88df5aa2b31971afdb96f6c910cca484938bb6861d7770f",
+         "log_sha256" : "3e9a688e326c3860ce6f66b6e9ac6449f5509f236db65ad331c0ef06df53935e",
+         "name" : "cell-cand-reverse",
+         "observed" : "one error at InterpBorrows.ml line 1206, generated file carries sorry"
+      },
+      {
+         "argv" : [
+            "env",
+            "LEAN_PATH=<cand-forward dir>:<lake env printenv LEAN_PATH of infra/verification/lean-pilot>",
+            "lean",
+            "-j4",
+            "-M4096",
+            "-DwarningAsError=true",
+            "NamedClosure-forward.lean"
+         ],
+         "exit" : 0,
+         "lean_sha256" : "1bce0c866768a308f766b61dd5e8018ea786c093cc562581896b957fd769daa1",
+         "name" : "lean-cand-forward",
+         "observed" : "exit 0, empty output; the generated file equals the retained diagnostic-no_guess-forward/NamedClosure-forward.lean byte for byte",
+         "retained_lean_sha256" : "1bce0c866768a308f766b61dd5e8018ea786c093cc562581896b957fd769daa1"
+      },
+      {
+         "argv" : [
+            "env",
+            "LEAN_PATH=<cand-absent dir>:<lake env printenv LEAN_PATH>",
+            "lean",
+            "-j4",
+            "-M4096",
+            "-DwarningAsError=true",
+            "NamedClosure.lean"
+         ],
+         "exit" : 1,
+         "lean_sha256" : "48825c2cbf7e6644711526156c5a58d1eaf0d4fe12a76f6c2e26356c5c133e6f",
+         "name" : "lean-cand-absent",
+         "observed" : "the absent-cell partial file fails Lean: the check can fail; the file equals the retained diagnostic-no_guess-absent/NamedClosure.lean"
+      },
+      {
+         "argv" : [
+            "/nix/store/5hfqp8q0vx2pk77r6f4mm99a615kjvwj-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-mine-pred",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/method-constraints-review/fx/two_region_iterator.llbc"
+         ],
+         "exit" : 0,
+         "llbc_sha256" : "abae485bd56586e2a936e8e1f31e9e4af19e37cf46b007e1a89f1a0c0b6b1239",
+         "log_sha256" : "9e96142b47ba1976628926f4ae50b3db6a8de2255ea5454fabb8478b2f0b5499",
+         "name" : "two-region-iterator-pred",
+         "observed" : "zero errors, no sorry"
+      },
+      {
+         "argv" : [
+            "/nix/store/v2br63mjn55pkcfdzf6inyg007l36sj7-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+            "-backend",
+            "lean",
+            "-checks",
+            "-strict-joins",
+            "-sequential",
+            "-print-error-emitters",
+            "-dest",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/mc-mine-cand",
+            "/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/method-constraints-review/fx/two_region_iterator.llbc"
+         ],
+         "exit" : 1,
+         "llbc_sha256" : "abae485bd56586e2a936e8e1f31e9e4af19e37cf46b007e1a89f1a0c0b6b1239",
+         "log_sha256" : "279498a049b08b5f74a6ba323c11b5e470226521bbc7ed961dc25e50afc0f2d0",
+         "name" : "two-region-iterator-cand",
+         "observed" : "one error at InterpBorrows.ml line 1206; two_regions_ref_item::call_mut emitted as sorry"
+      }
+   ],
+   "schema" : "append-only independent review receipt; the packet README, package.nix and patch bytes are unchanged except the README corrections this review requested",
+   "six_cell_table" : {
+      "guess deleted (candidate)" : {
+         "absent" : "rejects",
+         "forward" : "translates and Lean-checks",
+         "reverse" : "rejects"
+      },
+      "guess retained (predecessor)" : {
+         "absent" : "rejects",
+         "forward" : "rejects",
+         "reverse" : "rejects"
+      }
+   },
+   "verdict" : "FIX (as posted 2026-09-08T22:22:44Z): the removal of an unsupported lifetime guess is not unconditional closure compatibility; the required source-region contract remains with Charon; no adoption"
+}

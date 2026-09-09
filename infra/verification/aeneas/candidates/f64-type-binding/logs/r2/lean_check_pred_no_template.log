@@ -1,0 +1,5 @@
+AssociatedFloat/Types exit=0
+AssociatedFloat/Funs exit=0
+@associated_float.RealKind.Insts.Associated_floatScalarKindF64 : {F64 : Type} →
+  associated_float.ScalarKind associated_float.RealKind F64
+Inspect exit=0

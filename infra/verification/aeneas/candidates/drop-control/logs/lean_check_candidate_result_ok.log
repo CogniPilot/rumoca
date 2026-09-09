@@ -1,0 +1,16 @@
+OptionBoundarySource.lean:79:34: error: Application type mismatch: The argument
+  some x
+has type
+  Option T
+but is expected to have type
+  core.result.Result T ?m.25
+in the application
+  ok (some x)
+OptionBoundarySource.lean:80:35: error: Application type mismatch: The argument
+  none
+has type
+  Option ?m.30
+but is expected to have type
+  core.result.Result T ?m.29
+in the application
+  ok none

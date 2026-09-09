@@ -1,0 +1,8 @@
+--- a/infra/verification/charon/fixtures/closure-lifetimes/preserved-signature.rs
++++ b/infra/verification/charon/fixtures/closure-lifetimes/preserved-signature.rs
+@@ -18,4 +18,5 @@
+ pub fn captured_move(value: &u32) -> &u32 {
+     let captured = move || value;
++    assert!(*value != 42);
+     captured()
+ }

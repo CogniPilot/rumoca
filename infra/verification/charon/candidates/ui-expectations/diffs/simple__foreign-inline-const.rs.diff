@@ -1,0 +1,39 @@
+---- simple/foreign-inline-const.rs ----
+Command: `charon ui_test tests/ui/simple/foreign-inline-const.rs`
+Compilation failed:
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#0}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#1}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/base-charon/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#2}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+ERROR Charon failed to translate this code (6 errors)
+
+

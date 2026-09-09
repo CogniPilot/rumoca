@@ -1,0 +1,8 @@
+F64BindingExt/Types.lean:26:0: error: Constructor field `F64` of `f64_binding_ext.Literal.Real` contains universe level metavariables at the expression
+  Sort ?u.5
+in its type
+  Sort ?u.5
+F64BindingExt/Types.lean:32:10: error: Constructor field `value` of `f64_binding_ext.Entry.mk` contains universe level metavariables at the expression
+  {F64 : Sort ?u.6} → F64
+in its type
+  {F64 : Sort ?u.6} → F64

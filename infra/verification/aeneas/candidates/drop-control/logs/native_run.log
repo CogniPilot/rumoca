@@ -1,0 +1,9 @@
+
+running 4 tests
+test tests::take_drops_keep_payload_exactly_once_and_take_payload_never ... ok
+test tests::take_early_and_peek_agree_with_take ... ok
+test tests::take_reporting_observes_the_keep_path ... ok
+test tests::take_first_keeps_the_returned_half_alive_and_drops_the_other_inside ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

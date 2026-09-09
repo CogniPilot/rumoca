@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/cargo.rs (target/debug/build/charon/02bc60fe9fd09816/out/cargo-02bc60fe9fd09816)
+
+running 11 tests
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed     Removed 0 files
+ 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+test unsafe_                                      ... ok
+test toml                                         ... ok
+test build-script                                 ... ok
+test issue-1298-absolute-path-for-generated-files ... ok
+test workspace                                    ... ok
+test error-dependencies                           ... ok
+test test-attributes                              ... ok
+test issue-412-dup-deps                           ... ok
+test issue-396-lib-bin                            ... ok
+test dependencies                                 ... ok
+test multi-targets                                ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.62s
+
+exit=0

@@ -1,0 +1,104 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/Ud07CatalogComposition.llbc
+Applied prepasses:  [------------------------------------------------]   0/187 ⠋Applied prepasses:  [------------------------------------------------]   1/187 ⠙Applied prepasses:  [###---------------------------------------------]  13/187 ⠙Applied prepasses:  [####################################------------] 143/187 ⠙Applied prepasses:  [################################################] 187/187 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [----------------------------------------]  0/60 ⠋Translated opaque functions:  [########################################] 60/60 ✔️
+Translated transparent functions:  [---------------------------------]   0/100 ⠋Translated transparent functions:  [---------------------------------]   1/100 ⠙Translated transparent functions:  [---------------------------------]   3/100 ⠙Translated transparent functions:  [##-------------------------------]   7/100 ⠹Translated transparent functions:  [##-------------------------------]   8/100 ⠸Translated transparent functions:  [##-------------------------------]   9/100 ⠼Translated transparent functions:  [###------------------------------]  10/100 ⠴Translated transparent functions:  [###------------------------------]  12/100 ⠴Translated transparent functions:  [####-----------------------------]  14/100 ⠦Translated transparent functions:  [##########-----------------------]  31/100 ⠦Translated transparent functions:  [################-----------------]  49/100 ⠧Translated transparent functions:  [################-----------------]  50/100 ⠇Translated transparent functions:  [#################----------------]  52/100 ⠏Translated transparent functions:  [###################--------------]  58/100 ⠏Translated transparent functions:  [#####################------------]  65/100 ⠋Translated transparent functions:  [######################-----------]  67/100 ⠋Translated transparent functions:  [#######################----------]  71/100 ⠋Translated transparent functions:  [#######################----------]  72/100 ⠋Translated transparent functions:  [#########################--------]  78/100 ⠋Translated transparent functions:  [##########################-------]  79/100 ⠙Translated transparent functions:  [#############################----]  88/100 ⠙Translated transparent functions:  [##############################---]  91/100 ⠙Translated transparent functions:  [###############################--]  94/100 ⠹Translated transparent functions:  [#################################] 100/100 ✔️
+Translated trait declarations:  [--------------------------------------]  0/33 ⠋Translated trait declarations:  [#################---------------------] 15/33 ✔️
+Translated trait impls:  [---------------------------------------------]  0/69 ⠋Translated trait impls:  [########################---------------------] 38/69 ✔️
+Post-processed translated opaque functions:  [-------------------------]  0/60 ⠋Post-processed translated opaque functions:  [-------------------------]  1/60 ⠋Post-processed translated opaque functions:  [#########################] 60/60 ✔️
+Post-processed translated transparent functions:  [------------------]   0/100 ⠋Post-processed translated transparent functions:  [------------------]   1/100 ⠋Post-processed translated transparent functions:  [#-----------------]   7/100 ⠋Post-processed translated transparent functions:  [#-----------------]   8/100 ⠙Post-processed translated transparent functions:  [#-----------------]   9/100 ⠙Post-processed translated transparent functions:  [#-----------------]  10/100 ⠹Post-processed translated transparent functions:  [##----------------]  13/100 ⠹Post-processed translated transparent functions:  [##----------------]  14/100 ⠹Post-processed translated transparent functions:  [#####-------------]  33/100 ⠹Post-processed translated transparent functions:  [########----------]  49/100 ⠸Post-processed translated transparent functions:  [#########---------]  50/100 ⠸Post-processed translated transparent functions:  [#########---------]  52/100 ⠸Post-processed translated transparent functions:  [###########-------]  65/100 ⠼Post-processed translated transparent functions:  [############------]  72/100 ⠼Post-processed translated transparent functions:  [##############----]  79/100 ⠴Post-processed translated transparent functions:  [################--]  91/100 ⠴Post-processed translated transparent functions:  [#################-]  99/100 ⠴Post-processed translated transparent functions:  [##################] 100/100 ✔️
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator::', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator::', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64
+Compiler source: extract/Extract.ml, line 2866
+
+[Warn ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.
+Source: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64
+Compiler source: extract/Extract.ml, line 2866
+
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean/TypesExternal_Template.lean
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/ops/function.rs', lines 242:0-242:35
+[Info ] Generated the partial file (because of 2 errors, including 1 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean/Types.lean
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/convert/num.rs', lines 302:12-302:64
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/adapters/enumerate.rs', lines 79:4-79:64
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/range.rs', lines 1184:4-1184:35
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/traits/collect.rs', lines 322:4-322:27
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 243:4-243:49
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 236:4-236:37
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 225:4-225:64
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 205:4-205:64
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 194:4-194:55
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 183:4-183:43
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/iter/macros.rs', lines 157:12-157:47
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/alloc/src/boxed.rs', lines 2297:4-2297:25
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3854:4-3854:27
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/alloc/src/vec/mod.rs', lines 3863:4-3863:39
+[Info ] Generated the partial file (because of 16 errors, including 2 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean/FunsExternal_Template.lean
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/adapters/enumerate.rs', lines 62:0-64:16
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/ops/function.rs', lines 309:8-309:67
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/ops/function.rs', lines 304:4-306:28
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/adapters/map.rs', lines 106:4-106:35
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/adapters/map.rs', lines 99:0-101:27
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/iter/range.rs', lines 1180:0-1180:40
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/num/nonzero.rs', lines 47:12-47:56
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/option.rs', lines 2868:4-2868:64
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/index.rs', lines 179:0-179:46
+[Error] Could not convert the name to a pattern
+Source: '/rustc/library/core/src/slice/iter/macros.rs', lines 153:8-153:45
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 134:62-134:64
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 134:62-134:64
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 523:39-523:51
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 523:39-523:51
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 523:39-523:51
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 523:39-523:51
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 188:17-188:32
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 188:17-188:32
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 188:17-188:32
+[Error] Could not convert the name to a pattern
+Source: 'crates/rumoca-ir-dae/src/model/view.rs', lines 188:17-188:32
+[Info ] Generated the partial file (because of 36 errors, including 2 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean/Funs.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti7-m0/combined-lean/translation.json
+[Info ] Total execution time: 6.827307 seconds

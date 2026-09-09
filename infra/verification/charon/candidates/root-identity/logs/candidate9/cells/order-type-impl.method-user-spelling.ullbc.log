@@ -1,0 +1,50 @@
+# Final ULLBC before control-flow reconstruction:
+
+opaque type ()
+
+// Full name: rootid::View
+pub struct View<'a> {
+  data: &'a [u32],
+}
+
+// Full name: rootid::{View<'a>}::refine
+pub fn refine<'a, '_1>(self: &'_1 View<'a>) -> u32
+where
+    RegionOutlives0: 'a: '_1,
+{
+    let _0: u32; // return
+    let self: &'3 View<'4>; // arg #1
+    let _2: usize; // anonymous local
+    let _3: &'6 [u32]; // anonymous local
+
+    bb0: {
+        storage_live(_0);
+        storage_live(_2);
+        storage_live(_3);
+        _3 = &(*(*self).data) with_metadata(copy (*self).data.metadata);
+        _2 = len<'10, u32>(move _3) -> bb2 (unwind: bb1);
+    }
+
+    bb1: {
+        storage_dead(self);
+        unwind_continue;
+    }
+
+    bb2: {
+        storage_dead(_3);
+        _0 = cast<usize, u32>(move _2);
+        storage_dead(_2);
+        storage_dead(self);
+        return;
+    }
+}
+
+// Full name: core::slice::{[T]}::len
+#[lang_item(SliceLen)]
+pub fn len<'_0, T>(_1: &'_0 [T]) -> usize
+where
+    TypeOutlives0: T: '_0,
+= <opaque>
+
+
+

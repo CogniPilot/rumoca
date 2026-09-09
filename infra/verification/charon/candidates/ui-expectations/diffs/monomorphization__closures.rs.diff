@@ -1,0 +1,82 @@
+---- monomorphization/closures.rs ----
+
+---- expected: tests/ui/monomorphization/closures.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | opaque type core::marker::MetaSized::{vtable}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+ 148  148 |     storage_live(_0)
+ 149  149 |     storage_live(_2)
+ 150  150 |     _2 = &f
+ 151  151 |     storage_live(_3)
+ 152  152 |     _3 = (const 0u8,)
+ 153      -     _0 = impl_Fn_for_closure<'9>::call<'10>(move _2, move _3)
+ 154      -     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'14, '15>] f
+      153 +     _0 = impl_Fn_for_closure<'7>::call<'8>(move _2, move _3)
+      154 +     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'11, '12>] f
+ 155  155 |         ↳⚡ storage_dead(f)
+ 156  156 |             unwind_terminate
+ 157  157 |         storage_dead(f)
+ 158  158 |         unwind_continue
+ 159  159 |     storage_dead(_3)
+ 160  160 |     storage_dead(_2)
+ 161      -     conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'19, '20>] f
+      161 +     conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'15, '16>] f
+ 162  162 |     ↳⚡ storage_dead(f)
+ 163  163 |         unwind_continue
+ 164  164 |     storage_dead(f)
+ 165  165 |     return
+ 166  166 | }
+          ⋮
+ 211  211 |     storage_live(_0)
+ 212  212 |     storage_live(_2)
+ 213  213 |     _2 = &mut f
+ 214  214 |     storage_live(_3)
+ 215  215 |     _3 = (const 0u8,)
+ 216      -     _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'9>::call_mut<'10>(move _2, move _3)
+ 217      -     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'14, '15>] f
+      216 +     _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'7>::call_mut<'8>(move _2, move _3)
+      217 +     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'11, '12>] f
+ 218  218 |         ↳⚡ storage_dead(f)
+ 219  219 |             unwind_terminate
+ 220  220 |         storage_dead(f)
+ 221  221 |         unwind_continue
+ 222  222 |     storage_dead(_3)
+ 223  223 |     storage_dead(_2)
+ 224      -     conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'19, '20>] f
+      224 +     conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'15, '16>] f
+ 225  225 |     ↳⚡ storage_dead(f)
+ 226  226 |         unwind_continue
+ 227  227 |     storage_dead(f)
+ 228  228 |     return
+ 229  229 | }
+          ⋮
+ 287  287 | fn main()
+ 288  288 | {
+ 289  289 |     let _0: (); // return
+ 290  290 |     let z_1: u8; // local
+ 291  291 |     let _2: u8; // anonymous local
+ 292      -     let _3: test_crate::main::closure<'2>; // anonymous local
+      292 +     let _3: test_crate::main::closure<'1>; // anonymous local
+ 293  293 |     let _4: &'3 u8; // anonymous local
+ 294  294 |     let z_5: u8; // local
+ 295  295 |     let _6: u8; // anonymous local
+ 296      -     let _7: test_crate::main::closure#1<'6>; // anonymous local
+      296 +     let _7: test_crate::main::closure#1<'5>; // anonymous local
+ 297  297 |     let _8: &'7 mut u8; // anonymous local
+ 298  298 |     let z_9: Thing; // local
+ 299  299 |     let _10: u8; // anonymous local
+ 300  300 |     let _11: test_crate::main::closure#2; // anonymous local
+ 301  301 | 
+          ⋮
+ 558  558 |     return
+ 559  559 | }
+ 560  560 | 
+ 561  561 | 
+ 562  562 | 
+
+
+

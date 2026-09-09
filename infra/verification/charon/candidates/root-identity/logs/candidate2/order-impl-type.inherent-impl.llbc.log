@@ -1,0 +1,7 @@
+error: failed to resolve item path `{impl rootid::View}`: `--start-from` does not support inherent impls
+ --> order-impl-type.rs:3:59
+  |
+3 | pub fn free(view: &View<'_>) -> u32 { view.refine() + 1 }
+  |                                                          ^
+
+ERROR Code failed to compile

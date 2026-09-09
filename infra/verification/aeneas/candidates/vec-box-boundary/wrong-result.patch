@@ -1,0 +1,10 @@
+--- a/fixture.rs
++++ b/fixture.rs
+@@ -1,5 +1,6 @@
+ pub fn move_values<T>(values: Vec<T>) -> Box<[T]> {
+-    values.into_boxed_slice()
++    let _ = values.into_boxed_slice();
++    Vec::new().into_boxed_slice()
+ }
+ 
+ pub fn from_values<T>(values: Vec<T>) -> Box<[T]> {

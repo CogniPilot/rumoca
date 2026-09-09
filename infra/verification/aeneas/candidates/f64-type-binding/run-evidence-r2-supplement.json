@@ -1,0 +1,68 @@
+{
+   "applied_patches" : {
+      "float-dependencies-r2.patch" : "281c2d4cd9cb623307455ee271f378351b7ec8f84a00e213e34c3d381b8d0582"
+   },
+   "base_receipt" : {
+      "file" : "run-evidence.json",
+      "sha256" : "a9084b32221c554d87ba4b203777595b603f2080e837c7f3738d0af00daa1979"
+   },
+   "commands" : [
+      {
+         "command" : "sha256sum infra/verification/aeneas/candidates/f64-type-binding/float-dependencies-r2.patch",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "281c2d4cd9cb623307455ee271f378351b7ec8f84a00e213e34c3d381b8d0582  infra/verification/aeneas/candidates/f64-type-binding/float-dependencies-r2.patch"
+      },
+      {
+         "command" : "sha256sum infra/verification/aeneas/candidates/f64-type-binding/external-inventory-consumer-r2.patch",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "2c8b49d080c9defede100e7f17f26ed720a57009bd0539b2024dd5738be7b530  infra/verification/aeneas/candidates/f64-type-binding/external-inventory-consumer-r2.patch"
+      },
+      {
+         "command" : "sha256sum infra/verification/aeneas/candidates/f64-type-binding/float-dependencies.patch",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "9042edc1175daf1ff4cf3221baff37856e5364a2d09ff77649cca57174b4d632  infra/verification/aeneas/candidates/f64-type-binding/float-dependencies.patch"
+      },
+      {
+         "command" : "sha256sum infra/verification/aeneas/candidates/f64-type-binding/external-inventory-consumer.patch",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "660cd06a15435a75ee766069daa7b3464535f239e321ca374a54e9c9994e159c  infra/verification/aeneas/candidates/f64-type-binding/external-inventory-consumer.patch"
+      },
+      {
+         "command" : "grep -n 281c2d4c dev/f64-candidate-review-aHBYni/r2-review-evidence.json",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "3:  \"scope\": \"Independent bounded review of float-dependencies-r2 281c2d4c and consumer-r2 2c8b49d0. No pin adoption, new float semantics or UnitDerivative relation.\""
+      },
+      {
+         "command" : "grep -rln 281c2d4cd9cb6233 dev/f64-candidate-review-aHBYni/",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "output" : "dev/f64-candidate-review-aHBYni/r2-associated/AssociatedFloat/translation.json"
+      }
+   ],
+   "proposed_consumer_patch_not_applied_by_recipe" : {
+      "external-inventory-consumer-r2.patch" : "2c8b49d080c9defede100e7f17f26ed720a57009bd0539b2024dd5738be7b530",
+      "note" : "xtask consumer change proposed alongside; not in package.nix"
+   },
+   "purpose" : "bind the R2 patch bytes: float-dependencies-r2.patch, which package.nix applies, and external-inventory-consumer-r2.patch, a separate proposed xtask consumer change that package.nix does not apply; the original receipt names both at its lines 760 and 859 without their full hashes, and dev/f64-candidate-review-aHBYni/r2-review-evidence.json carries only eight-character prefixes",
+   "recipe" : {
+      "applies" : "float-dependencies-r2.patch",
+      "file" : "package.nix",
+      "line" : 3
+   },
+   "recorded_at" : "2026-09-08T22:14:17Z",
+   "review_evidence" : {
+      "carries_r2_hashes" : "prefixes only (281c2d4c, 2c8b49d0) in its scope line; the full float-dependencies-r2 hash appears in r2-associated/AssociatedFloat/translation.json as the Aeneas version tag; this supplement is the first packet file to record both full hashes",
+      "file" : "dev/f64-candidate-review-aHBYni/r2-review-evidence.json",
+      "sha256" : "6b4aff9762494fb56bdf48a565cc3860cd3229630b2e925a7179659a3439a975"
+   },
+   "schema" : "append-only supplement; the original run-evidence.json is unchanged",
+   "superseded_patches_retained" : {
+      "external-inventory-consumer.patch" : "660cd06a15435a75ee766069daa7b3464535f239e321ca374a54e9c9994e159c",
+      "float-dependencies.patch" : "9042edc1175daf1ff4cf3221baff37856e5364a2d09ff77649cca57174b4d632"
+   }
+}

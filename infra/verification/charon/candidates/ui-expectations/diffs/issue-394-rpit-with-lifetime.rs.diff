@@ -1,0 +1,75 @@
+---- issue-394-rpit-with-lifetime.rs ----
+
+---- expected: tests/ui/issue-394-rpit-with-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | struct () {}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+  92   92 | fn call_mut<'a, '_1>(_1: &'_1 mut closure<'a>, tupled_args: ()) -> Option<u8>[{built_in impl Sized for u8}]
+  93   93 | where
+  94   94 |     RegionOutlives0: 'a: '_1,
+  95   95 | {
+  96   96 |     let _0: Option<u8>[{built_in impl Sized for u8}]; // return
+  97      -     let _1: &'1 mut closure<'a>; // arg #1
+       97 +     let _1: &'2 mut closure<'a>; // arg #1
+  98   98 |     let tupled_args: (); // arg #2
+  99   99 | 
+ 100  100 |     storage_live(_0)
+ 101  101 |     _0 = Option::None {  }
+ 102  102 |     storage_dead(tupled_args)
+          ⋮
+ 108  108 | unsafe fn drop_glue<'a, '_1>(_1: &'_1 mut closure<'a>)
+ 109  109 | where
+ 110  110 |     RegionOutlives0: 'a: '_1,
+ 111  111 | {
+ 112  112 |     let _0: (); // return
+ 113      -     let _1: &'1 mut closure<'a>; // arg #1
+      113 +     let _1: &'2 mut closure<'a>; // arg #1
+ 114  114 | 
+ 115  115 |     storage_live(_0)
+ 116  116 |     _0 = ()
+ 117  117 |     storage_dead(_1)
+ 118  118 |     return
+          ⋮
+ 122  122 | fn call_once<'a>(_1: closure<'a>, _2: ()) -> Option<u8>[{built_in impl Sized for u8}]
+ 123  123 | {
+ 124  124 |     let _0: Option<u8>[{built_in impl Sized for u8}]; // return
+ 125  125 |     let _1: closure<'a>; // arg #1
+ 126  126 |     let _2: (); // arg #2
+ 127      -     let _3: &'1 mut closure<'a>; // anonymous local
+      127 +     let _3: &'2 mut closure<'a>; // anonymous local
+ 128  128 | 
+ 129  129 |     storage_live(_0)
+ 130  130 |     storage_live(_3)
+ 131  131 |     _3 = &mut _1
+ 132      -     _0 = call_mut<'a, '4>(move _3, move _2)
+ 133      -     ↳⚡ drop[drop_glue<'a, '7>] _1
+      132 +     _0 = call_mut<'a, '5>(move _3, move _2)
+      133 +     ↳⚡ drop[drop_glue<'a, '8>] _1
+ 134  134 |         ↳⚡ storage_dead(_3)
+ 135  135 |             storage_dead(_2)
+ 136  136 |             storage_dead(_1)
+ 137  137 |             unwind_terminate
+ 138  138 |         storage_dead(_3)
+ 139  139 |         storage_dead(_2)
+ 140  140 |         storage_dead(_1)
+ 141  141 |         unwind_continue
+ 142      -     drop[drop_glue<'a, '10>] _1
+      142 +     drop[drop_glue<'a, '11>] _1
+ 143  143 |     ↳⚡ storage_dead(_3)
+ 144  144 |         storage_dead(_2)
+ 145  145 |         storage_dead(_1)
+ 146  146 |         unwind_continue
+ 147  147 |     storage_dead(_3)
+          ⋮
+ 192  192 |     non-dyn-compatible
+ 193  193 | }
+ 194  194 | 
+ 195  195 | 
+ 196  196 | 
+
+
+

@@ -1,0 +1,7 @@
+these 2 derivations will be built:
+  /nix/store/r5b5i01v5zks8mpmvl1s5haz24lxm18h-ocaml5.2.1-charon-0.1.0.drv
+  /nix/store/mrdxq92icqy3z5mk2r4rmj2lq0z8idbz-ocaml5.2.1-aeneas-0.1.0.drv
+building '/nix/store/r5b5i01v5zks8mpmvl1s5haz24lxm18h-ocaml5.2.1-charon-0.1.0.drv'...
+building '/nix/store/mrdxq92icqy3z5mk2r4rmj2lq0z8idbz-ocaml5.2.1-aeneas-0.1.0.drv'...
+/nix/store/b6cm4pqyynfqzwjdgl23a7s9by46zh60-ocaml5.2.1-aeneas-0.1.0
+exit=0

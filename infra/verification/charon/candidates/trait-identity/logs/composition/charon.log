@@ -1,0 +1,80 @@
+   Compiling compiler_builtins v0.1.160 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/core)
+   Compiling libc v0.2.189
+   Compiling object v0.39.1
+   Compiling std v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/std)
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling libc v0.2.186
+   Compiling object v0.37.3
+   Compiling rustix v1.1.4
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.9
+   Compiling syn v2.0.118
+   Compiling serde_core v1.0.228
+   Compiling cc v1.2.66
+   Compiling owo-colors v4.3.0
+   Compiling serde v1.0.228
+   Compiling thiserror v2.0.18
+   Compiling rumoca-core v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-core)
+   Compiling blake3 v1.8.5
+   Compiling miette-derive v7.6.0
+   Compiling serde_derive v1.0.228
+   Compiling rustc-std-workspace-core v1.99.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/rustc-std-workspace-core)
+   Compiling alloc v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/alloc)
+   Compiling unwind v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/unwind)
+   Compiling rustc-std-workspace-alloc v1.99.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/rustc-std-workspace-alloc)
+   Compiling gimli v0.34.0
+   Compiling memchr v2.8.3
+   Compiling adler2 v2.0.1
+   Compiling miniz_oxide v0.9.1
+   Compiling addr2line v0.27.1
+   Compiling hashbrown v0.17.1
+   Compiling std_detect v0.1.5 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/std_detect)
+   Compiling panic_unwind v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/panic_unwind)
+   Compiling rustc-demangle v0.1.28
+   Compiling cfg-if v1.0.4
+   Compiling panic_abort v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/panic_abort)
+   Compiling rustc-literal-escaper v0.0.8
+   Compiling thiserror-impl v2.0.18
+   Compiling tracing-attributes v0.1.31
+   Compiling proc_macro v0.0.0 (/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib/rustlib/src/rust/library/proc_macro)
+   Compiling memchr v2.8.2
+   Compiling gimli v0.32.3
+   Compiling miniz_oxide v0.8.9
+   Compiling bitflags v2.13.0
+   Compiling addr2line v0.25.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling rustc-demangle v0.1.27
+   Compiling unicode-width v0.2.2
+   Compiling backtrace v0.3.76
+   Compiling is_ci v1.2.0
+   Compiling unicode-linebreak v0.1.5
+   Compiling supports-color v3.0.2
+   Compiling textwrap v0.16.2
+   Compiling backtrace-ext v0.2.1
+   Compiling terminal_size v0.4.4
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayvec v0.7.8
+   Compiling supports-hyperlinks v3.2.0
+   Compiling arrayref v0.3.9
+   Compiling supports-unicode v3.0.0
+   Compiling equivalent v1.0.2
+   Compiling unicode-width v0.1.14
+   Compiling cpufeatures v0.3.0
+   Compiling indexmap v2.14.0
+   Compiling miette v7.6.0
+   Compiling rustc-hash v2.1.3
+   Compiling once_cell v1.21.4
+   Compiling pin-project-lite v0.2.17
+   Compiling tracing-core v0.1.36
+   Compiling tracing v0.1.44
+   Compiling rumoca-ir-dae v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-dae)
+   Compiling rumoca-ir-galec v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-galec)
+   Compiling rumoca-ir-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-ir-solve)
+   Compiling rumoca-eval-dae v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-eval-dae)
+   Compiling rumoca-phase-structural v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-phase-structural)
+   Compiling rumoca-eval-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-eval-solve)
+   Compiling rumoca-phase-solve v0.10.0 (/home/jgoppert/git/rumoca/crates/rumoca-phase-solve)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2m 12s

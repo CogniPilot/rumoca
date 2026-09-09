@@ -1,0 +1,12 @@
+diff --git a/src/ast/type_level/substitute.rs b/src/ast/type_level/substitute.rs
+--- a/src/ast/type_level/substitute.rs
++++ b/src/ast/type_level/substitute.rs
+@@ -114,7 +114,7 @@ impl VarsVisitor for SubstVisitor<'_> {
+         }
+     }
+     fn visit_self_clause(&mut self) -> Option<TraitRefKind> {
+-        if self.explicits_only {
++        if self.explicits_only || self.self_ref.is_some() {
+             return None;
+         }
+         Some(self.self_ref.cloned().expect(

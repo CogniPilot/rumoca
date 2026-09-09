@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "review": "Claude 2026-09-08T21:44:12Z conditional bounded ACCEPT; the two requested metadata controls are recorded here.",
+  "base_receipt_sha256": "29260c3320024ded2c292590d129aa72d6ad4aac97a982405fc756ee4b107898",
+  "source_and_law_bytes_unchanged": true,
+  "requests": [
+    {
+      "request": "Record exact post-String diff and comparison commands",
+      "evidence": [
+        "post_string_registry_diff",
+        "post_string_registry_exact_cmp"
+      ],
+      "result": "diff exit1 is the intended one-entry change; cmp exit0 proves the full diff equals binding-registry.patch"
+    },
+    {
+      "request": "Record the emitted-opaque census command and distinguish it from progress-bar builtins",
+      "evidence": [
+        "emitted_opaque_census"
+      ],
+      "result": "9 emitted function entries, 0 emitted opaque declarations; README names translation.json is_opaque"
+    }
+  ],
+  "runs": [
+    {
+      "name": "post_string_registry_diff",
+      "command": "diff -u --label a/extract/ExtractBuiltinLean.ml --label b/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml",
+      "initial": {
+        "chunk_id": "86f576",
+        "wall_time_seconds": 0.00000321,
+        "exit_code": 1,
+        "original_token_count": 141,
+        "output": "--- a/extract/ExtractBuiltinLean.ml\n+++ b/extract/ExtractBuiltinLean.ml\n@@ -1001,6 +1001,8 @@\n     (* file: \"Aeneas/Std/Core/Iter.lean\", line: 639 *)\n     mk_fun \"core::ops::range::{core::ops::range::RangeInclusive<@Idx>}::new\"\n       \"core.ops.range.RangeInclusive.new\";\n+    (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 38 *)\n+    mk_fun \"core::option::expect_failed\" \"core.option.expect_failed\";\n     (* file: \"Aeneas/Std/Core/CoreOption.lean\", line: 11 *)\n     mk_fun \"core::option::{core::option::Option<@T>}::expect\"\n       \"core.option.Option.expect\";\n"
+      },
+      "observations": []
+    },
+    {
+      "name": "post_string_registry_exact_cmp",
+      "command": "cmp <(diff -u --label a/extract/ExtractBuiltinLean.ml --label b/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-before/src/extract/ExtractBuiltinLean.ml /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/registry-after/src/extract/ExtractBuiltinLean.ml) /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/expect-failed-model/binding-registry.patch",
+      "initial": {
+        "chunk_id": "df32ef",
+        "wall_time_seconds": 0.00000293,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "name": "emitted_opaque_census",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq '{functions: (.functions|length), emitted_opaque_declarations: [.functions[]|select(.is_opaque)|.name]}' /home/jgoppert/git/rumoca/dev/expect-failed-review-rWJ1CL/fresh-generated-positive/DaeBuiltinBindingSource/translation.json",
+      "initial": {
+        "chunk_id": "be56d4",
+        "wall_time_seconds": 0.00000335,
+        "exit_code": 0,
+        "original_token_count": 15,
+        "output": "{\n  \"functions\": 9,\n  \"emitted_opaque_declarations\": []\n}\n"
+      },
+      "observations": []
+    }
+  ],
+  "latest_production_tracer": {
+    "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+    "initial": {
+      "chunk_id": "916e09",
+      "wall_time_seconds": 0.781547704,
+      "exit_code": 0,
+      "original_token_count": 185,
+      "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 1.39s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.10s\n\n"
+    },
+    "observations": []
+  },
+  "not_claimed": [
+    "canonical adoption",
+    "M1 completion",
+    "second compiler relation",
+    "full translator correctness"
+  ]
+}

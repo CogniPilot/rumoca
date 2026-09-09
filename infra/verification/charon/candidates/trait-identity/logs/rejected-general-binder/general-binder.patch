@@ -1,0 +1,103 @@
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/src/ast/meta/names.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti-charon/src/ast/meta/names.rs
+--- a/src/ast/meta/names.rs	2026-09-07 13:15:29.287955671 -0400
++++ b/src/ast/meta/names.rs	2026-09-08 13:38:36.299101438 -0400
+@@ -239,6 +239,24 @@
+         self.compare_with_ref_name(true, ref_name)
+     }
+ 
++    /// Whether this binder records an in-place extension of an item's generics rather than a
++    /// copy: its arguments are exactly the identity of a prefix of its parameters. Name matching
++    /// treats both kinds the same; printing and identity do not.
++    pub fn binder_is_generics_extension(binder: &Binder<GenericArgs>) -> bool {
++        let args = &binder.skip_binder;
++        let identity = binder.params.identity_args();
++        args.regions.len() <= identity.regions.len()
++            && args.types.len() <= identity.types.len()
++            && args.const_generics.len() <= identity.const_generics.len()
++            && args.regions.iter().zip(identity.regions.iter()).all(|(a, b)| a == b)
++            && args.types.iter().zip(identity.types.iter()).all(|(a, b)| a == b)
++            && args
++                .const_generics
++                .iter()
++                .zip(identity.const_generics.iter())
++                .all(|(a, b)| a == b)
++    }
++
+     /// Created an instantiated version of this name by putting a `PathElem::Instantiated` last. If
+     /// the item was already instantiated, this merges the two instantiations.
+     pub fn instantiate(mut self, binder: Binder<GenericArgs>) -> Self {
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/src/pretty/fmt_with_ctx.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti-charon/src/pretty/fmt_with_ctx.rs
+--- a/src/pretty/fmt_with_ctx.rs	2026-09-07 13:15:29.292536220 -0400
++++ b/src/pretty/fmt_with_ctx.rs	2026-09-08 13:44:07.024990863 -0400
+@@ -1229,7 +1229,13 @@
+         // Reset generics to avoid names being displayed differently depending on the current
+         // binding level.
+         let ctx = &ctx.no_generics();
+-        let name = self.name.iter().map(|x| x.with_ctx(ctx)).format("::");
++        // An in-place generics extension keeps the item's printed identity.
++        let name = self
++            .name
++            .iter()
++            .filter(|x| !matches!(x, PathElem::Instantiated(b) if Name::binder_is_generics_extension(b)))
++            .map(|x| x.with_ctx(ctx))
++            .format("::");
+         write!(f, "{}", name)
+     }
+ }
+@@ -1243,6 +1249,7 @@
+             let name = self
+                 .name
+                 .iter()
++                .filter(|x| !matches!(x, PathElem::Instantiated(b) if Name::binder_is_generics_extension(b)))
+                 .map(|elem| match elem {
+                     PathElem::Impl(impl_elem) => Either::Left(impl_elem.with_ctx(ctx)),
+                     _ => Either::Right(elem.with_ctx(ctx)),
+@@ -1321,6 +1328,11 @@
+                 write!(f, "({fields}{trailing_comma})")
+             }
+             PathElem::Builtin(BuiltinPathElem::Str) => write!(f, "str"),
++            PathElem::Instantiated(binder) if Name::binder_is_generics_extension(binder) => {
++                // The item was not copied: its generics were extended in place (associated-type
++                // lifting) and the binder only records its declared identity. Print nothing.
++                Ok(())
++            }
+             PathElem::Instantiated(binder) => {
+                 // Anonymize all parameters.
+                 let underscore = "_".to_string();
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/rumoca-charon-captures-5tXAoU/src/transform/normalize/expand_associated_types.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti-charon/src/transform/normalize/expand_associated_types.rs
+--- a/src/transform/normalize/expand_associated_types.rs	2026-09-08 05:38:58.691754427 -0400
++++ b/src/transform/normalize/expand_associated_types.rs	2026-09-08 13:31:20.217166681 -0400
+@@ -1552,6 +1552,9 @@
+             let id = item.as_ref().id();
+             let span = item.as_ref().item_meta().span;
+             let modifications = item_modifications.get(&GenericsSource::Item(id)).unwrap();
++            // The parameters the item was declared with. If lifting extends them, the item keeps
++            // its original identity through an `Instantiated` name element below.
++            let original_params = item.generic_params().clone();
+ 
+             // Add new parameters or associated types in order to have types to fill in all the
+             // replaced paths. We then collect the replaced paths and their associated value.
+@@ -1601,6 +1604,23 @@
+                 item.generic_params().trait_type_constraints.swap_remove(*cid);
+             }
+ 
++            // Lifting appended type parameters after the declared ones and left regions, const
++            // generics and clauses in place, so the declared identity is the identity arguments of
++            // the original parameters over the new ones. Record it on the name: name matching
++            // (Rust and OCaml) translates an instantiated item back to its original generics, so a
++            // pattern written for the declared arity keeps matching the lifted item.
++            if item.generic_params().types.len() != original_params.types.len() {
++                let binder = Binder::new(
++                    BinderKind::Other,
++                    item.generic_params().clone(),
++                    original_params.identity_args(),
++                );
++                let name = &mut item.item_meta().name;
++                *name = std::mem::take(name).instantiate(binder);
++                let name = name.clone();
++                ctx.translated.item_names.insert(id, name);
++            }
++
+             // Remove trait associated types.
+             if let ItemRefMut::TraitDecl(tr) = &mut item
+                 && modifications.add_type_params

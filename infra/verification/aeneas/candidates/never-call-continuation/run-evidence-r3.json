@@ -1,0 +1,879 @@
+{
+  "schema": 1,
+  "candidate": "never-call-continuation R3",
+  "updated": "2026-09-08T19:15:00Z",
+  "status": "READY FOR INDEPENDENT BOUNDED REVIEW; NOT ADOPTED",
+  "specs": [
+    "SPEC_0033 sections 2, 2a, 4, 6",
+    "SPEC_0037 (DRAFT experimental) sections 2, 6"
+  ],
+  "invariant": "Retain Never-returning calls and their failure/divergence; eliminate only their impossible successful result.",
+  "patch_sha256": "481cdd186566c38d97ecb54285945560002966d1f0629a514fccfc58831ce146",
+  "aeneas_path": "/nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+  "aeneas_sha256": "cc11b467b37ddaff260b53c23a66440e23c3a5582ea1a0a0a43dd76bf053f8e7",
+  "predecessor_aeneas": "/nix/store/j64xdd5bjaidsmgslypki02v719jz72k-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+  "charon_path": "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon",
+  "rust_and_lean_environment": "Every literal command and search path is in runs.",
+  "artifact_hashes": {
+    "chunk_id": "4d0f94",
+    "wall_time_seconds": 0.00000337,
+    "exit_code": 0,
+    "original_token_count": 552,
+    "output": "481cdd186566c38d97ecb54285945560002966d1f0629a514fccfc58831ce146  infra/verification/aeneas/candidates/never-call-continuation/never-call-continuation.patch\n068ecd12bae9ec1cb3bea976bd920485fd9758a642dce586fb667a9230cd3081  infra/verification/aeneas/candidates/never-call-continuation/package.nix\n2cac04c988c2e6b79b4b2ffc4bb2730d418f3d60d52a7e65f0716895a7a0def6  infra/verification/aeneas/candidates/never-call-continuation/never-call.rs\n982ffc771dce9c100a98d607779d078d5ee55b3686c79c435ecb260ba2bc126d  infra/verification/aeneas/candidates/never-call-continuation/never-scopes.rs\n065a4edbe856ebb4e93635deca48b1ae25af9fed37ff9dc4b3efa2e24f838912  infra/verification/aeneas/candidates/never-call-continuation/Laws.lean\n516dd396a3678c1e163755a74f3c3291e390e4ea1079b7cd7423d5b482f41c90  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc\nf6839b96b2bcb0502119253489a59b0235cc43585225cba14764a306fc953452  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverScopes.llbc\n3d3fd48b0f5d7b3a541f79662c85135508528f58c25abfba7aa2ee6ec3df4ada  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Types.lean\n6614f2eaee3e70aa8b910a8787f33c094766d510382eb21556521d670e85fbce  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Funs.lean\nce6a14b59a2a017aa106a36188cc4c5ea0e07987e69063148e515aa009de37f6  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Types.lean\n905357db2901533e63e32dc63301bdf193258030ccef789b6a7b9b24edfe9bec  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Funs.lean\nd2ffb3c5849564b4ea035f551a716a6001619e7d4d4ea36692652016b7b7476f  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/never-call.rs\n97e0b933e74cd17de788efcfa6f4749bdd3bdc56f0a9aa3facadbd52bc6e5acc  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Funs.lean\ne0e2dce0de4095103837d006f0751facb3aa365e0fa20b72343274aa153f6344  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/never-call.rs\n1b16b794ee717c88476ea3194fb31a889ad727eef89f209838afd2429dd02dd3  /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Funs.lean\n"
+  },
+  "regression_hashes": {
+    "command": "sha256sum /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/PostLoopLaws.lean /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingPanic.llbc",
+    "chunk_id": "0826bd",
+    "wall_time_seconds": 0.00000718,
+    "exit_code": 0,
+    "original_token_count": 150,
+    "output": "1137465a2f40b8a86523e2138ff8c8295d7d3c4b44f88a4df986c2d4c854ee7f  /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean\n130eb706e23392ef557b466b457f1ceff029791dd99331c19147536a58c22b95  /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/PostLoopLaws.lean\nc54d734159d84c7861b688fbad18dd6c471feaa12a9880d045024d8eccb10cb4  /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc\nd9990077f04bc34c8ba8a64fa73b03ef46b99b9361ab72621e3765b67a57f44d  /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingPanic.llbc\n"
+  },
+  "runs": [
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "native_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition 2024 --crate-name never_call --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-call.rs -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/native-tests -D warnings",
+      "initial": {
+        "chunk_id": "6fa163",
+        "wall_time_seconds": 0.00000529,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --edition 2024 --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-call.rs",
+      "initial": {
+        "chunk_id": "0cee3a",
+        "wall_time_seconds": 0.00000229,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "charon",
+      "command": "timeout 120 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=never_call::relay --start-from=never_call::branch --dest-file=/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc -- --edition=2024 --crate-name never_call --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-call.rs",
+      "initial": {
+        "chunk_id": "0a5788",
+        "wall_time_seconds": 0.00000283,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "strict_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition 2024 --crate-name never_call --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-call.rs --emit metadata -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/lint.rmeta -D warnings",
+      "initial": {
+        "chunk_id": "e837e1",
+        "wall_time_seconds": 0.00000241,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "native",
+      "command": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/native-tests --test-threads=4",
+      "initial": {
+        "chunk_id": "0745c4",
+        "wall_time_seconds": 0.00000781,
+        "exit_code": 0,
+        "original_token_count": 76,
+        "output": "\nrunning 3 tests\ntest tests::ordinary_branch_does_not_call_source ... ok\ntest tests::relay_preserves_source_panic - should panic ... ok\ntest tests::taken_branch_preserves_source_panic - should panic ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "predecessor",
+      "command": "timeout 120 /nix/store/j64xdd5bjaidsmgslypki02v719jz72k-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/predecessor/NeverCall /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc",
+      "initial": {
+        "chunk_id": "af0af2",
+        "wall_time_seconds": 0.00000354,
+        "exit_code": 1,
+        "original_token_count": 938,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r[\u001b[91mError\u001b[39m] evaluate_function_symbolic failed on: never_call::relay\nUnexpected result: Cps.Unit\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 5:0-7:1\n[\u001b[93mWarn\u001b[39m ] Could not translate the body of function 'never_call::relay because of previous error\nName pattern: 'never_call::relay'\nDefinition span: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 5:0-7:1\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 5:0-7:1\nCompiler source: interp/Interp.ml, line 621\n\n\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\r[\u001b[91mError\u001b[39m] evaluate_function_symbolic failed on: never_call::branch\nUnexpected result: Cps.Unit\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 9:0-11:1\n[\u001b[93mWarn\u001b[39m ] Could not translate the body of function 'never_call::branch because of previous error\nName pattern: 'never_call::branch'\nDefinition span: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 9:0-11:1\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 9:0-11:1\nCompiler source: interp/Interp.ml, line 621\n\n\rTranslated transparent functions:  [#####################################] 2/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/predecessor/NeverCall\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 1 unique errors): /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/predecessor/NeverCall/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 1 unique errors): /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/predecessor/NeverCall/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/predecessor/NeverCall/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.350869 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "scope_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --edition 2024 --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-scopes.rs",
+      "initial": {
+        "chunk_id": "6971ff",
+        "wall_time_seconds": 0.00001064,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "scope_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition 2024 --crate-name never_scopes --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-scopes.rs --emit metadata -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/scope-lint.rmeta -D warnings",
+      "initial": {
+        "chunk_id": "ed3686",
+        "wall_time_seconds": 0.00000254,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "scope_native_build",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition 2024 --crate-name never_scopes --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/never-scopes.rs -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/scope-native-tests -D warnings",
+      "initial": {
+        "chunk_id": "0ab4c3",
+        "wall_time_seconds": 0.00000379,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "scope_native",
+      "command": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/scope-native-tests --test-threads=4",
+      "initial": {
+        "chunk_id": "b5d67e",
+        "wall_time_seconds": 0.0000039,
+        "exit_code": 0,
+        "original_token_count": 89,
+        "output": "\nrunning 4 tests\ntest tests::borrowed_ordinary_branch_preserves_alias ... ok\ntest tests::borrowed_taken_branch_preserves_panic - should panic ... ok\ntest tests::loop_ordinary_branch ... ok\ntest tests::loop_taken_branch_preserves_panic - should panic ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "translate_NeverScopes",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverScopes.llbc",
+      "initial": {
+        "chunk_id": "3cfb8a",
+        "wall_time_seconds": 0.00000488,
+        "exit_code": 0,
+        "original_token_count": 652,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverScopes.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/3 ⠋\r\rApplied prepasses:  [#################-----------------------------------] 1/3 ⠙\rApplied prepasses:  [####################################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/3 ⠋\r\rTranslated transparent functions:  [############-------------------------] 1/3 ⠋\r\rTranslated transparent functions:  [########################-------------] 2/3 ⠙\r\rTranslated transparent functions:  [#####################################] 3/3 ⠙\rTranslated transparent functions:  [#####################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/3 ⠋\r\rPost-processed translated transparent functions:  [#######---------------] 1/3 ⠋\r\rPost-processed translated transparent functions:  [##############--------] 2/3 ⠙\rPost-processed translated transparent functions:  [######################] 3/3 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.498231 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "translate_NeverCall",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc",
+      "initial": {
+        "chunk_id": "e4698c",
+        "wall_time_seconds": 0.00000263,
+        "exit_code": 0,
+        "original_token_count": 608,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\r\rTranslated transparent functions:  [#####################################] 2/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.341238 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "types_NeverCall",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3 -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Types.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Types.lean",
+      "initial": {
+        "chunk_id": "6615e4",
+        "wall_time_seconds": 1.000197671,
+        "session_id": 87952,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "3f0eeb",
+          "wall_time_seconds": 0.00000152,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "types_NeverScopes",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3 -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Types.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Types.lean",
+      "initial": {
+        "chunk_id": "bcc496",
+        "wall_time_seconds": 1.000944285,
+        "session_id": 55711,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "330cb3",
+          "wall_time_seconds": 9.9e-7,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "funs_NeverCall",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3 -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Funs.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverCall/Funs.lean",
+      "initial": {
+        "chunk_id": "21e42f",
+        "wall_time_seconds": 1.000787751,
+        "session_id": 42871,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "5056e5",
+          "wall_time_seconds": 0.0000022,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "funs_NeverScopes",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3 -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Funs.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3/NeverScopes/Funs.lean",
+      "initial": {
+        "chunk_id": "08863b",
+        "wall_time_seconds": 1.00088933,
+        "session_id": 59598,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "71d1d3",
+          "wall_time_seconds": 0.00000108,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "panic-mutant",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/Witness.lean",
+      "initial": {
+        "chunk_id": "c0f4ef",
+        "wall_time_seconds": 1.00080754,
+        "session_id": 85567,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "ff04a0",
+          "wall_time_seconds": 0.00000186,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "mutant",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/Witness.lean",
+      "initial": {
+        "chunk_id": "5d15ea",
+        "wall_time_seconds": 0.623407037,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "r3_while",
+      "command": "timeout 180 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json  -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while dev/ud07-loop-return-Wkt24U/while_only.llbc",
+      "initial": {
+        "chunk_id": "3ec5d2",
+        "wall_time_seconds": 0.0000049,
+        "exit_code": 0,
+        "original_token_count": 550,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: dev/ud07-loop-return-Wkt24U/while_only.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠙\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while/WhileOnly.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.467600 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "r3_switch_call",
+      "command": "timeout 180 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json  -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call dev/loop-return-order-review-W6T76i/loop_switch_call.llbc",
+      "initial": {
+        "chunk_id": "ee6a8f",
+        "wall_time_seconds": 0.0000029,
+        "exit_code": 0,
+        "original_token_count": 643,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: dev/loop-return-order-review-W6T76i/loop_switch_call.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/4 ⠋\r\rApplied prepasses:  [#############---------------------------------------] 1/4 ⠙\r\rApplied prepasses:  [##########################--------------------------] 2/4 ⠙\rApplied prepasses:  [####################################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/3 ⠋\r\rTranslated transparent functions:  [############-------------------------] 1/3 ⠙\r\rTranslated transparent functions:  [########################-------------] 2/3 ⠹\rTranslated transparent functions:  [#####################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/3 ⠋\r\rPost-processed translated transparent functions:  [#######---------------] 1/3 ⠋\r\rPost-processed translated transparent functions:  [##############--------] 2/3 ⠋\rPost-processed translated transparent functions:  [######################] 3/3 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call/LoopSwitchCall.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.595348 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "r3_switch",
+      "command": "timeout 180 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json  -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch dev/loop-return-order-review-W6T76i/loop_switch.llbc",
+      "initial": {
+        "chunk_id": "9e9904",
+        "wall_time_seconds": 0.0000037,
+        "exit_code": 0,
+        "original_token_count": 574,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: dev/loop-return-order-review-W6T76i/loop_switch.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/1 ⠋\r\rTranslated transparent functions:  [#####################################] 1/1 ⠙\rTranslated transparent functions:  [#####################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/1 ⠋\r\rPost-processed translated transparent functions:  [######################] 1/1 ⠋\rPost-processed translated transparent functions:  [######################] 1/1 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch/LoopSwitch.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.591174 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while",
+      "name": "lean_WhileOnly",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o WhileOnly.olean WhileOnly.lean",
+      "initial": {
+        "chunk_id": "ca8e53",
+        "wall_time_seconds": 1.000981134,
+        "session_id": 18146,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "60203b",
+          "wall_time_seconds": 0.00000115,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch",
+      "name": "lean_LoopSwitch",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopSwitch.olean LoopSwitch.lean",
+      "initial": {
+        "chunk_id": "0d0c79",
+        "wall_time_seconds": 0.797497757,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call",
+      "name": "lean_LoopSwitchCall",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopSwitchCall.olean LoopSwitchCall.lean",
+      "initial": {
+        "chunk_id": "f60064",
+        "wall_time_seconds": 1.001460607,
+        "session_id": 11565,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "68e2db",
+          "wall_time_seconds": 0.00000184,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "while_laws",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean",
+      "initial": {
+        "chunk_id": "874604",
+        "wall_time_seconds": 1.00130904,
+        "session_id": 1711,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "42aa7b",
+          "wall_time_seconds": 0.00000104,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "post_loop_laws",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/regression/r3_switch_call:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/PostLoopLaws.lean",
+      "initial": {
+        "chunk_id": "f5411d",
+        "wall_time_seconds": 0.960929105,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverBuildR3",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/package.nix --max-jobs 1 --cores 4",
+      "initial": {
+        "chunk_id": "18366b",
+        "wall_time_seconds": 1.000640132,
+        "session_id": 65343,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "1e889d",
+          "wall_time_seconds": 5.000681022,
+          "session_id": 65343,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/hq4rdd4jd7xffca8kyra148kqzd8s59l-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/hq4rdd4jd7xffca8kyra148kqzd8s59l-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "ff9c49",
+          "wall_time_seconds": 2.169032421,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverDaeR3",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc",
+      "initial": {
+        "chunk_id": "ab4c43",
+        "wall_time_seconds": 0.510393843,
+        "exit_code": 0,
+        "original_token_count": 727,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingSource.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/14 ⠋\r\rApplied prepasses:  [###-----------------------------------------------]  1/14 ⠙\rApplied prepasses:  [##################################################] 14/14 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/10 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/10 ⠙\r\rTranslated transparent functions:  [#######----------------------------]  2/10 ⠙\r\rTranslated transparent functions:  [#####################--------------]  6/10 ⠙\r\rTranslated transparent functions:  [###################################] 10/10 ⠹\rTranslated transparent functions:  [###################################] 10/10 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [##########------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###########------------------------------------] 1/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/10 ⠋\r\rPost-processed translated transparent functions:  [##------------------]  1/10 ⠋\rPost-processed translated transparent functions:  [####################] 10/10 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-source-r3/DaeBuiltinBindingSource/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.448004 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverDaePanicR3",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingPanic.llbc",
+      "initial": {
+        "chunk_id": "7433a6",
+        "wall_time_seconds": 0.545118879,
+        "exit_code": 0,
+        "original_token_count": 725,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-builtin-binding-QhcHRF/DaeBuiltinBindingPanic.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/17 ⠋\r\rApplied prepasses:  [##------------------------------------------------]  1/17 ⠙\rApplied prepasses:  [##################################################] 17/17 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/5 ⠋\rTranslated opaque functions:  [##########################################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/11 ⠋\r\rTranslated transparent functions:  [###--------------------------------]  1/11 ⠙\r\rTranslated transparent functions:  [######-----------------------------]  2/11 ⠙\r\rTranslated transparent functions:  [###################----------------]  6/11 ⠙\r\rTranslated transparent functions:  [###################################] 11/11 ⠹\rTranslated transparent functions:  [###################################] 11/11 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/5 ⠋\rTranslated trait declarations:  [################------------------------] 2/5 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/6 ⠋\rTranslated trait impls:  [#######################------------------------] 3/6 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/5 ⠋\r\rPost-processed translated opaque functions:  [#####----------------------] 1/5 ⠋\rPost-processed translated opaque functions:  [###########################] 5/5 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/11 ⠋\r\rPost-processed translated transparent functions:  [#-------------------]  1/11 ⠋\rPost-processed translated transparent functions:  [####################] 11/11 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/dae-panic-r3/DaeBuiltinBindingPanic/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.473441 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverLawsR3",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean",
+      "initial": {
+        "chunk_id": "1875da",
+        "wall_time_seconds": 1.001076818,
+        "session_id": 63084,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "f347a6",
+          "wall_time_seconds": 0.00000151,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverCoqRefusal",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend coq -checks -sequential -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/refused-coq /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc",
+      "initial": {
+        "chunk_id": "60241c",
+        "wall_time_seconds": 0.00000422,
+        "exit_code": 1,
+        "original_token_count": 720,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverCall.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\r\rTranslated transparent functions:  [#####################################] 2/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/refused-coq\n[\u001b[93mWarn\u001b[39m ] Could not copy the primitives file: /backends/coq/Primitives.v.\nYou will have to copy it/set up the project by hand.\nCompiler source: Translate.ml, line 1828\n\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/refused-coq/NeverCall_Types.v\n[\u001b[91mError\u001b[39m] Never elimination is only supported by the Lean backend\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 5:0-7:1\n[\u001b[91mError\u001b[39m] Never elimination is only supported by the Lean backend\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-call.rs', lines 9:0-11:1\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 2 errors, including 1 unique errors): /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/refused-coq/NeverCall_Funs.v\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.336703 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverMutantCharon",
+      "command": "timeout 120 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=never_call::relay --start-from=never_call::branch --dest-file=/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall.llbc -- --edition=2024 --crate-name never_call --crate-type lib /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/never-call.rs",
+      "initial": {
+        "chunk_id": "8b2e3c",
+        "wall_time_seconds": 0.646381428,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverMutantAeneas",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall.llbc",
+      "initial": {
+        "chunk_id": "d4db45",
+        "wall_time_seconds": 0.393710664,
+        "exit_code": 0,
+        "original_token_count": 604,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\r\rTranslated transparent functions:  [#####################################] 2/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.333023 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverMutantTypes",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Types.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Types.lean",
+      "initial": {
+        "chunk_id": "af3882",
+        "wall_time_seconds": 1.00130408,
+        "session_id": 4943,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "3c423e",
+          "wall_time_seconds": 0.0000014,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverMutantFuns",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Funs.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/NeverCall/Funs.lean",
+      "initial": {
+        "chunk_id": "6a6d51",
+        "wall_time_seconds": 1.000741175,
+        "session_id": 81353,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "a2edf5",
+          "wall_time_seconds": 0.00000167,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverMutantLaws",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean",
+      "initial": {
+        "chunk_id": "9fcaea",
+        "wall_time_seconds": 0.841675317,
+        "exit_code": 1,
+        "original_token_count": 215,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:32:2: error: Tactic `rfl` failed: The left-hand side\n  never_call.branch model source false\nis not definitionally equal to the right-hand side\n  Result.ok 7#u32\n\nS : Type\nmodel : never_call.NeverSource S\nsource : S\n⊢ never_call.branch model source false = Result.ok 7#u32\n'NeverCallLaws.branch_ordinary' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:103:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'NeverCallLaws.branch_ordinary' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'NeverCallLaws.branch_ordinary' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverCountMutantNativeBuild",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition 2024 --crate-name never_call --test /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/never-call.rs -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/native-tests -D warnings",
+      "initial": {
+        "chunk_id": "200eb0",
+        "wall_time_seconds": 0.049069544,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverCountMutantNative",
+      "command": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/native-tests --test-threads=4",
+      "initial": {
+        "chunk_id": "ec2b68",
+        "wall_time_seconds": 0.00000492,
+        "exit_code": 101,
+        "original_token_count": 164,
+        "output": "\nrunning 3 tests\ntest tests::relay_preserves_source_panic - should panic ... ok\ntest tests::ordinary_branch_does_not_call_source ... FAILED\ntest tests::taken_branch_preserves_source_panic - should panic ... ok\n\nfailures:\n\n---- tests::ordinary_branch_does_not_call_source stdout ----\n\nthread 'tests::ordinary_branch_does_not_call_source' (4112663) panicked at /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/mutant/never-call.rs:28:9:\nassertion `left == right` failed\n  left: 9\n right: 7\n\n\nfailures:\n    tests::ordinary_branch_does_not_call_source\n\ntest result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicMutantCharon",
+      "command": "timeout 120 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=never_call::relay --start-from=never_call::branch --dest-file=/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall.llbc -- --edition=2024 --crate-name never_call --crate-type lib /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/never-call.rs",
+      "initial": {
+        "chunk_id": "dcd312",
+        "wall_time_seconds": 0.354362906,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicMutantAeneas",
+      "command": "timeout 120 /nix/store/nbp8w3in4wdsf1rcgzpx5m9j8apjnbns-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall.llbc",
+      "initial": {
+        "chunk_id": "0d8f1a",
+        "wall_time_seconds": 0.00000533,
+        "exit_code": 0,
+        "original_token_count": 611,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/3 ⠋\r\rApplied prepasses:  [#################-----------------------------------] 1/3 ⠋\rApplied prepasses:  [####################################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠋\r\rTranslated transparent functions:  [#####################################] 2/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.352975 seconds\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicMutantTypes",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Types.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Types.lean",
+      "initial": {
+        "chunk_id": "1bc46d",
+        "wall_time_seconds": 1.000399399,
+        "session_id": 99068,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "2c9309",
+          "wall_time_seconds": 0.00000119,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicMutantFuns",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Funs.olean /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/NeverCall/Funs.lean",
+      "initial": {
+        "chunk_id": "f2b261",
+        "wall_time_seconds": 1.001123834,
+        "session_id": 70040,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "a221da",
+          "wall_time_seconds": 0.00000158,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicMutantLaws",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant:/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean",
+      "initial": {
+        "chunk_id": "54a12a",
+        "wall_time_seconds": 1.001962015,
+        "session_id": 26930,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "2ae453",
+          "wall_time_seconds": 0.00000188,
+          "exit_code": 1,
+          "original_token_count": 786,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:18:15: error: unsolved goals\ncase fail\nS : Type\nmodel : never_call.NeverSource S\nsource : S\nerror : Error\nh : model.run source = Result.fail error\n⊢ Error.panic = error\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:19:8: error: unsolved goals\ncase div\nS : Type\nmodel : never_call.NeverSource S\nsource : S\nh : model.run source = Result.div\n⊢ False\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:18:51: error: This simp argument is unused:\n  h\n\nHint: Omit it from the simp argument list.\n  simp [never_call.relay, outcome,̵ ̵h̵]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:19:44: error: This simp argument is unused:\n  h\n\nHint: Omit it from the simp argument list.\n  simp [never_call.relay, outcome,̵ ̵h̵]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:26:15: error: unsolved goals\ncase fail\nS : Type\nmodel : never_call.NeverSource S\nsource : S\nerror : Error\nh : model.run source = Result.fail error\n⊢ Error.assertionFailure = error\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:27:8: error: unsolved goals\ncase div\nS : Type\nmodel : never_call.NeverSource S\nsource : S\nh : model.run source = Result.div\n⊢ False\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:26:52: error: This simp argument is unused:\n  h\n\nHint: Omit it from the simp argument list.\n  simp [never_call.branch, outcome,̵ ̵h̵]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:27:45: error: This simp argument is unused:\n  h\n\nHint: Omit it from the simp argument list.\n  simp [never_call.branch, outcome,̵ ̵h̵]\n\nNote: This linter can be disabled with `set_option linter.unusedSimpArgs false`\n'NeverCallLaws.relay_outcome' depends on axioms: [sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:97:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'NeverCallLaws.relay_outcome' depends on axioms: [propext]\n+ info: 'NeverCallLaws.relay_outcome' depends on axioms: [sorryAx]\n'NeverCallLaws.branch_taken_outcome' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:100:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'NeverCallLaws.branch_taken_outcome' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'NeverCallLaws.branch_taken_outcome' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicNativeBuild",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition 2024 --crate-name never_call --test /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/never-call.rs -o /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/native-tests -D warnings",
+      "initial": {
+        "chunk_id": "f32144",
+        "wall_time_seconds": 0.00000283,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverPanicNative",
+      "command": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/panic-mutant/native-tests --test-threads=4",
+      "initial": {
+        "chunk_id": "20c692",
+        "wall_time_seconds": 0.0000051,
+        "exit_code": 0,
+        "original_token_count": 76,
+        "output": "\nrunning 3 tests\ntest tests::ordinary_branch_does_not_call_source ... ok\ntest tests::relay_preserves_source_panic - should panic ... ok\ntest tests::taken_branch_preserves_source_panic - should panic ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverFinalFormat",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --check /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/Translate.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/extract/Extract.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/interp/InterpStatements.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureTypeCheck.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/symbolic/SymbolicToPure.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/symbolic/SymbolicToPureCore.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/symbolic/SymbolicToPureExpressions.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesLoops.ml /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml",
+      "initial": {
+        "chunk_id": "3e29e7",
+        "wall_time_seconds": 0.680896449,
+        "exit_code": 0,
+        "original_token_count": 483,
+        "output": "Warning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 1829, character 59 to line 1831, character 8:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 1831, character 11 to line 1833, character 6:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 2196, character 4 to line 2202, character 5:\n'{\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    }': bad markup.\nSuggestion: did you mean '{!\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    }' or '[\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    ]'?\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 2380, character 9 to line 2382, character 7:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 2382, character 10 to line 2384, character 6:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 2390, character 17 to line 2392, character 9:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/after/pure/PureMicroPassesGeneral.ml\", line 2392, character 12 to line 2394, character 7:\nBlank line is not allowed in '[...]' (code).\n"
+      },
+      "observations": []
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK",
+      "name": "neverFinalDiffCheck",
+      "command": "git diff --no-index --check -- before after",
+      "initial": {
+        "chunk_id": "825e73",
+        "wall_time_seconds": 0.00000334,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [],
+      "interpretation": "exit 1 with empty output reports differing trees and no whitespace errors"
+    },
+    {
+      "cwd": "/home/jgoppert/git/rumoca",
+      "name": "neverBaselineFormatWarnings",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --check /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml",
+      "initial": {
+        "chunk_id": "574063",
+        "wall_time_seconds": 0.021573653,
+        "exit_code": 0,
+        "original_token_count": 485,
+        "output": "Warning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 1828, character 59 to line 1830, character 8:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 1830, character 11 to line 1832, character 6:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 2195, character 4 to line 2201, character 5:\n'{\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    }': bad markup.\nSuggestion: did you mean '{!\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    }' or '[\n      alloc.boxed.CloneBox.clone CloneInst x\n\n          ~>\n\n      CloneInst.clone x\n    ]'?\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 2379, character 9 to line 2381, character 7:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 2381, character 10 to line 2383, character 6:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 2389, character 17 to line 2391, character 9:\nBlank line is not allowed in '[...]' (code).\nWarning: Invalid documentation comment:\nFile \"/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/before/pure/PureMicroPassesGeneral.ml\", line 2391, character 12 to line 2393, character 7:\nBlank line is not allowed in '[...]' (code).\n"
+      },
+      "observations": []
+    }
+  ],
+  "history": {
+    "r1": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/r1-run-evidence.json",
+    "r2": "/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/r2-run-evidence.json",
+    "r2_scopes": {
+      "command": "timeout 120 /nix/store/q5bp9xr7hw4rjy6nqh4gchxdyk5r664l-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -dest /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/scopes-r2/NeverScopes /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverScopes.llbc",
+      "initial": {
+        "chunk_id": "6531f0",
+        "wall_time_seconds": 0.48249409,
+        "exit_code": 2,
+        "original_token_count": 1098,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/NeverScopes.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/3 ⠋\r\rApplied prepasses:  [#################-----------------------------------] 1/3 ⠙\rApplied prepasses:  [####################################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/3 ⠋\r\rTranslated transparent functions:  [############-------------------------] 1/3 ⠋\r\rTranslated transparent functions:  [########################-------------] 2/3 ⠙\r\rTranslated transparent functions:  [#####################################] 3/3 ⠙\rTranslated transparent functions:  [#####################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/3 ⠋\r[\u001b[91mError\u001b[39m] Unexpected: match with no branches\nSource: 'infra/verification/aeneas/candidates/never-call-continuation/never-scopes.rs', lines 5:0-7:1\nPost-processed translated transparent functions:  [----------------------] 0/3 ✔️\r\n\u001b[?25hUncaught exception:\n  \n  Aeneas.Errors.CFailure(_)\n\nRaised at Aeneas__Errors.craise_opt_span in file \"Errors.ml\", line 123, characters 4-46\nCalled from Aeneas__Errors.craise in file \"Errors.ml\" (inlined), line 126, characters 2-43\nCalled from Aeneas__PureUtils.mk_switch in file \"pure/PureUtils.ml\", line 889, characters 8-73\nCalled from Aeneas__PureMicroPassesLoops.filter_loop_useless_inputs_outputs.update in file \"pure/PureMicroPassesLoops.ml\", line 1669, characters 19-30\nCalled from Aeneas__PureMicroPassesLoops.filter_loop_useless_inputs_outputs.(fun) in file \"pure/PureMicroPassesLoops.ml\", line 1740, characters 38-54\nCalled from Stdlib__Option.map in file \"option.ml\", line 24, characters 57-62\nCalled from Aeneas__PureMicroPassesLoops.filter_loop_useless_inputs_outputs in file \"pure/PureMicroPassesLoops.ml\", lines 1737-1742, characters 4-14\nCalled from Aeneas__PureMicroPasses.apply_passes_to_def.(fun) in file \"pure/PureMicroPasses.ml\", line 243, characters 21-33\nCalled from Stdlib__List.fold_left in file \"list.ml\", line 123, characters 24-34\nCalled from Aeneas__PureMicroPasses.apply_passes_to_def in file \"pure/PureMicroPasses.ml\", lines 232-255, characters 4-16\nCalled from Aeneas__PureMicroPasses.apply_passes_to_pure_fun_translations.apply in file \"pure/PureMicroPasses.ml\", line 361, characters 26-51\nCalled from Aeneas__PureMicroPasses.apply_passes_to_pure_fun_translations.process.(fun) in file \"pure/PureMicroPasses.ml\", line 528, characters 22-34\nCalled from Stdlib__List.map in file \"list.ml\", line 86, characters 15-19\nCalled from Aeneas__Parallel.catch_reraise in file \"Parallel.ml\", line 17, characters 6-9\nCalled from Progress_engine__Renderer.Make.Reporters.apply_all in file \"src/progress/engine/renderer.ml\", line 507, characters 54-59\nCalled from Stdlib__Fun.protect in file \"fun.ml\", line 34, characters 8-15\nRe-raised at Stdlib__Fun.protect in file \"fun.ml\", line 39, characters 6-52\nCalled from Aeneas__PureMicroPasses.apply_passes_to_pure_fun_translations in file \"pure/PureMicroPasses.ml\", line 535, characters 22-62\nCalled from Aeneas__Translate.translate_crate_to_pure in file \"Translate.ml\", lines 609-610, characters 4-46\nCalled from Aeneas__Translate.translate_crate in file \"Translate.ml\", line 2241, characters 31-71\nCalled from Dune__exe__Main in file \"Main.ml\", lines 767-768, characters 8-37\n"
+      },
+      "observations": []
+    },
+    "first_lean_tactic_attempt": {
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/never-call-review-9p1kiK/candidate-r3:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean",
+      "initial": {
+        "chunk_id": "a333d8",
+        "wall_time_seconds": 1.001697196,
+        "session_id": 41261,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "2af86d",
+          "wall_time_seconds": 0.00000156,
+          "exit_code": 1,
+          "original_token_count": 728,
+          "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:18:62: error: Invalid simp theorem: Expected a proposition, but found\n  (x_0 : Type _abstMVar.0) → (x_1 : Type _abstMVar.1) → Result x_0 → (x_0 → Result x_1) → Result x_1\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:19:55: error: Ambiguous term\n  bind\nPossible interpretations:\n  Std.bind : Result ?m.62 → (?m.62 → Result ?m.63) → Result ?m.63\n  \n  Bind.bind : ?m.62 ?m.64 → (?m.64 → ?m.62 ?m.65) → ?m.62 ?m.65\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:26:63: error: Invalid simp theorem: Expected a proposition, but found\n  (x_0 : Type _abstMVar.0) → (x_1 : Type _abstMVar.1) → Result x_0 → (x_0 → Result x_1) → Result x_1\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:27:56: error: Ambiguous term\n  bind\nPossible interpretations:\n  Std.bind : Result ?m.62 → (?m.62 → Result ?m.63) → Result ?m.63\n  \n  Bind.bind : ?m.62 ?m.64 → (?m.64 → ?m.62 ?m.65) → ?m.62 ?m.65\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:39:61: error: Invalid simp theorem: Expected a proposition, but found\n  (x_0 : Type _abstMVar.0) → (x_1 : Type _abstMVar.1) → Result x_0 → (x_0 → Result x_1) → Result x_1\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:40:54: error: Ambiguous term\n  bind\nPossible interpretations:\n  Std.bind : Result ?m.61 → (?m.61 → Result ?m.62) → Result ?m.62\n  \n  Bind.bind : ?m.61 ?m.63 → (?m.63 → ?m.61 ?m.64) → ?m.61 ?m.64\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:48:67: error: Invalid simp theorem: Expected a proposition, but found\n  (x_0 : Type _abstMVar.0) → (x_1 : Type _abstMVar.1) → Result x_0 → (x_0 → Result x_1) → Result x_1\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:49:60: error: Ambiguous term\n  bind\nPossible interpretations:\n  Std.bind : Result ?m.62 → (?m.62 → Result ?m.63) → Result ?m.63\n  \n  Bind.bind : ?m.62 ?m.64 → (?m.64 → ?m.62 ?m.65) → ?m.62 ?m.65\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:65:68: error: Invalid simp theorem: Expected a proposition, but found\n  (x_0 : Type _abstMVar.0) → (x_1 : Type _abstMVar.1) → Result x_0 → (x_0 → Result x_1) → Result x_1\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/never-call-continuation/Laws.lean:67:68: error: Ambiguous term\n  bind\nPossible interpretations:\n  Std.bind : Result ?m.67 → (?m.67 → Result ?m.68) → Result ?m.68\n  \n  Bind.bind : ?m.67 ?m.69 → (?m.69 → ?m.67 ?m.70) → ?m.67 ?m.70\n"
+        }
+      ]
+    }
+  },
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Both Rust fixtures translate with zero opaque functions; generated Types/Funs compile unchanged; 10 outcome laws pass with guarded standard axioms only."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Seven native Rust tests, strict Clippy, Rust format and OCaml format pass. OCaml format reports the same seven pre-existing documentation warnings on the unchanged base."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The 7-to-9 source mutant emits and Lean-checks, then fails both the unchanged native oracle and Lean law; an independent wrong-answer witness compiles."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The call-to-panic source mutant passes all three native tests and emits/typechecks, but fails unchanged universal error/divergence laws; a witness of the erased call compiles."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Both unchanged DAE-shaped expect source-retention inputs emit beyond Cps.Unit. The source route still has expect_failed external; the deeper route still has two Display::fmt and panic_display external. Neither module is admitted or Lean-checked with invented external definitions."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Three prior loop fixtures emit/typecheck and their 13 unchanged guarded laws pass."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Coq backend explicitly refuses Never elimination."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "The source expectation failure and reduced Never call share the repaired symbolic-control-flow owner; no claim of universal translator semantic preservation follows from fixture proofs."
+    }
+  ],
+  "not_run": [
+    {
+      "command": "cargo xtask verify lean-pilot",
+      "reason": "This candidate is not adopted into live tool pins; UD07 still lacks reviewed library contracts and canonical registration."
+    },
+    {
+      "command": "cargo xtask verify quick; cargo xtask verify full",
+      "reason": "No production/pin capability changed in this candidate cut; prior broad quick remains red. These gates have not been made green by this work."
+    },
+    {
+      "command": "full upstream Aeneas test suite",
+      "reason": "This packet contains bounded source regressions, not a full upstream campaign."
+    },
+    {
+      "command": "Lean compilation of DaeBuiltinBindingSource/Funs and DaeBuiltinBindingPanic/Funs",
+      "reason": "Their external library definitions remain unadmitted; no semantic axioms supplied."
+    }
+  ],
+  "limits": [
+    "Generic successful values of Never are impossible in the pinned Lean model.",
+    "Only Lean extraction is supported by this new elimination.",
+    "All IR mutation and proof claims are fixture-bounded; UnitDerivative remains 1/18.",
+    "No production compiler source, brand, live pin, or existing library model was changed.",
+    "The pinned Rust, Charon/Aeneas translation, Lean kernel and existing library semantics remain trusted under the pilot boundary."
+  ]
+}

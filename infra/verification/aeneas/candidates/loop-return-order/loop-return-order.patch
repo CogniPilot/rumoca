@@ -1,0 +1,14 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -2370,8 +2370,10 @@
+       ("erase_body_regions", erase_body_regions);
+       ("remove_unreachable", remove_unreachable);
+       ("remove_dead_drop_switches", remove_dead_drop_switches);
+-      ("update_loop", update_loops);
++      (* Expose supported shared return continuations inside branches before
++         normalizing early returns from loops nested in those branches. *)
+       ("remove_useless_joins", remove_useless_joins);
++      ("update_loop", update_loops);
+       ( "remove_shallow_borrows_storage_live_dead",
+         remove_shallow_borrows_storage_live_dead );
+       ("decompose_str_borrows", decompose_str_borrows);

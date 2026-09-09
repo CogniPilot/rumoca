@@ -1,0 +1,12 @@
+diff -ru b/Translate.ml m/Translate.ml
+--- a/Translate.ml	2026-09-08 10:20:32.471547601 -0400
++++ b/Translate.ml	2026-09-08 10:20:57.827120074 -0400
+@@ -1957,8 +1957,6 @@
+              noncomputable = false;
+            }
+          in
+-         EmitJson.record_float_dependencies_if_enabled float_types
+-           ~lean_file:(Filename.basename opaque_filename);
+          extract_file opaque_config ctx file_info;
+          (* Return the additional dependencies *)
+          [ opaque_imported_module ])

@@ -1,0 +1,49 @@
+--- a/extract/ExtractName.ml
++++ b/extract/ExtractName.ml
+@@ -162,3 +162,20 @@
+-let name_to_simple_name (ctx : ctx) (n : Types.name) : string list =
+-  let c = default_to_pat_config in
+-  pattern_to_extract_name None (name_to_pattern ctx c n)
++(** A specialized declaration carries the substitution from its remaining
++    parameters to the original item. Keep that substitution when deriving a
++    name or selecting a builtin contract, even without call-site arguments. *)
++let instantiated_name_generics (name : Types.name) :
++    (Types.generic_params * Types.generic_args) option =
++  match List.rev name with
++  | Types.PeInstantiated binder :: _ ->
++      let params = binder.binder_params in
++      Some (params, Charon.TypesUtils.generic_args_of_params None params)
++  | _ -> None
++
++let name_to_simple_name (ctx : ctx) (n : Types.name) : string list =
++  let c = default_to_pat_config in
++  let pattern =
++    match instantiated_name_generics n with
++    | None -> name_to_pattern ctx c n
++    | Some (params, args) ->
++        name_with_generics_to_pattern ctx c params n args
++  in
++  pattern_to_extract_name None pattern
+--- a/TranslateCore.ml
++++ b/TranslateCore.ml
+@@ -45,4 +45,7 @@
+-let match_name_find_opt (ctx : trans_ctx) (name : Types.name)
+-    (m : 'a NameMatcher.NameMatcherMap.t) : 'a option =
+-  let mctx = NameMatcher.ctx_from_crate ctx.crate in
+-  ExtractBuiltin.NameMatcherMap.find_opt mctx name m
++let match_name_find_opt (ctx : trans_ctx) (name : Types.name)
++    (m : 'a NameMatcher.NameMatcherMap.t) : 'a option =
++  let mctx = NameMatcher.ctx_from_crate ctx.crate in
++  match instantiated_name_generics name with
++  | None -> ExtractBuiltin.NameMatcherMap.find_opt mctx name m
++  | Some (_, args) ->
++      ExtractBuiltin.NameMatcherMap.find_with_generics_opt mctx name args m
+@@ -67,2 +70,7 @@
+-  let pat = LlbcAstUtils.name_to_pattern span mctx c n in
++  let pat =
++    match instantiated_name_generics n with
++    | None -> LlbcAstUtils.name_to_pattern span mctx c n
++    | Some (params, args) ->
++        LlbcAstUtils.name_with_generics_to_pattern span mctx c params n args
++  in
+   Charon.NameMatcher.pattern_to_string { tgt = TkPattern } pat

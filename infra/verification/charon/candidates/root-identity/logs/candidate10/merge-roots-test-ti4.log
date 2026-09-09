@@ -1,0 +1,10 @@
+   Compiling charon v0.1.248 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.43s
+     Running tests/merge_roots.rs (target/debug/build/charon/7de83608b525823c/out/merge_roots-7de83608b525823c)
+
+running 1 test
+test mutually_recursive_roots_survive_the_merge ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.96s
+
+exit=0

@@ -1,0 +1,256 @@
+diff -ru a/EmitJson.ml b/EmitJson.ml
+--- a/EmitJson.ml	2026-09-08 10:09:43.008877859 -0400
++++ b/EmitJson.ml	2026-09-08 10:13:45.508511154 -0400
+@@ -42,6 +42,13 @@
+ [@@deriving to_yojson]
+ 
+ (** Lean type declaration. *)
++type float_dependency = {
++  width : int;
++  lean_name : string;
++  lean_file : string;
++}
++[@@deriving to_yojson]
++
+ type type_entry = {
+   def_id : int;
+   lean_name : string;
+@@ -104,6 +111,7 @@
+   globals : global_entry list;
+   trait_decls : trait_decl_entry list;
+   trait_impls : trait_impl_entry list;
++  float_dependencies : float_dependency list;
+ }
+ [@@deriving to_yojson]
+ 
+@@ -122,6 +130,7 @@
+   mutable global_entries : global_entry list;
+   mutable trait_decl_entries : trait_decl_entry list;
+   mutable trait_impl_entries : trait_impl_entry list;
++  mutable float_dependency_entries : float_dependency list;
+   mutable current_lean_file : string;
+   mutable current_lean_namespace : string;
+   mutable current_in_namespace : bool;
+@@ -130,6 +139,7 @@
+ 
+ let make_state () : state =
+   {
++    float_dependency_entries = [];
+     function_entries = [];
+     type_entries = [];
+     global_entries = [];
+@@ -342,7 +352,24 @@
+         globals = List.rev state.global_entries;
+         trait_decls = List.rev state.trait_decl_entries;
+         trait_impls = List.rev state.trait_impl_entries;
++        float_dependencies = List.rev state.float_dependency_entries;
+       };
+     Some path
+   end
+   else None
++
++(** Record the floating-point widths the translated crate depends on. Each is
++    a primitive the backend names but never defines, so the model file listed
++    here must supply it; the entry is what lets a consumer decide that. *)
++let record_float_dependencies_if_enabled (floats : Pure.float_type list)
++    ~(lean_file : string) : unit =
++  if !Config.emit_json then
++    state.float_dependency_entries <-
++      List.map
++        (fun (f : Pure.float_type) ->
++          let width =
++            match f with F16 -> 16 | F32 -> 32 | F64 -> 64 | F128 -> 128
++          in
++          { width; lean_name = "Aeneas.Std." ^ ExtractBase.float_name f; lean_file })
++        floats
++      @ state.float_dependency_entries
+diff -ru a/extract/ExtractTypes.ml b/extract/ExtractTypes.ml
+--- a/extract/ExtractTypes.ml	2026-09-08 10:09:43.009896003 -0400
++++ b/extract/ExtractTypes.ml	2026-09-08 10:13:45.510511161 -0400
+@@ -2177,3 +2177,24 @@
+         if backend () = Lean then
+           extract_type_decl_record_field_projectors_simp_lemmas ctx fmt kind
+             decl)
++
++(** Emit, into the external-types template, one required-model placeholder per
++    floating-point width the crate references. The backend prints the width as
++    a bare name (see [ExtractBase.float_name]) and defines it nowhere, so the
++    model file replacing this template must supply it under [Aeneas.Std]. The
++    placeholder is an axiom of the same shape the template uses for opaque
++    types; whether an unfilled placeholder may be admitted is the consumer's
++    decision, not the translator's. *)
++let extract_float_dependency_placeholders (fmt : F.formatter)
++    (floats : Pure.float_type list) : unit =
++  List.iter
++    (fun (f : Pure.float_type) ->
++      let name = ExtractBase.float_name f in
++      F.pp_print_string fmt
++        ("/-- [" ^ String.lowercase_ascii name
++       ^ "]: floating-point storage primitive referenced by this crate.\n\
++         \    The translator names it and does not define it; the model \
++          file must supply\n\
++         \    `Aeneas.Std." ^ name ^ "`. -/\n" ^ "axiom Aeneas.Std." ^ name
++       ^ " : Type\n\n"))
++    floats
+diff -ru a/pure/PureUtils.ml b/pure/PureUtils.ml
+--- a/pure/PureUtils.ml	2026-09-08 10:09:43.012374113 -0400
++++ b/pure/PureUtils.ml	2026-09-08 10:13:45.491511092 -0400
+@@ -2857,3 +2857,49 @@
+   in
+   let app1 = { e = App (binop, b0); ty = TArrow (bool_ty, bool_ty) } in
+   { e = App (app1, b1); ty = bool_ty }
++
++(** Float widths referenced anywhere in a set of translated declarations.
++
++    The walk is typed: it visits every [TFloat] in type declarations, function
++    signatures and bodies, globals and trait constants through the pure
++    visitors, so a width is found whether it appears in a field, a parameter,
++    a local or a literal, and never by inspecting emitted text. The result is
++    sorted and duplicate-free. *)
++let crate_float_types (types : type_decl list) (funs : fun_decl list)
++    (globals : global_decl list) (trait_decls : trait_decl list) :
++    float_type list =
++  let found : float_type list ref = ref [] in
++  let record (f : float_type) = if not (List.mem f !found) then found := f :: !found in
++  let ty_visitor =
++    object
++      inherit [_] iter_ty
++      method! visit_TFloat _ f = record f
++    end
++  in
++  let expr_visitor =
++    object
++      inherit [_] iter_expr
++      method! visit_TFloat _ f = record f
++    end
++  in
++  List.iter
++    (fun (d : type_decl) ->
++      match d.kind with
++      | Struct fields -> List.iter (fun (fd : field) -> ty_visitor#visit_ty () fd.field_ty) fields
++      | Enum variants ->
++          List.iter
++            (fun (v : variant) -> List.iter (fun (fd : field) -> ty_visitor#visit_ty () fd.field_ty) v.fields)
++            variants
++      | _ -> ())
++    types;
++  List.iter
++    (fun (f : fun_decl) ->
++      List.iter (ty_visitor#visit_ty ()) f.signature.inputs;
++      ty_visitor#visit_ty () f.signature.output;
++      Option.iter (fun (b : fun_body) -> expr_visitor#visit_texpr () b.body) f.body)
++    funs;
++  List.iter (fun (g : global_decl) -> ty_visitor#visit_ty () g.ty) globals;
++  List.iter
++    (fun (d : trait_decl) -> List.iter (fun (_, _, ty) -> ty_visitor#visit_ty () ty) d.consts)
++    trait_decls;
++  List.sort compare !found
+diff -ru a/Translate.ml b/Translate.ml
+--- a/Translate.ml	2026-09-08 10:09:43.009176061 -0400
++++ b/Translate.ml	2026-09-08 10:20:32.471547601 -0400
+@@ -639,6 +639,9 @@
+           extract the opaque types in an opaque module, because some non-opaque
+           types may refer to opaque types and vice-versa. *)
+   extract_globals : bool;
++  float_dependencies : Pure.float_type list;
++      (** Floating-point widths whose required-model placeholders this file
++          must carry; empty everywhere except the external-types template. *)
+       (** If [true], generate a definition/declaration for top-level (global)
+           declarations *)
+   interface : bool;
+@@ -1440,6 +1443,9 @@
+   | HOL4 -> Printf.fprintf out "val _ = export_theory ()\n"
+   | Coq -> Printf.fprintf out "End %s.\n" fi.module_name);
+ 
++  if config.float_dependencies <> [] then
++    ExtractTypes.extract_float_dependency_placeholders fmt config.float_dependencies;
++
+   (* Some logging *)
+   if !Errors.error_list <> [] then
+     log#linfo
+@@ -1857,13 +1863,34 @@
+     crate_has_opaque_non_builtin_decls ctx true
+   in
+   let has_opaque = has_opaque_types || has_opaque_funs in
++  (* Floating-point widths are primitives the backend names but never defines:
++     they are a dependency on an external model exactly like an opaque type,
++     found from the typed IR. *)
++  let float_types =
++    PureUtils.crate_float_types
++      (List.map snd (Pure.TypeDeclId.Map.bindings ctx.trans_types))
++      (List.concat_map
++         (fun (_, (t : pure_fun_translation)) -> (t.f :: t.loops) @ t.bodies)
++         (FunDeclId.Map.bindings ctx.trans_funs))
++      (List.map snd (GlobalDeclId.Map.bindings ctx.trans_globals))
++      (List.map snd (Pure.TraitDeclId.Map.bindings ctx.trans_trait_decls))
++  in
++  let has_float_types = float_types <> [] in
+ 
+   (* Extract one or several files, depending on the configuration *)
+-  (if !Config.split_files then (
++  if (not !Config.split_files) && has_float_types then
++    [%craise_opt_span] None
++       ("The crate references floating-point widths ("
++       ^ String.concat ", " (List.map ExtractBase.float_name float_types)
++       ^ ") whose model must be supplied by a TypesExternal module; single-file \
++          output has no such module to import. Use -split-files and provide the \
++          model, or remove the dependency.");
++   (if !Config.split_files then (
+      let base_gen_config =
+        {
+          extract_types = false;
+          extract_decreases_clauses = !Config.extract_decreases_clauses;
++         float_dependencies = [];
+          extract_template_decreases_clauses = false;
+          extract_fun_decls = false;
+          extract_trait_decls = false;
+@@ -1881,7 +1908,7 @@
+      (* If there are opaque types, we extract in an interface *)
+      (* Extract the opaque type declarations, if needed *)
+      let opaque_types_module =
+-       if has_opaque_types then (
++       if has_opaque_types || has_float_types then (
+          (* For F*, we generate an .fsti, and let the user write the .fst.
+             For the other backends, we generate a template file as a model
+             for the file the user has to provide. *)
+@@ -1910,6 +1937,7 @@
+              extract_opaque = true;
+              extract_transparent = false;
+              extract_types = true;
++             float_dependencies = float_types;
+              extract_trait_decls = true;
+              interface = true;
+            }
+@@ -1929,6 +1957,8 @@
+              noncomputable = false;
+            }
+          in
++         EmitJson.record_float_dependencies_if_enabled float_types
++           ~lean_file:(Filename.basename opaque_filename);
+          extract_file opaque_config ctx file_info;
+          (* Return the additional dependencies *)
+          [ opaque_imported_module ])
+@@ -2032,6 +2062,7 @@
+              extract_fun_decls = true;
+              extract_trait_impls = true;
+              extract_globals = true;
++             float_dependencies = [];
+              extract_transparent = false;
+              extract_opaque = true;
+              interface = true;
+@@ -2067,6 +2098,7 @@
+          extract_fun_decls = true;
+          extract_trait_impls = true;
+          extract_globals = true;
++         float_dependencies = [];
+        }
+      in
+      let clauses_module =
+@@ -2107,6 +2139,7 @@
+          extract_transparent = true;
+          extract_opaque = true;
+          extract_globals = true;
++         float_dependencies = [];
+          interface = false;
+        }
+      in

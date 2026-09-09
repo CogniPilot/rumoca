@@ -1,0 +1,7 @@
+test merge_reports_a_lost_selected_root ... ok
+test consumed_roots_carry_their_disposition ... ok
+test nonrecursive_roots_survive_the_merge ... ok
+test mutually_recursive_roots_survive_the_merge ... ok
+test explicit_selection_is_carried_and_its_dependency_is_not_a_root ... ok
+test selected_default_method_survives_the_merge ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.03s

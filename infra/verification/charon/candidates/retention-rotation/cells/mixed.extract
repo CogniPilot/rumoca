@@ -1,0 +1,17 @@
+IMPL mixed::A for mixed::SA
+   IMPL mixed::A for mixed::SA: proof ImpliedClause2: (mixed::SB: mixed::B) = mixed::{impl mixed::B for mixed::SB}
+   IMPL mixed::A for mixed::SA: type X = mixed::SB
+IMPL mixed::B for mixed::SB
+IMPL mixed::C for mixed::SB
+   IMPL mixed::C for mixed::SB: proof ImpliedClause2: (mixed::SA: mixed::A) = mixed::{impl mixed::A for mixed::SA}
+   IMPL mixed::C for mixed::SB: type Z = mixed::SA
+   mixed::A: proof ImpliedClause2: (Self::X: mixed::B)
+   mixed::A: type X
+   mixed::C: proof ImpliedClause2: (Self::Z: mixed::A)
+   mixed::C: type Z
+TRAIT core::marker::Destruct header=core::marker::Destruct<Self>
+TRAIT core::marker::MetaSized header=core::marker::MetaSized<Self>
+TRAIT core::marker::Sized header=core::marker::Sized<Self>
+TRAIT mixed::A header=mixed::A<Self>
+TRAIT mixed::B header=mixed::B<Self>
+TRAIT mixed::C header=mixed::C<Self>

@@ -1,0 +1,13 @@
+--- a/loop-constructor-identity.rs
++++ b/loop-constructor-identity.rs
+@@ -4,8 +4,8 @@
+     value
+ }
+ 
+-pub fn done(value: u32) -> u32 {
+-    value
++pub fn done(_value: u32) -> u32 {
++    0
+ }
+ 
+ pub fn once(mut again: bool, value: u32) -> u32 {

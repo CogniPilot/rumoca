@@ -1,0 +1,147 @@
+--- a/src/transform/normalize/expand_associated_types.rs
++++ b/src/transform/normalize/expand_associated_types.rs
+@@ -938,13 +938,21 @@
+                     modifications.replace_path(path);
+                     continue;
+                 }
+-                let Some(canonical) =
+-                    cyclic_demands::normalize_path(&self.ctx.translated, tr, &path)
+-                else {
+-                    self.retained_traits.insert(id);
+-                    self.unresolved_trait.get_or_insert(id);
+-                    continue;
+-                };
++                let canonical =
++                    match cyclic_demands::normalize_path(&self.ctx.translated, tr, &path) {
++                        Ok(canonical) => canonical,
++                        Err(unresolved) => {
++                            let owner = cyclic_demands::retention_owner(
++                                &self.ctx.translated,
++                                tr,
++                                &unresolved,
++                            )
++                            .unwrap_or(id);
++                            self.retained_traits.insert(owner);
++                            self.unresolved_trait.get_or_insert(id);
++                            continue;
++                        }
++                    };
+                 if canonical != path {
+                     let Some(ty) = cyclic_demands::path_type(&self.ctx.translated, tr, &canonical)
+                     else {
+--- a/src/transform/normalize/expand_associated_types/cyclic_demands.rs
++++ b/src/transform/normalize/expand_associated_types/cyclic_demands.rs
+@@ -134,7 +134,26 @@
+     Some(predicate)
+ }
+ 
+-/// `None` means an unresolved cycle, not a proof that the path is infinite.
++fn parent_ref(
++    krate: &TranslatedCrate,
++    current: &TraitRef,
++    clause_id: TraitClauseId,
++    constraints: &mut TypeConstraintSet,
++) -> Option<TraitRef> {
++    let declaration = krate.trait_decls.get(current.trait_id())?;
++    add_source_constraints(constraints, declaration, current);
++    let clause = declaration.implied_clauses.get(clause_id)?;
++    Some(TraitRef::new(
++        TraitRefKind::ParentClause(Box::new(current.clone()), clause_id),
++        clause
++            .trait_
++            .clone()
++            .try_substitute_with_tref(current)
++            .ok()?,
++    ))
++}
++
++/// Err retains the unresolved path after any justified contractions.
+ /// Every successful rewrite deletes a nonempty segment with equal endpoint
+ /// predicates. Exact predicate equality uses declared equations and preserves
+ /// trait identity, arguments and binders; it does not assume an inverse Try law.
+@@ -142,26 +161,27 @@
+     krate: &TranslatedCrate,
+     root: &TraitDecl,
+     path: &AssocTypePath,
+-) -> Option<AssocTypePath> {
+-    let base = base_ref(root, path.tref.base)?;
++) -> Result<AssocTypePath, AssocTypePath> {
+     let mut path = path.clone();
++    match normalize_path_inner(krate, root, &mut path) {
++        Some(()) => Ok(path),
++        None => Err(path),
++    }
++}
++
++fn normalize_path_inner(
++    krate: &TranslatedCrate,
++    root: &TraitDecl,
++    path: &mut AssocTypePath,
++) -> Option<()> {
++    let base = base_ref(root, path.tref.base)?;
+     while repeats_trait(krate, base.trait_id(), &path.tref.parent_path)? {
+         let mut constraints = source_constraints(&root.generics);
+         let mut ancestors = vec![base.clone()];
+         let mut shortening = None;
+         for (index, clause_id) in path.tref.parent_path.iter().enumerate() {
+             let current = ancestors.last()?;
+-            let declaration = krate.trait_decls.get(current.trait_id())?;
+-            add_source_constraints(&mut constraints, declaration, current);
+-            let clause = declaration.implied_clauses.get(*clause_id)?;
+-            let next = TraitRef::new(
+-                TraitRefKind::ParentClause(Box::new(current.clone()), *clause_id),
+-                clause
+-                    .trait_
+-                    .clone()
+-                    .try_substitute_with_tref(current)
+-                    .ok()?,
+-            );
++            let next = parent_ref(krate, current, *clause_id, &mut constraints)?;
+             let predicate = normalized_predicate(&next, &constraints)?;
+             for (ancestor_index, ancestor) in ancestors.iter().enumerate() {
+                 if normalized_predicate(ancestor, &constraints)? == predicate {
+@@ -177,7 +197,43 @@
+         let (start, end) = shortening?;
+         path.tref.parent_path.drain(start..end);
+     }
+-    Some(path)
++    Some(())
++}
++
++/// Keep the source edge that changes Self inside the unresolved cycle explicit.
++/// A non-growing supertrait edge need not retain unrelated associated parameters.
++pub(super) fn retention_owner(
++    krate: &TranslatedCrate,
++    root: &TraitDecl,
++    path: &AssocTypePath,
++) -> Option<TraitDeclId> {
++    let mut ancestors = vec![base_ref(root, path.tref.base)?];
++    let mut constraints = source_constraints(&root.generics);
++    for clause_id in &path.tref.parent_path {
++        let next = parent_ref(krate, ancestors.last()?, *clause_id, &mut constraints)?;
++        if let Some(start) = ancestors
++            .iter()
++            .position(|prior| prior.trait_id() == next.trait_id())
++        {
++            let mut cycle = ancestors[start..].iter().chain(std::iter::once(&next));
++            let mut previous = cycle.next()?;
++            for current in cycle {
++                let before = normalized_predicate(previous, &constraints)?;
++                let after = normalized_predicate(current, &constraints)?;
++                if before.skip_binder.generics.types.get(TypeVarId::ZERO)?
++                    != after.skip_binder.generics.types.get(TypeVarId::ZERO)?
++                {
++                    return Some(previous.trait_id());
++                }
++                previous = current;
++            }
++            // Other generic arguments may vary when Self is unchanged. Keeping this cycle
++            // entry's associated form does not assert equality between those predicates.
++            return Some(ancestors[start].trait_id());
++        }
++        ancestors.push(next);
++    }
++    None
+ }
+ 
+ pub(super) fn path_type(

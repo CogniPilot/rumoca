@@ -1,0 +1,69 @@
+diff --git a/extract/Extract.ml b/extract/Extract.ml
+--- a/extract/Extract.ml
++++ b/extract/Extract.ml
+@@ -2735,6 +2735,45 @@
+           (fun (c, name) -> (c.clause_id, name))
+           (List.combine trait_decl.parent_clauses info.parent_clauses)
+   in
++  (* Fields may share names across records, never within one record. Other
++     members are registered first so parent clauses cannot shadow them. *)
++  let span = trait_decl.item_meta.span in
++  let decl_id = trait_decl.def_id in
++  let reserved =
++    StringSet.of_list
++      (List.map
++         (fun (id, _, _) -> ctx_get_trait_const span decl_id id ctx)
++         trait_decl.consts
++      @ List.map
++          (fun (id, _) -> ctx_get_trait_type span decl_id id ctx)
++          trait_decl.types
++      @ List.map
++          (fun meth -> ctx_get_trait_method span decl_id meth.method_id ctx)
++          trait_decl.methods)
++  in
++  let _, clause_names =
++    List.fold_left_map
++      (fun used (cid, name) ->
++        let name =
++          match builtin_info with
++          | Some _ ->
++              [%cassert] span
++                (not (StringSet.mem name used))
++                ("Duplicate builtin trait field name: " ^ name);
++              name
++          | None ->
++              let collision candidate =
++                StringSet.mem candidate used
++                || StringSet.mem candidate
++                     ctx.names_maps.strict_names_map.names_set
++                || (not !record_fields_short_names)
++                   && StringSet.mem candidate ctx.names_maps.names_map.names_set
++              in
++              basename_to_unique_aux collision name_append_index name
++        in
++        (StringSet.add name used, (cid, name)))
++      reserved clause_names
++  in
+   (* Register the names *)
+   List.fold_left
+     (fun ctx (cid, cname) ->
+@@ -2926,10 +2965,6 @@
+     (ctx, trait_name)
+   in
+   let builtin_info = trait_decl.builtin_info in
+-  (* Parent clauses *)
+-  let ctx =
+-    extract_trait_decl_register_parent_clause_names ctx trait_decl builtin_info
+-  in
+   (* Constants *)
+   let ctx =
+     extract_trait_decl_register_constant_names ctx trait_decl builtin_info
+@@ -2940,7 +2975,7 @@
+   let ctx =
+     extract_trait_decl_method_names ctx trait_decl trait_name builtin_info
+   in
+-  ctx
++  extract_trait_decl_register_parent_clause_names ctx trait_decl builtin_info
+ 
+ (** Similar to {!extract_type_decl_register_names} *)
+ let extract_trait_impl_register_names (ctx : extraction_ctx)

@@ -1,0 +1,77 @@
+{
+  "aeneas_version": "f9a8e338188447c77f31246892cb9a7a742e58ef-rumoca-9977c3508c94785b30cc7247fb34f3393c66dd8ffcfafba9b8d0110a7462685f-alias-2eb1a079b9d0651fbd735874d20d4d42ff93610d2830dd4f0923e75deee1535f-stored-ca4d7deda43a23c507127ae8fe50c067b11e1fb2ae1a03c483dbb004d19c028a-static-0715f5ed8e209865e6b50fe868e5d6ea4d5659ea451c03b5e1f5429f4243d9c2-lifecycle-f4a7ac4625751e3a36cccc53e6fb6ba2fb63867c3a40495f23a4f6dfffdae00c-roots-33f74ca918c8d1ec8467937092ffa568beb13c1eee79c8d4ea2aac47cedafdc4-no-signature-guess-8304e1048252c79d52796df71b524a268853c6ced6fe9a06269bcfaabd7653d3-no-method-guess-80955670afb1f8e66fbb69850db5154536365354a21ccbbb6238a2e94fcad996-drop-control-43b5571e07953a8b1fcbcad9cb8487e7f4a8c93caf43607c872d57c7b01b44ed-builtin-identity-e582e802919472a277478e06a439b4c889af1882f8f2f337a13c0a71ce6f5ebf-specialized-names-c5e43a84ff49bd85c51c6b0b997f1ddc1ae66030a9d70227542d5c0520f2aa4d-impl-names-16ac1aae87438b5421b9d57c12ac30bb1fc55adef6d2ed8ac4891421e270b594-name-presentation-bcbd909f4633ae9e46508e71479b06ff46298bf9e1af4f73a890ac106b33b918-alias-inference-487ef0120e152757801612bcedcdd3c5035023eb9d993c32157b7e8707a12e98-float-dependencies-9042edc1175daf1ff4cf3221baff37856e5364a2d09ff77649cca57174b4d632",
+  "charon_version": "0.1.248",
+  "crate": "f64_binding",
+  "functions": [
+    {
+      "def_id": 0,
+      "lean_name": "f64_binding.real",
+      "lean_file": "Funs.lean",
+      "rust_name": "f64_binding::real",
+      "is_local": true,
+      "source": {
+        "file": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs",
+        "begin_line": 19,
+        "end_line": 21
+      },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    },
+    {
+      "def_id": 1,
+      "lean_name": "f64_binding.entry_value",
+      "lean_file": "Funs.lean",
+      "rust_name": "f64_binding::entry_value",
+      "is_local": true,
+      "source": {
+        "file": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs",
+        "begin_line": 23,
+        "end_line": 25
+      },
+      "is_opaque": false,
+      "can_fail": true,
+      "can_diverge": false,
+      "is_rec": false,
+      "reducible": false
+    }
+  ],
+  "types": [
+    {
+      "def_id": 1,
+      "lean_name": "f64_binding.Literal",
+      "lean_file": "Types.lean",
+      "rust_name": "f64_binding::Literal",
+      "is_local": true,
+      "source": {
+        "file": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs",
+        "begin_line": 9,
+        "end_line": 12
+      }
+    },
+    {
+      "def_id": 2,
+      "lean_name": "f64_binding.Entry",
+      "lean_file": "Types.lean",
+      "rust_name": "f64_binding::Entry",
+      "is_local": true,
+      "source": {
+        "file": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/f64-type-binding/f64-binding.rs",
+        "begin_line": 14,
+        "end_line": 17
+      }
+    }
+  ],
+  "globals": [],
+  "trait_decls": [],
+  "trait_impls": [],
+  "float_dependencies": [
+    {
+      "width": 64,
+      "lean_name": "Aeneas.Std.F64",
+      "lean_file": "TypesExternal_Template.lean"
+    }
+  ]
+}

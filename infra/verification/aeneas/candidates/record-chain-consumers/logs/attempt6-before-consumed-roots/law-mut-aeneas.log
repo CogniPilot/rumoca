@@ -1,0 +1,14 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti8-mut.llbc
+Applied prepasses:  [----------------------------------------------------] 0/8 ⠋Applied prepasses:  [######----------------------------------------------] 1/8 ⠙Applied prepasses:  [####################################################] 8/8 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [------------------------------------------] 0/3 ⠋Translated opaque functions:  [##########################################] 3/3 ✔️
+Translated transparent functions:  [-------------------------------------] 0/4 ⠋Translated transparent functions:  [#########----------------------------] 1/4 ⠙Translated transparent functions:  [#####################################] 4/4 ✔️
+Translated trait declarations:  [----------------------------------------] 0/4 ⠋Translated trait declarations:  [##########------------------------------] 1/4 ✔️
+Translated trait impls:  [-----------------------------------------------] 0/4 ⠋Translated trait impls:  [###########------------------------------------] 1/4 ✔️
+Post-processed translated opaque functions:  [---------------------------] 0/3 ⠋Post-processed translated opaque functions:  [#########------------------] 1/3 ⠋Post-processed translated opaque functions:  [###########################] 3/3 ✔️
+Post-processed translated transparent functions:  [----------------------] 0/4 ⠋Post-processed translated transparent functions:  [#####-----------------] 1/4 ⠋Post-processed translated transparent functions:  [######################] 4/4 ✔️
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/r6-mut-out
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/r6-mut-out/Types.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/r6-mut-out/Funs.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/r6-mut-out/translation.json
+[Info ] Total execution time: 0.344826 seconds

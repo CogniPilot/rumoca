@@ -1,0 +1,21 @@
+diff --git a/src/ast/type_level/substitute.rs b/src/ast/type_level/substitute.rs
+--- a/src/ast/type_level/substitute.rs
++++ b/src/ast/type_level/substitute.rs
+@@ -114,6 +114,9 @@ impl VarsVisitor for SubstVisitor<'_> {
+         }
+     }
+     fn visit_self_clause(&mut self) -> Option<TraitRefKind> {
++        if self.explicits_only {
++            return None;
++        }
+         Some(self.self_ref.cloned().expect(
+             "used `substitute` on an item coming from a trait; \
+             use `substitute_with_self` or `substitute_inner_binder` instead.",
+@@ -222,6 +225,7 @@ pub trait TyVisitable: Sized + AstVisitable {
+         self.substitute_with_self(generics, &TraitRefKind::SelfId)
+     }
+     /// Substitute only the type, region and const generic args.
++    /// Implicit trait witnesses, including `SelfId`, remain unchanged.
+     fn substitute_explicits(self, generics: &GenericArgs) -> Self {
+         SubstVisitor::new(generics, None, true).visit(self).unwrap()
+     }

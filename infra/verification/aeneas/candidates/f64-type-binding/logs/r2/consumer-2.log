@@ -1,0 +1,5 @@
+$ nix develop .#default --command cargo clippy -p xtask --all-targets -- -D warnings
+warning: Git tree '/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt' is dirty
+    Checking xtask v0.10.0 (/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/consumer-wt/crates/xtask)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 7.15s
+exit=0

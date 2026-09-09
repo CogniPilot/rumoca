@@ -1,0 +1,15 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono.llbc
+Applied prepasses:  [----------------------------------------------------] 0/8 ⠋Applied prepasses:  [######----------------------------------------------] 1/8 ⠙Applied prepasses:  [####################################################] 8/8 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [------------------------------------------] 0/4 ⠋Translated opaque functions:  [##########################################] 4/4 ✔️
+Translated transparent functions:  [-------------------------------------] 0/4 ⠋Translated transparent functions:  [#########----------------------------] 1/4 ⠙Translated transparent functions:  [#####################################] 4/4 ✔️
+Translated trait declarations:  [----------------------------------------] 0/2 ⠋Translated trait declarations:  [----------------------------------------] 0/2 ✔️
+Translated trait impls:  [-----------------------------------------------] 0/4 ⠋Translated trait impls:  [-----------------------------------------------] 0/4 ✔️
+Post-processed translated opaque functions:  [---------------------------] 0/4 ⠋Post-processed translated opaque functions:  [######---------------------] 1/4 ⠋Post-processed translated opaque functions:  [###########################] 4/4 ✔️
+Post-processed translated transparent functions:  [----------------------] 0/4 ⠋Post-processed translated transparent functions:  [#####-----------------] 1/4 ⠋Post-processed translated transparent functions:  [######################] 4/4 ✔️
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-head
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-head/Types.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-head/FunsExternal_Template.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-head/Funs.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-head/translation.json
+[Info ] Total execution time: 0.372304 seconds

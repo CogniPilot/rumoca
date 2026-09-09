@@ -1,0 +1,33 @@
+[Info ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono.llbc
+Applied prepasses:  [----------------------------------------------------] 0/8 ⠋Applied prepasses:  [######----------------------------------------------] 1/8 ⠙Applied prepasses:  [####################################################] 8/8 ✔️
+Translated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+Translated opaque functions:  [------------------------------------------] 0/4 ⠋Translated opaque functions:  [##########################################] 4/4 ✔️
+Translated transparent functions:  [-------------------------------------] 0/4 ⠋Translated transparent functions:  [#########----------------------------] 1/4 ⠙Translated transparent functions:  [#####################################] 4/4 ✔️
+Translated trait declarations:  [----------------------------------------] 0/2 ⠋Translated trait declarations:  [----------------------------------------] 0/2 ✔️
+Translated trait impls:  [-----------------------------------------------] 0/4 ⠋Translated trait impls:  [-----------------------------------------------] 0/4 ✔️
+Post-processed translated opaque functions:  [---------------------------] 0/4 ⠋Post-processed translated opaque functions:  [######---------------------] 1/4 ⠋Post-processed translated opaque functions:  [###########################] 4/4 ✔️
+Post-processed translated transparent functions:  [----------------------] 0/4 ⠋Post-processed translated transparent functions:  [#####-----------------] 1/4 ⠋Post-processed translated transparent functions:  [######################] 4/4 ✔️
+[Info ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-base
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-base/Types.lean
+[Info ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/law/ti6-mono-base/FunsExternal_Template.lean
+Uncaught exception:
+  
+  (Failure Unexpected)
+
+Raised at Charon__TypesUtils.as_ident in file "charon-ml/src/TypesUtils.ml", line 36, characters 9-37
+Called from Aeneas__ExtractBase.ctx_compute_var_basename in file "extract/ExtractBase.ml", line 2054, characters 35-59
+Called from Aeneas__Extract.extract_tpat in file "extract/Extract.ml", line 361, characters 20-69
+Called from Aeneas__Extract.extract_lets.extract_let in file "extract/Extract.ml", line 1363, characters 22-77
+Called from Stdlib__List.fold_left in file "list.ml", line 123, characters 24-34
+Called from Aeneas__Extract.extract_lets in file "extract/Extract.ml", lines 1433-1435, characters 4-14
+Called from Aeneas__Extract.extract_fun_decl_gen in file "extract/Extract.ml", lines 2286-2287, characters 8-52
+Called from Aeneas__Translate.export_functions_group_scc.(fun) in file "Translate.ml", line 892, characters 14-71
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.export_functions_group_scc in file "Translate.ml", line 906, characters 4-42
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.export_functions_group in file "Translate.ml", line 990, characters 4-45
+Called from Aeneas__Translate.extract_definitions.(fun) in file "Translate.ml", line 1274, characters 10-29
+Called from Stdlib__List.iter in file "list.ml", line 112, characters 12-15
+Called from Aeneas__Translate.extract_file in file "Translate.ml", line 1430, characters 2-36
+Called from Aeneas__Translate.extract_translated_crate in file "Translate.ml", line 2096, characters 5-42
+Called from Dune__exe__Main in file "Main.ml", lines 767-768, characters 8-37

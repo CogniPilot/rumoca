@@ -1,0 +1,20 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/dc.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/6 ⠋Applied prepasses:  [########--------------------------------------------] 1/6 ⠙Applied prepasses:  [####################################################] 6/6 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/5 ⠋Translated transparent functions:  [#######------------------------------] 1/5 ⠙Translated transparent functions:  [##############-----------------------] 2/5 ⠙Translated transparent functions:  [#############################--------] 4/5 ⠙[[91mError[39m] There should be no bottoms in the value
+Source: 'infra/verification/charon/fixtures/drop-control.rs', lines 68:0-68:1
+[[93mWarn[39m ] Could not translate the body of function 'drop_control::take_first because of previous error
+Name pattern: 'drop_control::take_first'
+Definition span: 'infra/verification/charon/fixtures/drop-control.rs', lines 63:0-68:1
+Source: 'infra/verification/charon/fixtures/drop-control.rs', lines 68:0-68:1
+Compiler source: interp/Interp.ml, line 621
+
+Translated transparent functions:  [#####################################] 5/5 ⠹Translated transparent functions:  [#####################################] 5/5 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋Translated trait declarations:  [----------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋Translated trait impls:  [-----------------------------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/5 ⠋Post-processed translated transparent functions:  [####------------------] 1/5 ⠋Post-processed translated transparent functions:  [######################] 5/5 ✔️
+[?25h[[92mInfo[39m ] Generated the partial file (because of 1 errors, including 1 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/m-dm/Dc.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/m-dm/translation.json
+[[92mInfo[39m ] Total execution time: 0.458502 seconds

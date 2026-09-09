@@ -1,0 +1,378 @@
+{
+   "acceptance" : {
+      "accepted_golden_models" : 0,
+      "accepted_unit_derivative_relations" : 1,
+      "live_adoption" : false,
+      "total_relations" : 18
+   },
+   "anchors" : [
+      "SPEC_0033 sections 2a, 4, 6",
+      "SPEC_0037 section 6 (DRAFT)"
+   ],
+   "artifact_bindings" : {
+      "aeneas" : {
+         "path" : "/nix/store/p5hkdmndy9bnp2587pr05pgw1asl1g1q-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+         "sha256" : "3afb9ee4f249fbf349336b981f0825d7bccf9fb39970920e4c495b3f8842c6c5"
+      },
+      "driver" : {
+         "path" : "/tmp/rumoca-demand-retention-QVu1kr/charon-driver",
+         "sha256" : "d9ae2041e32e62e0eb08a91acda7b30be0c4c3eb6ab0484f52cf405000dbfa11"
+      },
+      "launcher" : {
+         "path" : "/tmp/rumoca-demand-retention-QVu1kr/charon",
+         "sha256" : "10ca62cdad3f2804801e5b8a7b8e96b4eba76c2242663c508a9205f8f0fe2a9d"
+      },
+      "llbc" : {
+         "has_errors" : false,
+         "monomorphize_mut" : "All",
+         "path" : "/tmp/rumoca-demand-retention-QVu1kr/SpecializedDaeSource.llbc",
+         "retained_functions" : 298,
+         "sha256" : "527bb939e5534b15f90e4f684b5cfc382754ef54d2802d01265e1c4e30d72422"
+      },
+      "recipe_derivation" : "/nix/store/bf16pdib22lvhl3508d9zg9kwbfl1x7q-charon-0.1.248.drv"
+   },
+   "backup_directory" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-demand-retention-W1JVEO",
+   "branch" : "msl-trace-parity-50",
+   "claims" : [
+      {
+         "claim" : "Both declaration orders have the tested Ring-retained/Field-Packing-lifted shape; a separate hard cycle does not retain unrelated Link/Back associated types.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Actual entry-owner mutation fails all three retention tests; actual predicate-ID mutation still fails the unchanged distinct-associated-type regression.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Canonical restoration passes all seven focused tests, 27 library tests, all-target warning-denied Clippy and formatting.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Full UI returns to 422 pass/18 fail/2 ignored. Identity comparison removes exactly issue-1260; no new failure or snapshot update.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Actual specialized DAE passes the unchanged Charon checker, then Aeneas refuses at specialized impl-name generic instantiation.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "UnitDerivative remains green in all five production-spine tests.",
+         "status" : "VERIFIED"
+      },
+      {
+         "claim" : "Carrying the unresolved remainder avoids choosing a retention owner from an already contracted prefix; no separate mutation of this remainder preservation was run.",
+         "status" : "INFERRED"
+      },
+      {
+         "claim" : "Type-changing-edge retention is a better construction policy for these cyclic sources than traversal-entry retention. Global optimality, preservation and termination remain unproved.",
+         "status" : "INFERRED"
+      }
+   ],
+   "classification_note" : "Per-record expected_exit is the outcome the run was meant to produce; for discovery_failure records that is 0 and the observed nonzero exit stands as a mismatch; for every other class the intended outcome is the one observed; classification states why that exit is the intended outcome: intended_pass (a gate that passed), intended_refusal (a refusal that is the test: predecessor reproducer, mutation kill, negative control), known_boundary (a documented next refusal outside this change), discovery_failure (an investigation run that is not a gate), superseded (replaced by a later record and not part of the package), baseline_red (a full UI run whose nonzero exit is the pre-existing failure set), informational (exit 0 but not evidence for a claim). These fields were added as a metadata correction; commands, exits, observations and hashes are unchanged.",
+   "head" : "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+   "not_run" : [
+      {
+         "command" : "Nix build of package.nix",
+         "reason" : "Native pinned builds and no-fuzz recipe replay measured; Nix derivation only evaluated."
+      },
+      {
+         "command" : "Upstream root make/OCaml AST integration",
+         "reason" : "Standalone Rust tree has no root make/OCaml wiring. Public AST unchanged; still required before upstream adoption."
+      },
+      {
+         "command" : "Lean compilation of final specialized DAE",
+         "reason" : "Aeneas fails before emitting the module."
+      },
+      {
+         "command" : "cargo xtask verify quick/full and GitHub CI",
+         "reason" : "Unreviewed, unadopted translator dependency experiment, not a dependency-closed or PR-final compiler milestone. Tracer remains green; no broad gate claim."
+      }
+   ],
+   "pending" : [
+      "Independent adversarial review of this and all composed predecessor candidates.",
+      "Controls for more complex quantified/generic-argument-only cycles and complete preflight refusals.",
+      "Separate mutation coverage of preserved unresolved remainders; no claim made that present tests prove that sub-contract.",
+      "Systematic extraction performance measurements; no machine-checked normalization/retention preservation or termination proof.",
+      "Aeneas specialized impl-name instantiation and whole specialized DAE Lean admission."
+   ],
+   "predecessor" : "../specialized-trait-normalization/finite-demands-evidence.json",
+   "recorded_at" : "2026-09-08T09:58:45Z",
+   "review_verdict" : null,
+   "reviewer" : "Claude",
+   "runs" : [
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Red test written first.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test cyclic_retention -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/predecessor-test.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "initial_typed_red_regression",
+         "observation" : "Ring carries1 associated type instead of2; required Packing witness is not created.",
+         "result" : "e5bff8",
+         "state" : "Frozen finite-demand producer and initial single test80d60415"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo build --offline --locked --bins --message-format=json > /tmp/rumoca-demand-retention-QVu1kr/probe-build.json 2> /tmp/rumoca-demand-retention-QVu1kr/probe-build.log",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "instrumented_all_binary_build",
+         "result" : "081809",
+         "state" : "retention-trace-probe.patch on finite predecessor"
+      },
+      {
+         "classification" : "informational",
+         "classification_note" : "Path probe on an instrumented build.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-charon-captures-5tXAoU/target/debug/charon rustc --lift-associated-types='*' --dest-file=/tmp/rumoca-demand-retention-QVu1kr/retention-probe-fresh.llbc -- --edition=2024 --crate-type=rlib tests/ui/associated_types/issue-1260-self-ref-assoc-const.rs > /tmp/rumoca-demand-retention-QVu1kr/retention-probe-fresh.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "instrumented_path_probe",
+         "observation" : "Consumer1/owner1 path Self::Clause1::Clause2::Type0 and consumer0/owner0 path Self::Clause2::Clause1::Type0; IDs map to Field and Ring. Initial launcher-only d910c4 is not trace evidence.",
+         "result" : "4f141b"
+      },
+      {
+         "classification" : "superseded",
+         "classification_note" : "Counterexample that rejected the first proposal; the proposal is not part of the package.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test cyclic_retention --test specialized_traits -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/expanded-tests.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "rejected_dfs_entry_proposal",
+         "observation" : "2 pass/1 fail. Reversed declarations fail translation before shape assertions; missing Ring::Sub value. Reversed source is separately retained.",
+         "result" : "b266cf",
+         "state" : "retention-entry.patch; earlier three-test harness before shared exact-order assertions"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-finite-demands-final-yhqxzE/charon rustc --lift-associated-types='*' --error-on-warnings --dest-file=/tmp/rumoca-demand-retention-QVu1kr/finite_predecessor-reversed.llbc -- --edition=2021 --crate-type=rlib /tmp/rumoca-demand-retention-QVu1kr/reversed-recursion.rs > /tmp/rumoca-demand-retention-QVu1kr/finite_predecessor-reversed.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "finite_predecessor_accepts_reversal",
+         "observation" : "Frozen finite predecessor, same reversed source.",
+         "result" : "189412"
+      },
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Original producer control.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-explicit-self-0j3PN2/charon rustc --lift-associated-types='*' --error-on-warnings --dest-file=/tmp/rumoca-demand-retention-QVu1kr/original_predecessor-reversed.llbc -- --edition=2021 --crate-type=rlib /tmp/rumoca-demand-retention-QVu1kr/reversed-recursion.rs > /tmp/rumoca-demand-retention-QVu1kr/original_predecessor-reversed.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 1,
+         "expected_exit" : 1,
+         "name" : "original_predecessor_refuses_reversal",
+         "observation" : "Original pre-finite associated-type producer already fails this reversal.",
+         "result" : "c11357"
+      },
+      {
+         "classification" : "superseded",
+         "classification_note" : "UI on the rejected proposal.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  env IN_CI=1 cargo test --offline --locked --test ui -- --test-threads=4 > /tmp/rumoca-demand-retention-QVu1kr/ui-restored.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "rejected_proposal_full_ui",
+         "observation" : "422/18/2, but source-order counterexample rejects the proposal despite restoring snapshots.",
+         "result" : "b7fe2d",
+         "state" : "Rejected DFS-entry proposal"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo build --offline --locked --bins --message-format=json > /tmp/rumoca-demand-retention-QVu1kr/final-build.json 2> /tmp/rumoca-demand-retention-QVu1kr/final-build.log",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_all_binary_build",
+         "observation" : "25.25 seconds; actual compiler-artifact paths frozen before either mutation.",
+         "result" : "ef58d0"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test cyclic_retention --test specialized_traits -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/final-tests.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_focused_tests",
+         "observation" : "3 retention +4 unchanged specialization tests; both orders use the same exact shape assertion.",
+         "result" : "7adbcf"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --lib -- --test-threads=4 > /tmp/rumoca-demand-retention-QVu1kr/final-lib.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_library_tests",
+         "observation" : "27/27",
+         "result" : "e271bf"
+      },
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Mutation kill; the only mutation of retention logic.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test cyclic_retention --test specialized_traits -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/entry-owner-mutation.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "entry_owner_mutation",
+         "observation" : "All3 retention tests fail. Cargo stops at this failing target; the specialization target is not counted as run.",
+         "result" : "3eb77b",
+         "state" : "entry-owner-mutation.patch on final helper"
+      },
+      {
+         "classification" : "intended_refusal",
+         "classification_note" : "Mutation kill of the normalizer.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test specialized_traits -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/predicate-mutation.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "predicate_equality_mutation",
+         "observation" : "3 pass/1 fail; distinct u8/u16 associated types catch invalid equality.",
+         "result" : "79972a",
+         "state" : "predicate-id-only-mutation.patch on final helper; entry mutation already restored"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo test --offline --locked --test cyclic_retention --test specialized_traits -- --test-threads=4 --nocapture > /tmp/rumoca-demand-retention-QVu1kr/restored-tests.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "restored_focused_tests",
+         "observation" : "3+4 pass after canonical helper restoration67500e (4e1061de).",
+         "result" : "4b0199"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo clippy --offline --locked --all-targets --no-deps -- -D warnings > /tmp/rumoca-demand-retention-QVu1kr/final-clippy.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_strict_all_target_clippy",
+         "result" : "593f9e"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 cargo fmt --all --check",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_format",
+         "result" : "7f63b3"
+      },
+      {
+         "classification" : "baseline_red",
+         "classification_note" : "422/18/2, the 18 baseline failures.",
+         "command" : "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  env IN_CI=1 cargo test --offline --locked --test ui -- --test-threads=4 > /tmp/rumoca-demand-retention-QVu1kr/growth-edge-ui.log 2>&1",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 101,
+         "expected_exit" : 101,
+         "name" : "final_producer_full_ui",
+         "observation" : "422 pass/18 fail/2 ignored;63.39 seconds. Exact final producer bytes; later focused-test assertion refactor does not affect the UI target.",
+         "result" : "ef3f51"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env RUST_BACKTRACE=1 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  timeout 600 /tmp/rumoca-demand-retention-QVu1kr/charon cargo --preset=aeneas --sysroot=default --error-on-warnings --start-from=rumoca_phase_solve::scalar_constant_derivative_refinement::admit_dae_profile --include=rumoca_ir_dae --include=rumoca_ir_solve --include=rumoca_core --include='core::bool::*::then' --include='core::option::*::branch' --include='core::option::*::from_residual' --include='core::marker::*::eq' --include='core::iter::adapters::map::Map' --include='core::iter::adapters::map::*::new' --include='core::iter::traits::iterator::Iterator::map' --include='core::iter::traits::iterator::Iterator::sum' --include='core::iter::traits::accum::*::sum' --include='core::iter::adapters::map::*::next' --include='core::option::*::map' --include='core::ops::function::impls::*::call_once' --monomorphize-mut --dest-file=/tmp/rumoca-demand-retention-QVu1kr/SpecializedDaeSource.llbc -- --locked -Zbuild-std=std,panic_abort --target=x86_64-unknown-linux-gnu --target-dir=/tmp/rumoca-stdlib-source-facts-j7Drx7/dae-build -p rumoca-phase-solve --lib > /tmp/rumoca-demand-retention-QVu1kr/dae-charon.log 2>&1",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "actual_specialized_dae_charon",
+         "observation" : "97 seconds; has_errors=false,298 retained functions, mutable specialization All.",
+         "result" : "e4e37a"
+      },
+      {
+         "classification" : "known_boundary",
+         "classification_note" : "Unchanged next boundary at Aeneas.",
+         "command" : "timeout 180 /nix/store/p5hkdmndy9bnp2587pr05pgw1asl1g1q-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /tmp/rumoca-demand-retention-QVu1kr/dae-lean /tmp/rumoca-demand-retention-QVu1kr/SpecializedDaeSource.llbc > /tmp/rumoca-demand-retention-QVu1kr/dae-aeneas.log 2>&1",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 2,
+         "expected_exit" : 2,
+         "name" : "actual_specialized_dae_aeneas",
+         "observation" : "Unchanged next boundary: partially monomorphized generic parameters do not match supplied arguments, at impl-name generation for ids.rs derived Eq.",
+         "result" : "37188b"
+      },
+      {
+         "classification" : "informational",
+         "classification_note" : "Evaluated, not built.",
+         "command" : "nix eval --impure --raw --expr 'let f = builtins.getFlake \"git+file:///home/jgoppert/git/rumoca\"; in (import /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/package.nix { aeneas = f.inputs.aeneas; system = \"x86_64-linux\"; }).drvPath'",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "nix_recipe_evaluation",
+         "observation" : "Derivation evaluates; not a Nix build.",
+         "result" : "ab6494"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "patch --dry-run --batch --fuzz=0 -p1 < /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/growth-edge-retention.patch",
+         "cwd" : "/tmp/rumoca-demand-retention-QVu1kr/predecessor",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "exact_no_fuzz_overlay_replay_check",
+         "observation" : "Predecessor main84f24313 and installed helper6bf5c929, matching package postPatch ordering.",
+         "result" : "90acd4"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "git apply --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/predicate-id-only-mutation.patch\ngit apply --reverse --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/growth-edge-retention.patch\ngit apply --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/entry-owner-mutation.patch",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "final_patch_and_mutation_applicability",
+         "observation" : "The older predicate mutation patch did not apply after refactoring; the guard-preserving rebased patch does.",
+         "result" : "68ede2"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "git apply --reverse --check /home/jgoppert/git/rumoca/infra/verification/charon/candidates/associated-demand-retention/regression-extension.patch",
+         "cwd" : "/tmp/rumoca-charon-captures-5tXAoU",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "historical_regression_reconstruction",
+         "observation" : "Reconstructs initial single-test80d60415 from final testd23eb2dd.",
+         "result" : "078403"
+      },
+      {
+         "classification" : "intended_pass",
+         "command" : "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+         "cwd" : "/home/jgoppert/git/rumoca",
+         "exit" : 0,
+         "expected_exit" : 0,
+         "name" : "unit_derivative_tracer",
+         "observation" : "5/5 actual compile-to-Solve, closed-form simulation, receipt and typed refusals.",
+         "result" : "a6e71d"
+      }
+   ],
+   "scope" : "Private Charon demand construction and cyclic-path metadata only. No public LLBC shape, Rumoca production, MLS, final checker, live pin, or proof-admission change.",
+   "source_bindings" : {
+      "entry_mutated_helper_sha256" : "9ce25dea896a12a17f2ba47a308789ce72e3eabacbafb489fcbb7597f12f32be",
+      "entry_mutation_patch_sha256" : "f27118118c4e2ef1fef2c3c43b58d109521cb71eaaa7b11fdc1fec4e4e6750af",
+      "final_helper_sha256" : "4e1061ded060a368b4c0ddc8eed98dd96eda3d5219c1b0b9622b2dc01498d700",
+      "final_main_sha256" : "9ed79792b5b2a8f32f2bb79dbbf9d2e975ddf7426fa15d0aeb4b278cd41c84f8",
+      "final_patch_sha256" : "393d58edf77c00635660439dc4ef09191999f68a1192c6ab397db33382562de5",
+      "final_test_sha256" : "d23eb2ddb73661fc11e56164cab96d4fd144315f92755fb185fc2ea00a54731b",
+      "initial_red_test_sha256" : "80d60415d4a60dd011ad54c53bb8c5f38c0d387b713591cae944ed00bc6df0d5",
+      "predecessor_helper_sha256" : "6bf5c9298a04e3ec5c0a6ad64114d51bb1de94ec49b06c0a80c41a3f67dc9f12",
+      "predecessor_main_sha256" : "84f243131df28f58e885ae0d3936be089c480dfc11647f1a2cd2c2b3cb860d5c",
+      "predicate_mutated_helper_sha256" : "267b9e6dda803d2aa930aadc6322b92b5f24b8000b40f059a0ba1962c23692f3",
+      "predicate_mutation_patch_sha256" : "cd13142e597517af63b656454849778b133f7af680a24404c5fa4198a4af42b9",
+      "recipe_sha256" : "16907dc5ff8d7f3f630d2a4fd8b46cf0d570ddf4001a09d388de19c264e56446",
+      "rejected_entry_main_sha256" : "05154f93496a958e0d3adf4b4847f655ba129d04640a6beaa1d4d10b55baa57f",
+      "rejected_entry_patch_sha256" : "436e647436315bed32b4e43cc621c815235ad7171f86680e5eba807186af4cb8",
+      "reversed_source_sha256" : "6a76dc8c1695f1fe1adec8c0de3f3734f01dad2a89a36572ce3c9d36c7d16176",
+      "trace_patch_sha256" : "28ea1257e75b1281d04b78a2635714f010117955a1f88d6d0d766011c8764768",
+      "unchanged_specialization_test_sha256" : "f149b64aefbde0a50602b279f21ad513c42d65c2faf4711dd7e0cb5805c79220",
+      "unchanged_upstream_snapshot_sha256" : "087f1f5825d1b3d485eee87b6994d43a5ed07aebebacd79c4668a3dbdc3b164c",
+      "upstream_source_sha256" : "c716b0e94dc4741daab91131ea4bd0f317b28cae0dc7e0be6b64177fe8eeba0b"
+   },
+   "status" : "EXPERIMENTAL_REVIEW_PENDING_NOT_ADOPTED",
+   "ui_delta" : {
+      "after" : 18,
+      "before" : 19,
+      "new" : [],
+      "resolved" : [
+         "associated_types/issue-1260-self-ref-assoc-const.rs"
+      ]
+   },
+   "writer" : "Codex"
+}

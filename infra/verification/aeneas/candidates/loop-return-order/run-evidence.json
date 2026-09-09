@@ -1,0 +1,668 @@
+{
+  "recorded_at": "2026-09-08 15:35:34 UTC",
+  "scope": "Source-bound translator control-flow diagnostic and candidates, not live pin adoption or another UnitDerivative relation.",
+  "baseline": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "specs": [
+    "SPEC_0033 sections 2, 2a, 4",
+    "SPEC_0037 experimental section 6"
+  ],
+  "tools": {
+    "charon": "/tmp/rumoca-demand-retention-QVu1kr/charon",
+    "charon_sha256": "10ca62cdad3f2804801e5b8a7b8e96b4eba76c2242663c508a9205f8f0fe2a9d",
+    "predecessor": "/nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+    "predecessor_sha256": "10916246796f8fb7360a4eeebf440b85ff154699392ef9651bc799fae2e0798f",
+    "r1": "/nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+    "r1_sha256": "72fea522fc535cad40572d908ebadc5c45729797cae5319f41aaca83435d4e12",
+    "r2": "/nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+    "r2_sha256": "43db9e70f31a303edcc94bb3e3d1110f5ea55bb0af02714d1f8c6bc38dd72238",
+    "lean": "/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean",
+    "lean_sha256": "9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac"
+  },
+  "builds": {
+    "r1": {
+      "command": "nix build --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/loop-return-order/package.nix'",
+      "initial": {
+        "chunk_id": "5faed9",
+        "wall_time_seconds": 1.001451535,
+        "session_id": 36019,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "5290fa",
+          "wall_time_seconds": 5.000638529,
+          "session_id": 36019,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/0pzccp8ki4m02bgavhcyimwwqzcacsx2-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/0pzccp8ki4m02bgavhcyimwwqzcacsx2-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "e0b25a",
+          "wall_time_seconds": 0.00000197,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ]
+    },
+    "r2_malformed_patch": {
+      "command": "nix build --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/loop-return-order/package.nix'",
+      "initial": {
+        "chunk_id": "0a2b30",
+        "wall_time_seconds": 1.001989551,
+        "session_id": 72434,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "56b922",
+          "wall_time_seconds": 0.00000175,
+          "exit_code": 1,
+          "original_token_count": 520,
+          "output": "this derivation will be built:\n  /nix/store/7nlx8bb9sw11d4j1saqdrwf1nbbd8bbj-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/7nlx8bb9sw11d4j1saqdrwf1nbbd8bbj-ocaml5.2.1-aeneas-0.1.0.drv'...\nerror: Cannot build '/nix/store/7nlx8bb9sw11d4j1saqdrwf1nbbd8bbj-ocaml5.2.1-aeneas-0.1.0.drv'.\n       Reason: builder failed with exit code 2.\n       Output paths:\n         /nix/store/njrpirsx2f21l1v2gknxjdcxv248zx6d-ocaml5.2.1-aeneas-0.1.0\n       Last 25 log lines:\n       > patching file PrePasses.ml\n       > Hunk #2 succeeded at 2369 with fuzz 1 (offset -116 lines).\n       > applying patch /nix/store/pw38bggb506dp559r9mv0n5rzgm8f547-qualified-constructors.patch\n       > patching file extract/ExtractBase.ml\n       > patching file extract/Extract.ml\n       > applying patch /nix/store/335c1w4486g7fv4zqhswi80xyhwxckka-specialized-names.patch\n       > patching file extract/ExtractName.ml\n       > patching file TranslateCore.ml\n       > applying patch /nix/store/b4rd1qi3z4i4j9db4mqvgzsibwh36xsf-complete-trait-arguments.patch\n       > patching file extract/ExtractBase.ml\n       > Hunk #1 succeeded at 1756 (offset 2 lines).\n       > Hunk #2 succeeded at 1792 (offset 2 lines).\n       > Hunk #3 succeeded at 1843 (offset 2 lines).\n       > applying patch /nix/store/m8za98f0mc96hlz48b3px6wydr7jgk8r-prepared-name-components.patch\n       > patching file extract/ExtractBase.ml\n       > applying patch /nix/store/h0666s1rw4lgmz3zx00zksdghaswk2r5-alias-inference.patch\n       > patching file pure/PureUtils.ml\n       > patching file symbolic/SymbolicToPureTypes.ml\n       > patching file symbolic/SymbolicToPure.ml\n       > patching file symbolic/SymbolicToPureExpressions.ml\n       > patching file pure/PureMicroPassesLoops.ml\n       > applying patch /nix/store/ljiqii4vvb8hnfi3q2giwwkbrnmx8sbr-loop-continuations.patch\n       > patching file PrePasses.ml\n       > patch: **** malformed patch at line 22:                  let after = decompose_after after in\n       >\n       For full logs, run:\n         nix log /nix/store/7nlx8bb9sw11d4j1saqdrwf1nbbd8bbj-ocaml5.2.1-aeneas-0.1.0.drv\n"
+        }
+      ]
+    },
+    "r2_interrupted": {
+      "command": "nix build --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/loop-return-order/package.nix'",
+      "initial": {
+        "chunk_id": "5639d4",
+        "wall_time_seconds": 1.001643365,
+        "session_id": 56612,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "c047ee",
+          "wall_time_seconds": 0.00000154,
+          "exit_code": 1,
+          "original_token_count": 56,
+          "output": "this derivation will be built:\n  /nix/store/f3f8wps892zrp9c5rycnrvzcwf38l15y-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/f3f8wps892zrp9c5rycnrvzcwf38l15y-ocaml5.2.1-aeneas-0.1.0.drv'...\nerror: interrupted by the user\n"
+        }
+      ]
+    },
+    "r2": {
+      "command": "nix build --cores 4 --impure --no-link --print-out-paths --expr 'import ./infra/verification/aeneas/candidates/loop-return-order/package.nix'",
+      "initial": {
+        "chunk_id": "8c7444",
+        "wall_time_seconds": 1.000296171,
+        "session_id": 26039,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "995f1f",
+          "wall_time_seconds": 0.00000203,
+          "exit_code": 0,
+          "original_token_count": 65,
+          "output": "this derivation will be built:\n  /nix/store/f3f8wps892zrp9c5rycnrvzcwf38l15y-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/f3f8wps892zrp9c5rycnrvzcwf38l15y-ocaml5.2.1-aeneas-0.1.0.drv'...\n/nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ]
+    }
+  },
+  "runs": [
+    {
+      "name": "loop_charon",
+      "command": "timeout 90 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --dest-file=/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop_return.llbc -- --edition=2024 --crate-name loop_return --crate-type lib /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "aa5156",
+        "wall_time_seconds": 0.623146314,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "loop_aeneas",
+      "command": "timeout 90 /nix/store/3dyrlm2kfsqcgnhzs29kj31fa975d3km-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/lean /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop_return.llbc",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 14:57:05 UTC"
+      },
+      "initial": {
+        "chunk_id": "d17f82",
+        "wall_time_seconds": 0.00000539,
+        "exit_code": 1,
+        "original_token_count": 800,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop_return.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/8 ⠋\r[\u001b[91mError\u001b[39m] Early returns inside of loops are not supported yet\nSource: 'dev/ud07-loop-return-Wkt24U/loop-return.rs', lines 3:0-12:1\n[\u001b[91mError\u001b[39m] Ignoring the body of 'loop_return::guarded_loop' because of previous error\nSource: 'dev/ud07-loop-return-Wkt24U/loop-return.rs', lines 3:0-12:1\n\rApplied prepasses:  [######----------------------------------------------] 1/8 ⠋\r\rApplied prepasses:  [#############---------------------------------------] 2/8 ⠙\r[\u001b[91mError\u001b[39m] Early returns inside of loops are not supported yet\nSource: 'dev/ud07-loop-return-Wkt24U/loop-return.rs', lines 23:0-34:1\n[\u001b[91mError\u001b[39m] Ignoring the body of 'loop_return::guarded_while' because of previous error\nSource: 'dev/ud07-loop-return-Wkt24U/loop-return.rs', lines 23:0-34:1\nApplied prepasses:  [####################################################] 8/8 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/4 ⠋\rTranslated opaque functions:  [##########################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/22 ⠋\rTranslated trait declarations:  [--------------------------------------]  0/22 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/7 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/7 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/4 ⠋\r\rPost-processed translated opaque functions:  [######---------------------] 1/4 ⠋\rPost-processed translated opaque functions:  [###########################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠋\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/lean\n[\u001b[92mInfo\u001b[39m ] Generated the partial file (because of 4 errors, including 2 unique errors): /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/lean/LoopReturn.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/lean/translation.json\n[\u001b[93mWarn\u001b[39m ] The crate contains extracted external, unknown definitions: we advise using the option -split-files to allow manually providing these definitions in separate files.\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.670250 seconds\n"
+      }
+    },
+    {
+      "name": "loop_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 --test -Dwarnings --crate-name loop_return -o /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return-tests /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return.rs",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 14:57:07 UTC"
+      },
+      "initial": {
+        "chunk_id": "1eea24",
+        "wall_time_seconds": 0.00000281,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "loop_fmt",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustfmt --check --edition 2024 /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return.rs",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 14:57:09 UTC"
+      },
+      "initial": {
+        "chunk_id": "436a79",
+        "wall_time_seconds": 0.00000224,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "loop_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 clippy-driver --edition=2024 --crate-name loop_return --crate-type lib --emit=metadata -o /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop.rmeta -Dwarnings -Dclippy::all /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return.rs",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 14:57:12 UTC"
+      },
+      "initial": {
+        "chunk_id": "e7a3d8",
+        "wall_time_seconds": 0.00000209,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "loop_native_run",
+      "command": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return-tests --test-threads=4",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "initial": {
+        "chunk_id": "52235b",
+        "wall_time_seconds": 0.00000322,
+        "exit_code": 0,
+        "original_token_count": 42,
+        "output": "\nrunning 1 test\ntest tests::error_and_normal_exit_are_distinct ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "name": "while_only_charon",
+      "command": "timeout 90 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --start-from=loop_return::guarded_while --start-from=loop_return::flat_while --dest-file=/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/while_only.llbc -- --edition=2024 --crate-name loop_return --crate-type lib /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "b190d7",
+        "wall_time_seconds": 0.340003288,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "candidate_actual_catalog_checker",
+      "command": "timeout 180 /nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-catalog /home/jgoppert/git/rumoca/dev/ud07-extraction-gt77Yb/CatalogChecker.llbc",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 15:05:13 UTC"
+      },
+      "initial": {
+        "chunk_id": "a40ff3",
+        "wall_time_seconds": 1.000783612,
+        "session_id": 17612,
+        "original_token_count": 289,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-extraction-gt77Yb/CatalogChecker.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/105 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/105 ⠙\r\rApplied prepasses:  [##----------------------------------------------]   5/105 ⠙\rApplied prepasses:  [################################################] 105/105 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/39 ⠋\rTranslated opaque functions:  [########################################] 39/39 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/48 ⠋\r\rTranslated transparent functions:  [-----------------------------------]  1/48 ⠙\r\rTranslated transparent functions:  [#----------------------------------]  2/48 ⠹\r\rTranslated transparent functions:  [##---------------------------------]  3/48 ⠸\r"
+      },
+      "observations": [
+        {
+          "chunk_id": "bb516a",
+          "wall_time_seconds": 0.00000163,
+          "exit_code": 0,
+          "original_token_count": 775,
+          "output": "\rTranslated transparent functions:  [##---------------------------------]  4/48 ⠼\r\rTranslated transparent functions:  [##################-----------------] 26/48 ⠴\r\rTranslated transparent functions:  [###################----------------] 27/48 ⠦\r\rTranslated transparent functions:  [####################---------------] 28/48 ⠧\r\rTranslated transparent functions:  [#####################--------------] 30/48 ⠧\r\rTranslated transparent functions:  [#######################------------] 32/48 ⠧\r\rTranslated transparent functions:  [#########################----------] 35/48 ⠧\r\rTranslated transparent functions:  [##########################---------] 36/48 ⠇\r\rTranslated transparent functions:  [################################---] 45/48 ⠇\r\rTranslated transparent functions:  [###################################] 48/48 ⠇\rTranslated transparent functions:  [###################################] 48/48 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/26 ⠋\rTranslated trait declarations:  [##########----------------------------]  7/26 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/43 ⠋\rTranslated trait impls:  [########################---------------------] 23/43 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/39 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/39 ⠋\rPost-processed translated opaque functions:  [#########################] 39/39 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/48 ⠋\r\rPost-processed translated transparent functions:  [--------------------]  1/48 ⠋\r\rPost-processed translated transparent functions:  [--------------------]  2/48 ⠋\r\rPost-processed translated transparent functions:  [#-------------------]  3/48 ⠙\r\rPost-processed translated transparent functions:  [#-------------------]  4/48 ⠹\r\rPost-processed translated transparent functions:  [##########----------] 26/48 ⠹\r\rPost-processed translated transparent functions:  [###########---------] 27/48 ⠸\r\rPost-processed translated transparent functions:  [###########---------] 28/48 ⠸\r\rPost-processed translated transparent functions:  [##############------] 34/48 ⠸\r\rPost-processed translated transparent functions:  [###############-----] 36/48 ⠼\rPost-processed translated transparent functions:  [####################] 48/48 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-catalog\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-catalog/CatalogChecker.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-catalog/translation.json\n[\u001b[93mWarn\u001b[39m ] The crate contains extracted external, unknown definitions: we advise using the option -split-files to allow manually providing these definitions in separate files.\n[\u001b[92mInfo\u001b[39m ] Total execution time: 5.853182 seconds\n"
+        }
+      ]
+    },
+    {
+      "name": "candidate_while_only",
+      "command": "timeout 90 /nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/while_only.llbc",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 15:05:08 UTC"
+      },
+      "initial": {
+        "chunk_id": "8f9345",
+        "wall_time_seconds": 0.00000639,
+        "exit_code": 0,
+        "original_token_count": 553,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/while_only.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠙\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/WhileOnly.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.435375 seconds\n"
+      }
+    },
+    {
+      "name": "candidate_complete_fixture",
+      "command": "timeout 90 /nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-all /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop_return.llbc",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "started": {
+        "current_time": "2026-09-08 15:05:10 UTC"
+      },
+      "initial": {
+        "chunk_id": "23330d",
+        "wall_time_seconds": 0.00000346,
+        "exit_code": 0,
+        "original_token_count": 615,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop_return.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/8 ⠋\r\rApplied prepasses:  [######----------------------------------------------] 1/8 ⠙\rApplied prepasses:  [####################################################] 8/8 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/2 ⠋\rTranslated opaque functions:  [##########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/4 ⠋\r\rTranslated transparent functions:  [#########----------------------------] 1/4 ⠙\r\rTranslated transparent functions:  [##################-------------------] 2/4 ⠙\rTranslated transparent functions:  [#####################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/22 ⠋\rTranslated trait declarations:  [--------------------------------------]  0/22 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/7 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/7 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/2 ⠋\r\rPost-processed translated opaque functions:  [#############--------------] 1/2 ⠋\rPost-processed translated opaque functions:  [###########################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/4 ⠋\r\rPost-processed translated transparent functions:  [#####-----------------] 1/4 ⠋\r\rPost-processed translated transparent functions:  [######################] 4/4 ⠋\rPost-processed translated transparent functions:  [######################] 4/4 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-all\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-all/LoopReturn.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-all/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.748086 seconds\n"
+      }
+    },
+    {
+      "name": "while_only_generated_lean",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o WhileOnly.olean WhileOnly.lean",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while",
+      "initial": {
+        "chunk_id": "675d56",
+        "wall_time_seconds": 1.001078151,
+        "session_id": 65690,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "819184",
+          "wall_time_seconds": 0.00000158,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "loop_behavior_laws_initial",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopOrderLaws.olean LoopOrderLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "3a6ae9",
+        "wall_time_seconds": 1.000915043,
+        "session_id": 93469,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "01d0ce",
+          "wall_time_seconds": 0.00000123,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "loop_axiom_inventory",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true AxiomInventory.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "aa4898",
+        "wall_time_seconds": 1.001065306,
+        "session_id": 24298,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "688e87",
+          "wall_time_seconds": 0.00000162,
+          "exit_code": 0,
+          "original_token_count": 175,
+          "output": "'LoopOrderLaws.disabled_does_not_enter_loop' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.guarded_and_flat_bodies_agree' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.enabled_agrees_with_flat' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.empty_loop_returns_success' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.early_error_at_seven' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.bound_exit_is_success' depends on axioms: [propext, Classical.choice, Quot.sound]\n'LoopOrderLaws.reaches_early_error' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    {
+      "name": "loop_behavior_laws_guarded",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopOrderLaws.olean LoopOrderLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "06c655",
+        "wall_time_seconds": 1.00088278,
+        "session_id": 67546,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "c1ef50",
+          "wall_time_seconds": 0.00000128,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "mutant_charon",
+      "command": "timeout 90 env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 /tmp/rumoca-demand-retention-QVu1kr/charon rustc --preset=aeneas --error-on-warnings --start-from=loop_return::guarded_while --start-from=loop_return::flat_while --dest-file=/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant/while_only.llbc -- --edition=2024 --crate-name loop_return --crate-type lib /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return-mutant.rs",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "initial": {
+        "chunk_id": "4144ae",
+        "wall_time_seconds": 0.00000585,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "mutant_native_compile",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 rustc --edition=2024 --test -Dwarnings --crate-name loop_return -o /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-tests /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return-mutant.rs",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "initial": {
+        "chunk_id": "3f2f30",
+        "wall_time_seconds": 0.00000244,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "mutant_aeneas",
+      "command": "timeout 90 /nix/store/xvqxhb7awgp6kgzsi70g156x72zyfnwm-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant/while_only.llbc",
+      "expected_exit": 0,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "initial": {
+        "chunk_id": "90e0c0",
+        "wall_time_seconds": 0.00000599,
+        "exit_code": 0,
+        "original_token_count": 551,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant/while_only.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠙\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean/WhileOnly.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.446608 seconds\n"
+      }
+    },
+    {
+      "name": "mutant_native_run",
+      "command": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-tests --test-threads=4",
+      "expected_exit": 101,
+      "cwd": "/home/jgoppert/git/rumoca",
+      "initial": {
+        "chunk_id": "dcc58b",
+        "wall_time_seconds": 0.00000379,
+        "exit_code": 101,
+        "original_token_count": 150,
+        "output": "\nrunning 1 test\ntest tests::error_and_normal_exit_are_distinct ... FAILED\n\nfailures:\n\n---- tests::error_and_normal_exit_are_distinct stdout ----\n\nthread 'tests::error_and_normal_exit_are_distinct' (3484602) panicked at /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/loop-return-mutant.rs:61:9:\nassertion `left == right` failed\n  left: Err(9)\n right: Err(7)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::error_and_normal_exit_are_distinct\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "name": "mutant_generated_lean",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o WhileOnly.olean WhileOnly.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "11d411",
+        "wall_time_seconds": 1.000916741,
+        "session_id": 80453,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "35f476",
+          "wall_time_seconds": 0.00000152,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "mutant_unchanged_loop_laws",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U -o /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean/LoopOrderLaws.olean /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/mutant-lean",
+      "expected_exit": 1,
+      "initial": {
+        "chunk_id": "6afc97",
+        "wall_time_seconds": 1.00095218,
+        "session_id": 92819,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "fea94e",
+          "wall_time_seconds": 0.00000268,
+          "exit_code": 1,
+          "original_token_count": 969,
+          "output": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:14:2: error: Tactic `rfl` failed: The left-hand side\n  guarded_while_loop.body bound index\nis not definitionally equal to the right-hand side\n  flat_while_loop.body bound index\n\nbound index : U32\n⊢ guarded_while_loop.body bound index = flat_while_loop.body bound index\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:18:2: error: Tactic `rfl` failed: The left-hand side\n  guarded_while bound true\nis not definitionally equal to the right-hand side\n  flat_while bound\n\nbound : U32\n⊢ guarded_while bound true = flat_while bound\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:27:2: error: Tactic `rfl` failed: The left-hand side\n  guarded_while_loop.body 8#u32 7#u32\nis not definitionally equal to the right-hand side\n  Result.ok (ControlFlow.done (core.result.Result.Err 7#u32))\n\n⊢ guarded_while_loop.body 8#u32 7#u32 = Result.ok (ControlFlow.done (core.result.Result.Err 7#u32))\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:50:2: error: Tactic `rfl` failed: The left-hand side\n  match guarded_while_loop.body 8#u32 7#u32 with\n  | Result.ok r =>\n    match r with\n    | ControlFlow.cont x => loop (guarded_while_loop.body 8#u32) x\n    | ControlFlow.done x => Result.ok x\n  | Result.fail e => Result.fail e\n  | Result.div => Result.div\nis not definitionally equal to the right-hand side\n  Result.ok (core.result.Result.Err 7#u32)\n\n⊢ (match guarded_while_loop.body 8#u32 7#u32 with\n    | Result.ok r =>\n      match r with\n      | ControlFlow.cont x => loop (guarded_while_loop.body 8#u32) x\n      | ControlFlow.done x => Result.ok x\n    | Result.fail e => Result.fail e\n    | Result.div => Result.div) =\n    Result.ok (core.result.Result.Err 7#u32)\n'LoopOrderLaws.guarded_and_flat_bodies_agree' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:57:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'LoopOrderLaws.guarded_and_flat_bodies_agree' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'LoopOrderLaws.guarded_and_flat_bodies_agree' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'LoopOrderLaws.enabled_agrees_with_flat' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:61:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'LoopOrderLaws.enabled_agrees_with_flat' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'LoopOrderLaws.enabled_agrees_with_flat' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'LoopOrderLaws.early_error_at_seven' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:69:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'LoopOrderLaws.early_error_at_seven' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'LoopOrderLaws.early_error_at_seven' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n'LoopOrderLaws.reaches_early_error' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean:77:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'LoopOrderLaws.reaches_early_error' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'LoopOrderLaws.reaches_early_error' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+        }
+      ]
+    },
+    {
+      "name": "r2_actual_catalog",
+      "command": "timeout 180 /nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-catalog /home/jgoppert/git/rumoca/dev/ud07-extraction-gt77Yb/CatalogChecker.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "755f27",
+        "wall_time_seconds": 1.000777289,
+        "session_id": 48276,
+        "original_token_count": 331,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-extraction-gt77Yb/CatalogChecker.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/105 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/105 ⠙\r\rApplied prepasses:  [##----------------------------------------------]   5/105 ⠙\rApplied prepasses:  [################################################] 105/105 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/39 ⠋\rTranslated opaque functions:  [########################################] 39/39 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-----------------------------------]  0/48 ⠋\r\rTranslated transparent functions:  [-----------------------------------]  1/48 ⠙\r\rTranslated transparent functions:  [#----------------------------------]  2/48 ⠹\r\rTranslated transparent functions:  [##---------------------------------]  3/48 ⠸\r\rTranslated transparent functions:  [##---------------------------------]  4/48 ⠼\r\rTranslated transparent functions:  [##################-----------------] 26/48 ⠴\r"
+      },
+      "observations": [
+        {
+          "chunk_id": "beca40",
+          "wall_time_seconds": 0.00000286,
+          "exit_code": 0,
+          "original_token_count": 728,
+          "output": "\rTranslated transparent functions:  [###################----------------] 27/48 ⠦\r\rTranslated transparent functions:  [####################---------------] 28/48 ⠧\r\rTranslated transparent functions:  [#####################--------------] 30/48 ⠧\r\rTranslated transparent functions:  [########################-----------] 33/48 ⠧\r\rTranslated transparent functions:  [#########################----------] 35/48 ⠧\r\rTranslated transparent functions:  [##########################---------] 36/48 ⠇\r\rTranslated transparent functions:  [################################---] 45/48 ⠇\r\rTranslated transparent functions:  [###################################] 48/48 ⠏\rTranslated transparent functions:  [###################################] 48/48 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/26 ⠋\rTranslated trait declarations:  [##########----------------------------]  7/26 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/43 ⠋\rTranslated trait impls:  [########################---------------------] 23/43 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/39 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/39 ⠋\rPost-processed translated opaque functions:  [#########################] 39/39 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [--------------------]  0/48 ⠋\r\rPost-processed translated transparent functions:  [--------------------]  1/48 ⠋\r\rPost-processed translated transparent functions:  [--------------------]  2/48 ⠋\r\rPost-processed translated transparent functions:  [#-------------------]  3/48 ⠙\r\rPost-processed translated transparent functions:  [#-------------------]  4/48 ⠹\r\rPost-processed translated transparent functions:  [##########----------] 26/48 ⠹\r\rPost-processed translated transparent functions:  [###########---------] 27/48 ⠸\r\rPost-processed translated transparent functions:  [###########---------] 28/48 ⠸\r\rPost-processed translated transparent functions:  [##############------] 34/48 ⠸\r\rPost-processed translated transparent functions:  [###############-----] 36/48 ⠼\rPost-processed translated transparent functions:  [####################] 48/48 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-catalog\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-catalog/CatalogChecker.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-catalog/translation.json\n[\u001b[93mWarn\u001b[39m ] The crate contains extracted external, unknown definitions: we advise using the option -split-files to allow manually providing these definitions in separate files.\n[\u001b[92mInfo\u001b[39m ] Total execution time: 6.009120 seconds\n"
+        }
+      ]
+    },
+    {
+      "name": "r2_while",
+      "command": "timeout 180 /nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/while_only.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "bff1b6",
+        "wall_time_seconds": 0.000007091,
+        "exit_code": 0,
+        "original_token_count": 547,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/while_only.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋\r\rTranslated transparent functions:  [##################-------------------] 1/2 ⠙\rTranslated transparent functions:  [#####################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋\r\rPost-processed translated transparent functions:  [###########-----------] 1/2 ⠙\rPost-processed translated transparent functions:  [######################] 2/2 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while/WhileOnly.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.470083 seconds\n"
+      }
+    },
+    {
+      "name": "r2_switch_call",
+      "command": "timeout 180 /nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call /home/jgoppert/git/rumoca/dev/loop-return-order-review-W6T76i/loop_switch_call.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "cc1917",
+        "wall_time_seconds": 0.00000363,
+        "exit_code": 0,
+        "original_token_count": 641,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/loop-return-order-review-W6T76i/loop_switch_call.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/4 ⠋\r\rApplied prepasses:  [#############---------------------------------------] 1/4 ⠙\r\rApplied prepasses:  [##########################--------------------------] 2/4 ⠙\rApplied prepasses:  [####################################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/3 ⠋\r\rTranslated transparent functions:  [############-------------------------] 1/3 ⠙\r\rTranslated transparent functions:  [########################-------------] 2/3 ⠹\rTranslated transparent functions:  [#####################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/3 ⠋\r\rPost-processed translated transparent functions:  [#######---------------] 1/3 ⠋\r\rPost-processed translated transparent functions:  [##############--------] 2/3 ⠋\rPost-processed translated transparent functions:  [######################] 3/3 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call/LoopSwitchCall.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.597352 seconds\n"
+      }
+    },
+    {
+      "name": "r2_switch",
+      "command": "timeout 180 /nix/store/2nlcaggijzpaqp8rllixa1rq37jqincr-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch /home/jgoppert/git/rumoca/dev/loop-return-order-review-W6T76i/loop_switch.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "921439",
+        "wall_time_seconds": 0.00000468,
+        "exit_code": 0,
+        "original_token_count": 572,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/loop-return-order-review-W6T76i/loop_switch.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/2 ⠋\r\rApplied prepasses:  [##########################--------------------------] 1/2 ⠙\rApplied prepasses:  [####################################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/1 ⠋\rTranslated opaque functions:  [##########################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/1 ⠋\r\rTranslated transparent functions:  [#####################################] 1/1 ⠙\rTranslated transparent functions:  [#####################################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋\rTranslated trait declarations:  [----------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋\rTranslated trait impls:  [-----------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/1 ⠋\r\rPost-processed translated opaque functions:  [###########################] 1/1 ⠋\rPost-processed translated opaque functions:  [###########################] 1/1 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/1 ⠋\r\rPost-processed translated transparent functions:  [######################] 1/1 ⠋\rPost-processed translated transparent functions:  [######################] 1/1 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch/LoopSwitch.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.610645 seconds\n"
+      }
+    },
+    {
+      "name": "r2_while_generated_lean",
+      "kind": "loop",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o WhileOnly.olean WhileOnly.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "b0202d",
+        "wall_time_seconds": 1.001350882,
+        "session_id": 21350,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "3a4551",
+          "wall_time_seconds": 0.00000191,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "r2_unchanged_guarded_laws",
+      "kind": "loop",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -R /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U -o /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-while/LoopOrderLaws.olean /home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "5591e6",
+        "wall_time_seconds": 1.001052083,
+        "session_id": 22152,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "c745d0",
+          "wall_time_seconds": 0.00000108,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "r2_switch_lean",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopSwitch.olean LoopSwitch.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "bc6b07",
+        "wall_time_seconds": 1.001238518,
+        "session_id": 33368,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "606c1b",
+          "wall_time_seconds": 0.0000011,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "r2_switch_call_lean",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o LoopSwitchCall.olean LoopSwitchCall.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "261920",
+        "wall_time_seconds": 1.001216528,
+        "session_id": 65789,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "b0781a",
+          "wall_time_seconds": 0.00000101,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "r2_post_loop_laws_initial",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch:/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o PostLoopLaws.olean PostLoopLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "4ba7f4",
+        "wall_time_seconds": 1.000610608,
+        "session_id": 58140,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "62eea9",
+          "wall_time_seconds": 0.00000103,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "r2_post_loop_laws_guarded",
+      "command": "timeout 90 env LEAN_PATH='/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch:/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U/r2-switch-call:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean' /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true -o PostLoopLaws.olean PostLoopLaws.lean",
+      "cwd": "/home/jgoppert/git/rumoca/dev/ud07-loop-return-Wkt24U",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "74d02e",
+        "wall_time_seconds": 1.001472503,
+        "session_id": 80106,
+        "original_token_count": 0,
+        "output": ""
+      },
+      "observations": [
+        {
+          "chunk_id": "f35f86",
+          "wall_time_seconds": 0.0000012,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ]
+    }
+  ],
+  "artifact_hash_observation": {
+    "chunk_id": "8cb783",
+    "wall_time_seconds": 0.00000321,
+    "exit_code": 0,
+    "original_token_count": 814,
+    "output": "130eb706e23392ef557b466b457f1ceff029791dd99331c19147536a58c22b95  dev/ud07-loop-return-Wkt24U/PostLoopLaws.lean\n3946bab48aa3effecf52c8e35a22b7f637f339957134b43cffe0f0726d183d86  dev/ud07-loop-return-Wkt24U/README.md\n771e72cee3bebfd0a9f50395a663ede34f5db4c286367d28ab3d029498cfa196  dev/ud07-loop-return-Wkt24U/candidate-all/LoopReturn.lean\ne73b0adaf48656e790462f95951895551ff79a0f1f952c15a5443a37762568f1  dev/ud07-loop-return-Wkt24U/candidate-all/translation.json\n940bcd02de5c42afd1b9c5af362996a26333b1eac354bc685e9430aff02df372  dev/ud07-loop-return-Wkt24U/candidate-catalog/CatalogChecker.lean\nacc7674c84a6ff558800ba0a1ddcc273f62948649ec68d37ed6478c66bd7c438  dev/ud07-loop-return-Wkt24U/candidate-catalog/translation.json\nd6cbc202f41f02edac68ee4be8db0382a136f7f79a0479e7d16bb605111f2493  dev/ud07-loop-return-Wkt24U/candidate-while/AxiomInventory.lean\n1137465a2f40b8a86523e2138ff8c8295d7d3c4b44f88a4df986c2d4c854ee7f  dev/ud07-loop-return-Wkt24U/candidate-while/LoopOrderLaws.lean\n93e69ca045b7c9b33993ef1352e08f6dae7ab09d0f029da4347b1efd3f9837cb  dev/ud07-loop-return-Wkt24U/candidate-while/WhileOnly.lean\n21e3eef612de5f12339aa7c5afc0f4bd179f8eb75199b8a873930e399b4e4d70  dev/ud07-loop-return-Wkt24U/candidate-while/translation.json\nec415acce58ef9b8fa0e223f31f005e19297746867faafffa4d8417a71b2feff  dev/ud07-loop-return-Wkt24U/lean/LoopReturn.lean\n4ea76d3da191a41c9b3eb2705f156e3502af5598f71958c9d316725079f79c37  dev/ud07-loop-return-Wkt24U/lean/translation.json\n3cd69290a5cf83132fd8ab0b19910d17a3302feabb0cc90bdcef1f1c9ae6ba4c  dev/ud07-loop-return-Wkt24U/loop-return-mutant.rs\n933869b3c19e9dc223c32641da47c3960f6667727fb07a17f0f5d9a8dc1300d9  dev/ud07-loop-return-Wkt24U/loop-return.rs\n457f888c1930c29383bad1924883c688be6ae439e33cd636461a6dd78f22c257  dev/ud07-loop-return-Wkt24U/loop_return.llbc\nde605db827c7f533cd875becb2c11551f56d386e72ed29ba757c8fd963412f81  dev/ud07-loop-return-Wkt24U/mutant-lean/WhileOnly.lean\nb8ed9f4a321b07a25ad9b131130a18acf36234c2e64b40d2339e50a4f89fd051  dev/ud07-loop-return-Wkt24U/mutant-lean/translation.json\n1c441f37526ffeee161bf70e52253dd76de1aade7c590c4cf299189a0f490016  dev/ud07-loop-return-Wkt24U/mutant/while_only.llbc\n940bcd02de5c42afd1b9c5af362996a26333b1eac354bc685e9430aff02df372  dev/ud07-loop-return-Wkt24U/r2-catalog/CatalogChecker.lean\n113139afa721970cc64d7cc0904314276df55955aebbca027cd151f7c16caaac  dev/ud07-loop-return-Wkt24U/r2-catalog/translation.json\n52e48d2ea0971843f7b222d264b6a6acbeca5e825c7e9ac7cd816ef769347380  dev/ud07-loop-return-Wkt24U/r2-switch-call/LoopSwitchCall.lean\ncdd5e4a83b036fb396366d50e41ba5f974982bc5e29f9b0cb75fe01f4787631c  dev/ud07-loop-return-Wkt24U/r2-switch-call/translation.json\n69474c083471ea9af8e14661b4b04c56d0cbf5452f671f36980d159c7bfeb8cb  dev/ud07-loop-return-Wkt24U/r2-switch/LoopSwitch.lean\neaaad7d8ea7581341483018c83133b1f6b1c05986b980e8fbc826169266d8b28  dev/ud07-loop-return-Wkt24U/r2-switch/translation.json\n93e69ca045b7c9b33993ef1352e08f6dae7ab09d0f029da4347b1efd3f9837cb  dev/ud07-loop-return-Wkt24U/r2-while/WhileOnly.lean\n104099d565fc64bb614ac0485ca0bae1e0fb579d0f63b0905b7f737f0eb598f8  dev/ud07-loop-return-Wkt24U/r2-while/translation.json\nbdc2679f6c48fd6dc4e9ee520478a0dfa44a8972a9345b639721d6514a2913e7  dev/ud07-loop-return-Wkt24U/while_only.llbc\n"
+  },
+  "verdicts": {
+    "r1": "FIX: independently executed review counterexamples reject a pure pass reorder. Never adopted.",
+    "r2": "IN REVIEW: four source emission controls and actual checker pass, seven existing guarded laws and six post-loop behavior laws pass with axiom guards. Not general preservation or adoption."
+  },
+  "limits": [
+    "All process observations retained, including initial expected-zero Aeneas refusal, malformed patch build and interrupted build. Cancellation is a terminal observation, not a semantic result; only then was the same corrected derivation rebuilt with --cores 4.",
+    "Full first fixture LLBC was emitted before a one-character correction in its cfg(test) code. No translated production function changed; while_only.llbc is a fresh extraction after correction and is the proof subject. Earlier full fixture is diagnostic only.",
+    "R1 real Rust payload mutant Err(7)->Err(9) fails native tests and unchanged Lean laws. This is not an executed R2 mutation claim. No generated Lean is edited.",
+    "The R2 catalog emits with 66 functions and six opaque library functions (NonZero clone/equality, Option clone/copied/flatten, Result::branch). No first-party failed body remains, but library admission and Lean typing of that whole catalog are not closed.",
+    "Source-to-LLBC correctness and translator correctness remain trusted. Small generated-function laws do not prove the general OCaml pass or another whole compiler relation.",
+    "Post-loop LLBC came from the independent review packet dev/loop-return-order-review-W6T76i; its source/Charon run is reviewer-relayed here. Root independently reopened Rust/LLBC and ran R2 Aeneas/Lean, not that packet's original Charon commands.",
+    "Artifacts are saved in dev outside target/tmp, but this is a machine-local evidence packet. Nix derivations reconstruct candidate tools. No broad gates rerun for isolated candidate changes; last broad quick is red.",
+    "Production UnitDerivative was independently rerun with fixed 4/4/4 budgets at 15:18Z, tool chunk744f28, exit0, five tests pass, build0.67s/test0.03s; this is not a proof relation."
+  ]
+}

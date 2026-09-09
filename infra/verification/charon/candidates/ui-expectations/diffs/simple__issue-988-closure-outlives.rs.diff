@@ -1,0 +1,31 @@
+---- simple/issue-988-closure-outlives.rs ----
+
+---- expected: tests/ui/simple/issue-988-closure-outlives.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 138  138 |     _5 = &read
+ 139  139 |     storage_live(_6)
+ 140  140 |     storage_live(_7)
+ 141  141 |     _7 = copy i
+ 142  142 |     _6 = (move _7,)
+ 143      -     _0 = call<'14, '15>(move _5, move _6)
+      143 +     _0 = call<'12, '13>(move _5, move _6)
+ 144  144 |     ↳⚡ storage_dead(i)
+ 145  145 |         storage_dead(a)
+ 146  146 |         unwind_continue
+ 147  147 |     storage_dead(_7)
+ 148  148 |     storage_dead(_6)
+          ⋮
+ 260  260 |     non-dyn-compatible
+ 261  261 | }
+ 262  262 | 
+ 263  263 | 
+ 264  264 | 
+
+
+

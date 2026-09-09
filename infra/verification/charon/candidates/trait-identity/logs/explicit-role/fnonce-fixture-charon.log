@@ -1,0 +1,325 @@
+# Final LLBC before serialization:
+
+opaque type ()
+
+// Full name: core::marker::Destruct
+#[lang_item(Destruct)]
+pub trait Destruct<Self>
+{
+    fn drop_glue<'_0_1>;
+    non-dyn-compatible
+}
+
+#[lang_item(Destruct)]
+pub trait core::marker::Destruct::<&_ mut _><'_0, T0>
+{
+    fn drop_glue<'_0_1>;
+    non-dyn-compatible
+}
+
+// Full name: core::ops::function::FnOnce
+#[fundamental]
+#[lang_item(FnOnce)]
+pub trait FnOnce<Self, Args, Self_Output>
+{
+    fn call_once;
+    vtable: core::ops::function::FnOnce::{vtable}<Args, Self_Output>
+}
+
+// Full name: core::ops::function::FnMut
+#[fundamental]
+#[lang_item(FnMut)]
+pub trait FnMut<Self, Args, Self_Clause0_Output>
+{
+    proof ImpliedClause0: (Self: FnOnce<Args, Self_Clause0_Output>)
+    fn call_mut<'_0_1>;
+    vtable: core::ops::function::FnMut::{vtable}<Args, Self_Clause0_Output>
+}
+
+#[fundamental]
+#[lang_item(FnOnce)]
+pub trait core::ops::function::FnOnce::<&_ mut _, _, _><'_0, T0, T1, T2>
+{
+    fn call_once;
+    vtable: core::ops::function::FnOnce::{vtable}<T1, T2>
+}
+
+// Full name: core::ops::function::impls::{impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}::call_once
+pub extern "rust-call" fn {impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}::call_once<'_0, A, F, Clause0_Clause0_Output>(self: &'_0 mut F, args: A) -> Clause0_Clause0_Output
+where
+    TraitClause0: (F: FnMut<A, Clause0_Clause0_Output>),
+    TypeOutlives0: F: '_0,
+{
+    let _0: Clause0_Clause0_Output; // return
+    let self: &'1 mut F; // arg #1
+    let args: A; // arg #2
+    let _3: &'2 mut F; // anonymous local
+    let _4: A; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = &two-phase-mut (*self)
+    storage_live(_4)
+    _4 = move args
+    _0 = TraitClause0::call_mut<'3>(move _3, move _4)
+    ↳⚡ storage_dead(args)
+        storage_dead(self)
+        unwind_continue
+    storage_dead(_4)
+    storage_dead(_3)
+    storage_dead(args)
+    storage_dead(self)
+    return
+}
+
+// Full name: core::ops::function::impls::{impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}
+impl<'_0, A, F, Clause0_Clause0_Output> core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F
+where
+    TraitClause0: (F: FnMut<A, Clause0_Clause0_Output>),
+    TypeOutlives0: F: '_0,
+{
+    fn call_once = {impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}::call_once<'_0, A, F, Clause0_Clause0_Output>[TraitClause0]
+    vtable: {impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}::{vtable}<'_0, A, F>[TraitClause0]
+}
+
+// Full name: test_crate::once
+pub fn once<G>(g: G) -> u32
+where
+    TraitClause0: (G: FnOnce<(u32,), u32>),
+{
+    let _0: u32; // return
+    let g: G; // arg #1
+    let _2: G; // anonymous local
+    let _3: (u32,); // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = move g
+    storage_live(_3)
+    _3 = (const 1u32,)
+    _0 = TraitClause0::call_once(move _2, move _3)
+    ↳⚡ conditional_drop[{built_in impl Destruct for G}::drop_glue<'0>] _2
+        ↳⚡ storage_dead(g)
+            unwind_terminate
+        conditional_drop[{built_in impl Destruct for G}::drop_glue<'2>] g
+        ↳⚡ storage_dead(g)
+            unwind_terminate
+        storage_dead(g)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    conditional_drop[{built_in impl Destruct for G}::drop_glue<'1>] g
+    ↳⚡ storage_dead(g)
+        unwind_continue
+    storage_dead(g)
+    return
+}
+
+pub fn test_crate::once::<&_ mut _><'_0, T0>(g: &'_0 mut T0) -> u32
+where
+    TraitClause0: (T0: core::ops::function::FnOnce::<&_ mut _, _, _><'_0, (u32,), u32>),
+{
+    let _0: u32; // return
+    let g: &'_0 mut T0; // arg #1
+    let _2: &'_0 mut T0; // anonymous local
+    let _3: (u32,); // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = move g
+    storage_live(_3)
+    _3 = (const 1u32,)
+    _0 = TraitClause0::call_once(move _2, move _3)
+    ↳⚡ conditional_drop[{built_in impl core::marker::Destruct::<&_ mut _><'_0> for T0}::drop_glue<'0>] _2
+        ↳⚡ storage_dead(g)
+            unwind_terminate
+        conditional_drop[{built_in impl core::marker::Destruct::<&_ mut _><'_0> for T0}::drop_glue<'2>] g
+        ↳⚡ storage_dead(g)
+            unwind_terminate
+        storage_dead(g)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    conditional_drop[{built_in impl core::marker::Destruct::<&_ mut _><'_0> for T0}::drop_glue<'1>] g
+    ↳⚡ storage_dead(g)
+        unwind_continue
+    storage_dead(g)
+    return
+}
+
+// Full name: test_crate::wrap
+pub fn wrap<'_0, F>(f: &'_0 mut F) -> u32
+where
+    TraitClause0: (F: FnMut<(u32,), u32>),
+    TypeOutlives0: F: '_0,
+{
+    let _0: u32; // return
+    let f: &'1 mut F; // arg #1
+    let _2: &'2 mut F; // anonymous local
+
+    storage_live(_0)
+    storage_live(_2)
+    _2 = move f
+    _0 = test_crate::once::<&_ mut _><'4, F>[{impl core::ops::function::FnOnce::<&_ mut _, _, _><'_0, A, Clause0_Clause0_Output> for F}<'4, (u32,), F, u32>[TraitClause0]](move _2)
+    ↳⚡ storage_dead(f)
+        unwind_continue
+    storage_dead(_2)
+    storage_dead(f)
+    return
+}
+
+// Full name: test_crate::use_it::closure
+struct closure<'_0, '_1> {
+  _0: &'_0 mut u32,
+  _1: &'_1 u32,
+}
+
+// Full name: test_crate::use_it::{impl FnMut<(u32,), u32> for closure<'_0, '_1>}::call_mut
+fn call_mut<'_0, '_1, '_2>(_1: &'_2 mut closure<'_0, '_1>, tupled_args: (u32,)) -> u32
+where
+    RegionOutlives0: '_0: '_2,
+    RegionOutlives1: '_1: '_2,
+{
+    let _0: u32; // return
+    let _1: &'1 mut closure<'_0, '_1>; // arg #1
+    let tupled_args: (u32,); // arg #2
+    let x: u32; // local
+    let _4: u32; // anonymous local
+    let _5: u32; // anonymous local
+    let _6: u32; // anonymous local
+    let _7: u32; // anonymous local
+    let _8: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(x)
+    storage_live(_5)
+    storage_live(_8)
+    x = move tupled_args.0
+    storage_live(_4)
+    _4 = copy x
+    _5 = copy (*(*_1)._0) panic.+ copy _4
+    (*(*_1)._0) = move _5
+    storage_dead(_4)
+    storage_live(_6)
+    _6 = copy (*(*_1)._0)
+    storage_live(_7)
+    _7 = copy (*(*_1)._1)
+    _8 = copy _6 panic.+ copy _7
+    _0 = move _8
+    storage_dead(_7)
+    storage_dead(_6)
+    storage_dead(_8)
+    storage_dead(_5)
+    storage_dead(x)
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::use_it::closure::{impl Destruct for closure<'_0, '_1>}::drop_glue
+unsafe fn drop_glue<'_0, '_1, '_2>(_1: &'_2 mut closure<'_0, '_1>)
+where
+    RegionOutlives0: '_0: '_2,
+    RegionOutlives1: '_1: '_2,
+{
+    let _0: (); // return
+    let _1: &'1 mut closure<'_0, '_1>; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::use_it::{impl FnOnce<(u32,), u32> for closure<'_0, '_1>}::call_once
+fn impl_FnOnce_unit_for_closure::call_once<'_0, '_1>(_1: closure<'_0, '_1>, _2: (u32,)) -> u32
+{
+    let _0: u32; // return
+    let _1: closure<'_0, '_1>; // arg #1
+    let _2: (u32,); // arg #2
+    let _3: &'1 mut closure<'_0, '_1>; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _3 = &mut _1
+    _0 = call_mut<'_0, '_1, '2>(move _3, move _2)
+    ↳⚡ drop[drop_glue<'_0, '_1, '3>] _1
+        ↳⚡ storage_dead(_3)
+            storage_dead(_2)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    drop[drop_glue<'_0, '_1, '4>] _1
+    ↳⚡ storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::use_it::{impl FnOnce<(u32,), u32> for closure<'_0, '_1>}
+impl<'_0, '_1> "impl_FnOnce_unit_for_closure" FnOnce<(u32,), u32> for closure<'_0, '_1> {
+    fn call_once = impl_FnOnce_unit_for_closure::call_once<'_0, '_1>
+    vtable: impl_FnOnce_unit_for_closure::{vtable}<'_0, '_1>
+}
+
+// Full name: test_crate::use_it::{impl FnMut<(u32,), u32> for closure<'_0, '_1>}
+impl<'_0, '_1> "impl_FnMut_unit_for_closure" FnMut<(u32,), u32> for closure<'_0, '_1> {
+    proof ImpliedClause0: (closure<'_0, '_1>: FnOnce<(u32,), u32>) = impl_FnOnce_unit_for_closure<'_0, '_1>
+    fn call_mut<'_0_1> = call_mut<'_0, '_1, '_0_1>
+    vtable: impl_FnMut_unit_for_closure::{vtable}<'_0, '_1>
+}
+
+// Full name: test_crate::use_it
+pub fn use_it(k: u32) -> u32
+{
+    let _0: u32; // return
+    let k: u32; // arg #1
+    let acc: u32; // local
+    let _3: &'5 mut closure<'6, '7>; // anonymous local
+    let _4: &'8 mut closure<'9, '10>; // anonymous local
+    let _5: closure<'11, '12>; // anonymous local
+    let _6: &'14 mut u32; // anonymous local
+    let _7: &'16 u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(acc)
+    acc = const 0u32
+    fake_read(acc)
+    storage_live(_3)
+    storage_live(_4)
+    storage_live(_5)
+    storage_live(_6)
+    _6 = &mut acc
+    storage_live(_7)
+    _7 = &k
+    _5 = closure { _0: move _6, _1: move _7 }
+    storage_dead(_7)
+    storage_dead(_6)
+    _4 = &mut _5
+    _3 = &two-phase-mut (*_4)
+    _0 = wrap<'32, closure<'23, '24>>[impl_FnMut_unit_for_closure<'23, '24>](move _3)
+    ↳⚡ storage_dead(k)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(acc)
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(k)
+    return
+}
+
+// Full name: test_crate::use_it::closure::{impl Destruct for closure<'_0, '_1>}
+impl<'_0, '_1> "impl_Destruct_for_closure" Destruct for closure<'_0, '_1> {
+    fn drop_glue<'_0_1> = drop_glue<'_0, '_1, '_0_1>
+    non-dyn-compatible
+}
+
+
+

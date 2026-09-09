@@ -1,0 +1,7 @@
+exe-noincr	0	panic=0	sidecars=[]	
+exe-incr	0	panic=0	sidecars=[]	
+exe-metadata	2	panic=0	sidecars=[]	
+lib-rlib	0	panic=0	sidecars=[]	
+lib-metadata	0	panic=0	sidecars=[libdepm.rmeta.charon-closure-regions.json ]	
+user-consumes	1	panic=0	sidecars=[libdepm.rmeta.charon-closure-regions.json ]	DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out-repaired2/libdep.rlib")
+lib-broken	2	panic=0	sidecars=[libdepm.rmeta.charon-closure-regions.json ]	

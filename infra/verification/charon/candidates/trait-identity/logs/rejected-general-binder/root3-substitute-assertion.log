@@ -1,0 +1,30 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti-m0/Ud07CatalogComposition.llbc
+[?25lApplied prepasses:  [------------------------------------------------]   0/187 ⠋Applied prepasses:  [------------------------------------------------]   1/187 ⠙Applied prepasses:  [###---------------------------------------------]  13/187 ⠙Applied prepasses:  [######################--------------------------]  89/187 ⠙Applied prepasses:  [################################################] 187/187 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [----------------------------------------]  0/41 ⠋Translated opaque functions:  [########################################] 41/41 ✔️
+[?25h[?25lTranslated transparent functions:  [-----------------------------------]  0/50 ⠋Translated transparent functions:  [-----------------------------------]  1/50 ⠙Translated transparent functions:  [##---------------------------------]  3/50 ⠹Translated transparent functions:  [##---------------------------------]  4/50 ⠸Translated transparent functions:  [###--------------------------------]  5/50 ⠼Translated transparent functions:  [##################-----------------] 27/50 ⠼Translated transparent functions:  [###################----------------] 28/50 ⠴Translated transparent functions:  [####################---------------] 29/50 ⠦Translated transparent functions:  [#####################--------------] 30/50 ⠧Translated transparent functions:  [######################-------------] 32/50 ⠧Translated transparent functions:  [########################-----------] 35/50 ⠧Translated transparent functions:  [#########################----------] 37/50 ⠧Translated transparent functions:  [##########################---------] 38/50 ⠇Translated transparent functions:  [################################---] 47/50 ⠇Translated transparent functions:  [###################################] 50/50 ⠏Translated transparent functions:  [###################################] 50/50 ✔️
+[?25h[?25lTranslated trait declarations:  [--------------------------------------]  0/33 ⠋Translated trait declarations:  [############--------------------------] 11/33 ✔️
+[?25h[?25lTranslated trait impls:  [---------------------------------------------]  0/69 ⠋Translated trait impls:  [###############------------------------------] 24/69 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [-------------------------]  0/41 ⠋Post-processed translated opaque functions:  [-------------------------]  1/41 ⠋Post-processed translated opaque functions:  [#########################] 41/41 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [--------------------]  0/50 ⠋Post-processed translated transparent functions:  [--------------------]  1/50 ⠋Post-processed translated transparent functions:  [#-------------------]  3/50 ⠋Post-processed translated transparent functions:  [#-------------------]  4/50 ⠙Post-processed translated transparent functions:  [##------------------]  5/50 ⠹Post-processed translated transparent functions:  [###########---------] 28/50 ⠹Post-processed translated transparent functions:  [###########---------] 29/50 ⠸Post-processed translated transparent functions:  [############--------] 30/50 ⠸Post-processed translated transparent functions:  [##############------] 37/50 ⠸Post-processed translated transparent functions:  [###############-----] 38/50 ⠼Post-processed translated transparent functions:  [####################] 50/50 ⠼Post-processed translated transparent functions:  [####################] 50/50 ✔️
+[?25hUncaught exception:
+  
+  (Failure
+   "(partially) monomorphized generic parameters do not match the supplied generic arguments")
+
+Raised at Stdlib.failwith in file "stdlib.ml", line 29, characters 17-33
+Called from Charon__Substitute.instantiate_name_generics in file "charon-ml/src/Substitute.ml", lines 510-512, characters 6-36
+Called from Charon__NameMatcher.name_with_generics_to_pattern_aux in file "charon-ml/src/NameMatcher.ml", line 935, characters 28-80
+Called from Charon__NameMatcher.name_with_generics_to_pattern in file "charon-ml/src/NameMatcher.ml", line 1140, characters 4-52
+Called from Aeneas__ExtractName.name_with_generics_to_simple_name in file "extract/ExtractName.ml", line 189, characters 13-57
+Called from Aeneas__ExtractBase.ctx_compute_trait_impl_name_raw in file "extract/ExtractBase.ml", lines 1834-1835, characters 22-39
+Called from Aeneas__ExtractBase.ctx_compute_trait_impl_name_aux in file "extract/ExtractBase.ml", line 1861, characters 13-62
+Called from Aeneas__ExtractBase.ctx_compute_fun_global_name_no_suffix in file "extract/ExtractBase.ml", line 2376, characters 8-61
+Called from Aeneas__ExtractBase.ctx_compute_fun_name_no_suffix in file "extract/ExtractBase.ml" (inlined), lines 2414-2416, characters 2-28
+Called from Aeneas__ExtractBase.ctx_compute_fun_name in file "extract/ExtractBase.ml", lines 2439-2440, characters 4-9
+Called from Aeneas__ExtractBase.ctx_add_fun_decl in file "extract/ExtractBase.ml", line 2535, characters 19-53
+Called from Stdlib__List.fold_left in file "list.ml", line 123, characters 24-34
+Called from Aeneas__Translate.extract_translated_crate.(fun) in file "Translate.ml", line 1617, characters 10-75
+Called from Stdlib__List.fold_left in file "list.ml", line 123, characters 24-34
+Called from Aeneas__Translate.extract_translated_crate in file "Translate.ml", lines 1601-1637, characters 4-39
+Called from Dune__exe__Main in file "Main.ml", lines 767-768, characters 8-37

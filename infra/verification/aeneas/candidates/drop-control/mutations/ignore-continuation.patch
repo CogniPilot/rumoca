@@ -1,0 +1,11 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -776,7 +776,7 @@
+                 when dropped = p
+                      && discarded_before_use local rest
+                      && normalize st.span (taken.statements @ after)
+-                        = normalize st.span rest ->
++                        = normalize st.span (taken.statements @ after) ->
+                   let replacement = taken.statements @ after in
+                   [%ldebug
+                     "remove_dead_drop_switches: replacing switch with:\n"

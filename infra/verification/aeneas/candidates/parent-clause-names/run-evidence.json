@@ -1,0 +1,1015 @@
+{
+  "schema": 1,
+  "created_at": "2026-09-09T00:00:25Z",
+  "status": "REVIEW REQUESTED; not accepted or adopted",
+  "branch": "msl-trace-parity-50",
+  "baseline": "a1daf47556c1a6ffd7f4b203235ff09711089a85",
+  "anchors": [
+    "SPEC_0033 sections 2a/4/6",
+    "SPEC_0037 sections 2/6, experimental DRAFT"
+  ],
+  "invariant": "Distinct compiler-owned parent clause identities receive distinct field names in one emitted trait, and every use reads the same ID-to-name binding.",
+  "earliest_owner": "Aeneas extract/Extract.ml trait field-name registration",
+  "writer": "Codex",
+  "independent_reviewer": "Claude (requested, no verdict yet)",
+  "predecessor": "Frozen expect-model stack; this packet does not accept or adopt its separately open predecessor cuts.",
+  "upstream": "https://github.com/AeneasVerif/aeneas/issues/1051",
+  "claims": [
+    {
+      "status": "VERIFIED",
+      "claim": "Original Rust positive fixture passes; predecessor Lean rejects duplicate fields; candidate Lean compiles with 9 transparent functions and 0 opaque functions."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Four guarded dispatch/result laws pass; three use no axioms, the numeric-result law uses propext, Classical.choice and Quot.sound only."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "A real Rust call-order/result mutation still emits Lean that compiles, but breaks the unchanged laws. Its wrong-outcome witness passes and rejects the positive output."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Seven unchanged prior Option laws pass on freshly emitted and compiled candidate output."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "The operation-only NonZero diagnostic passes Lean typechecking after the field-name fix, but its declared opaque types/get axioms are not admitted semantics. Range source extraction remains refused."
+    },
+    {
+      "status": "VERIFIED",
+      "claim": "Selected production function metadata is identical: 127 entries, 4 opaque libraries, no opaque first-party functions. Production type/fun source delta is three naming lines only."
+    },
+    {
+      "status": "INFERRED",
+      "claim": "All clause consumers remain aligned by existing identity lookup. The candidate changes no Rumoca execution cost or representation because it changes only verification-tool extraction."
+    }
+  ],
+  "final_review_binary": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas",
+  "final_patch_sha256": "fca06a18d1431c4b529addb32f0c83ed44bbaa2b16ddb47ed15d885e669072d2",
+  "proof_limits": [
+    "Generic laws verify the emitted source fixture, not a universal proof of Aeneas or Charon correctness.",
+    "Builtin duplicate-name refusal has mechanism review only; no injected-invalid-builtin execution.",
+    "Lean default naming mode only; no claim about other backends.",
+    "No complete production Lean admission, no NonZero payload/equality proof, no M1 closure or second UnitDerivative relation."
+  ],
+  "historical_unexpected_results": [
+    {
+      "key": "parent_build_path_failure",
+      "expected": 0,
+      "observed": 1
+    },
+    {
+      "key": "parent_build_context_failure",
+      "expected": 0,
+      "observed": 1
+    },
+    {
+      "key": "parent_ocaml_format",
+      "expected": 0,
+      "observed": 1
+    },
+    {
+      "key": "parent_patch_probe_failure",
+      "expected": 0,
+      "observed": 1
+    },
+    {
+      "key": "parent_laws_initial_guard_failure",
+      "expected": 0,
+      "observed": 1
+    },
+    {
+      "key": "parentVersion_flag_failure",
+      "expected": 0,
+      "observed": 2
+    }
+  ],
+  "historical_attempt_notes": [
+    "Two initial package builds failed on patch path/context before compilation; corrected.",
+    "The first built patch failed OCaml formatting; corrected and rebuilt.",
+    "The first patch syntax worked with the Nix GNU patch step but not ordinary git apply; rebuilt as the exact formatted source diff. Final patch passes git apply with strict whitespace.",
+    "The initial numeric law incorrectly expected zero foundational axioms; the theorem's standard Lean axiom set is now guarded explicitly.",
+    "The initial --version probe used the wrong Aeneas option; corrected to -version."
+  ],
+  "runs": [
+    {
+      "key": "parent_native_compile",
+      "name": "parent naming native compilation",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/native-tests",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "d40a87",
+        "wall_time_seconds": 0.00000269,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_native_tests",
+      "name": "parent_native_tests",
+      "command": "/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/native-tests --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "830969",
+        "wall_time_seconds": 0.00000285,
+        "exit_code": 0,
+        "original_token_count": 60,
+        "output": "\nrunning 2 tests\ntest tests::distinct_constraints_preserve_both_dispatches ... ok\ntest tests::unrelated_trait_keeps_its_own_field_scope ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "key": "parent_clippy",
+      "name": "parent_clippy",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  clippy-driver --edition=2024 --test /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs --emit=metadata -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/tests.rmeta -Dwarnings",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "dacd17",
+        "wall_time_seconds": 0.00000293,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_format",
+      "name": "parent_format",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustfmt --check --edition 2024 /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "fc2f67",
+        "wall_time_seconds": 0.00000266,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_charon",
+      "name": "parent naming fixture Charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=parent_clause_names --dest-file=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc -- --edition=2024 --crate-name parent_clause_names --crate-type lib /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "5e0643",
+        "wall_time_seconds": 0.398548092,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_before_aeneas",
+      "name": "predecessor parent naming extraction",
+      "command": "timeout 90 /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "cc2c34",
+        "wall_time_seconds": 0.446659171,
+        "exit_code": 0,
+        "original_token_count": 574,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/9 ⠋\r\rApplied prepasses:  [#####-----------------------------------------------] 1/9 ⠙\rApplied prepasses:  [####################################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/9 ⠋\r\rTranslated transparent functions:  [####---------------------------------] 1/9 ⠙\r\rTranslated transparent functions:  [####################-----------------] 5/9 ⠙\rTranslated transparent functions:  [#####################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###############################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/9 ⠋\r\rPost-processed translated transparent functions:  [##--------------------] 1/9 ⠋\rPost-processed translated transparent functions:  [######################] 9/9 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.391093 seconds\n"
+      }
+    },
+    {
+      "key": "parent_before_lean",
+      "name": "predecessor generated Lean must reject duplicate fields",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [
+        {
+          "chunk_id": "5562b0",
+          "wall_time_seconds": 0.00000226,
+          "exit_code": 1,
+          "original_token_count": 506,
+          "output": "/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean:61:2: error: Field `ValueInst` has already been declared\n/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean:105:50: error: Function expected at\n  Pair\nbut this term has type\n  ?m.1\n\nNote: Expected a function because this term is being applied to the argument\n  Values\n\nHint: The identifier `Pair` is unknown, and Lean's `autoImplicit` option causes an unknown identifier to be treated as an implicitly bound variable with an unknown type. However, the unknown type cannot be a function, and a function is what Lean expects here. This is often the result of a typo or a missing `import` or `open` statement.\n/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean:118:70: error: Function expected at\n  Pair\nbut this term has type\n  ?m.1\n\nNote: Expected a function because this term is being applied to the argument\n  P\n\nHint: The identifier `Pair` is unknown, and Lean's `autoImplicit` option causes an unknown identifier to be treated as an implicitly bound variable with an unknown type. However, the unknown type cannot be a function, and a function is what Lean expects here. This is often the result of a typo or a missing `import` or `open` statement.\n/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/ParentClauseNames.lean:137:54: error: typeclass instance problem is stuck\n  Insert U32 ?m.13\n\nNote: Lean will not try to resolve this typeclass instance problem because the second type argument to `Insert` is a metavariable. This argument must be fully determined before Lean will try to resolve the typeclass.\n\nHint: Adding type annotations and supplying implicit arguments to functions can give Lean more information for typeclass resolution. For example, if you have a variable `x` that you intend to be a `Nat`, but Lean reports it as having an unresolved type like `?m`, replacing `x` with `(x : Nat)` can get typeclass resolution un-stuck.\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "319e7e",
+        "wall_time_seconds": 1.001332752,
+        "session_id": 84554,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_build_path_failure",
+      "name": "build parent field-name candidate",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix --max-jobs 1 --cores 4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "7b8ae1",
+          "wall_time_seconds": 0.00000151,
+          "exit_code": 1,
+          "original_token_count": 460,
+          "output": "this derivation will be built:\n  /nix/store/csxbkpb0wc38xihir0p7g7bvkdr9fn8h-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/csxbkpb0wc38xihir0p7g7bvkdr9fn8h-ocaml5.2.1-aeneas-0.1.0.drv'...\nerror: Cannot build '/nix/store/csxbkpb0wc38xihir0p7g7bvkdr9fn8h-ocaml5.2.1-aeneas-0.1.0.drv'.\n       Reason: builder failed with exit code 1.\n       Output paths:\n         /nix/store/55bk74q6l8y3d5kgscf4k1jm2k56kak1-ocaml5.2.1-aeneas-0.1.0\n       Last 25 log lines:\n       > applying patch /nix/store/bn3i71gvik1hfj0xrf8hp5bdfhbihw03-never-call-continuation.patch\n       > patching file Translate.ml\n       > patching file extract/Extract.ml\n       > patching file interp/InterpStatements.ml\n       > patching file pure/PureMicroPassesGeneral.ml\n       > patching file pure/PureMicroPassesLoops.ml\n       > patching file pure/PureTypeCheck.ml\n       > patching file symbolic/SymbolicToPure.ml\n       > patching file symbolic/SymbolicToPureCore.ml\n       > patching file symbolic/SymbolicToPureExpressions.ml\n       > applying patch /nix/store/4c1l01fx7nq9376z6qzgb5j4h98c399a-binding-registry.patch\n       > patching file extract/ExtractBuiltinLean.ml\n       > applying patch /nix/store/q8ddvmbja41jhlq0mzvdpibx4pz8dcbm-unique-parent-fields.patch\n       > can't find file to patch at input line 4\n       > Perhaps you used the wrong -p or --strip option?\n       > The text leading up to this was:\n       > --------------------------\n       > |diff --git a/src/extract/Extract.ml b/src/extract/Extract.ml\n       > |--- a/src/extract/Extract.ml\n       > |+++ b/src/extract/Extract.ml\n       > --------------------------\n       > File to patch:\n       > Skip this patch? [y]\n       > Skipping patch.\n       > 3 out of 3 hunks ignored\n       For full logs, run:\n         nix log /nix/store/csxbkpb0wc38xihir0p7g7bvkdr9fn8h-ocaml5.2.1-aeneas-0.1.0.drv\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "691571",
+        "wall_time_seconds": 1.000801104,
+        "session_id": 1999,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_build_context_failure",
+      "name": "build parent field-name candidate",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix --max-jobs 1 --cores 4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "4b386f",
+          "wall_time_seconds": 0.00000197,
+          "exit_code": 1,
+          "original_token_count": 501,
+          "output": "this derivation will be built:\n  /nix/store/bskbmwpm755d2ixv03mc7c0q4nl41a2b-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/bskbmwpm755d2ixv03mc7c0q4nl41a2b-ocaml5.2.1-aeneas-0.1.0.drv'...\nerror: Cannot build '/nix/store/bskbmwpm755d2ixv03mc7c0q4nl41a2b-ocaml5.2.1-aeneas-0.1.0.drv'.\n       Reason: builder failed with exit code 1.\n       Output paths:\n         /nix/store/shx6gq6s5lrk82dm09ylbrllrvi1m1s7-ocaml5.2.1-aeneas-0.1.0\n       Last 25 log lines:\n       > applying patch /nix/store/ddh13xqacw8p9ja4kppgyj11rrmdq46h-float-dependencies-r2.patch\n       > patching file EmitJson.ml\n       > patching file extract/ExtractTypes.ml\n       > patching file pure/PureUtils.ml\n       > patching file Translate.ml\n       > applying patch /nix/store/88a8ds9pfb4zk2lw95k1kp1v5fdpbsm6-shared-continuations.patch\n       > patching file PrePasses.ml\n       > applying patch /nix/store/bn3i71gvik1hfj0xrf8hp5bdfhbihw03-never-call-continuation.patch\n       > patching file Translate.ml\n       > patching file extract/Extract.ml\n       > patching file interp/InterpStatements.ml\n       > patching file pure/PureMicroPassesGeneral.ml\n       > patching file pure/PureMicroPassesLoops.ml\n       > patching file pure/PureTypeCheck.ml\n       > patching file symbolic/SymbolicToPure.ml\n       > patching file symbolic/SymbolicToPureCore.ml\n       > patching file symbolic/SymbolicToPureExpressions.ml\n       > applying patch /nix/store/4c1l01fx7nq9376z6qzgb5j4h98c399a-binding-registry.patch\n       > patching file extract/ExtractBuiltinLean.ml\n       > applying patch /nix/store/pys6mpq0s66sdz0rrmqd3xliiyg56rzv-unique-parent-fields.patch\n       > patching file extract/Extract.ml\n       > Hunk #1 succeeded at 2736 (offset 6 lines).\n       > Hunk #2 succeeded at 2967 (offset 6 lines).\n       > Hunk #3 FAILED at 2970.\n       > 1 out of 3 hunks FAILED -- saving rejects to file extract/Extract.ml.rej\n       For full logs, run:\n         nix log /nix/store/bskbmwpm755d2ixv03mc7c0q4nl41a2b-ocaml5.2.1-aeneas-0.1.0.drv\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "000ee9",
+        "wall_time_seconds": 1.001139628,
+        "session_id": 18636,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_build_unformatted",
+      "name": "build parent field-name candidate",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix --max-jobs 1 --cores 4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "cabc31",
+          "wall_time_seconds": 5.001149749,
+          "session_id": 78996,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/ddg44b73dkmmcz5ivbamhc0kqapi6my3-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/ddg44b73dkmmcz5ivbamhc0kqapi6my3-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "ecb006",
+          "wall_time_seconds": 0.00000162,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/a30h8wjl1i2dhx7hkg6i8fwkpzqf3x20-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "05ee3f",
+        "wall_time_seconds": 1.000674981,
+        "session_id": 78996,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_ocaml_format",
+      "name": "candidate OCaml format check",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --profile=default --margin=80 --break-cases=fit-or-vertical --doc-comments=before --exp-grouping=preserve --parens-tuple=always --parens-tuple-patterns=multi-line-only --check /nix/store/a30h8wjl1i2dhx7hkg6i8fwkpzqf3x20-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "83767b",
+        "wall_time_seconds": 0.00000388,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_build_formatted_noncanonical",
+      "name": "build formatted parent field-name candidate",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix --max-jobs 1 --cores 4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "c7bb9f",
+          "wall_time_seconds": 5.00044653,
+          "session_id": 15125,
+          "original_token_count": 48,
+          "output": "this derivation will be built:\n  /nix/store/8fa2i2hv3akyrg15psbnajaig3yybmsr-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/8fa2i2hv3akyrg15psbnajaig3yybmsr-ocaml5.2.1-aeneas-0.1.0.drv'...\n"
+        },
+        {
+          "chunk_id": "f8351f",
+          "wall_time_seconds": 0.00000138,
+          "exit_code": 0,
+          "original_token_count": 17,
+          "output": "/nix/store/j02kfmrbj76qkzdcrnaijda1i7x4l43z-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "77b366",
+        "wall_time_seconds": 1.000963998,
+        "session_id": 15125,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_patch_probe_failure",
+      "name": "noncanonical initial patch Git applicability check",
+      "command": "git apply --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/unique-parent-fields.patch",
+      "cwd": "/nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas",
+      "expected_exit": 0,
+      "initial": {
+        "chunk_id": "abe094",
+        "exit_code": 1,
+        "output": "error: patch failed: extract/Extract.ml:2730\nerror: extract/Extract.ml: patch does not apply\n"
+      },
+      "observations": []
+    },
+    {
+      "key": "parent_build",
+      "name": "build final canonical-patch parent naming candidate",
+      "command": "nix build --impure --no-link --print-out-paths --file /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix --max-jobs 1 --cores 4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "59521a",
+          "wall_time_seconds": 0.00000176,
+          "exit_code": 0,
+          "original_token_count": 65,
+          "output": "this derivation will be built:\n  /nix/store/is14fqm3gv74zj6i1wpg8b1068j59h04-ocaml5.2.1-aeneas-0.1.0.drv\nbuilding '/nix/store/is14fqm3gv74zj6i1wpg8b1068j59h04-ocaml5.2.1-aeneas-0.1.0.drv'...\n/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "5c0c8b",
+        "wall_time_seconds": 1.001276013,
+        "session_id": 1046,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_source_patch_check",
+      "name": "canonical translator patch applies to exact predecessor",
+      "command": "git apply --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/unique-parent-fields.patch",
+      "cwd": "/nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "dddd11",
+        "wall_time_seconds": 0.00000284,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_patch_whitespace",
+      "name": "translator patch strict added-whitespace check",
+      "command": "git apply --check --whitespace=error-all /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/unique-parent-fields.patch",
+      "cwd": "/nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b68474",
+        "wall_time_seconds": 0.00000281,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_source_equal",
+      "name": "canonical patch output equals formatted reviewed source",
+      "command": "cmp /nix/store/j02kfmrbj76qkzdcrnaijda1i7x4l43z-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "2d2286",
+        "wall_time_seconds": 0.00000296,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_ocaml_format",
+      "name": "parent_review_ocaml_format",
+      "command": "/nix/store/3k07w06bpvwzrb1kwz5nm1aipig3yh20-ocaml5.3.0-ocamlformat-0.27.0/bin/ocamlformat --enable-outside-detected-project --profile=default --margin=80 --break-cases=fit-or-vertical --doc-comments=before --exp-grouping=preserve --parens-tuple=always --parens-tuple-patterns=multi-line-only --check /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "81b5f4",
+        "wall_time_seconds": 0.00000273,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_laws_initial_guard_failure",
+      "name": "four guarded parent-dispatch laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/after:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "d49397",
+          "wall_time_seconds": 0.00000187,
+          "exit_code": 1,
+          "original_token_count": 111,
+          "output": "'ParentClauseLaws.concrete_values' depends on axioms: [propext, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:36:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ParentClauseLaws.concrete_values' does not depend on any axioms\n+ info: 'ParentClauseLaws.concrete_values' depends on axioms: [propext, Classical.choice, Quot.sound]\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "4d97bc",
+        "wall_time_seconds": 1.000631454,
+        "session_id": 7489,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_mutant_charon",
+      "name": "mutated source Charon",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 timeout 90 /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon rustc --preset=aeneas --error-on-warnings --monomorphize-mut --start-from=parent_clause_names --dest-file=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/ParentClauseNames.llbc -- --edition=2024 --crate-name parent_clause_names --crate-type lib /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "f33b19",
+        "wall_time_seconds": 0.394975877,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_mutant_native_compile",
+      "name": "native mutation compilation",
+      "command": "env CHARON_TOOLCHAIN_IS_IN_PATH=1 CHARON_MIRI_SYSROOTS=/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots LD_LIBRARY_PATH=/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib PATH=/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:$PATH CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4  rustc --edition=2024 --test /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/fixture.rs -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/native-tests",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "078ea7",
+        "wall_time_seconds": 0.00000441,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_mutant_native_tests",
+      "name": "parent_mutant_native_tests",
+      "command": "/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/native-tests --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 101,
+      "observations": [],
+      "initial": {
+        "chunk_id": "4f94f1",
+        "wall_time_seconds": 0.00000493,
+        "exit_code": 101,
+        "original_token_count": 182,
+        "output": "\nrunning 2 tests\ntest tests::unrelated_trait_keeps_its_own_field_scope ... ok\ntest tests::distinct_constraints_preserve_both_dispatches ... FAILED\n\nfailures:\n\n---- tests::distinct_constraints_preserve_both_dispatches stdout ----\n\nthread 'tests::distinct_constraints_preserve_both_dispatches' (466183) panicked at /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/fixture.rs:83:9:\nassertion `left == right` failed\n  left: (1, 17, 101, 202)\n right: (17, 1, 101, 202)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::distinct_constraints_preserve_both_dispatches\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+      }
+    },
+    {
+      "key": "parent_mutant_patch_check",
+      "name": "Rust mutation patch applies to source",
+      "command": "git apply --check /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/wrong-dispatch.patch",
+      "cwd": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "a5946b",
+        "wall_time_seconds": 0.00000352,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_aeneas",
+      "name": "parent_review_aeneas",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "78f939",
+        "wall_time_seconds": 0.0000049,
+        "exit_code": 0,
+        "original_token_count": 574,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/9 ⠋\r\rApplied prepasses:  [#####-----------------------------------------------] 1/9 ⠙\rApplied prepasses:  [####################################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/9 ⠋\r\rTranslated transparent functions:  [####---------------------------------] 1/9 ⠙\r\rTranslated transparent functions:  [####################-----------------] 5/9 ⠙\rTranslated transparent functions:  [#####################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###############################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/9 ⠋\r\rPost-processed translated transparent functions:  [##--------------------] 1/9 ⠋\rPost-processed translated transparent functions:  [######################] 9/9 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.413138 seconds\n"
+      }
+    },
+    {
+      "key": "parent_review_lean",
+      "name": "parent_review_lean",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.lean -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "8aa234",
+        "wall_time_seconds": 0.00000506,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_laws",
+      "name": "parent_review_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "f818b6",
+        "wall_time_seconds": 0.00000539,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_mutant_aeneas",
+      "name": "parent_review_mutant_aeneas",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/ParentClauseNames.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b3340b",
+        "wall_time_seconds": 0.0000029,
+        "exit_code": 0,
+        "original_token_count": 581,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/ParentClauseNames.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/9 ⠋\r\rApplied prepasses:  [#####-----------------------------------------------] 1/9 ⠙\rApplied prepasses:  [####################################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/9 ⠋\r\rTranslated transparent functions:  [####---------------------------------] 1/9 ⠙\r\rTranslated transparent functions:  [####################-----------------] 5/9 ⠙\rTranslated transparent functions:  [#####################################] 9/9 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/3 ⠋\rTranslated trait declarations:  [########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋\rTranslated trait impls:  [###############################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/9 ⠋\r\rPost-processed translated transparent functions:  [##--------------------] 1/9 ⠋\rPost-processed translated transparent functions:  [######################] 9/9 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.407318 seconds\n"
+      }
+    },
+    {
+      "key": "parent_review_mutant_lean",
+      "name": "parent_review_mutant_lean",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.lean -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "6a5544",
+        "wall_time_seconds": 0.00000267,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_mutant_laws",
+      "name": "parent_review_mutant_laws",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "d3954b",
+        "wall_time_seconds": 0.711078718,
+        "exit_code": 1,
+        "original_token_count": 655,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:17:2: error: Tactic `rfl` failed: The left-hand side\n  observe inst pair\nis not definitionally equal to the right-hand side\n  do\n    let left ← inst.left pair\n    let leftValue ← inst.ValueInst2.value left\n    let right ← inst.right pair\n    let rightValue ← inst.ValueInst3.value right\n    let firstMethod ← inst.ValueInst pair\n    let secondMethod ← inst.ValueInst1 pair\n    Result.ok (leftValue, rightValue, firstMethod, secondMethod)\n\nP L R : Type\ninst : Pair P L R\npair : P\n⊢ observe inst pair = do\n    let left ← inst.left pair\n    let leftValue ← inst.ValueInst2.value left\n    let right ← inst.right pair\n    let rightValue ← inst.ValueInst3.value right\n    let firstMethod ← inst.ValueInst pair\n    let secondMethod ← inst.ValueInst1 pair\n    Result.ok (leftValue, rightValue, firstMethod, secondMethod)\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:22:18: error: Tactic `rfl` failed: The left-hand side\n  concrete left false\nis not definitionally equal to the right-hand side\n  Result.ok (left, if false = true then 1#u32 else 0#u32, 101#u32, 202#u32)\n\ncase false\nleft : U32\n⊢ concrete left false = Result.ok (left, if false = true then 1#u32 else 0#u32, 101#u32, 202#u32)\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:22:18: error: Tactic `rfl` failed: The left-hand side\n  concrete left true\nis not definitionally equal to the right-hand side\n  Result.ok (left, if true = true then 1#u32 else 0#u32, 101#u32, 202#u32)\n\ncase true\nleft : U32\n⊢ concrete left true = Result.ok (left, if true = true then 1#u32 else 0#u32, 101#u32, 202#u32)\n'ParentClauseLaws.dispatch' depends on axioms: [sorryAx]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:33:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ParentClauseLaws.dispatch' does not depend on any axioms\n+ info: 'ParentClauseLaws.dispatch' depends on axioms: [sorryAx]\n'ParentClauseLaws.concrete_values' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean:36:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ParentClauseLaws.concrete_values' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'ParentClauseLaws.concrete_values' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+      }
+    },
+    {
+      "key": "parent_review_mutant_witness",
+      "name": "parent_review_mutant_witness",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "a35cf5",
+        "wall_time_seconds": 0.00000439,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_positive_rejects_witness",
+      "name": "parent_review_positive_rejects_witness",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "bff7ed",
+        "wall_time_seconds": 0.00000239,
+        "exit_code": 1,
+        "original_token_count": 343,
+        "output": "/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean:10:18: error: Tactic `rfl` failed: The left-hand side\n  concrete left false\nis not definitionally equal to the right-hand side\n  Result.ok (if false = true then 1#u32 else 0#u32, left, 101#u32, 202#u32)\n\ncase false\nleft : U32\n⊢ concrete left false = Result.ok (if false = true then 1#u32 else 0#u32, left, 101#u32, 202#u32)\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean:10:18: error: Tactic `rfl` failed: The left-hand side\n  concrete left true\nis not definitionally equal to the right-hand side\n  Result.ok (if true = true then 1#u32 else 0#u32, left, 101#u32, 202#u32)\n\ncase true\nleft : U32\n⊢ concrete left true = Result.ok (if true = true then 1#u32 else 0#u32, left, 101#u32, 202#u32)\n'ParentClauseMutation.swapped_results' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n/home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean:13:0: error: ❌️ Docstring on `#guard_msgs` does not match generated message:\n\n- info: 'ParentClauseMutation.swapped_results' depends on axioms: [propext, Classical.choice, Quot.sound]\n+ info: 'ParentClauseMutation.swapped_results' depends on axioms: [propext, sorryAx, Classical.choice, Quot.sound]\n"
+      }
+    },
+    {
+      "key": "parent_before_nonzero_lean",
+      "name": "predecessor NonZero operation module refuses duplicate fields",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [
+        {
+          "chunk_id": "2c51e9",
+          "wall_time_seconds": 0.00000189,
+          "exit_code": 1,
+          "original_token_count": 566,
+          "output": "/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:71:2: error: Field `markerCopyInst` has already been declared\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:79:2: error(lean.unknownIdentifier): Unknown identifier `core.num.nonzero.ZeroablePrimitive`\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:100:2: error(lean.unknownIdentifier): Unknown identifier `core.num.nonzero.ZeroablePrimitive`\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:113:2: error(lean.unknownIdentifier): Unknown identifier `core.num.nonzero.ZeroablePrimitive`\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:127:2: error(lean.unknownIdentifier): Unknown identifier `core.num.nonzero.ZeroablePrimitive`\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:138:2: error(lean.unknownIdentifier): Unknown identifier `core.num.nonzero.ZeroablePrimitive`\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:173:0: error: declaration `nonzero_source_boundary.equal` contains universe level metavariables at the expression\n  core.num.nonzero.NonZero.Insts.CoreCmpPartialEqNonZero.eq.{?u.6}\n    U32.Insts.CoreNumNonzeroZeroablePrimitiveNonZeroU32Inner.{?u.6} core.cmp.PartialEqU32 left right\nin the declaration body\n  fun left right =>\n    core.num.nonzero.NonZero.Insts.CoreCmpPartialEqNonZero.eq.{?u.6}\n      U32.Insts.CoreNumNonzeroZeroablePrimitiveNonZeroU32Inner.{?u.6} core.cmp.PartialEqU32 left right\n/home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/operations/NonzeroOperationBoundary.lean:196:0: error: declaration `nonzero_source_boundary.clone_optional` contains universe level metavariables at the expression\n  core.num.nonzero.NonZero.Insts.CoreCloneClone.{?u.7} U32.Insts.CoreNumNonzeroZeroablePrimitiveNonZeroU32Inner.{?u.7}\nin the declaration body\n  fun value =>\n    cloned\n      (core.option.Option.Insts.CoreCloneClone\n        (core.num.nonzero.NonZero.Insts.CoreCloneClone.{?u.7}\n          U32.Insts.CoreNumNonzeroZeroablePrimitiveNonZeroU32Inner.{?u.7}))\n      value\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "91aa6c",
+        "wall_time_seconds": 1.001718746,
+        "session_id": 11862,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_nonzero_aeneas",
+      "name": "parent_review_nonzero_aeneas",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "402eef",
+        "wall_time_seconds": 0.00000213,
+        "exit_code": 0,
+        "original_token_count": 670,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroOperationBoundary.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/11 ⠋\r\rApplied prepasses:  [####----------------------------------------------]  1/11 ⠙\rApplied prepasses:  [##################################################] 11/11 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋\rTranslated opaque functions:  [##########################################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/7 ⠋\r\rTranslated transparent functions:  [#####--------------------------------] 1/7 ⠙\r\rTranslated transparent functions:  [#####################----------------] 4/7 ⠙\r\rTranslated transparent functions:  [##########################-----------] 5/7 ⠙\rTranslated transparent functions:  [#####################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋\rTranslated trait declarations:  [########################################] 4/4 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/9 ⠋\rTranslated trait impls:  [#########################################------] 8/9 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋\r\rPost-processed translated opaque functions:  [#########------------------] 1/3 ⠋\rPost-processed translated opaque functions:  [###########################] 3/3 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/7 ⠋\r\rPost-processed translated transparent functions:  [###-------------------] 1/7 ⠋\rPost-processed translated transparent functions:  [######################] 7/7 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/NonzeroOperationBoundary.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/translation.json\n[\u001b[93mWarn\u001b[39m ] The crate contains extracted external, unknown definitions: we advise using the option -split-files to allow manually providing these definitions in separate files.\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.414955 seconds\n"
+      }
+    },
+    {
+      "key": "parent_review_nonzero_lean",
+      "name": "parent_review_nonzero_lean",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/NonzeroOperationBoundary.lean -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/NonzeroOperationBoundary.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "cd4a8f",
+        "wall_time_seconds": 0.759532562,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_range_refusal",
+      "name": "final review candidate retains range refusal",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-range-refusal /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 2,
+      "observations": [],
+      "initial": {
+        "chunk_id": "453cc5",
+        "wall_time_seconds": 0.00000513,
+        "exit_code": 2,
+        "original_token_count": 1057,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/nonzero-source-Nweqqt/NonzeroSourceBoundary.llbc\n\u001b[?25lApplied prepasses:  [--------------------------------------------------]  0/11 ⠋\r\rApplied prepasses:  [####----------------------------------------------]  1/11 ⠙\rApplied prepasses:  [##################################################] 11/11 ✔️\r\n\u001b[?25h[\u001b[91mError\u001b[39m] unsupported type: (Generated_Types.TPattern (\n   (Generated_Types.TLiteral (Generated_Values.TUInt Generated_Values.U32)),\n   (Generated_Types.Range (\n      { Generated_Types.kind =\n        (Generated_Types.CLiteral\n           (Generated_Values.VScalar\n              (Generated_Values.UnsignedScalar (Generated_Values.U32, 1))));\n        ty =\n        (Generated_Types.TLiteral\n           (Generated_Values.TUInt Generated_Values.U32))\n        },\n      { Generated_Types.kind =\n        (Generated_Types.CLiteral\n           (Generated_Values.VScalar\n              (Generated_Values.UnsignedScalar (Generated_Values.U32,\n                 4294967295))));\n        ty =\n        (Generated_Types.TLiteral\n           (Generated_Values.TUInt Generated_Values.U32))\n        }\n      ))\n   ))\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n[\u001b[91mError\u001b[39m] Encountered an error when analyzing the following type declarations group:\ncore::num::niche_types::NonZeroU32Inner (Source: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55)\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n[\u001b[91mError\u001b[39m] Internal error: please file an issue\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\n[\u001b[93mWarn\u001b[39m ] Could not translate type decl 'core::num::niche_types::NonZeroU32Inner because of previous error\nName pattern: 'core::num::niche_types::NonZeroU32Inner'\n\nThis definition is (transitively) used at the following locations:\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 3:0-5:1\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:4-4:8\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:4-4:17\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 4:12-4:17\nSource: 'infra/verification/aeneas/candidates/nonzero-source-boundary/fixture.rs', lines 11:0-13:1\n… (omitted - change the number of displayed spans with -max-error-spans)\nSource: '/rustc/library/core/src/num/niche_types.rs', lines 20:8-20:55\nCompiler source: symbolic/SymbolicToPure.ml, line 153\n\n\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25hUncaught exception:\n  \n  Not_found\n\nRaised at Stdlib__Map.Make.find in file \"map.ml\", line 141, characters 10-25\nCalled from Aeneas__TypesUtils.type_decl_from_decl_id_is_tuple_struct in file \"llbc/TypesUtils.ml\" (inlined), line 535, characters 13-39\nCalled from Aeneas__SymbolicToPureTypes.normalize_inference_ty in file \"symbolic/SymbolicToPureTypes.ml\", lines 261-262, characters 9-37\nCalled from Aeneas__PureUtils.mk_visited_params_visitor.object#visit_ty in file \"pure/PureUtils.ml\", line 1760, characters 51-68\nCalled from Stdlib__List.iter in file \"list.ml\", line 112, characters 12-15\nCalled from Aeneas__PureUtils.compute_explicit_info in file \"pure/PureUtils.ml\", line 1797, characters 2-43\nCalled from Aeneas__SymbolicToPureTypes.translate_fun_sig_from_decomposed in file \"symbolic/SymbolicToPureTypes.ml\", line 1264, characters 22-69\nCalled from Aeneas__SymbolicToPureTypes.translate_fun_sigs_from_decomposed in file \"symbolic/SymbolicToPureTypes.ml\", line 1092, characters 11-58\nCalled from Aeneas__Translate.translate_crate_to_pure.(fun) in file \"Translate.ml\", line 382, characters 21-64\nCalled from Stdlib__List.filter_map in file \"list.ml\", line 280, characters 12-15\nCalled from Aeneas__Translate.translate_crate_to_pure in file \"Translate.ml\", lines 375-400, characters 6-59\nCalled from Aeneas__Translate.translate_crate in file \"Translate.ml\", line 2241, characters 31-71\nCalled from Dune__exe__Main in file \"Main.ml\", lines 767-768, characters 8-37\n"
+      }
+    },
+    {
+      "key": "parent_review_option_aeneas",
+      "name": "prior Option fixture through review candidate",
+      "command": "timeout 90 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/OptionSourceBoundaryClosed.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "94d05f",
+        "wall_time_seconds": 0.482150345,
+        "exit_code": 0,
+        "original_token_count": 583,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/OptionSourceBoundaryClosed.llbc\n\u001b[?25lApplied prepasses:  [----------------------------------------------------] 0/7 ⠋\r\rApplied prepasses:  [#######---------------------------------------------] 1/7 ⠙\rApplied prepasses:  [####################################################] 7/7 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋\rTranslated opaque functions:  [------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [-------------------------------------] 0/6 ⠋\r\rTranslated transparent functions:  [######-------------------------------] 1/6 ⠙\r\rTranslated transparent functions:  [########################-------------] 4/6 ⠙\rTranslated transparent functions:  [#####################################] 6/6 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [----------------------------------------] 0/2 ⠋\rTranslated trait declarations:  [########################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [-----------------------------------------------] 0/2 ⠋\rTranslated trait impls:  [###############################################] 2/2 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋\rPost-processed translated opaque functions:  [---------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [----------------------] 0/6 ⠋\r\rPost-processed translated transparent functions:  [###-------------------] 1/6 ⠋\rPost-processed translated transparent functions:  [######################] 6/6 ✔️\r\n\u001b[?25h[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/OptionSourceBoundaryClosed.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 0.429933 seconds\n"
+      }
+    },
+    {
+      "key": "parent_review_option_lean",
+      "name": "fresh prior Option generated Lean",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/OptionSourceBoundaryClosed.lean -o /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/OptionSourceBoundaryClosed.olean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "87cc27",
+          "wall_time_seconds": 9.8e-7,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "e58594",
+        "wall_time_seconds": 1.001130153,
+        "session_id": 77832,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_option_laws",
+      "name": "seven prior Option laws on fresh review output",
+      "command": "env LEAN_PATH=/home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Cli/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/batteries/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/Qq/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aesop/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/proofwidgets/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/importGraph/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/LeanSearchClient/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/plausible/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/mathlib/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/packages/aeneas/backends/lean/.lake/build/lib/lean:/home/jgoppert/git/rumoca/infra/verification/lean-pilot/.lake/build/lib/lean:/home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/lib/lean timeout 90 /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean -j4 -M4096 -DwarningAsError=true /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/option-source-boundary/Laws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "329081",
+          "wall_time_seconds": 0.00000135,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      ],
+      "initial": {
+        "chunk_id": "c83153",
+        "wall_time_seconds": 1.001586357,
+        "session_id": 96321,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "key": "parent_review_production_aeneas",
+      "name": "final canonical-patch production replay",
+      "command": "timeout 180 /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -backend lean -checks -strict-joins -sequential -emit-json -split-files -keep-function \"rumoca_ir_dae::model::view::{rumoca_ir_dae::model::view::DaeView<'_>}::variable_refinement\" -keep-function 'rumoca_ir_solve::model::{rumoca_ir_solve::model::SolveModel}::variable_refinement' -keep-function rumoca_phase_solve::variable_catalog_refinement::check_variable_catalog_refinement -dest /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/Ud07CatalogComposition.llbc",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [
+        {
+          "chunk_id": "c0279b",
+          "wall_time_seconds": 0.00000138,
+          "exit_code": 0,
+          "original_token_count": 1567,
+          "output": "\rTranslated transparent functions:  [##-------------------------------]   8/108 ⠸\r\rTranslated transparent functions:  [##-------------------------------]   9/108 ⠼\r\rTranslated transparent functions:  [###------------------------------]  10/108 ⠴\r\rTranslated transparent functions:  [###------------------------------]  13/108 ⠴\r\rTranslated transparent functions:  [####-----------------------------]  15/108 ⠦\r\rTranslated transparent functions:  [###########----------------------]  37/108 ⠦\r\rTranslated transparent functions:  [###############------------------]  50/108 ⠧\r\rTranslated transparent functions:  [################-----------------]  53/108 ⠇\r\rTranslated transparent functions:  [#################----------------]  56/108 ⠏\r\rTranslated transparent functions:  [##################---------------]  62/108 ⠏\r\rTranslated transparent functions:  [#####################------------]  69/108 ⠋\r\rTranslated transparent functions:  [#####################------------]  71/108 ⠋\r\rTranslated transparent functions:  [######################-----------]  73/108 ⠋\r\rTranslated transparent functions:  [#######################----------]  76/108 ⠋\r\rTranslated transparent functions:  [#########################--------]  82/108 ⠙\r\rTranslated transparent functions:  [#########################--------]  84/108 ⠹\r\rTranslated transparent functions:  [############################-----]  93/108 ⠹\r\rTranslated transparent functions:  [############################-----]  94/108 ⠹\r\rTranslated transparent functions:  [#############################----]  97/108 ⠸\r\rTranslated transparent functions:  [##############################---] 100/108 ⠸\r\rTranslated transparent functions:  [################################-] 107/108 ⠸\rTranslated transparent functions:  [#################################] 108/108 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait declarations:  [--------------------------------------]  0/33 ⠋\rTranslated trait declarations:  [#################---------------------] 15/33 ✔️\r\n\u001b[?25h\u001b[?25lTranslated trait impls:  [---------------------------------------------]  0/69 ⠋\rTranslated trait impls:  [########################---------------------] 37/69 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated opaque functions:  [-------------------------]  0/52 ⠋\r\rPost-processed translated opaque functions:  [-------------------------]  1/52 ⠋\rPost-processed translated opaque functions:  [#########################] 52/52 ✔️\r\n\u001b[?25h\u001b[?25lPost-processed translated transparent functions:  [------------------]   0/108 ⠋\r\rPost-processed translated transparent functions:  [------------------]   1/108 ⠋\r\rPost-processed translated transparent functions:  [#-----------------]   7/108 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]   8/108 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]   9/108 ⠙\r\rPost-processed translated transparent functions:  [#-----------------]  10/108 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  14/108 ⠹\r\rPost-processed translated transparent functions:  [##----------------]  16/108 ⠹\r\rPost-processed translated transparent functions:  [######------------]  36/108 ⠹\r\rPost-processed translated transparent functions:  [########----------]  50/108 ⠸\r\rPost-processed translated transparent functions:  [########----------]  53/108 ⠸\r\rPost-processed translated transparent functions:  [#########---------]  56/108 ⠼\r\rPost-processed translated transparent functions:  [###########-------]  69/108 ⠼\r\rPost-processed translated transparent functions:  [############------]  76/108 ⠼\r\rPost-processed translated transparent functions:  [##############----]  84/108 ⠴\r\rPost-processed translated transparent functions:  [################--]  97/108 ⠴\r\rPost-processed translated transparent functions:  [#################-] 105/108 ⠴\rPost-processed translated transparent functions:  [##################] 108/108 ✔️\r\n\u001b[?25h[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'map'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::traits::iterator::Iterator', could not find the information for item 'collect'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/traits/iterator.rs', lines 42:0-42:24\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'forward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[93mWarn\u001b[39m ] When retrieving the builtin information for trait decl 'core::iter::range::Step', could not find the information for item 'backward_overflowing'. The model defined in the Lean library seems to be missing the corresponding field.\nSource: '/rustc/library/core/src/iter/range.rs', lines 34:0-34:64\nCompiler source: extract/Extract.ml, line 2911\n\n[\u001b[92mInfo\u001b[39m ] Creating missing directory: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/TypesExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Types.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/FunsExternal_Template.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean\n[\u001b[92mInfo\u001b[39m ] Generated: /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/translation.json\n[\u001b[92mInfo\u001b[39m ] Total execution time: 6.892345 seconds\n"
+        }
+      ],
+      "initial": {
+        "chunk_id": "8b210d",
+        "wall_time_seconds": 1.000935098,
+        "session_id": 40400,
+        "original_token_count": 337,
+        "output": "[\u001b[92mInfo\u001b[39m ] Imported: /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/Ud07CatalogComposition.llbc\n\u001b[?25lApplied prepasses:  [------------------------------------------------]   0/188 ⠋\r\rApplied prepasses:  [------------------------------------------------]   1/188 ⠙\r\rApplied prepasses:  [###---------------------------------------------]  13/188 ⠙\r\rApplied prepasses:  [######################--------------------------]  89/188 ⠙\r\rApplied prepasses:  [############################################----] 174/188 ⠙\rApplied prepasses:  [################################################] 188/188 ✔️\r\n\u001b[?25h\u001b[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋\rTranslated globals:  [---------------------------------------------------] 0/0 ✔️\r\n\u001b[?25h\u001b[?25lTranslated opaque functions:  [----------------------------------------]  0/52 ⠋\rTranslated opaque functions:  [########################################] 52/52 ✔️\r\n\u001b[?25h\u001b[?25lTranslated transparent functions:  [---------------------------------]   0/108 ⠋\r\rTranslated transparent functions:  [---------------------------------]   1/108 ⠙\r\rTranslated transparent functions:  [---------------------------------]   3/108 ⠙\r\rTranslated transparent functions:  [##-------------------------------]   7/108 ⠹\r"
+      }
+    },
+    {
+      "key": "parent_review_production_metadata",
+      "name": "final review production metadata",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '{before:{entries:(.[0].functions|length),opaque:([.[0].functions[]|select(.is_opaque)]|length)},after:{entries:(.[1].functions|length),opaque:([.[1].functions[]|select(.is_opaque)]|length)},function_metadata_identical:(.[0].functions==.[1].functions),opaque_first_party:([.[1].functions[]|select(.is_local and .is_opaque)]|length),remaining:[.[1].functions[]|select(.is_opaque)|.rust_name]}' /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/generated/translation.json /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/translation.json",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "439bd9",
+        "wall_time_seconds": 0.00000324,
+        "exit_code": 0,
+        "original_token_count": 159,
+        "output": "{\n  \"before\": {\n    \"entries\": 127,\n    \"opaque\": 4\n  },\n  \"after\": {\n    \"entries\": 127,\n    \"opaque\": 4\n  },\n  \"function_metadata_identical\": true,\n  \"opaque_first_party\": 0,\n  \"remaining\": [\n    \"core::num::niche_types::{impl core::clone::Clone for core::num::niche_types::NonZeroU32Inner}::clone\",\n    \"core::num::nonzero::{impl core::cmp::PartialEq<core::num::nonzero::NonZero<T, Clause0_NonZeroInner>> for core::num::nonzero::NonZero<T, Clause0_NonZeroInner>}::eq\",\n    \"alloc::boxed::convert::{impl core::convert::From<&'_0 [T]> for alloc::boxed::Box<[T]>}::from\",\n    \"alloc::vec::{alloc::vec::Vec<T>}::into_boxed_slice\"\n  ]\n}\n"
+      }
+    },
+    {
+      "key": "parent_production_types_delta",
+      "name": "parent_production_types_delta",
+      "command": "diff -u /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/generated/Types.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Types.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "938fe9",
+        "wall_time_seconds": 0.00000306,
+        "exit_code": 1,
+        "original_token_count": 222,
+        "output": "--- /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/generated/Types.lean\t2026-09-08 18:22:34.064686478 -0400\n+++ /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Types.lean\t2026-09-08 19:47:04.353285927 -0400\n@@ -67,11 +67,11 @@\n     Name pattern: [core::num::nonzero::ZeroablePrimitive]\n     Visibility: public -/\n @[rust_trait \"core::num::nonzero::ZeroablePrimitive\"\n-  (parentClauses := [\"markerCopyInst\", \"markerCopyInst\"])]\n+  (parentClauses := [\"markerCopyInst\", \"markerCopyInst1\"])]\n structure core.num.nonzero.ZeroablePrimitive (Self : Type) (Self_NonZeroInner :\n   Type) where\n   markerCopyInst : core.marker.Copy Self\n-  markerCopyInst : core.marker.Copy Self_NonZeroInner\n+  markerCopyInst1 : core.marker.Copy Self_NonZeroInner\n \n /-- [core::option::Option::<&_ mut _>]\n     Source: '/rustc/library/core/src/option.rs', lines 598:0-598:18\n"
+      }
+    },
+    {
+      "key": "parent_production_funs_delta",
+      "name": "parent_production_funs_delta",
+      "command": "diff -u /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/generated/Funs.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Funs.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "observations": [],
+      "initial": {
+        "chunk_id": "d58682",
+        "wall_time_seconds": 0.00000378,
+        "exit_code": 1,
+        "original_token_count": 161,
+        "output": "--- /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/generated/Funs.lean\t2026-09-08 18:22:34.084686544 -0400\n+++ /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Funs.lean\t2026-09-08 19:47:04.371285991 -0400\n@@ -191,7 +191,7 @@\n   core.num.nonzero.ZeroablePrimitive Std.U32\n   core.num.niche_types.NonZeroU32Inner := {\n   markerCopyInst := core.marker.CopyU32\n-  markerCopyInst := core.num.niche_types.NonZeroU32Inner.Insts.CoreMarkerCopy\n+  markerCopyInst1 := core.num.niche_types.NonZeroU32Inner.Insts.CoreMarkerCopy\n }\n \n /-- [core::option::{impl core::clone::Clone for core::option::Option<T>}::clone]:\n"
+      }
+    },
+    {
+      "key": "parent_fixture_metadata",
+      "name": "parent_fixture_metadata",
+      "command": "/nix/store/q0pj1dw2nr57y6b4pqljklf0hy20alfj-jq-1.8.1-bin/bin/jq -s '[.[]|{crate,functions:(.functions|length),opaque:([.functions[]|select(.is_opaque)]|length)}]' /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/before/translation.json /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/final/translation.json /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/final-mutant/translation.json",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "aa3fb4",
+        "wall_time_seconds": 0.00000283,
+        "exit_code": 0,
+        "original_token_count": 62,
+        "output": "[\n  {\n    \"crate\": \"parent_clause_names\",\n    \"functions\": 9,\n    \"opaque\": 0\n  },\n  {\n    \"crate\": \"parent_clause_names\",\n    \"functions\": 9,\n    \"opaque\": 0\n  },\n  {\n    \"crate\": \"parent_clause_names\",\n    \"functions\": 9,\n    \"opaque\": 0\n  }\n]\n"
+      }
+    },
+    {
+      "key": "parentVersion_flag_failure",
+      "name": "review candidate version binds full source patch digest",
+      "command": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas --version",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "5ad90b",
+        "wall_time_seconds": 0.049603231,
+        "exit_code": 2,
+        "original_token_count": 1879,
+        "output": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas: unknown option '--version'.\nAeneas: verification of Rust programs by translation to pure lambda calculus\n\nUsage: /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas [OPTIONS] FILE\n\n  -version                  Print the version (git commit) and exit\n  -print-error-emitters     Whenever reporting an error, print the span of the source code of Aeneas which emitted the error\n  -borrow-check             Only borrow-check the program and do not generate any translation\n  -backend {fstar|coq|rocq|lean|hol4}\n                            Specify the target backend (fstar, coq, rocq, lean, hol4)\n  -namespace                Set the namespace of the definitions in the pure model\n  -dest                     Specify the output directory\n  -subdir                   Extract the files in a sub-folder; this option has an impact on the import paths of the generated files\n  -test-units               Test the unit functions with the concrete (i.e., not symbolic) interpreter\n  -decreases-clauses        Use decreases clauses/termination measures for the recursive definitions\n  -use-fuel                 Use a fuel parameter to control divergence\n  -no-template-clauses      Do not generate templates for the required decreases clauses/termination measures, in a dedicated file, if you also put the option -decreases-clauses\n  -split-files              Split the definitions between different files for types, functions, etc.\n  -checks                   Activate extensive sanity checks (warning: causes a ~100 times slow down).\n  -gen-lib-entry            Add an entry point file to the generated library (only valid if the crate is split between different files)\n  -lean-default-lakefile    Generate a default lakefile.lean (Lean only)\n  -emit-json                Emit a translation.json file alongside the Lean files (Lean only)\n  -print-llbc               Print the imported LLBC\n  -abort-on-error           Abort on the first encountered error\n  -warnings-as-errors       Treat warnings as errors\n  -tuple-nested-proj        Use nested projectors for tuples (e.g., (0, 1, 2).snd.fst instead of (0, 1, 2).1).\n  -print-unknown-externals  Print all the external definitions which are not listed in the builtin functions\n  -log                      Activate trace log for a given logger designated by its name. It is possible to specifiy a list of names if they are separated by commas without spaces; for instance: '-log Interp,SymbolicToPure'. The existing loggers are: {BorrowCheck, Builtin, Contexts, Deps, Errors, Extract, FunsAnalysis, Interp, InterpAbs, InterpBorrows, InterpExpansion, InterpExpressions, InterpJoin, InterpLoops, InterpLoopsFixedPoint, InterpMatchCtxs, InterpPaths, InterpProjectors, InterpReduceCollapse, InterpStatements, Invariants, MainLogger, PrePasses, PureMicroPasses, PureMicroPasses.simplify_aggregates_unchanged_fields, PureTypeCheck, PureUtils, RegionsHierarchy, ReorderDecls, SCC, SymbolicToPure, SymbolicToPureAbs, SymbolicToPureExpressions, SymbolicToPureTypes, SymbolicToPureValues, Translate, TypesAnalysis}\n  -log-debug                Same as '-log' but sets the level to the more verbose 'debug' rather than 'trace'\n  -log-error                Activate error log for a given logger designated by its name. It is possible to specifiy a list of names if they are separated by commas without spaces; for instance: '-log Interp,SymbolicToPure'. The existing loggers are: {BorrowCheck, Builtin, Contexts, Deps, Errors, Extract, FunsAnalysis, Interp, InterpAbs, InterpBorrows, InterpExpansion, InterpExpressions, InterpJoin, InterpLoops, InterpLoopsFixedPoint, InterpMatchCtxs, InterpPaths, InterpProjectors, InterpReduceCollapse, InterpStatements, Invariants, MainLogger, PrePasses, PureMicroPasses, PureMicroPasses.simplify_aggregates_unchanged_fields, PureTypeCheck, PureUtils, RegionsHierarchy, ReorderDecls, SCC, SymbolicToPure, SymbolicToPureAbs, SymbolicToPureExpressions, SymbolicToPureTypes, SymbolicToPureValues, Translate, TypesAnalysis}\n  -mark-ids                 For developers: mark some identifiers to throw an exception if we generate them; this is useful to insert breakpoints when debugging by using the log. For example, one can mark the symbolic value ids 1 and 2 with '-mark-ids s1,s2', or '-mark-ids s@1, s@2. The supported prefixes are: 's' (symbolic value id), 'b' (borrow id), 'a' (abstraction id), 'r' (region id), 'f' (pure free variable id).\n  -sequential               Execute sequentially\n  -no-progress-bar          Do not display a progress bar\n  -max-error-spans          Maximum number of local uses of an external definition which triggered an error that we print (if < 0 we print them all)\n  -strict-joins             Report an error whenever joining contexts fails rather than duplicating the code after the branching statement\n  -color                    Use colors when printing log messages\n  -borrow-check-globals     Borrow-check globals - an over-simplification in the LLBC provided by Charon for the global initialization functions currently prevents us from borrow-checking globals which contain static references\n  -print-error-diagnostics  Print additional diagnostics about the kind of errors encountered\n  -impl-namespace           For Lean: always prefix method names with \"impl\" to avoid collisions with field projectors. Example: the `len` method in `impl Struct { fn len(&self) -> usize { ... } }` would be named `Struct.impl.len`.\n  -filter-trait-methods     When extracting a trait impl, filter out the methods which are absent from the model of the trait declaration in the target backend (e.g., Lean). Trait declarations which have no model are not affected.\n  -keep-function            Retain translated functions matching this Rust name pattern after call simplification. Repeat for multiple roots; unmatched patterns are errors.\n  -all-computable           For Lean: do not insert `noncomputable section` at the top of the extracted files if there are external definitions not covered by the standard library.\n  -loops-to-rec             Always extract loops to recursive functions.\n  -feature-gates            For Lean: introduce an assertion at the beginning of the functions annotated with `#[target_feature(enable = \"...\")]`, to check that the required target features are available.\n  -loops-no-rec             Never attempt to extract loops to recursive functions.\n  -max-heartbeats For       Lean: set the value of the `set_option maxHeartBeats ...` command at the top of the generated files\n  -max-recdepth For         Lean: set the value of the `set_option maxRecDepth ...` command at the top of the generated files\n  -eval-drops Evaluate      the drops. By default we do not borrow-check them by treating them as no-ops.\n  -diagnose-translation     Measure the time it takes to translate every function and print the results sorted from longest to shortest\n  -diagnose-micro-passes    Measure the time it takes to apply the micro-passes on every function and print them from longest to shortest\n  -diagnose-detailed        In combination with -diagnose-micro-passes, compute per-function, per -micro-pass time measurements\n  -diagnose-limit           Upper bound on the number of lines printed for the -diagnose options. If positive, print at most this many lines. If negative, print everything\n  -help                     Display this list of options\n  --help                    Display this list of options\n"
+      }
+    },
+    {
+      "key": "parentVersion",
+      "name": "review candidate version binds full patch digest",
+      "command": "/nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas -version",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "fbed70",
+        "wall_time_seconds": 0.052317142,
+        "exit_code": 0,
+        "original_token_count": 380,
+        "output": "aeneas f9a8e338188447c77f31246892cb9a7a742e58ef-rumoca-9977c3508c94785b30cc7247fb34f3393c66dd8ffcfafba9b8d0110a7462685f-alias-2eb1a079b9d0651fbd735874d20d4d42ff93610d2830dd4f0923e75deee1535f-stored-ca4d7deda43a23c507127ae8fe50c067b11e1fb2ae1a03c483dbb004d19c028a-static-0715f5ed8e209865e6b50fe868e5d6ea4d5659ea451c03b5e1f5429f4243d9c2-lifecycle-f4a7ac4625751e3a36cccc53e6fb6ba2fb63867c3a40495f23a4f6dfffdae00c-roots-33f74ca918c8d1ec8467937092ffa568beb13c1eee79c8d4ea2aac47cedafdc4-no-signature-guess-8304e1048252c79d52796df71b524a268853c6ced6fe9a06269bcfaabd7653d3-no-method-guess-80955670afb1f8e66fbb69850db5154536365354a21ccbbb6238a2e94fcad996-drop-control-43b5571e07953a8b1fcbcad9cb8487e7f4a8c93caf43607c872d57c7b01b44ed-builtin-identity-e582e802919472a277478e06a439b4c889af1882f8f2f337a13c0a71ce6f5ebf-specialized-names-c5e43a84ff49bd85c51c6b0b997f1ddc1ae66030a9d70227542d5c0520f2aa4d-impl-names-16ac1aae87438b5421b9d57c12ac30bb1fc55adef6d2ed8ac4891421e270b594-name-presentation-bcbd909f4633ae9e46508e71479b06ff46298bf9e1af4f73a890ac106b33b918-alias-inference-487ef0120e152757801612bcedcdd3c5035023eb9d993c32157b7e8707a12e98-float-dependencies-281c2d4cd9cb623307455ee271f378351b7ec8f84a00e213e34c3d381b8d0582-loop-89e3f86f4f026a8b215d30c6f6f4402077f08f84984c382b660994e91f974635-never-29e7916c622701efad2aa5287eec22a2b0e2930b9f9738ac0732a0aaaf1a0510-expect-failed-abb920339583e827d79e67e8218178a9ac8dd7863aaf1e2522ca1f6a89be5344-parent-clause-names-fca06a18d1431c4b529addb32f0c83ed44bbaa2b16ddb47ed15d885e669072d2\n"
+      }
+    },
+    {
+      "key": "parentHashes",
+      "name": "review source, tool and artifact hashes",
+      "command": "sha256sum /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/unique-parent-fields.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/wrong-dispatch.patch /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/README.md /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/fixture.rs /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/ParentClauseNames.llbc /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.olean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/translation.json /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.olean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/NonzeroOperationBoundary.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/OptionSourceBoundaryClosed.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Types.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/translation.json /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/Ud07CatalogComposition.llbc /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b1cf5a",
+        "wall_time_seconds": 0.263517305,
+        "exit_code": 0,
+        "original_token_count": 1025,
+        "output": "faafbe3db857785a24b6fcc675c4dda3e36d78edefacc1a44f3573d290e0415a  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs\n1acb6789987d44472d65a7adb733361416aeaa92e2c206c38dc47a1dda296033  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean\n964d2384429ea6e06bb62bcdd85c03fd52f15212886e2663d81fec1f47ac860e  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean\nfca06a18d1431c4b529addb32f0c83ed44bbaa2b16ddb47ed15d885e669072d2  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/unique-parent-fields.patch\neffcc3284d5426694181ebaa12da14fa937831508612ab071228355465e683af  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/wrong-dispatch.patch\nc227552c1829561504fd915e55cffc75d915cfde3af6fcd81f21478a4ea2c821  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix\nb770356a1e371d4c8aa9cabcc323e71f1b313d19fcb44d5740536769f8373167  /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/README.md\n32a6f865af0014a0b17412e8ff3cd91f9c3f1aa87a6e7a17a40e35090d31280e  /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n3a041c484f6a6649aa0017d5e1263b5b5314f479356e7bd8829033400c92b636  /nix/store/wgk67jk950hr2kr5gyzf9fyczq6qd1if-ocaml5.2.1-aeneas-0.1.0/bin/aeneas\n9a23d3d5376ca475135d6492c47e4883dc4d9e80abbb8c24e6c02e4644c69aac  /home/jgoppert/.elan/toolchains/leanprover--lean4---v4.31.0/bin/lean\n29d5b284bdc09dbca1851eb87f55e44f9586cbbfb6b6a2fdda18b84a3f34defc  /home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/bin/charon\n4eb052cb4a073469639c025ebb4b3370676bbf8fb9ee5b202f80af2d1481bbfc  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/ParentClauseNames.llbc\n715c3a6cd0e54c34fbc76bb2b737e19f1f05e2acf0cd4912255259e1c9a8aa1d  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/fixture.rs\n97d42016fd269a76917c78e0125bbe1cdf09a9f4f8b354b58510119b57c600db  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/mutation/ParentClauseNames.llbc\n8652388d53ab8f70fb519392aa64c9a5eb7b45147e6104a2eb9df1d733a3a449  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.lean\n700735f5cc12f9b2521ca20d8342efd1bf7b9c43045fd979741e8eef87bd3f33  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/ParentClauseNames.olean\neab53bab12ed2a5e6932261e0c8a10840e083eeb68f3ef3824b89948e88913d7  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review/translation.json\n84fb0f72da0e64dcfda91bface2217066b792860330c36c7c8e38a4afe1e59e2  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.lean\nb1dd1cdfd2b6197a94d659a24d1d448b33ea2412fea918dab2f1f0d8d9f4c5b2  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-mutant/ParentClauseNames.olean\n2e5535f97fd4b9aa317fc6b6ff985eb03fbdf216d7115b95f05804f9345b2b36  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-nonzero/NonzeroOperationBoundary.lean\n3897ad888818eef19875e79da7fa249e33d14094861c5dfd32d2808a75e80b4b  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-option/OptionSourceBoundaryClosed.lean\nbd1893b97a78306df7109d6a3e9b7db38254b43d2891515ab0bbd9f2cd407d80  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Types.lean\nd313bb67f73f2859350c890fc95d79a804a13e73b797003968861872e90584d3  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean\n0d537e49cbde8ce61cfac2b50ebd80850103b7d172fcb646213c66d05455c527  /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/translation.json\n07151e1aff132771072f725ae0068304057fc0d26b364c041ced8b9cb3b71e26  /home/jgoppert/git/rumoca/dev/ud07-option-source-X392sU/with-clone/Ud07CatalogComposition.llbc\n782f10a34505589eb1f9d21e5051b02a1041ca3604f9676470588c73fa005831  /nix/store/wa5f681889wwswn7i9xhka97bv4zhjg8-ocaml5.2.1-aeneas-0.1.0/lib/ocaml/5.2.1/site-lib/aeneas/extract/Extract.ml\n"
+      }
+    },
+    {
+      "key": "parentTracer",
+      "name": "production UnitDerivative after parent-naming proof cut",
+      "command": "env CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 RAYON_NUM_THREADS=4 nix develop --command cargo test --locked -p rumoca --test suite_core unit_derivative -- --test-threads=4",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "b7b548",
+        "wall_time_seconds": 0.00000504,
+        "exit_code": 0,
+        "original_token_count": 185,
+        "output": "    Finished `test` profile [optimized + debuginfo] target(s) in 0.41s\n     Running tests/suite_core/main.rs (target/debug/deps/suite_core-33817b71840ea96f)\n\nrunning 5 tests\ntest pipeline_test::unit_derivative_efmi_algorithm_code_is_refused_before_construction ... ok\ntest pipeline_test::unit_derivative_production_lowering_carries_the_equation_refinement_receipt ... ok\ntest pipeline_test::minimal_unit_derivative_reaches_solve_and_matches_closed_form ... ok\ntest pipeline_test::unit_derivative_with_modelica_default_fixed_false_is_rejected ... ok\ntest pipeline_test::unit_derivative_registered_efmi_targets_refuse_typed_at_the_state ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 459 filtered out; finished in 0.01s\n\n"
+      }
+    },
+    {
+      "name": "final production Types.lean equals measured three-line delta",
+      "command": "cmp /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Types.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Types.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "8c1a63",
+        "wall_time_seconds": 0.00000258,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "final production Funs.lean equals measured three-line delta",
+      "command": "cmp /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/production/Funs.lean /home/jgoppert/git/rumoca/dev/parent-clause-names-yaqQJe/review-production/Funs.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 0,
+      "observations": [],
+      "initial": {
+        "chunk_id": "5fb674",
+        "wall_time_seconds": 0.00000344,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "whitespace_checks": [
+    {
+      "name": "whitespace fixture.rs",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/fixture.rs",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "3987ff",
+        "wall_time_seconds": 0.00000304,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "whitespace Laws.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/Laws.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "eff95e",
+        "wall_time_seconds": 0.00000268,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "whitespace MutationWitness.lean",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/MutationWitness.lean",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "693530",
+        "wall_time_seconds": 0.00000253,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "whitespace package.nix",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/package.nix",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "9f1521",
+        "wall_time_seconds": 0.00000314,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "name": "whitespace README.md",
+      "command": "git diff --no-index --check /dev/null /home/jgoppert/git/rumoca/infra/verification/aeneas/candidates/parent-clause-names/README.md",
+      "cwd": "/home/jgoppert/git/rumoca",
+      "expected_exit": 1,
+      "expected_output": "",
+      "observations": [],
+      "initial": {
+        "chunk_id": "f21aa0",
+        "wall_time_seconds": 0.00000255,
+        "exit_code": 1,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "not_run": [
+    "Full upstream Aeneas suite",
+    "Non-Lean backends",
+    "Injected-invalid-builtin metadata negative",
+    "Complete production Lean admission",
+    "Canonical cargo xtask verify lean-pilot/quick/full: dependency stack not adopted/closed",
+    "Full MSL sweep and remote CI"
+  ],
+  "next": "Independent adversarial review; retain the NonZero range/get boundary and remaining library obligations. No live pin change or blanket staging."
+}

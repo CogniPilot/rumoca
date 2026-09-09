@@ -1,0 +1,13 @@
+diff --git a/fixture.rs b/fixture.rs
+--- a/fixture.rs
++++ b/fixture.rs
+@@ -9,7 +9,8 @@
+ }
+ 
+ pub fn clone_optional(value: &Option<NonZeroU32>) -> Option<NonZeroU32> {
+-    cloned(value)
++    let _ = cloned(value);
++    None
+ }
+ 
+ #[cfg(test)]

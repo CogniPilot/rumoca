@@ -1,0 +1,57 @@
+---- simple/closure-with-non-upvar-lifetime.rs ----
+
+---- expected: tests/ui/simple/closure-with-non-upvar-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+  94   94 | {
+  95   95 |     let _0: u8; // return
+  96   96 |     let _1: &'1 closure<'_0, '_1>; // arg #1
+  97   97 |     let tupled_args: (usize,); // arg #2
+  98   98 |     let i: usize; // local
+  99      -     let _4: &'2 &'3 [u8]; // anonymous local
+       99 +     let _4: &'5 &'6 [u8]; // anonymous local
+ 100  100 |     let _5: usize; // anonymous local
+ 101  101 |     let _6: &'_ [u8]; // anonymous local
+ 102  102 |     let _7: &'_ u8; // anonymous local
+ 103  103 | 
+ 104  104 |     storage_live(_0)
+          ⋮
+ 128  128 | fn call_fn<'_0>(a: &'_0 [u8], i: usize) -> u8
+ 129  129 | {
+ 130  130 |     let _0: u8; // return
+ 131  131 |     let a: &'1 [u8]; // arg #1
+ 132  132 |     let i: usize; // arg #2
+ 133      -     let read: closure<'6, '7>; // local
+      133 +     let read: closure<'4, '5>; // local
+ 134  134 |     let _4: &'8 &'9 [u8]; // anonymous local
+ 135  135 |     let _5: &'13 closure<'14, '15>; // anonymous local
+ 136  136 |     let _6: (usize,); // anonymous local
+ 137  137 |     let _7: usize; // anonymous local
+ 138  138 | 
+          ⋮
+ 147  147 |     _5 = &read
+ 148  148 |     storage_live(_6)
+ 149  149 |     storage_live(_7)
+ 150  150 |     _7 = copy i
+ 151  151 |     _6 = (move _7,)
+ 152      -     _0 = call<'28, '29, '30>(move _5, move _6)
+      152 +     _0 = call<'22, '23, '24>(move _5, move _6)
+ 153  153 |     ↳⚡ storage_dead(i)
+ 154  154 |         storage_dead(a)
+ 155  155 |         unwind_continue
+ 156  156 |     storage_dead(_7)
+ 157  157 |     storage_dead(_6)
+          ⋮
+ 287  287 |     non-dyn-compatible
+ 288  288 | }
+ 289  289 | 
+ 290  290 | 
+ 291  291 | 
+
+
+

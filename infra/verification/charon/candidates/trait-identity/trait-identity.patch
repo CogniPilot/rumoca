@@ -1,0 +1,543 @@
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/ast/meta/names.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/ast/meta/names.rs
+--- a/src/ast/meta/names.rs	2026-09-07 13:15:29.287955671 -0400
++++ b/src/ast/meta/names.rs	2026-09-08 15:14:11.189581360 -0400
+@@ -45,6 +45,11 @@
+     /// A path element for a builtin, like tuples
+     #[serde_state(stateless)]
+     Builtin(BuiltinPathElem),
++    /// The generics of this item were extended in place (associated types lifted into type
++    /// parameters). The binder binds the extended parameters; its arguments are the original
++    /// parameters. The item keeps its original identity; consumers fold this record last, after
++    /// any `Instantiated` record that follows it. Last so the earlier variants keep their tags.
++    Extended(Box<Binder<GenericArgs>>),
+ }
+ 
+ /// Used for builtin items, rather than hardcoding these as strings.
+@@ -207,10 +212,11 @@
+ 
+     /// Returns this name with the `PathElem::Instantiated` part removed, if it has one.
+     pub fn as_slice_uninstantiated(&self) -> &[PathElem] {
+-        match self.name.as_slice() {
+-            [name @ .., PathElem::Instantiated(_)] => name,
+-            name => name,
++        let mut name = self.name.as_slice();
++        while let [rest @ .., PathElem::Instantiated(_) | PathElem::Extended(_)] = name {
++            name = rest;
+         }
++        name
+     }
+ 
+     /// Compare the name to a constant array.
+@@ -239,10 +245,24 @@
+         self.compare_with_ref_name(true, ref_name)
+     }
+ 
++    /// Records an in-place extension of this item's generics by putting a `PathElem::Extended`
++    /// last. The item keeps its identity; a later `instantiate` appends a copy record after it.
++    pub fn extend(mut self, binder: Binder<GenericArgs>) -> Self {
++        self.name.push(PathElem::Extended(Box::new(binder)));
++        self
++    }
++
+     /// Created an instantiated version of this name by putting a `PathElem::Instantiated` last. If
+     /// the item was already instantiated, this merges the two instantiations.
+     pub fn instantiate(mut self, binder: Binder<GenericArgs>) -> Self {
+-        if let [.., PathElem::Instantiated(x)] = self.name.as_mut_slice() {
++        if let [.., PathElem::Extended(_)] = self.name.as_mut_slice() {
++            // The item was not a copy, only an in-place extension of its generics. A copy of it
++            // keeps both facts as a chain of records: the copy record last, with the full
++            // arguments that make its identity distinct, and the extension record before it,
++            // through which matching recovers the declared arguments. Consumers fold trailing
++            // records last to first.
++            self.name.push(PathElem::Instantiated(Box::new(binder)));
++        } else if let [.., PathElem::Instantiated(x)] = self.name.as_mut_slice() {
+             // Put the new args in place; the params are what we want but the args are wrong.
+             let old_args = std::mem::replace(x.as_mut(), binder);
+             // Apply the new args to the old binder to get correct args.
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/generate-asts/generate_ml/util.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/bin/generate-asts/generate_ml/util.rs
+--- a/src/bin/generate-asts/generate_ml/util.rs	2026-09-07 13:15:29.291499235 -0400
++++ b/src/bin/generate-asts/generate_ml/util.rs	2026-09-08 15:11:02.183521315 -0400
+@@ -12,7 +12,7 @@
+         .map(|path_elem| match path_elem {
+             PathElem::Ident(i, _) => i.clone(),
+             PathElem::Impl(..) => "<impl>".to_string(),
+-            PathElem::Instantiated(..) => "<mono>".to_string(),
++            PathElem::Instantiated(..) | PathElem::Extended(..) => "<mono>".to_string(),
+             PathElem::Target(target) => target.clone(),
+             PathElem::Builtin(BuiltinPathElem::Tuple(n)) => format!("<tuple_{n}>"),
+             PathElem::Builtin(BuiltinPathElem::Str) => "<str>".to_string(),
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/bin/generate-asts/generate_rust.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/bin/generate-asts/generate_rust.rs
+--- a/src/bin/generate-asts/generate_rust.rs	2026-09-07 13:15:29.291713096 -0400
++++ b/src/bin/generate-asts/generate_rust.rs	2026-09-08 15:11:02.181281143 -0400
+@@ -385,7 +385,7 @@
+             .map(|elem| match elem {
+                 PathElem::Ident(name, _) => name.clone(),
+                 PathElem::Impl(_) => "<impl>".to_string(),
+-                PathElem::Instantiated(_) => "<mono>".to_string(),
++                PathElem::Instantiated(_) | PathElem::Extended(_) => "<mono>".to_string(),
+                 PathElem::Target(target) => target.clone(),
+                 PathElem::Builtin(BuiltinPathElem::Tuple(n)) => format!("<tuple_{n}>"),
+                 PathElem::Builtin(BuiltinPathElem::Str) => "<str>".to_string(),
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/name_matcher/mod.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/name_matcher/mod.rs
+--- a/src/name_matcher/mod.rs	2026-09-07 13:15:29.292409029 -0400
++++ b/src/name_matcher/mod.rs	2026-09-08 17:45:10.157858752 -0400
+@@ -72,7 +72,14 @@
+     ) -> bool {
+         let mut scrutinee_elems = name.name.as_slice();
+         let mut args: Option<GenericArgs> = args.cloned();
+-        if let [prefix @ .., PathElem::Instantiated(instantiation)] = scrutinee_elems {
++        // Fold every trailing instantiation record, last to first: a copy record maps the
++        // copy's generics to its parent's, an extension record maps extended generics to the
++        // declared ones.
++        while let [
++            prefix @ ..,
++            PathElem::Instantiated(instantiation) | PathElem::Extended(instantiation),
++        ] = scrutinee_elems
++        {
+             // An `Instantiated` suffix is appended when the generics of an item are modified; it
+             // records the map from the new generics to the old ones.
+             args = match args {
+@@ -105,7 +112,7 @@
+                 }
+             };
+             scrutinee_elems = prefix;
+-        };
++        }
+         let args = args.as_ref();
+         // Patterns that start with an impl block match that impl block anywhere. In such a case we
+         // truncate the scrutinee name to start with the rightmost impl in its name. This isn't
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/pretty/fmt_with_ctx.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/pretty/fmt_with_ctx.rs
+--- a/src/pretty/fmt_with_ctx.rs	2026-09-07 13:15:29.292536220 -0400
++++ b/src/pretty/fmt_with_ctx.rs	2026-09-08 15:12:26.260477733 -0400
+@@ -1229,7 +1229,13 @@
+         // Reset generics to avoid names being displayed differently depending on the current
+         // binding level.
+         let ctx = &ctx.no_generics();
+-        let name = self.name.iter().map(|x| x.with_ctx(ctx)).format("::");
++        // An in-place generics extension keeps the item's printed identity.
++        let name = self
++            .name
++            .iter()
++            .filter(|x| !matches!(x, PathElem::Extended(_)))
++            .map(|x| x.with_ctx(ctx))
++            .format("::");
+         write!(f, "{}", name)
+     }
+ }
+@@ -1243,6 +1249,7 @@
+             let name = self
+                 .name
+                 .iter()
++                .filter(|x| !matches!(x, PathElem::Extended(_)))
+                 .map(|elem| match elem {
+                     PathElem::Impl(impl_elem) => Either::Left(impl_elem.with_ctx(ctx)),
+                     _ => Either::Right(elem.with_ctx(ctx)),
+@@ -1321,6 +1328,11 @@
+                 write!(f, "({fields}{trailing_comma})")
+             }
+             PathElem::Builtin(BuiltinPathElem::Str) => write!(f, "str"),
++            PathElem::Extended(_) => {
++                // The item was not copied: its generics were extended in place (associated-type
++                // lifting) and the binder only records its declared identity. Print nothing.
++                Ok(())
++            }
+             PathElem::Instantiated(binder) => {
+                 // Anonymize all parameters.
+                 let underscore = "_".to_string();
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' -x generated /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/src/transform/normalize/expand_associated_types.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/src/transform/normalize/expand_associated_types.rs
+--- a/src/transform/normalize/expand_associated_types.rs	2026-09-08 05:38:58.691754427 -0400
++++ b/src/transform/normalize/expand_associated_types.rs	2026-09-08 15:11:02.178849601 -0400
+@@ -1552,6 +1552,9 @@
+             let id = item.as_ref().id();
+             let span = item.as_ref().item_meta().span;
+             let modifications = item_modifications.get(&GenericsSource::Item(id)).unwrap();
++            // The parameters the item was declared with. If lifting extends them, the item keeps
++            // its original identity through an `Instantiated` name element below.
++            let original_params = item.generic_params().clone();
+ 
+             // Add new parameters or associated types in order to have types to fill in all the
+             // replaced paths. We then collect the replaced paths and their associated value.
+@@ -1601,6 +1604,25 @@
+                 item.generic_params().trait_type_constraints.swap_remove(*cid);
+             }
+ 
++            // Lifting appended type parameters after the declared ones and left regions, const
++            // generics and clauses in place, so the declared identity is the identity arguments of
++            // the original parameters over the new ones. Record it on the name: name matching
++            // (Rust and OCaml) translates an instantiated item back to its original generics, so a
++            // pattern written for the declared arity keeps matching the lifted item.
++            if matches!(item, ItemRefMut::TraitDecl(_))
++                && item.generic_params().types.len() != original_params.types.len()
++            {
++                let binder = Binder::new(
++                    BinderKind::Other,
++                    item.generic_params().clone(),
++                    original_params.identity_args(),
++                );
++                let name = &mut item.item_meta().name;
++                *name = std::mem::take(name).extend(binder);
++                let name = name.clone();
++                ctx.translated.item_names.insert(id, name);
++            }
++
+             // Remove trait associated types.
+             if let ItemRefMut::TraitDecl(tr) = &mut item
+                 && modifications.add_type_params
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/record_chain.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/tests/record_chain.rs
+--- a/tests/record_chain.rs	1969-12-31 19:00:00.000000000 -0500
++++ b/tests/record_chain.rs	2026-09-08 17:45:10.347859342 -0400
+@@ -0,0 +1,332 @@
++//! Laws of instantiation records on item names, checked through the actual matcher.
++//!
++//! An `Extended` record is provenance: the associated-type lifting extended the item's generics in
++//! place and the item keeps its identity. An `Instantiated` record is a copy: a distinct item made
++//! from its parent with the given arguments. Consumers fold every trailing record, last to first.
++
++mod util;
++
++use charon_lib::ast::*;
++use charon_lib::formatter::IntoFormatter;
++use charon_lib::name_matcher::Pattern;
++use charon_lib::pretty::FmtWithCtx;
++
++const CODE: &str = r#"
++    pub trait Tr {
++        type Out;
++        fn m(&self) -> Self::Out;
++    }
++    impl<A: Copy> Tr for Option<A> {
++        type Out = A;
++        fn m(&self) -> A {
++            self.unwrap()
++        }
++    }
++    impl Tr for u32 {
++        type Out = u64;
++        fn m(&self) -> u64 {
++            *self as u64
++        }
++    }
++    pub fn call<T: Tr>(x: T) -> T::Out {
++        x.m()
++    }
++    pub fn use_it(a: Option<u8>, b: Option<u16>, c: u32) -> (u8, u16, u64) {
++        (call(a), call(b), call(c))
++    }
++"#;
++
++/// The roles of the trailing records of a name, first to last.
++fn records(name: &Name) -> Vec<&'static str> {
++    let mut roles: Vec<_> = name
++        .name
++        .iter()
++        .rev()
++        .take_while(|e| matches!(e, PathElem::Instantiated(_) | PathElem::Extended(_)))
++        .map(|e| match e {
++            PathElem::Extended(_) => "ext",
++            _ => "copy",
++        })
++        .collect();
++    roles.reverse();
++    roles
++}
++
++fn last_ident_is(name: &Name, ident: &str) -> bool {
++    matches!(
++        name.as_slice_uninstantiated().last(),
++        Some(PathElem::Ident(s, _)) if s == ident
++    )
++}
++
++fn find_trait<'a>(krate: &'a TranslatedCrate, ident: &str) -> &'a TraitDecl {
++    krate
++        .trait_decls
++        .iter()
++        .find(|d| last_ident_is(&d.item_meta.name, ident))
++        .unwrap_or_else(|| panic!("no trait `{ident}`"))
++}
++
++fn find_fun<'a>(krate: &'a TranslatedCrate, ident: &str) -> &'a FunDecl {
++    krate
++        .fun_decls
++        .iter()
++        .find(|d| last_ident_is(&d.item_meta.name, ident) && records(&d.item_meta.name).is_empty())
++        .unwrap_or_else(|| panic!("no function `{ident}`"))
++}
++
++fn pat(s: &str) -> Pattern {
++    Pattern::parse(s).unwrap_or_else(|e| panic!("pattern `{s}`: {e}"))
++}
++
++/// Lifting appends an extension record; the trait keeps its identity for a bare pattern and for
++/// a pattern at the declared arity; the printer shows nothing of the record.
++#[test]
++fn extension_keeps_original_identity() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(CODE, &["--remove-associated-types=*"])?;
++    let fmt = &krate.into_fmt();
++    let tr = find_trait(&krate, "Tr");
++    assert_eq!(records(&tr.item_meta.name), ["ext"]);
++    assert_eq!(tr.generics.types.len(), 2, "Self and the lifted Out");
++    let item = ItemRef::TraitDecl(tr);
++    assert!(pat("test_crate::Tr").matches_item(&krate, item));
++    assert!(pat("test_crate::Tr<_>").matches_item(&krate, item));
++    assert!(
++        !pat("test_crate::Tr<_, _>").matches_item(&krate, item),
++        "the extended arity is not the declared identity"
++    );
++    let printed = tr.item_meta.name.with_ctx(fmt).to_string();
++    assert_eq!(printed, "test_crate::Tr", "extension records print nothing");
++    assert_eq!(
++        tr.item_meta.name.as_slice_uninstantiated().len(),
++        tr.item_meta.name.name.len() - 1
++    );
++    Ok(())
++}
++
++/// A copy record whose arguments are the identity of its parameters is still a copy: it is
++/// stripped by `as_slice_uninstantiated`, prints its arguments, and matches through the fold.
++#[test]
++fn identity_copy_is_a_copy() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(CODE, &["--remove-associated-types=*"])?;
++    let fmt = &krate.into_fmt();
++    let call = find_fun(&krate, "call");
++    let params = call.generics.clone();
++    let identity = params.identity_args();
++    let name = call.item_meta.name.clone().instantiate(Binder::new(
++        BinderKind::Other,
++        params.clone(),
++        identity.clone(),
++    ));
++    assert_eq!(records(&name), ["copy"]);
++    assert_eq!(
++        name.as_slice_uninstantiated(),
++        call.item_meta.name.as_slice_uninstantiated()
++    );
++    let original = call.item_meta.name.with_ctx(fmt).to_string();
++    let copied = name.with_ctx(fmt).to_string();
++    assert_ne!(copied, original, "a copy names distinctly");
++    assert!(copied.starts_with(&original));
++    // Lifting extended `call` to `<T, T_Out>`; the copy matches at that arity through the fold.
++    let original = ItemRef::Fun(call);
++    assert!(pat("test_crate::call<_, _>").matches_item(&krate, original));
++    assert!(!pat("test_crate::call<_>").matches_item(&krate, original));
++    assert!(pat("test_crate::call<_, _>").matches_with_generics(&krate, &name, Some(&identity)));
++    assert!(!pat("test_crate::call<_>").matches_with_generics(&krate, &name, Some(&identity)));
++    assert!(pat("test_crate::call").matches_with_generics(&krate, &name, Some(&identity)));
++    Ok(())
++}
++
++/// A copy record whose arguments differ from the identity only in trait evidence is a copy: the
++/// role is carried by the record, not read off the shape of its arguments.
++#[test]
++fn trait_evidence_only_copy_is_a_copy() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(CODE, &["--remove-associated-types=*"])?;
++    let fmt = &krate.into_fmt();
++    let call = find_fun(&krate, "call");
++    let tr = find_trait(&krate, "Tr");
++    let u32_impl = krate
++        .trait_impls
++        .iter()
++        .find(|i| {
++            i.impl_trait.id == tr.def_id
++                && i.impl_trait.generics.types.first().is_some_and(|t| {
++                    matches!(t.kind(), TyKind::Literal(LiteralTy::UInt(UIntTy::U32)))
++                })
++        })
++        .expect("impl Tr for u32");
++    let params = call.generics.clone();
++    let mut args = params.identity_args();
++    assert!(!args.trait_refs.is_empty(), "call has the clause T: Tr");
++    let evidence = TraitRef::new(
++        TraitRefKind::TraitImpl(TraitImplRef {
++            id: u32_impl.def_id,
++            generics: Box::new(GenericArgs::empty()),
++        }),
++        RegionBinder::empty(u32_impl.impl_trait.clone()),
++    );
++    args.trait_refs[TraitClauseId::from_raw(0)] = evidence;
++    let identity = params.identity_args();
++    assert_eq!(args.types, identity.types);
++    assert_eq!(args.regions, identity.regions);
++    assert_eq!(args.const_generics, identity.const_generics);
++    assert_ne!(args.trait_refs, identity.trait_refs);
++    let name =
++        call.item_meta
++            .name
++            .clone()
++            .instantiate(Binder::new(BinderKind::Other, params, args));
++    assert_eq!(records(&name), ["copy"]);
++    assert_eq!(
++        name.as_slice_uninstantiated(),
++        call.item_meta.name.as_slice_uninstantiated()
++    );
++    assert_ne!(
++        name.with_ctx(fmt).to_string(),
++        call.item_meta.name.with_ctx(fmt).to_string()
++    );
++    assert!(pat("test_crate::call<_, _>").matches_with_generics(&krate, &name, Some(&identity)));
++    Ok(())
++}
++
++/// A copy of an extended item keeps both records; a copy of that copy composes into the copy
++/// record and leaves the extension record in place; matching folds both back to the declared
++/// identity with the composed arguments.
++#[test]
++fn repeated_composition_folds_to_the_declared_identity() -> anyhow::Result<()> {
++    let krate = util::translate_rust_text(CODE, &["--remove-associated-types=*"])?;
++    let tr = find_trait(&krate, "Tr");
++    let option = krate
++        .type_decls
++        .iter()
++        .find(|d| last_ident_is(&d.item_meta.name, "Option"))
++        .expect("Option");
++    let u8_ty = TyKind::Literal(LiteralTy::UInt(UIntTy::U8)).into_ty();
++    let option_of = |t: Ty| {
++        TyKind::Adt(TypeDeclRef {
++            id: option.def_id,
++            builtin: None,
++            generics: Box::new(GenericArgs {
++                regions: IndexVec::new(),
++                types: [t].into_iter().collect(),
++                const_generics: IndexVec::new(),
++                trait_refs: IndexVec::new(),
++            }),
++        })
++        .into_ty()
++    };
++    // First copy: `Tr<Option<X>, X>` over one parameter `X`.
++    let mut params1 = GenericParams::empty();
++    params1.types.push(TypeParam {
++        index: TypeVarId::from_raw(0),
++        name: "X".to_string(),
++        variance: Variance::Unknown,
++    });
++    let x = TyKind::TypeVar(DeBruijnVar::bound(
++        DeBruijnId::zero(),
++        TypeVarId::from_raw(0),
++    ))
++    .into_ty();
++    let args1 = GenericArgs {
++        regions: IndexVec::new(),
++        types: [option_of(x.clone()), x].into_iter().collect(),
++        const_generics: IndexVec::new(),
++        trait_refs: IndexVec::new(),
++    };
++    let once =
++        tr.item_meta
++            .name
++            .clone()
++            .instantiate(Binder::new(BinderKind::Other, params1, args1));
++    assert_eq!(records(&once), ["ext", "copy"]);
++    // Second copy: `X := u8`, no parameters left.
++    let args2 = GenericArgs {
++        regions: IndexVec::new(),
++        types: [u8_ty].into_iter().collect(),
++        const_generics: IndexVec::new(),
++        trait_refs: IndexVec::new(),
++    };
++    let twice = once.clone().instantiate(Binder::new(
++        BinderKind::Other,
++        GenericParams::empty(),
++        args2,
++    ));
++    assert_eq!(
++        records(&twice),
++        ["ext", "copy"],
++        "composition keeps one copy record"
++    );
++    let empty = GenericArgs::empty();
++    assert!(
++        pat("test_crate::Tr<core::option::Option<u8>>").matches_with_generics(
++            &krate,
++            &twice,
++            Some(&empty)
++        )
++    );
++    assert!(!pat("test_crate::Tr<u8>").matches_with_generics(&krate, &twice, Some(&empty)));
++    assert!(pat("test_crate::Tr").matches_with_generics(&krate, &twice, Some(&empty)));
++    Ok(())
++}
++
++/// The producer itself emits chains: under partial monomorphization the blanket `FnOnce`
++/// implementation for `&mut F` specializes the lifted `FnOnce` declaration at `Self := &mut F`,
++/// so the copied declaration carries the extension record followed by the copy record and still
++/// matches at the declared arity.
++#[test]
++fn producer_emits_chains_under_partial_monomorphization() -> anyhow::Result<()> {
++    let code = r#"
++        pub fn once<G: FnOnce(u32) -> u32>(g: G) -> u32 {
++            g(1)
++        }
++        pub fn wrap<F: FnMut(u32) -> u32>(f: &mut F) -> u32 {
++            once(f)
++        }
++        pub fn use_it(k: u32) -> u32 {
++            let mut acc = 0;
++            wrap(&mut |x| {
++                acc += x;
++                acc + k
++            })
++        }
++    "#;
++    let krate = util::translate_rust_text(
++        code,
++        &[
++            "--preset=aeneas",
++            "--remove-associated-types=*",
++            "--monomorphize-mut",
++            "--include=core::ops::function::impls::*::call_once",
++        ],
++    )?;
++    let fmt = &krate.into_fmt();
++    let chained: Vec<_> = krate
++        .trait_decls
++        .iter()
++        .filter(|d| {
++            last_ident_is(&d.item_meta.name, "FnOnce")
++                && records(&d.item_meta.name) == ["ext", "copy"]
++        })
++        .collect();
++    assert_eq!(chained.len(), 1, "one copied lifted FnOnce");
++    let copy = chained[0];
++    let item = ItemRef::TraitDecl(copy);
++    assert!(pat("core::ops::function::FnOnce").matches_item(&krate, item));
++    assert!(pat("core::ops::function::FnOnce<&mut _, _>").matches_item(&krate, item));
++    assert!(
++        !pat("core::ops::function::FnOnce<_, _, _>").matches_item(&krate, item),
++        "the lifted arity is not the declared identity"
++    );
++    let printed = copy.item_meta.name.with_ctx(fmt).to_string();
++    assert!(
++        printed.starts_with("core::ops::function::FnOnce::<"),
++        "{printed}"
++    );
++    let original = find_trait(&krate, "FnOnce");
++    assert_eq!(records(&original.item_meta.name), ["ext"]);
++    assert_eq!(
++        original.item_meta.name.with_ctx(fmt).to_string(),
++        "core::ops::function::FnOnce"
++    );
++    Ok(())
++}
+diff -ruN -x target -x .git -x '*.llbc' -x '*.ullbc' -x '*.postcard' -x '*.rlib' -x '*.rmeta' /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/rootid-charon/tests/util/mod.rs /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ti4-charon/tests/util/mod.rs
+--- a/tests/util/mod.rs	2026-09-07 13:15:29.334690590 -0400
++++ b/tests/util/mod.rs	2026-09-08 17:45:10.291859168 -0400
+@@ -120,6 +120,7 @@
+                 ImplElem::Ty(..) => "<inherent impl>".to_string(),
+             },
+             PathElem::Instantiated(..) => "<mono>".to_string(),
++            PathElem::Extended(..) => "<extended>".to_string(),
+             PathElem::Target(target) => target.clone(),
+             PathElem::Builtin(BuiltinPathElem::Tuple(n)) => format!("<tuple_{n}>"),
+             PathElem::Builtin(BuiltinPathElem::Str) => "<str>".to_string(),
+@@ -134,7 +135,9 @@
+ 
+ pub fn trait_name(crate_data: &TranslatedCrate, trait_id: TraitDeclId) -> &str {
+     let tr = &crate_data.trait_decls[trait_id];
+-    let PathElem::Ident(trait_name, _) = tr.item_meta.name.name.last().unwrap() else {
++    let PathElem::Ident(trait_name, _) =
++        tr.item_meta.name.as_slice_uninstantiated().last().unwrap()
++    else {
+         panic!()
+     };
+     trait_name

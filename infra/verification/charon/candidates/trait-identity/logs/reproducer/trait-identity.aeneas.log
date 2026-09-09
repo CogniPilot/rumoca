@@ -1,0 +1,14 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/branch/ti3.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/6 ⠋Applied prepasses:  [########--------------------------------------------] 1/6 ⠙Applied prepasses:  [####################################################] 6/6 ✔️
+[?25h[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/3 ⠋Translated opaque functions:  [##########################################] 3/3 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/2 ⠋Translated transparent functions:  [##################-------------------] 1/2 ⠙Translated transparent functions:  [#####################################] 2/2 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/4 ⠋Translated trait declarations:  [##########------------------------------] 1/4 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/4 ⠋Translated trait impls:  [###########------------------------------------] 1/4 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/3 ⠋Post-processed translated opaque functions:  [#########------------------] 1/3 ⠋Post-processed translated opaque functions:  [###########################] 3/3 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/2 ⠋Post-processed translated transparent functions:  [###########-----------] 1/2 ⠋Post-processed translated transparent functions:  [######################] 2/2 ✔️
+[?25h[[92mInfo[39m ] Creating missing directory: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/branch/ti3-out
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/branch/ti3-out/Types.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/branch/ti3-out/Funs.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/branch/ti3-out/translation.json
+[[92mInfo[39m ] Total execution time: 0.355214 seconds

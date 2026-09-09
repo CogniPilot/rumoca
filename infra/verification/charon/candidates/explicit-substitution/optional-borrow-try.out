@@ -1,0 +1,11 @@
+error: Type error after transformations:
+       Mismatched trait clause:
+       expected: TraitClause1: (core::option::impl_Try_for_Option::<&_ mut _><'_0, T0>::Residual: Residual<core::option::impl_Try_for_Option::<&_ mut _><'_0, T0>::Output, core::option::impl_Try_for_Option::<&_ mut _><'_0, T0>::Self_Clause1_TryType>)
+            got: core::option::impl_Residual_for_Option_Infallible::<&_ mut _><'_0, T0>: core::ops::try_trait::Residual::<_, &_ mut _, core::option::Option::<&_ mut _><_, _>><'_0, '_0, Option<Infallible>, T0, T0>
+       Visitor stack:
+         charon_lib::ast::items::trait_impl::TraitImpl
+       Binding stack (depth 1):
+         0: <'_0, T0>
+ --> /rustc/library/core/src/option.rs:2858:1
+
+ERROR Charon failed to translate this code (1 errors)

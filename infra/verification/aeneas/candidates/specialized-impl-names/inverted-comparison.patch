@@ -1,0 +1,11 @@
+--- a/branded-trait.rs
++++ b/branded-trait.rs
+@@ -17,7 +17,7 @@
+ 
+ impl<'brand> Matches<u32> for Id<'brand> {
+     fn matches(&self, rhs: &u32) -> bool {
+-        self.raw == *rhs
++        self.raw != *rhs
+     }
+ }
+ 

@@ -1,0 +1,262 @@
+--- a/src/transform/normalize/expand_associated_types.rs
++++ b/src/transform/normalize/expand_associated_types.rs
+@@ -80,6 +80,8 @@
+ 
+ use crate::transform::{TransformCtx, ctx::TransformPass, utils::GenericsSource};
+ 
++mod cyclic_demands;
++
+ /// Represent some `TraitRef`s as paths for easier manipulation.
+ use trait_ref_path::*;
+ mod trait_ref_path {
+@@ -608,7 +610,7 @@
+                 self.remove_constraints.insert(cstr_id);
+             }
+             // The path is already in the set, no need to replace it.
+-        } else {
++        } else if !self.required_extra_paths.contains(&path) {
+             // We don't have a value for this associated type; we add a new type parameter
+             // to supply it.
+             self.required_extra_paths.push(path);
+@@ -698,14 +700,22 @@
+     ctx: &'a TransformCtx,
+     /// Records the modifications for each trait.
+     trait_modifications: IndexMap<TraitDeclId, CycleDetector<ItemModifications>>,
++    previous_trait_paths: IndexMap<TraitDeclId, Vec<AssocTypePath>>,
++    retained_traits: HashSet<TraitDeclId>,
++    unresolved_trait: Option<TraitDeclId>,
+     /// Records the set of known associated types for this trait impl, including parent impls and
+     /// associated type constraints.
+     impl_assoc_tys: IndexMap<TraitImplId, CycleDetector<TypeConstraintSet>>,
+ }
+ 
++struct TraitDemandError {
++    trait_id: TraitDeclId,
++    detail: &'static str,
++}
++
+ impl<'a> ComputeItemModifications<'a> {
+-    fn new(ctx: &'a TransformCtx) -> Self {
+-        ComputeItemModifications {
++    fn new(ctx: &'a TransformCtx) -> Result<Self, TraitDemandError> {
++        let mut this = ComputeItemModifications {
+             ctx,
+             trait_modifications: ctx
+                 .translated
+@@ -715,6 +725,69 @@
+                 .translated
+                 .trait_impls
+                 .map_ref_opt(|_| Some(CycleDetector::Unprocessed)),
++            previous_trait_paths: ctx.translated.trait_decls.map_ref(|_| vec![]),
++            retained_traits: HashSet::default(),
++            unresolved_trait: None,
++        };
++        this.settle_trait_demands()?;
++        Ok(this)
++    }
++
++    fn settle_trait_demands(&mut self) -> Result<(), TraitDemandError> {
++        let mut previous_signature = self.ctx.translated.trait_decls.map_ref(|_| vec![]);
++        let mut seen_signatures = Vec::new();
++        loop {
++            let retained_before = self.retained_traits.len();
++            self.unresolved_trait = None;
++            self.trait_modifications = self
++                .ctx
++                .translated
++                .trait_decls
++                .map_ref_opt(|_| Some(CycleDetector::Unprocessed));
++            for (id, _) in self.ctx.translated.trait_decls.iter_enumerated() {
++                self.compute_trait_modifications(id);
++            }
++            if self.retained_traits.len() != retained_before {
++                self.previous_trait_paths = self.ctx.translated.trait_decls.map_ref(|_| vec![]);
++                previous_signature = self.previous_trait_paths.clone();
++                seen_signatures.clear();
++                continue;
++            }
++            let signature = self.ctx.translated.trait_decls.map_ref_indexed(|id, _| {
++                self.trait_modifications[id]
++                    .as_processed()
++                    .unwrap()
++                    .required_extra_paths
++                    .clone()
++            });
++            let changed = signature
++                .iter_enumerated()
++                .find(|(id, paths)| **paths != previous_signature[*id]);
++            let Some((trait_id, _)) = changed else {
++                return match self.unresolved_trait {
++                    None => Ok(()),
++                    Some(trait_id) => Err(TraitDemandError {
++                        trait_id,
++                        detail: "Could not satisfy cyclic associated-type demands while retaining the trait's associated types",
++                    }),
++                };
++            };
++            if seen_signatures.contains(&signature) {
++                return Err(TraitDemandError {
++                    trait_id,
++                    detail: "Cyclic associated-type demands did not converge",
++                });
++            }
++            seen_signatures.push(signature.clone());
++            previous_signature = signature;
++            self.previous_trait_paths = self.ctx.translated.trait_decls.map_ref_indexed(|id, _| {
++                self.trait_modifications[id]
++                    .as_processed()
++                    .unwrap()
++                    .required_extra_params()
++                    .cloned()
++                    .collect()
++            });
+         }
+     }
+ 
+@@ -789,8 +862,8 @@
+         &mut self,
+         id: TraitDeclId,
+     ) -> &CycleDetector<ItemModifications> {
+-        if self.trait_modifications[id].start_processing()
+-            && let Some(tr) = self.ctx.translated.trait_decls.get(id)
++        if let Some(tr) = self.ctx.translated.trait_decls.get(id)
++            && self.trait_modifications[id].start_processing()
+         {
+             // The heart of the recursion: we process the trait clauses, which recursively computes
+             // the extra parameters needed for each corresponding trait. Each of the referenced
+@@ -812,11 +885,6 @@
+                 }
+             }
+ 
+-            let is_self_referential = match &self.trait_modifications[id] {
+-                CycleDetector::Unprocessed | CycleDetector::Processed(_) => unreachable!(),
+-                CycleDetector::Processing => false,
+-                CycleDetector::Cyclic => true,
+-            };
+             // These traits carry a built-in associated type that we can't replace with
+             // anything else than itself, so we keep it as an associated type.
+             let has_builtin_assoc_ty = matches!(
+@@ -830,7 +898,7 @@
+                     .lift_associated_types
+                     .iter()
+                     .any(|pat| pat.matches(&self.ctx.translated, &tr.item_meta.name));
+-            let remove_assoc_types = !is_self_referential && remove_assoc_type;
++            let remove_assoc_types = !self.retained_traits.contains(&id) && remove_assoc_type;
+ 
+             let type_constraints = {
+                 let mut type_constraints = self.compute_constraint_set(&tr.generics);
+@@ -866,7 +934,27 @@
+                 }
+             }
+             for path in replace {
+-                modifications.replace_path(path);
++                if modifications.type_constraints.find(&path).is_some() {
++                    modifications.replace_path(path);
++                    continue;
++                }
++                let Some(canonical) =
++                    cyclic_demands::normalize_path(&self.ctx.translated, tr, &path)
++                else {
++                    self.retained_traits.insert(id);
++                    self.unresolved_trait.get_or_insert(id);
++                    continue;
++                };
++                if canonical != path {
++                    let Some(ty) = cyclic_demands::path_type(&self.ctx.translated, tr, &canonical)
++                    else {
++                        self.retained_traits.insert(id);
++                        self.unresolved_trait.get_or_insert(id);
++                        continue;
++                    };
++                    modifications.type_constraints.insert_path(&path, ty);
++                }
++                modifications.replace_path(canonical);
+             }
+ 
+             self.trait_modifications[id] = CycleDetector::Processed(modifications);
+@@ -881,17 +969,18 @@
+         &mut self,
+         id: TraitDeclId,
+     ) -> impl Iterator<Item = &AssocTypePath> {
+-        match self.compute_trait_modifications(id) {
+-            CycleDetector::Unprocessed => None,
++        self.compute_trait_modifications(id);
++        match &self.trait_modifications[id] {
++            CycleDetector::Unprocessed => &[],
+             CycleDetector::Processing | CycleDetector::Cyclic => {
+-                // We're recursively processing ourselves. We already know we won't add new type
+-                // parameters, so we correctly return an empty iterator.
+-                None
++                self.previous_trait_paths[id].as_slice()
+             }
+-            CycleDetector::Processed(modifs) => Some(modifs.required_extra_params()),
++            CycleDetector::Processed(modifs) if modifs.add_type_params => {
++                modifs.required_extra_paths.as_slice()
++            }
++            CycleDetector::Processed(_) => &[],
+         }
+-        .into_iter()
+-        .flatten()
++        .iter()
+     }
+ 
+     fn compute_extra_params_for_clause<'b>(
+@@ -1420,7 +1509,14 @@
+         // Compute all the necessary type info to be able to replace and normalize associated
+         // types.
+         let item_modifications: HashMap<GenericsSource, ItemModifications> = {
+-            let mut computer = ComputeItemModifications::new(ctx);
++            let mut computer = match ComputeItemModifications::new(ctx) {
++                Ok(computer) => computer,
++                Err(error) => {
++                    let span = ctx.translated.trait_decls[error.trait_id].item_meta.span;
++                    register_error!(ctx, span, "{}", error.detail);
++                    return;
++                }
++            };
+             let mut item_modifications = HashMap::default();
+             for (id, item) in ctx.translated.all_items_with_ids() {
+                 let modifications = computer.compute_item_modifications(item);
+@@ -1517,3 +1613,42 @@
+         });
+     }
+ }
++
++#[cfg(test)]
++mod demand_tests {
++    use super::*;
++
++    #[test]
++    fn repeated_associated_type_demand_uses_one_parameter() {
++        let mut modifications =
++            ItemModifications::from_constraint_set(TypeConstraintSet::default(), true);
++        let path = TraitRefPath::self_ref(TraitDeclId::ZERO).with_assoc_type(AssocTypeId::ZERO);
++        modifications.replace_path(path.clone());
++        modifications.replace_path(path.clone());
++        assert_eq!(modifications.required_extra_paths, vec![path]);
++    }
++
++    #[test]
++    fn distinct_associated_types_keep_distinct_parameters() {
++        let mut modifications =
++            ItemModifications::from_constraint_set(TypeConstraintSet::default(), true);
++        let first = TraitRefPath::self_ref(TraitDeclId::ZERO).with_assoc_type(AssocTypeId::ZERO);
++        let second = TraitRefPath::self_ref(TraitDeclId::ZERO).with_assoc_type(AssocTypeId::new(1));
++        modifications.replace_path(first.clone());
++        modifications.replace_path(second.clone());
++        assert_eq!(modifications.required_extra_paths, vec![first, second]);
++    }
++
++    #[test]
++    fn distinct_clause_witnesses_keep_distinct_parameters() {
++        let mut modifications =
++            ItemModifications::from_constraint_set(TypeConstraintSet::default(), true);
++        let first = TraitRefPath::local_clause(TraitClauseId::ZERO, TraitDeclId::ZERO)
++            .with_assoc_type(AssocTypeId::ZERO);
++        let second = TraitRefPath::local_clause(TraitClauseId::new(1), TraitDeclId::ZERO)
++            .with_assoc_type(AssocTypeId::ZERO);
++        modifications.replace_path(first.clone());
++        modifications.replace_path(second.clone());
++        assert_eq!(modifications.required_extra_paths, vec![first, second]);
++    }
++}

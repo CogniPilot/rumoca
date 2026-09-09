@@ -1,0 +1,48 @@
+--- a/extract/ExtractBase.ml
++++ b/extract/ExtractBase.ml
+@@ -1754,10 +1754,18 @@
+   match trait_impl.item_meta.attr_info.rename with
+   | None -> (
+       let params = trait_impl.generics in
+-      let args = trait_impl.impl_trait.generics in
+-      let name =
+-        ctx_prepare_name trait_impl.item_meta ctx trait_decl.item_meta.name
++      (* Specialization moves original arguments into the declaration name.
++         Recover them before classifying or removing Self: the remaining
++         argument list may start with another parameter or contain no types. *)
++      let trait_name, args =
++        let args = trait_impl.impl_trait.generics in
++        match List.rev trait_decl.item_meta.name with
++        | PeInstantiated binder :: rest ->
++            ( List.rev rest,
++              Charon.Substitute.instantiate_name_generics binder args )
++        | _ -> (trait_decl.item_meta.name, args)
+       in
++      let name = ctx_prepare_name trait_impl.item_meta ctx trait_name in
+       (* Check if the impl is a blanket impl and add a suffix to avoid name
+              clashes if it is the case *)
+       let is_blanket =
+@@ -1782,12 +1790,6 @@
+ 
+              Check if it is a blanket impl, in which case we use the trait name. *)
+           if is_blanket then
+-            let params = trait_impl.generics in
+-            let args = trait_impl.impl_trait.generics in
+-            let name =
+-              ctx_prepare_name trait_impl.item_meta ctx
+-                trait_decl.item_meta.name
+-            in
+             let name =
+               opt_rename_llbc_name trait_impl.item_meta.attr_info name
+             in
+@@ -1839,8 +1841,8 @@
+ 
+             (* Generate the name for the trait *)
+             let trait_name =
+-              name_with_generics_to_simple_name ctx.trans_ctx
+-                trait_decl.item_meta.name params args
++              name_with_generics_to_simple_name ctx.trans_ctx trait_name params
++                args
+               |> flatten_name_no_sep
+             in
+             [%ldebug "trait_name: " ^ trait_name];

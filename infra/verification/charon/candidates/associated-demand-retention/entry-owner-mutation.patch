@@ -1,0 +1,11 @@
+--- a/src/transform/normalize/expand_associated_types/cyclic_demands.rs
++++ b/src/transform/normalize/expand_associated_types/cyclic_demands.rs
+@@ -223,7 +223,7 @@
+                 if before.skip_binder.generics.types.get(TypeVarId::ZERO)?
+                     != after.skip_binder.generics.types.get(TypeVarId::ZERO)?
+                 {
+-                    return Some(previous.trait_id());
++                    return Some(ancestors[start].trait_id());
+                 }
+                 previous = current;
+             }

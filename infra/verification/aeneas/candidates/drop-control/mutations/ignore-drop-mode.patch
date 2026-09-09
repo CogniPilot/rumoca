@@ -1,0 +1,11 @@
+--- a/PrePasses.ml
++++ b/PrePasses.ml
+@@ -731,7 +731,7 @@
+     ignores disappears, every other statement is preserved, and no place is
+     read. Nothing is done when drops are evaluated. *)
+ let remove_dead_drop_switches (crate : crate) (f : fun_decl) : fun_decl =
+-  if not !Config.drop_as_no_op then f
++  if false then f
+   else
+     let normalize (span : span) (ls : statement list) : statement list =
+       let visitor =

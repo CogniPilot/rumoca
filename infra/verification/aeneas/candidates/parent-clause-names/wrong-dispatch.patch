@@ -1,0 +1,11 @@
+diff --git a/fixture.rs b/fixture.rs
+--- a/fixture.rs
++++ b/fixture.rs
+@@ -57,6 +57,6 @@
+ pub fn observe<P: Pair>(pair: &P) -> (u32, u32, u32, u32) {
+     (
+-        pair.left().value(),
+         pair.right().value(),
++        pair.left().value(),
+         pair.reserved_first(),
+         pair.reserved_second(),

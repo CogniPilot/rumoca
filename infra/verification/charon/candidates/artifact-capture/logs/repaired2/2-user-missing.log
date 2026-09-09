@@ -1,0 +1,42 @@
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out2-repaired2/libdep.rmeta")
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#0}`, which is (transitively) used at the following location(s):
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out2-repaired2/libdep.rmeta")
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#1}`, which is (transitively) used at the following location(s):
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out2-repaired2/libdep.rmeta")
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+note: the error occurred when translating `dep::make::{impl#2}`, which is (transitively) used at the following location(s):
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 --------------------------
+error: Item `dep::make::{closure#0}` caused errors; ignoring.
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/dep.rs:2:41
+
+error: Could not compute the value of Self::Clause0::Clause0::Output (on {impl#2}<'3>) needed to update item reference core::ops::function::Fn<closure, (&'_Bound(0, 0) u32,)>.
+       Constraints in scope:
+       
+ --> /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/user.rs:2:33
+  |
+2 | pub fn use_it(x: &u32) -> u32 { dep::apply(dep::make(), x) }
+  |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ERROR Charon failed to translate this code (7 errors)

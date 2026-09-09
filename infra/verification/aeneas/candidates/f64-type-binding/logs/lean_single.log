@@ -1,0 +1,14 @@
+F64Binding.lean:25:0: error: Constructor field `F64` of `f64_binding.Literal.Real` contains universe level metavariables at the expression
+  Sort ?u.5
+in its type
+  Sort ?u.5
+F64Binding.lean:31:10: error: Constructor field `value` of `f64_binding.Entry.mk` contains universe level metavariables at the expression
+  {F64 : Sort ?u.5} → F64
+in its type
+  {F64 : Sort ?u.5} → F64
+F64Binding.lean:39:31: error(lean.invalidField): Invalid field notation: Field projection operates on types of the form `C ...` where C is a constant. The expression
+  Literal
+has type `Type ?u.5` which does not have the necessary form.
+F64Binding.lean:45:30: error(lean.invalidField): Invalid field notation: Field projection operates on types of the form `C ...` where C is a constant. The expression
+  entry
+has type `Entry` which does not have the necessary form.

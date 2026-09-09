@@ -1,0 +1,4 @@
+F32Width/Types.lean:24:10: error: Constructor field `value` of `f32_width.Sample.mk` contains universe level metavariables at the expression
+  {F32 : Sort ?u.5} → F32
+in its type
+  {F32 : Sort ?u.5} → F32

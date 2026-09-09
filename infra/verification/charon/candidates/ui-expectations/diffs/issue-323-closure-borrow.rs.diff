@@ -1,0 +1,39 @@
+---- issue-323-closure-borrow.rs ----
+
+---- expected: tests/ui/issue-323-closure-borrow.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 123  123 | {
+ 124  124 |     let _0: (); // return
+ 125  125 |     let _1: &'1 mut closure<'_0>; // arg #1
+ 126  126 |     let tupled_args: (); // arg #2
+ 127  127 |     let _3: (); // anonymous local
+ 128      -     let _4: &'2 mut Rng; // anonymous local
+      128 +     let _4: &'3 mut Rng; // anonymous local
+ 129  129 | 
+ 130  130 |     storage_live(_0)
+ 131  131 |     _0 = ()
+ 132  132 |     storage_live(_3)
+ 133  133 |     storage_live(_4)
+ 134  134 |     _4 = &two-phase-mut (*(*_1)._0)
+ 135      -     _3 = next_u64<'5>(move _4)
+      135 +     _3 = next_u64<'6>(move _4)
+ 136  136 |     ↳⚡ storage_dead(tupled_args)
+ 137  137 |         storage_dead(_1)
+ 138  138 |         unwind_continue
+ 139  139 |     storage_dead(_4)
+ 140  140 |     storage_dead(_3)
+          ⋮
+ 204  204 |     non-dyn-compatible
+ 205  205 | }
+ 206  206 | 
+ 207  207 | 
+ 208  208 | 
+
+
+

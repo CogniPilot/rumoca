@@ -1,0 +1,84 @@
+mod util;
+
+use charon_lib::ast::{TraitDecl, TranslatedCrate};
+
+const RECURSIVE_SOURCE: &str =
+    include_str!("ui/associated_types/issue-1260-self-ref-assoc-const.rs");
+
+fn declaration<'a>(krate: &'a TranslatedCrate, name: &str) -> &'a TraitDecl {
+    krate
+        .trait_decls
+        .iter()
+        .find(|declaration| util::trait_name(krate, declaration.def_id) == name)
+        .expect("fixture trait declaration")
+}
+
+#[test]
+fn recursive_associated_type_owner_does_not_retain_acyclic_parameters() -> anyhow::Result<()> {
+    let krate = util::translate_rust_text(
+        RECURSIVE_SOURCE,
+        &["--lift-associated-types=*", "--error-on-warnings"],
+    )?;
+    assert_retention_boundary(&krate);
+    Ok(())
+}
+
+fn assert_retention_boundary(krate: &TranslatedCrate) {
+    let ring = declaration(krate, "Ring");
+    let field = declaration(krate, "Field");
+    assert_eq!(ring.generics.types.len(), 1, "Ring keeps its recursive Sub");
+    assert_eq!(
+        ring.types.elem_count(),
+        2,
+        "Sub and the required Packing witness"
+    );
+    assert_eq!(
+        field.types.elem_count(),
+        0,
+        "Field::Packing is not the recursive associated-type owner"
+    );
+    assert_eq!(field.generics.types.len(), 2, "Self plus lifted Packing");
+}
+
+#[test]
+fn reversed_declarations_still_use_one_recursive_boundary() -> anyhow::Result<()> {
+    let (prelude, rest) = RECURSIVE_SOURCE
+        .split_once("trait Ring")
+        .expect("Ring header");
+    let (ring, rest) = rest.split_once("trait Field").expect("Field header");
+    let (field, function) = rest.split_once("fn zero").expect("zero header");
+    let source = format!("{prelude}trait Field{field}trait Ring{ring}fn zero{function}");
+    let krate = util::translate_rust_text(
+        source,
+        &["--lift-associated-types=*", "--error-on-warnings"],
+    )?;
+    assert_retention_boundary(&krate);
+    Ok(())
+}
+
+#[test]
+fn unrelated_active_cycle_is_not_used_as_the_retention_owner() -> anyhow::Result<()> {
+    let krate = util::translate_rust_text(
+        r#"
+        trait Link: Sized {
+            type Other: Back<Other = Self>;
+            type Hard: Ring;
+        }
+        trait Back: Sized {
+            type Other: Link<Other = Self>;
+        }
+        trait Ring {
+            type Sub: Field;
+        }
+        trait Field: Ring {
+            type Packing;
+        }
+        "#,
+        &["--lift-associated-types=*", "--error-on-warnings"],
+    )?;
+    assert_eq!(declaration(&krate, "Link").types.elem_count(), 0);
+    assert_eq!(declaration(&krate, "Back").types.elem_count(), 0);
+    assert_eq!(declaration(&krate, "Field").types.elem_count(), 0);
+    assert_eq!(declaration(&krate, "Ring").generics.types.len(), 1);
+    Ok(())
+}

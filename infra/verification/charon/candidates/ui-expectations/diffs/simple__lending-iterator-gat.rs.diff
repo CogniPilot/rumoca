@@ -1,0 +1,62 @@
+---- simple/lending-iterator-gat.rs ----
+
+---- expected: tests/ui/simple/lending-iterator-gat.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 500  500 |     let iter: Option<&'7 i32>[{built_in impl Sized for &'7 i32}]; // local
+ 501  501 |     let _3: &'11 i32; // anonymous local
+ 502  502 |     let sum: i32; // local
+ 503  503 |     let _5: (); // anonymous local
+ 504  504 |     let _6: Option<&'12 i32>[{built_in impl Sized for &'12 i32}]; // anonymous local
+ 505      -     let _7: closure<'18>; // anonymous local
+      505 +     let _7: closure<'17>; // anonymous local
+ 506  506 |     let _8: &'19 mut i32; // anonymous local
+ 507  507 |     let _9: (&'27 i32, &'28 i32); // anonymous local
+ 508  508 |     let _10: &'32 i32; // anonymous local
+ 509  509 |     let _11: &'33 i32; // anonymous local
+ 510  510 |     let left_val: &'34 i32; // local
+          ⋮
+ 520  520 |     let _22: &'39 i32; // anonymous local
+ 521  521 |     let _23: Option<Arguments<'47>>[{built_in impl Sized for Arguments<'47>}]; // anonymous local
+ 522  522 |     let _24: &'51 i32; // anonymous local
+ 523  523 |     let _25: &'52 i32; // anonymous local
+ 524  524 |     let _26: &'53 i32; // anonymous local
+ 525      -     let _27: &'127 i32; // anonymous local
+ 526      -     let _28: &'141 i32; // anonymous local
+      525 +     let _27: &'122 i32; // anonymous local
+      526 +     let _28: &'136 i32; // anonymous local
+ 527  527 |     let _29: i32; // anonymous local
+ 528      -     let _30: &'142 i32; // anonymous local
+      528 +     let _30: &'137 i32; // anonymous local
+ 529  529 |     let _31: i32; // anonymous local
+ 530  530 | 
+ 531  531 |     storage_live(_26)
+ 532  532 |     storage_live(_28)
+ 533  533 |     storage_live(_29)
+          ⋮
+ 557  557 |     storage_live(_7)
+ 558  558 |     storage_live(_8)
+ 559  559 |     _8 = &mut sum
+ 560  560 |     _7 = closure { _0: move _8 }
+ 561  561 |     storage_dead(_8)
+ 562      -     _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'74>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'74>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'74, '125>](move _6, move _7)
+      562 +     _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'73>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'73>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'73, '120>](move _6, move _7)
+ 563  563 |     ↳⚡ storage_dead(_25)
+ 564  564 |         storage_dead(_24)
+ 565  565 |         storage_dead(_23)
+ 566  566 |         storage_dead(_22)
+ 567  567 |         storage_dead(_21)
+          ⋮
+ 668  668 |     non-dyn-compatible
+ 669  669 | }
+ 670  670 | 
+ 671  671 | 
+ 672  672 | 
+
+
+

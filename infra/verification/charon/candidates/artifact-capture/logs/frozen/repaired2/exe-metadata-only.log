@@ -1,0 +1,2 @@
+error: closure fact transport failed: InvalidArtifact("rustc computed no crate hash for an artifact that publishes facts")
+ERROR Charon failed to translate this code (1 errors)

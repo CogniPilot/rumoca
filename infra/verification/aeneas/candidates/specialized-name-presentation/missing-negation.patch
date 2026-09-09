@@ -1,0 +1,11 @@
+--- a/default-methods.rs
++++ b/default-methods.rs
+@@ -9,7 +9,7 @@
+     fn matches(&self, rhs: &Rhs) -> bool;
+ 
+     fn differs(&self, rhs: &Rhs) -> bool {
+-        !self.matches(rhs)
++        self.matches(rhs)
+     }
+ }
+ 

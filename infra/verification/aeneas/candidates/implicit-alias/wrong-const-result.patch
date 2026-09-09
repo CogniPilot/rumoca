@@ -1,0 +1,11 @@
+--- a/alias-parameters.rs
++++ b/alias-parameters.rs
+@@ -9,7 +9,7 @@
+ pub struct WrappedValue<T>(pub T);
+ 
+ pub fn tag_value<const N: usize>(_tag: Tag<N>) -> usize {
+-    N
++    0
+ }
+ 
+ pub fn wrapped_value<const N: usize>(_tag: WrappedTag<N>) -> usize {

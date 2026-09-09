@@ -1,0 +1,31 @@
+---- simple/closure-with-remove-adt-clauses.rs ----
+
+---- expected: tests/ui/simple/closure-with-remove-adt-clauses.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 296  296 |     TraitClause0: (T: Sized),
+ 297  297 |     TraitClause1: (T: Copy),
+ 298  298 | {
+ 299  299 |     let _0: (); // return
+ 300  300 |     let x: T; // arg #1
+ 301      -     let _c: test_crate::g::closure<'2, T>; // local
+      301 +     let _c: test_crate::g::closure<'1, T>; // local
+ 302  302 |     let _3: &'3 T; // anonymous local
+ 303  303 | 
+ 304  304 |     storage_live(_0)
+ 305  305 |     _0 = ()
+ 306  306 |     storage_live(_c)
+          ⋮
+ 473  473 |     non-dyn-compatible
+ 474  474 | }
+ 475  475 | 
+ 476  476 | 
+ 477  477 | 
+
+
+

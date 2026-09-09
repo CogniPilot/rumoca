@@ -1,0 +1,21 @@
+test result-unwrap.rs                                                                 ... ok
+test closures.rs                                                                      ... FAILED
+test simple/issue-988-closure-outlives.rs                                             ... FAILED
+test simple/closure-with-remove-adt-clauses.rs                                        ... FAILED
+test simple/nested-closure-lifetime.rs                                                ... FAILED
+test simple/lending-iterator-gat.rs                                                   ... FAILED
+test simple/closure-fn.rs                                                             ... FAILED
+test simple/closure-with-non-upvar-lifetime.rs                                        ... FAILED
+test simple/foreign-inline-const.rs                                                   ... FAILED
+test simple/closure-capture-ref-by-move.rs                                            ... FAILED
+test simple/issue-1040-closure-upvar-lifetime.rs                                      ... FAILED
+test simple/closure-fnmut.rs                                                          ... FAILED
+test simple/nested-closure.rs                                                         ... FAILED
+test no-gen-tuple-structs.rs                                                          ... FAILED
+test issue-323-closure-borrow.rs                                                      ... FAILED
+test monomorphization/closure-fn.rs                                                   ... FAILED
+test monomorphization/closures.rs                                                     ... FAILED
+test issue-394-rpit-with-lifetime.rs                                                  ... FAILED
+test monomorphization/issue-708-from-str-mismatched-generics.rs                       ... FAILED
+test result: FAILED. 422 passed; 18 failed; 2 ignored; 0 measured; 0 filtered out; finished in 16.11s
+ui exit=101

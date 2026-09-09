@@ -1,0 +1,11 @@
+--- a/src/transform/normalize/expand_associated_types/cyclic_demands.rs
++++ b/src/transform/normalize/expand_associated_types/cyclic_demands.rs
+@@ -166,7 +166,7 @@
+             );
+             let predicate = normalized_predicate(&next, &constraints)?;
+             for (ancestor_index, ancestor) in ancestors.iter().enumerate() {
+-                if normalized_predicate(ancestor, &constraints)? == predicate {
++                if normalized_predicate(ancestor, &constraints)?.skip_binder.id == predicate.skip_binder.id {
+                     shortening = Some((ancestor_index, index + 1));
+                     break;
+                 }

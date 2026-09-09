@@ -1,0 +1,75 @@
+---- simple/closure-fn.rs ----
+
+---- expected: tests/ui/simple/closure-fn.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 344  344 | fn main()
+ 345  345 | {
+ 346  346 |     let _0: (); // return
+ 347  347 |     let v: u8; // local
+ 348  348 |     let z: u8; // local
+ 349      -     let f: closure<'3, '4>; // local
+      349 +     let f: closure<'2, '3>; // local
+ 350  350 |     let _4: &'5 u8; // anonymous local
+ 351  351 |     let _5: &'6 u8; // anonymous local
+ 352  352 |     let _6: u8; // anonymous local
+ 353  353 |     let _7: &'10 closure<'11, '12>; // anonymous local
+ 354  354 |     let _8: (u8, u8); // anonymous local
+          ⋮
+ 381  381 |     storage_live(_6)
+ 382  382 |     storage_live(_7)
+ 383  383 |     _7 = &f
+ 384  384 |     storage_live(_8)
+ 385  385 |     _8 = (const 10u8, const 20u8)
+ 386      -     _6 = call<'38, '39, '40>(move _7, move _8)
+      386 +     _6 = call<'36, '37, '38>(move _7, move _8)
+ 387  387 |     ↳⚡ unwind_continue
+ 388  388 |     storage_dead(_8)
+ 389  389 |     storage_dead(_7)
+ 390  390 |     storage_dead(_6)
+ 391  391 |     storage_live(_9)
+ 392  392 |     storage_live(_10)
+ 393  393 |     storage_live(_11)
+ 394  394 |     _11 = &f
+ 395  395 |     _10 = &(*_11)
+ 396      -     _9 = apply_to<'69, closure<'46, '47>>[{built_in impl Sized for closure<'46, '47>}, impl_Fn_tuple_for_closure<'46, '47>](move _10)
+      396 +     _9 = apply_to<'62, closure<'43, '44>>[{built_in impl Sized for closure<'43, '44>}, impl_Fn_tuple_for_closure<'43, '44>](move _10)
+ 397  397 |     ↳⚡ unwind_continue
+ 398  398 |     storage_dead(_10)
+ 399  399 |     storage_dead(_11)
+ 400  400 |     storage_dead(_9)
+ 401  401 |     storage_live(_12)
+ 402  402 |     storage_live(_13)
+ 403  403 |     storage_live(_14)
+ 404  404 |     _14 = &mut f
+ 405  405 |     _13 = &two-phase-mut (*_14)
+ 406      -     _12 = apply_to_mut<'98, closure<'75, '76>>[{built_in impl Sized for closure<'75, '76>}, impl_FnMut_tuple_for_closure<'75, '76>](move _13)
+      406 +     _12 = apply_to_mut<'86, closure<'67, '68>>[{built_in impl Sized for closure<'67, '68>}, impl_FnMut_tuple_for_closure<'67, '68>](move _13)
+ 407  407 |     ↳⚡ unwind_continue
+ 408  408 |     storage_dead(_13)
+ 409  409 |     storage_dead(_14)
+ 410  410 |     storage_dead(_12)
+ 411  411 |     storage_live(_15)
+ 412  412 |     storage_live(_16)
+ 413  413 |     _16 = copy f
+ 414      -     _15 = apply_to_once<closure<'102, '103>>[{built_in impl Sized for closure<'102, '103>}, impl_FnOnce_tuple_for_closure<'102, '103>](move _16)
+      414 +     _15 = apply_to_once<closure<'89, '90>>[{built_in impl Sized for closure<'89, '90>}, impl_FnOnce_tuple_for_closure<'89, '90>](move _16)
+ 415  415 |     ↳⚡ unwind_continue
+ 416  416 |     storage_dead(_16)
+ 417  417 |     storage_dead(_15)
+ 418  418 |     _0 = ()
+ 419  419 |     storage_dead(f)
+          ⋮
+ 428  428 |     non-dyn-compatible
+ 429  429 | }
+ 430  430 | 
+ 431  431 | 
+ 432  432 | 
+
+
+

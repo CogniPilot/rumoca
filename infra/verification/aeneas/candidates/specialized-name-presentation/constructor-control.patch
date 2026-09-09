@@ -1,0 +1,12 @@
+--- a/local-basename.rs
++++ b/local-basename.rs
+@@ -8,7 +8,8 @@
+ pub struct Wrap<T>(pub T);
+ 
+ pub fn wrap<'brand>(raw: u32) -> Wrap<Id<'brand>> {
+-    Wrap(Id {
++    let constructor = Wrap;
++    constructor(Id {
+         raw,
+         brand: PhantomData,
+     })

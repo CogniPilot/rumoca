@@ -1,0 +1,11 @@
+--- a/extract/ExtractBuiltinLean.ml
++++ b/extract/ExtractBuiltinLean.ml
+@@ -1001,6 +1001,8 @@
+     (* file: "Aeneas/Std/Core/Iter.lean", line: 639 *)
+     mk_fun "core::ops::range::{core::ops::range::RangeInclusive<@Idx>}::new"
+       "core.ops.range.RangeInclusive.new";
++    (* file: "Aeneas/Std/Core/CoreOption.lean", line: 38 *)
++    mk_fun "core::option::expect_failed" "core.option.expect_failed";
+     (* file: "Aeneas/Std/Core/CoreOption.lean", line: 11 *)
+     mk_fun "core::option::{core::option::Option<@T>}::expect"
+       "core.option.Option.expect";

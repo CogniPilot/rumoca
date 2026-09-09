@@ -1,0 +1,2923 @@
+{
+   "candidate" : {
+      "built_from" : "the retention-lane composed source (charon 10ca62cd) plus root-identity.patch, cargo dev profile; the first dev build (9426f9b6831b5b8472b55be2f4d00f94e755fc99298c318a90ccd7913cb20fd6) produced the recorded candidate rows, `cargo test` then rebuilt the bins from the same source (60a81b68f858ef892717752c0f9d01be9a53a250401edea6327e265ad821340d), and the ten cells rerun on that binary produced byte-identical logs (same log_sha256 values); the preserved binary is the second one",
+      "charon_driver_sha256" : "d9258ab1bbeb597f055a358e34be975320df4e001e2a5ece9d556231650031ea",
+      "charon_sha256" : "60a81b68f858ef892717752c0f9d01be9a53a250401edea6327e265ad821340d",
+      "first_build_sha256" : "9426f9b6831b5b8472b55be2f4d00f94e755fc99298c318a90ccd7913cb20fd6",
+      "patch" : "root-identity.patch",
+      "status" : "superseded by candidate2 (container-root fix); its rows stand for the method/free/type selections and are kept"
+   },
+   "candidate10" : {
+      "fix" : "dependency_sources seeds source strongly connected components (petgraph tarjan_scc) of the graph restricted to the ordered ids, not zero-incoming vertices; retained regression tests/merge_roots.rs",
+      "frozen_tools" : {
+         "charon_driver_sha256" : "d2117c27edcfe58fd73af419d0f9a34b7f3b6c887386e43710f00b7bb35be05b",
+         "charon_sha256" : "1daa503b0c50a4e030aae70abdd2a695235db146e115e4d6c044af6170049196",
+         "dir" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate10-JkMEbJ"
+      },
+      "patch_sha256" : "7e3fadbc67c715e3e27a4e107daa93bbd5de26c098d8340a9d6beada329858fc",
+      "rows" : [
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate10-JkMEbJ/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--dest-file=single.llbc",
+               "--print-llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate10/cycle-single.log",
+            "log_sha256" : "769d5dccd578bf5d32496709ed918308047a14ee473137afde8f17957f680249",
+            "name" : "candidate10-cycle-single",
+            "observed" : "even and odd both retained; has_errors false"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate10-JkMEbJ/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--print-llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate10/cycle-merged.log",
+            "log_sha256" : "1a40fc316352ca51230271581b3076a52e4c3ec5a9728bc074091716ce8547f3",
+            "name" : "candidate10-cycle-merged",
+            "observed" : "even and odd both retained through the merge path; candidate9 emitted zero functions on this input (Codex, dev/root9-cycle-review-e5d7Uz, reproduced on my candidate9-era tree: single 2, merged 0)"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "merge_roots"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate10/merge-roots-test-ti4.log",
+            "log_sha256" : "f73dfcadfd94fd5c7fea279c07abb387f805803b85eab0541301246ba6b05c68",
+            "name" : "candidate10-merge-roots-test",
+            "observed" : "tests/merge_roots.rs: mutually_recursive_roots_survive_the_merge ok (run on the trait-identity tree that carries the same fix; the root-identity tree's own suite run is row candidate10-suites)"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "merge_roots",
+               "--test",
+               "test-rust-name-matcher"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate10/suites.log",
+            "log_sha256" : "b87ffb6221992acae142e5951fc36eb825d92e84efbb2300e6a6b8c81ae6d7b0",
+            "name" : "candidate10-suites",
+            "observed" : "6 suites ok on the root-identity tree: 3, 4, 24, 7, 1, 2"
+         },
+         {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "ui"
+            ],
+            "classification" : "inherited_red",
+            "exit" : 101,
+            "log" : "logs/candidate10/ui-suite.log",
+            "log_sha256" : "264e1a69c428189d4105b229723b7d89c4c9e0a25e703c0e3a32c76ba915590c",
+            "name" : "candidate10-ui",
+            "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+         }
+      ]
+   },
+   "candidate11" : {
+      "change" : "TranslatedCrate carries roots and explicit_roots; CrateData::new writes them from the TransformCtx; the merge takes the carried lists after the id remap visited them, the deduplicator remaps both, the merged artifact carries the result; dependency_sources removed",
+      "frozen_tools" : {
+         "charon_driver_sha256" : "50759722b8ae3bfeef7766fff4780f360e8f42276b780dc4ee29fbf520d522af",
+         "charon_sha256" : "9a3accff43730657fb612e3f1a637dd228f0d39992ed0ba8f4fe8cb51e8ec31f",
+         "dir" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate11-yAGndw",
+         "note" : "copied from the debug build before the test runs, which relink target/debug"
+      },
+      "patch_sha256" : "7b9dc4453ecd7947f3bddb15eb72c1fc09deac674f39f45ab88910275fca74da",
+      "rows" : [
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate11-yAGndw/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--dest-file=single.llbc",
+               "--print-llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate11/cycle-single.log",
+            "log_sha256" : "769d5dccd578bf5d32496709ed918308047a14ee473137afde8f17957f680249",
+            "name" : "candidate11-cycle-single",
+            "observed" : "2 functions; artifact roots [Fun 0, Fun 1] (even, odd), explicit_roots [] (read back from the serialized file)"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate11-yAGndw/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--print-llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate11/cycle-merged.log",
+            "log_sha256" : "1a40fc316352ca51230271581b3076a52e4c3ec5a9728bc074091716ce8547f3",
+            "name" : "candidate11-cycle-merged",
+            "observed" : "2 functions through the merge path; roots [Fun 0, Fun 1] remapped and carried, explicit_roots []"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate11-yAGndw/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=cycle::even",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=explicit.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate11/cycle-explicit.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate11-cycle-explicit-merged",
+            "observed" : "2 functions (odd reachable from even); roots [Fun 0] and explicit_roots [Fun 0]: the exact selection is carried, its dependency is not a root"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "merge_roots"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate11/merge-roots-test.log",
+            "log_sha256" : "af33b02190e923f94030f57449ee1d87e43a0b54fc4acd128cfe9de2f2fa7d8e",
+            "name" : "candidate11-merge-roots-test",
+            "observed" : "3 controls ok: mutually recursive, nonrecursive, explicit selection; each compares the emitted functions, the carried roots and the explicit roots between the ordinary and the merge invocation (cells/merge_roots.rs)"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "merge_roots",
+               "--test",
+               "test-rust-name-matcher"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate11/suites.log",
+            "log_sha256" : "17292e79d55291d95559fab27f14d1c3d5176ef0b37af7c79e0b554476bb4235",
+            "name" : "candidate11-suites",
+            "observed" : "6 suites ok: 3, 4, 24, 7, 3, 2"
+         },
+         {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "ui"
+            ],
+            "classification" : "inherited_red",
+            "exit" : 101,
+            "log" : "logs/candidate11/ui-suite.log",
+            "log_sha256" : "5538d957abc0099aa1816dbd32f743731c71f9fabcccced26baed1b2cae2d08f",
+            "name" : "candidate11-ui",
+            "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+         }
+      ],
+      "schema" : "public: two new fields on TranslatedCrate, serialized as arrays of item ids; charon-ml generated readers regenerated by generate-asts in the trait-identity tree and carried by the record-chain-consumers candidate"
+   },
+   "candidate12" : {
+      "change" : "post-merge cleanup seeds reachability from the carried roots (a selected default method is kept); merge joins its cleanup errors into has_errors and the launcher fails on a merged crate with errors (mechanism-reviewed, not exercised); consumed-root dispositions: ConsumedRoot { root, consumer, pass } recorded by anon_const_to_call and inline_selected_functions through TransformCtx::consume_root, carried in the artifact, remapped through merge and dedup; the refusal accepts an absent explicit root only with a recorded disposition, no kind exemption; group_item_ids removed; cleanup seeds from the exactly selected roots only (roots by ancestry are not seeded, keeping the lazy scheme's removal of unmentioned default methods, ui multi-target/issue-1213); an exact root is the selection's own item kind, not every item made from the same definition (a vtable); an explicitly selected item the opacity rules make invisible records the disposition opacity: invisible",
+      "frozen_tools" : {
+         "charon_driver_sha256" : "f8fa863c21783f19a8645b625dac85bced431b0ccda9bfb82181f75aeeb3ac84",
+         "charon_sha256" : "edee799cdab09994a20f06be9bae2bbef843977aa974d4d84ba211464e7cdc43",
+         "dir" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7",
+         "note" : "third candidate12 freeze; the first two (A9Hign, TiRyrR, renamed -superseded) refused the selected impl's vtable and the invisible foreign static, then reported promoted constants at registration; retained, not relabelled"
+      },
+      "limits" : "the launcher exit on a merged crate with errors is mechanism-reviewed only: the direct merge() control exercises has_errors, and no launcher error control has run, since after the fix no real input reaches the post-merge refusal",
+      "patch_sha256" : "21f0017652fa22a84e01ddb04d18cd975e95d6bf567c4fb5181152c60ef56545",
+      "rows" : [
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate11-yAGndw/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "counterexample_reproduced",
+            "exit" : 0,
+            "log" : "logs/candidate12/trait-root-merged-candidate11.log",
+            "log_sha256" : "cd24afde463cd9288ee14136433e6d87f319be597b0d1d312da59255ebca0028",
+            "name" : "candidate12-trait-root-merged-on-candidate11",
+            "observed" : "Codex's counterexample on my frozen candidate11: 0 functions, has_errors false, exit 0, the refusal printed as a warning"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/trait-root-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-trait-root-single",
+            "observed" : "1 function; roots [Fun 0], explicit [Fun 0], consumed []"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/trait-root-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-trait-root-merged",
+            "observed" : "1 function through the merge; has_errors false: the exactly selected default method seeds the cleanup's reachability"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/cycle-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-cycle-single",
+            "observed" : "2 functions; roots [Fun 0, Fun 1]"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/cycle-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-cycle-merged",
+            "observed" : "2 functions; roots [Fun 0, Fun 1]"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/promo-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-promo-single",
+            "observed" : "1 function, 0 globals; roots [Fun 0, Global 0, Fun 1]; consumed: Global 0 by anon_const_to_call into Fun 1, Fun 1 by inline_selected_functions"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/promo-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-promo-merged",
+            "observed" : "same through the merge; dispositions carried and remapped"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from=core::fmt::num::DECIMAL_PAIRS",
+               "--extract-opaque-bodies",
+               "--ullbc",
+               "--dest-file=fs.ullbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/foreign-static.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/foreign-static.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate12-foreign-static",
+            "observed" : "the ui input regressions/issue-1233-foreign-static: the selected static is invisible under the preset; 0 items, has_errors false, explicit [Global 0], consumed [Global 0 by opacity: invisible]. On the uncorrected candidate12 this was a refusal"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate12-ma0gw7/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from-attribute=verify::start_from,foobar::haha",
+               "--dest-file=sfa.llbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/start-from-attribute.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/start-from-attribute.log",
+            "log_sha256" : "e44e7b06676494afaae745dc2f4dc6e78faa07c440abcb4fe0e0c3a4968e186d",
+            "name" : "candidate12-start-from-attribute",
+            "observed" : "the ui input filtering/start_from_attribute: explicit [Fun 0, TraitImpl 0, Fun 1, Fun 2]; the selected impl's vtable global is a root under it, no longer an exact root. On the uncorrected candidate12 the vtable was refused"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "merge_roots"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/merge-roots-test.log",
+            "log_sha256" : "df0b2ae76a2aa835a5857e9dde43030f98723fd8b225fc9493119d2944f33f63",
+            "name" : "candidate12-merge-roots-test",
+            "observed" : "6 controls ok: mutually recursive, nonrecursive, explicit selection, selected default method, merge_reports_a_lost_selected_root (merge() on a crate whose exact selection names an absent function: has_errors true), consumed_roots_carry_their_disposition (cells/merge_roots.rs)"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "merge_roots",
+               "--test",
+               "test-rust-name-matcher"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate12/suites.log",
+            "log_sha256" : "2b8e85122aabed7a7d1739697242fab765eff08f6e51d5c3ef65703f4976c487",
+            "name" : "candidate12-suites",
+            "observed" : "6 suites ok: 3, 4, 24, 7, 6, 2"
+         },
+         {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "ui"
+            ],
+            "classification" : "inherited_red",
+            "exit" : 101,
+            "log" : "logs/candidate12/ui-suite.log",
+            "log_sha256" : "efc34c988001f4c142e13d94bf403c3a310c86997b57f9d5b2570dc9d44bd9de",
+            "name" : "candidate12-ui",
+            "observed" : "422 passed; 18 failed: exactly the inherited set; zero new. The first candidate12 build had three new failures (start_from_attribute, issue-1213-merge-methods-when-missing-simple, issue-1233-foreign-static), each the source of one correction"
+         }
+      ],
+      "schema" : "public: TranslatedCrate.consumed_roots (array of {root, consumer, pass}); readers regenerated by generate-asts, carried by the consumer candidate"
+   },
+   "candidate13" : {
+      "change" : "Codex's root12 FIX: rustfmt clean (cargo fmt --check exit 0 on both trees); ConsumedRoot is a closed enum issued at the consumption site with required identities: AnonConstToCall { root: GlobalDeclId, initializer: FunDeclId } (anon_const_to_call finalize), Inlined { root: FunDeclId, into: FunDeclId } (inline_selected_functions, one record per host at the inlining site, no record at construction), Invisible { root: ItemId } (translation); TransformCtx::consume_root takes a disposition and drops it for non-roots; the merge remaps each variant's identities through dedup; the refusal matches on the disposition's root",
+      "frozen_tools" : {
+         "charon_driver_sha256" : "2f4cc0593f07916d6bb403bf7cfa4de81b805b078508b5d31958e96462eb01dd",
+         "charon_sha256" : "772c3c5399754f81057fa806324b13161f3b1996a1be58d5f1f1eded91cf2316",
+         "dir" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO",
+         "note" : "second candidate13 freeze; the first (o5qyRl, renamed -superseded) named the AnonConstToCall field initializer, an OCaml keyword, so generate-asts produced unparsable readers (record-chain-consumers attempt 8); the field is init_fun. Rows rerun on this freeze"
+      },
+      "limits" : "the launcher exit on a merged crate with errors remains mechanism-reviewed only; an artifact consumer can check a disposition's identities exist but cannot verify the transfer itself, which is the producer's claim; disposition metadata is a raw producer claim: the closed variants fix representation (unknown passes and missing fields are rejected by the reader), but an artifact consumer cannot validate that a recorded identity performed the transfer, and Codex showed an edited artifact with Inlined { root, into: absent } passing the raw merge with has_errors false. Bounded acceptance of candidate13 therefore covers producer-recorded accounting under the real translation and merge, not a checked witness or a missing-root integrity proof for arbitrary serialized artifacts",
+      "patch_sha256" : "8a52d3b59f3e1a38e92f5f4d7ffa1d432debd7f8f0bf9d11c8ca416b98564931",
+      "rows" : [
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/troot-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-trait-root-single",
+            "observed" : "1 function; explicit [Fun 0]; consumed []"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/troot-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-trait-root-merged",
+            "observed" : "1 function through the merge; has_errors false"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/cycle-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-cycle-single",
+            "observed" : "2 functions; roots [Fun 0, Fun 1]"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/cycle-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-cycle-merged",
+            "observed" : "2 functions; roots [Fun 0, Fun 1]"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/promo-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-promo-single",
+            "observed" : "1 function, 0 globals; consumed: AnonConstToCall { root: Global 0, init_fun: Fun 1 }, Inlined { root: Fun 1, into: Fun 0 } (issued at the inlining site with the host bound)"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/promo-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-promo-merged",
+            "observed" : "same dispositions through the merge, remapped per variant"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from=core::fmt::num::DECIMAL_PAIRS",
+               "--extract-opaque-bodies",
+               "--ullbc",
+               "--dest-file=fs.ullbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/foreign-static.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/foreign-static.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate13-foreign-static",
+            "observed" : "0 items; explicit [Global 0]; consumed: Invisible { root: Global 0 }"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate13-VpVbYO/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from-attribute=verify::start_from,foobar::haha",
+               "--dest-file=sfa.llbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/start-from-attribute.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/start-from-attribute.log",
+            "log_sha256" : "31ec7eb1c5fcee6e803858c7ed3d42a3872e7e915f4f6a5f6b2eb0695bafab79",
+            "name" : "candidate13-start-from-attribute",
+            "observed" : "explicit [Fun 0, TraitImpl 0, Fun 1, Fun 2]; the vtable global is a root under the impl, not the selection"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "merge_roots"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/merge-roots-test.log",
+            "log_sha256" : "93b700369b0a34411ab588523809731b62e3f71d322f67694ee3b22b00d703b7",
+            "name" : "candidate13-merge-roots-test",
+            "observed" : "6 controls ok; consumed_roots_carry_their_disposition now requires the AnonConstToCall record to name the initializer and an Inlined record from that initializer into bound, identical on both routes (cells/merge_roots.rs)"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "merge_roots",
+               "--test",
+               "test-rust-name-matcher"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate13/suites.log",
+            "log_sha256" : "c77d45ed075c1123325f983ebcba009acd44a994e9e27c7f4b1cd5fa4daad4e8",
+            "name" : "candidate13-suites",
+            "observed" : "6 suites ok: 3, 4, 24, 7, 6, 2"
+         },
+         {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "ui"
+            ],
+            "classification" : "inherited_red",
+            "exit" : 101,
+            "log" : "logs/candidate13/ui-suite.log",
+            "log_sha256" : "9456869ca1cff5f637bb10ddc3e9e196a61218052c5227538a9b8a084b85ba26",
+            "name" : "candidate13-ui",
+            "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "fmt",
+               "--check"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "name" : "candidate13-fmt",
+            "observed" : "clean on both trees"
+         }
+      ],
+      "schema" : "public: TranslatedCrate.consumed_roots is now an array of the closed enum (externally tagged: AnonConstToCall, Inlined, Invisible); readers regenerated by generate-asts"
+   },
+   "candidate14" : {
+      "change" : "candidate13 plus Codex's strict-gate FIX: the unused mut on the dedup remap closure removed; the merge test helper takes &Path; no semantic change; the raw-disposition trust limit stated in README and candidate13.limits",
+      "frozen_tools" : {
+         "charon_driver_sha256" : "e6659db0c07d9ddc70af09e3e64d125ae4e186089539e069a4bb91016a676ff4",
+         "charon_sha256" : "720b9b0c0ea36696fdb007e9763728e297fa147641cd8dd9d58c143220547553",
+         "dir" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG",
+         "note" : "cmp equal to the build that ran the rows and suites"
+      },
+      "limits" : "the launcher exit on a merged crate with errors remains mechanism-reviewed only; an artifact consumer can check a disposition's identities exist but cannot verify the transfer itself, which is the producer's claim; disposition metadata is a raw producer claim: the closed variants fix representation (unknown passes and missing fields are rejected by the reader), but an artifact consumer cannot validate that a recorded identity performed the transfer, and Codex showed an edited artifact with Inlined { root, into: absent } passing the raw merge with has_errors false. Bounded acceptance of candidate13 therefore covers producer-recorded accounting under the real translation and merge, not a checked witness or a missing-root integrity proof for arbitrary serialized artifacts",
+      "patch_sha256" : "83958edfaedb922bb4d3196206a61c50acef90735a0c41e2716a29bed928b67f",
+      "rows" : [
+         {
+            "argv" : [
+               "cargo",
+               "clippy",
+               "--locked",
+               "--all-targets",
+               "--",
+               "-D",
+               "warnings"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/clippy.log",
+            "log_sha256" : "f4403412cb20dc7d8a0a94c08c9c8853e4bac9b3e8489158834f30512311ed97",
+            "name" : "candidate14-clippy",
+            "observed" : "strict Clippy clean on the root-identity tree (and on the trait-identity tree); candidate13 was red on one unused mut (Codex 22:59Z) and, once that was removed, on the test helper taking &PathBuf instead of &Path"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "fmt",
+               "--check"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "name" : "candidate14-fmt",
+            "observed" : "clean on both trees"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/troot-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-trait-root-single",
+            "observed" : "1 function; explicit [Fun 0]"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=trait_root::T::value",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "trait_root",
+               "--crate-type",
+               "lib",
+               "cells/trait-root.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/troot-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-trait-root-merged",
+            "observed" : "1 function through the merge; has_errors false"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/cycle-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-cycle-single",
+            "observed" : "2 functions"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "cycle",
+               "--crate-type",
+               "lib",
+               "cells/cycle.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/cycle-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-cycle-merged",
+            "observed" : "2 functions through the merge"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--dest-file=single.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/promo-single.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-promo-single",
+            "observed" : "consumed: Inlined { root: Fun 1, into: Fun 0 }, AnonConstToCall { root: Global 0, init_fun: Fun 1 }"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=aeneas",
+               "--error-on-warnings",
+               "--start-from=promo::bound",
+               "--targets=x86_64-unknown-linux-gnu",
+               "--dest-file=merged.llbc",
+               "--",
+               "--edition=2024",
+               "--crate-name",
+               "promo",
+               "--crate-type",
+               "lib",
+               "cells/promo.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/promo-merged.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-promo-merged",
+            "observed" : "same dispositions through the merge"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from=core::fmt::num::DECIMAL_PAIRS",
+               "--extract-opaque-bodies",
+               "--ullbc",
+               "--dest-file=fs.ullbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/foreign-static.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/foreign-static.log",
+            "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "name" : "candidate14-foreign-static",
+            "observed" : "consumed: Invisible { root: Global 0 }"
+         },
+         {
+            "argv" : [
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "rustc",
+               "--preset=tests",
+               "--start-from-attribute=verify::start_from,foobar::haha",
+               "--dest-file=sfa.llbc",
+               "--",
+               "--crate-name",
+               "test_crate",
+               "--crate-type",
+               "lib",
+               "cells/start-from-attribute.rs"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/start-from-attribute.log",
+            "log_sha256" : "21c5dfef8a5619a200a60e226e5c020d1771d18755f32e26cf43b39fc898266d",
+            "name" : "candidate14-start-from-attribute",
+            "observed" : "explicit [Fun 0, TraitImpl 0, Fun 1, Fun 2]"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "merge_roots",
+               "--test",
+               "test-rust-name-matcher"
+            ],
+            "classification" : "green",
+            "exit" : 0,
+            "log" : "logs/candidate14/suites.log",
+            "log_sha256" : "a8419ef5ce1d501d837208cb9928c6110b090aabe132aca7a0ddf9b2b7357017",
+            "name" : "candidate14-suites",
+            "observed" : "6 suites ok: 3, 4, 24, 7, 6, 2"
+         },
+         {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "ui"
+            ],
+            "classification" : "inherited_red",
+            "exit" : 101,
+            "log" : "logs/candidate14/ui-suite.log",
+            "log_sha256" : "31d27e3ca1679a2d923ff2ae0fdb9d2e03989c9c242de47dd4817acf93db52af",
+            "name" : "candidate14-ui",
+            "observed" : "422 passed; 18 failed: exactly the inherited set; zero new"
+         },
+         {
+            "argv" : [
+               "cargo",
+               "build",
+               "--bin",
+               "charon",
+               "--bin",
+               "charon-driver",
+               "&&",
+               "cmp",
+               "target/debug/charon",
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon",
+               "&&",
+               "cmp",
+               "target/debug/charon-driver",
+               "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate14-vEbJNG/bin/charon-driver"
+            ],
+            "classification" : "binding",
+            "exit" : 0,
+            "name" : "candidate14-rebuild-cmp",
+            "observed" : "after the suite runs had relinked target/debug (5c352a05/59a79291), the same build command on the untouched tree yields 720b9b0c/e6659db0, cmp equal to the freeze; the freeze is the plain debug build output, no stripping or transformation"
+         }
+      ]
+   },
+   "candidate2" : {
+      "built_from" : "the same composed source plus the container-root fix (root_containers, enqueue_contained_item), cargo dev profile; the launcher binary hashes as the first build because only charon-driver changed, so both hashes are recorded from here on",
+      "charon_driver_sha256" : "339ec46b49b1c52e2fae29ef8323ed063d2add069efc80053dbea6c4a74272f3",
+      "charon_sha256" : "9426f9b6831b5b8472b55be2f4d00f94e755fc99298c318a90ccd7913cb20fd6",
+      "patch" : "root-identity.patch",
+      "patch_sha256" : "a4b352c745c0a8e8d22fcedcd598ee27642021d9cfbbbe1fdfce35d85817cb62",
+      "status" : "provisional: cargo target build preserved in scratch; superseded by the nix store artifact in `retained` once built from build.nix"
+   },
+   "candidate3" : {
+      "built_from" : "candidate2 source plus the clippy question_mark rewrite and root seeds in tests/box_copy.rs (3 sites) and tests/box_metadata.rs (forced consumers found by cargo clippy --all-targets); the 16 cell rows rerun on it produced byte-identical logs to candidate2",
+      "charon_driver_sha256" : "8ab884582f473493b9872043336b13795022587cc6f55016734c0b20596f57df",
+      "charon_sha256" : "9426f9b6831b5b8472b55be2f4d00f94e755fc99298c318a90ccd7913cb20fd6",
+      "checks" : {
+         "clippy" : {
+            "argv" : [
+               "cargo",
+               "clippy",
+               "--all-targets",
+               "--",
+               "-D",
+               "warnings"
+            ],
+            "exit" : 0
+         },
+         "suites" : {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata"
+            ],
+            "exit" : 0,
+            "passed" : {
+               "box_copy" : 24,
+               "box_metadata" : 7,
+               "cyclic_retention" : 3,
+               "specialized_traits" : 4
+            }
+         }
+      },
+      "patch" : "root-identity.patch",
+      "patch_sha256" : "dd64bae930ed1463bcd568782015d517f84b6f2b0bd69d11449c9492099335e5",
+      "status" : "provisional until the nix store artifact from build.nix is recorded under `retained`"
+   },
+   "candidate4" : {
+      "built_from" : "candidate3 plus the merge-path offset fix in CrateMerger::add_one",
+      "charon_driver_sha256" : "962d85360637dbf2976443f6c23b51793f687ca285288ab95dcd082fda7d586c",
+      "charon_sha256" : "29d5b284bdc09dbca1851eb87f55e44f9586cbbfb6b6a2fdda18b84a3f34defc",
+      "checks" : {
+         "cargo_suite_in_ci" : {
+            "argv" : [
+               "env",
+               "IN_CI=1",
+               "cargo",
+               "test",
+               "--test",
+               "cargo"
+            ],
+            "cwd" : "<scratch candidate tree>, tests/cargo/*/target removed first",
+            "exit" : 0,
+            "log" : "logs/candidate4-cargo-suite-in-ci.log",
+            "log_sha256" : "b47003ae7b531d7eb2b1a617ff387fc458e3023a955ffe6ab638f1851ada39b1",
+            "note" : "without IN_CI=1 the harness overwrites the expected .out files instead of comparing (tests/util/mod.rs:29-43), so earlier local passes of this suite were vacuous; the expected files of the candidate tree are byte-identical to upstream at this run",
+            "passed" : 11
+         },
+         "cells" : "the 16 widened rows rerun: logs byte-identical to candidate3 (logs/candidate2/)",
+         "clippy" : {
+            "argv" : [
+               "cargo",
+               "clippy",
+               "--all-targets",
+               "--",
+               "-D",
+               "warnings"
+            ],
+            "exit" : 0
+         },
+         "suites" : {
+            "argv" : [
+               "cargo",
+               "test",
+               "--test",
+               "cyclic_retention",
+               "--test",
+               "specialized_traits",
+               "--test",
+               "box_copy",
+               "--test",
+               "box_metadata",
+               "--test",
+               "cargo"
+            ],
+            "exit" : 0,
+            "note" : "stale tests/cargo/*/target directories removed first; 5 suites ok including the 11 cargo-mode tests"
+         }
+      },
+      "patch" : "root-identity.patch",
+      "patch_note" : "regenerated excluding tests/cargo/*.llbc outputs and with the blessed test-attributes.out restored; the previous patch identity carried those artifacts and one nix build (derivation pdv1hbb..., then 3p4d3yh... restarted) was discarded for it",
+      "patch_sha256" : "71ab7cf67e21cd5e5ff3609bad8b2ec349d139a9819d51638990634172059ae0",
+      "status" : "frozen copy retained; nix artifact blocked by the chain-inherited check-phase panic (see closure-regions attribution)"
+   },
+   "candidate9" : {
+      "charon_driver_sha256" : "fd1277b6a6db67a8523d5374933f1cc123509e31e91be6ef5a393342471f7412",
+      "charon_sha256" : "1fe5c8902bbb3ca4b226b27f3f255f19caacd1b047c641bd312a15f32c42e11c",
+      "patch_sha256" : "3c5fa90fe9660475369c52d86bf1af6955cc169f726b2859ed314afd855c4e3f",
+      "retained" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate9-SeWFxh",
+      "summary" : "ancestry rule (path selections denote their contents), exact selections match every instance, copies inherit root status, merge seeds from each target dependency sources, ordering seeds in id order, refusal for named roots except globals consumed by inlining, one justified expectation update",
+      "supersedes" : "candidate2/3/4 (container path) and the two intermediate builds (body-nested roots; ancestry with registration-order seed)"
+   },
+   "classification_note" : "observed_functions/observed_structs are the pub fn / pub struct lines of the printed crate after the named stage; the llbc stage is post-reorder. A mismatch between expected_exit and observed_exit anywhere would void the packet.",
+   "dae_root" : {
+      "candidate4" : {
+         "exit" : 0,
+         "functions" : 58,
+         "llbc" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr/dae/DaeView-variable_refinement.llbc",
+         "llbc_sha256" : "27a56e661296e62573517735c486c89eb4cb96a0e294e4858cc5e514f2166ee0",
+         "types" : 145
+      },
+      "candidate9" : {
+         "exit" : 0,
+         "functions" : 58,
+         "impls" : 18,
+         "llbc" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate9-SeWFxh/dae/DaeView-variable_refinement.llbc",
+         "log" : "logs/dae/candidate9.llbc.log",
+         "log_sha256" : "bc7ea5d2870f03926b42f6619dc357ba19e81d529620b7f16e62ecec44c90c07",
+         "note" : "one impl more than candidate4: the Destruct impl synthesized for the closure inside variable_refinement, now a root by ancestry",
+         "traits" : 12,
+         "types" : 145
+      },
+      "candidate_first_build" : {
+         "exit" : 0,
+         "functions" : 58,
+         "impls" : 17,
+         "log" : "logs/dae/candidate-first-build.llbc.log",
+         "log_sha256" : "465c23ee9eeff794fb1273b616dfed13ab9bca88dd8093013ea10f3bc41d366a",
+         "traits" : 12,
+         "types" : 145
+      },
+      "candidate_preserved" : {
+         "exit" : 0,
+         "functions" : 58,
+         "impls" : 17,
+         "log" : "logs/dae/candidate-preserved.llbc.log",
+         "log_sha256" : "84b56bb2a98429a1df1bdce9ff7a40bee4838b951dfc3a3d613a98f1914e0d3c",
+         "traits" : 12,
+         "types" : 145
+      },
+      "candidate_translated_pre_reorder" : {
+         "functions" : 61,
+         "impls" : 33,
+         "log" : "logs/dae/candidate.ullbc.log",
+         "log_sha256" : "9c6c2b3a59745339f674b3f6e336882fa67eaed549197744094ebd84df26ffd0",
+         "traits" : 36,
+         "types" : 175
+      },
+      "command" : [
+         "charon",
+         "cargo",
+         "--preset=aeneas",
+         "--error-on-warnings",
+         "--start-from=rumoca_ir_dae::model::view::DaeView::variable_refinement",
+         "--print-llbc",
+         "--dest-file=<scratch>/dae-<tool>.llbc",
+         "--",
+         "--locked"
+      ],
+      "cwd" : "crates/rumoca-ir-dae",
+      "env" : {
+         "CARGO_TARGET_DIR" : "<scratch>/target-<tool>"
+      },
+      "note" : "counts are pub fn/fn, struct/enum/opaque/union, trait and impl lines of the printed LLBC; the four prints are in logs/dae/ (cargo compile lines included)",
+      "predecessor" : {
+         "exit" : 0,
+         "functions" : 0,
+         "impls" : 0,
+         "log" : "logs/dae/predecessor.llbc.log",
+         "log_sha256" : "e3eb384b0f3269365b9809ebed0f0f276972eabe2750bfda951e6d18dd36f61d",
+         "traits" : 0,
+         "types" : 2
+      }
+   },
+   "m0_composition" : {
+      "candidate9" : {
+         "candidate4_groups" : 580,
+         "functions" : 127,
+         "groups" : 581,
+         "llbc" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate9-SeWFxh/m0/Ud07CatalogComposition.llbc",
+         "logs" : [
+            "logs/m0/candidate9-charon.log",
+            "logs/m0/candidate9-aeneas.log"
+         ],
+         "manifest" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate9-SeWFxh/m0/translation.json",
+         "note" : "Aeneas manifest identical to candidate4 in function set and opaque set; the extra group is the same closure Destruct impl",
+         "opaque" : 11
+      }
+   },
+   "merge_path" : {
+      "after" : {
+         "note" : "both two-target orders also keep both functions (same driver; logs overwritten by the three-target run, exit 0 each)",
+         "rows" : [
+            {
+               "functions" : [
+                  "no_os",
+                  "on_unix"
+               ],
+               "log" : "logs/merge/cand4-three-targets.llbc.log",
+               "log_sha256" : "0baf71cf44c54061d73d887945bb8e72e384eda5d36ceebc1cd951ef3227a3de",
+               "targets" : "i686-unknown-linux-gnu,x86_64-apple-darwin,riscv64gc-unknown-none-elf"
+            }
+         ],
+         "tool" : "candidate4"
+      },
+      "before" : {
+         "finding" : "only the first merged crate kept its roots: DeclarationGroup is in the visitor skip list (src/ast/visitor.rs:60), so the captured ordered_decls ids were never offset",
+         "rows" : [
+            {
+               "functions" : [
+                  "no_os"
+               ],
+               "log" : "logs/merge/cand3-riscv-first.llbc.log",
+               "log_sha256" : "6946d54154c99dece9f6817e2a829aed4c06d96d5f9ff839dd3305493f74c988",
+               "targets" : "riscv64gc-unknown-none-elf,i686-unknown-linux-gnu"
+            },
+            {
+               "functions" : [
+                  "on_unix"
+               ],
+               "log" : "logs/merge/cand3-i686-first.llbc.log",
+               "log_sha256" : "c88eab680dc0c4ed1f789cd14952931601a45d1b53c9254b9f0beda1fc05b350",
+               "targets" : "i686-unknown-linux-gnu,riscv64gc-unknown-none-elf"
+            }
+         ],
+         "tool" : "candidate3"
+      },
+      "command" : [
+         "charon",
+         "cargo",
+         "--preset=aeneas",
+         "--error-on-warnings",
+         "--targets=<order>",
+         "--print-llbc",
+         "--dest-file=<scratch>/out.llbc"
+      ],
+      "cwd" : "<scratch copy of the fixture>",
+      "discovered_by" : "upstream tests/cargo multi-targets in the nix check phase (fails on candidate3, passes on the base chain)",
+      "fixture" : "Charon tests/cargo/multi-targets (copied to scratch, per-project target removed)"
+   },
+   "mutant_ignore_roots" : {
+      "built_from" : "candidate source plus the mutation, same cargo dev profile",
+      "charon_sha256" : "5e7cd51dd6d33634260e57b662e8e8b3676b85c0f50ead98bbef4ac2ec434cb8",
+      "patch" : "mutations/ignore-roots.patch"
+   },
+   "nix_builds" : {
+      "base_chain" : {
+         "derivation" : "/nix/store/bf16pdib22lvhl3508d9zg9kwbfl1x7q-charon-0.1.248.drv",
+         "expression" : "associated-demand-retention/package.nix through the same getFlake wrapper, no root-identity patch",
+         "failing" : [
+            "build-script",
+            "dependencies",
+            "error-dependencies",
+            "issue-396-lib-bin",
+            "issue-412-dup-deps",
+            "test-attributes",
+            "toml",
+            "unsafe_"
+         ],
+         "log" : "logs/nix/base-chain-check-phase.log",
+         "log_sha256" : "2b76060bb542fc7265818ce6fe8ea0864b10ac73f018fff7257d1e2c1571cb29",
+         "result" : "builds, check phase fails 8 of 11 tests/cargo tests with the closure-regions crate_hash panic"
+      },
+      "candidate3" : {
+         "derivation" : "/nix/store/pdv1hbbnks95ki9v5cxp37iybp3z9m9l-charon-0.1.248.drv",
+         "log" : "logs/nix/candidate3-check-phase.log",
+         "log_sha256" : "4fe455bd3793317fe088bd86fb868e1532fce48d9e0b779a2d27d3620721b97d",
+         "result" : "same 8 plus multi-targets: the merge-path defect"
+      },
+      "candidate4" : {
+         "derivation" : "/nix/store/3p4d3yhwk5qcwkq8hdfs87hz36li92lp-charon-0.1.248.drv",
+         "failing" : [
+            "build-script",
+            "dependencies",
+            "error-dependencies",
+            "issue-396-lib-bin",
+            "issue-412-dup-deps",
+            "test-attributes",
+            "toml",
+            "unsafe_"
+         ],
+         "log" : "logs/nix/candidate4-check-phase.log",
+         "log_sha256" : "69b2c5d4c41616dfe99824492fa06049444f0f2d299cde4e08bd7de2faa38fcc",
+         "patch_sha256" : "71ab7cf67e21cd5e5ff3609bad8b2ec349d139a9819d51638990634172059ae0",
+         "result" : "multi-targets ok; the check phase fails exactly the base chain set",
+         "same_failing_set_as_base" : true
+      },
+      "candidate4_contaminated" : {
+         "result" : "discarded: the patch of that attempt carried blessed tests/cargo outputs from a non-IN_CI local run"
+      },
+      "command" : [
+         "nix",
+         "build",
+         "--impure",
+         "--no-link",
+         "--print-out-paths",
+         "--cores",
+         "4",
+         "--max-jobs",
+         "1",
+         "--file",
+         "<packet>/build.nix"
+      ],
+      "note" : "no store path was produced for any of them; the inherited panic is measured and attributed in logs/base-chain-release-noincremental-cargo-suite.log and belongs to the closure-regions lane"
+   },
+   "packet" : "charon/candidates/root-identity",
+   "records" : [
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/order-type-impl.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "pre-reorder ULLBC print: rustc resolved rootid::View::refine and translated View/refine/len",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-type-impl.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "method-user-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-type-impl.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "the ordering failure: method resolved and translated (see ullbc record) but compute_declarations_graph re-seeds by name and drops everything",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "e2bd295a4887eb26a966c3fde1027262afdc4dfb951d704545219a4ee4f74b55",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "method-user-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-type-impl.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "translation-time resolver rejects impl patterns that are not the first path element; not the ordering failure",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/order-type-impl.method-impl-spelling.llbc.log",
+         "log_sha256" : "a90fba4bbfba4b74f5d4b695e9c48c57a55d9c6be77d0f9ef47a9375c699a32c",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "method-impl-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-type-impl.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control: a free function is spelled identically by rustc and by Charon Name, so it survives ordering",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-type-impl.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "free-control"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-type-impl.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control: the type is nameable; the method is not reachable from it, so only View survives",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "type-only"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/order-impl-type.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "pre-reorder ULLBC print: rustc resolved rootid::View::refine and translated View/refine/len",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-impl-type.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "method-user-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-impl-type.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "the ordering failure: method resolved and translated (see ullbc record) but compute_declarations_graph re-seeds by name and drops everything",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-impl-type.method-user-spelling.llbc.log",
+         "log_sha256" : "e2bd295a4887eb26a966c3fde1027262afdc4dfb951d704545219a4ee4f74b55",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "method-user-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-impl-type.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "translation-time resolver rejects impl patterns that are not the first path element; not the ordering failure",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/order-impl-type.method-impl-spelling.llbc.log",
+         "log_sha256" : "9091f25c30bf4598bb044ec01916e469a0483aa09f93c519c176aaaf800379b5",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "method-impl-spelling"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-impl-type.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control: a free function is spelled identically by rustc and by Charon Name, so it survives ordering",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-impl-type.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "free-control"
+      },
+      {
+         "argv" : [
+            "/tmp/rumoca-demand-retention-QVu1kr/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/order-impl-type.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control: the type is nameable; the method is not reachable from it, so only View survives",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/order-impl-type.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "type-only"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/cand.order-type-impl.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "candidate pre-reorder print, identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-type-impl.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-type-impl.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "candidate: the resolved root survives ordering; len, refine and View are ordered",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-type-impl.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged: resolver refusal precedes ordering",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate/order-type-impl.method-impl-spelling.llbc.log",
+         "log_sha256" : "a90fba4bbfba4b74f5d4b695e9c48c57a55d9c6be77d0f9ef47a9375c699a32c",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::{impl rootid::View}::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-type-impl.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control, expected identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-type-impl.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::free",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-type-impl.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control, expected identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/cand.order-impl-type.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "candidate pre-reorder print, identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-impl-type.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-impl-type.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "candidate: the resolved root survives ordering; len, refine and View are ordered",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-impl-type.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-impl-type.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged: resolver refusal precedes ordering",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate/order-impl-type.method-impl-spelling.llbc.log",
+         "log_sha256" : "9091f25c30bf4598bb044ec01916e469a0483aa09f93c519c176aaaf800379b5",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::{impl rootid::View}::refine",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-impl-type.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control, expected identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-impl-type.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::free",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<candidate>/target/debug/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/cand.order-impl-type.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "control, expected identical to the predecessor",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate/order-impl-type.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View",
+         "tool" : "candidate"
+      },
+      {
+         "argv" : [
+            "<mutant>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/mut.order-type-impl.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "mutation_control",
+         "classification_note" : "seed without roots: the mutant orders nothing for every selection, so the free-control and user-spelling rows distinguish it from the candidate",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/mutant-ignore-roots/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "e2bd295a4887eb26a966c3fde1027262afdc4dfb951d704545219a4ee4f74b55",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::View::refine",
+         "tool" : "mutant-ignore-roots"
+      },
+      {
+         "argv" : [
+            "<mutant>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/mut.order-type-impl.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "mutation_control",
+         "classification_note" : "seed without roots: the mutant orders nothing for every selection, so the free-control and user-spelling rows distinguish it from the candidate",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/mutant-ignore-roots/order-type-impl.free-control.llbc.log",
+         "log_sha256" : "e2bd295a4887eb26a966c3fde1027262afdc4dfb951d704545219a4ee4f74b55",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::free",
+         "tool" : "mutant-ignore-roots"
+      },
+      {
+         "argv" : [
+            "<mutant>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/mut.order-type-impl.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "mutation_control",
+         "classification_note" : "seed without roots: the mutant orders nothing for every selection, so the free-control and user-spelling rows distinguish it from the candidate",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/mutant-ignore-roots/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "e2bd295a4887eb26a966c3fde1027262afdc4dfb951d704545219a4ee4f74b55",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::View",
+         "tool" : "mutant-ignore-roots"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.no-selection.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.module.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.module.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/c2.order-type-impl.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate2/order-type-impl.method-impl-spelling.llbc.log",
+         "log_sha256" : "a90fba4bbfba4b74f5d4b695e9c48c57a55d9c6be77d0f9ef47a9375c699a32c",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::{impl rootid::View}::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::free",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.no-selection.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.module.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.module.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-ullbc",
+            "--dest-file=<scratch>/c2.order-impl-type.method-user-spelling.ullbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.method-user-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::{impl rootid::View}::refine",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.method-impl-spelling.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate2/order-impl-type.method-impl-spelling.llbc.log",
+         "log_sha256" : "9091f25c30bf4598bb044ec01916e469a0483aa09f93c519c176aaaf800379b5",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "rootid::{impl rootid::View}::refine",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::free",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.free-control.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.free-control.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "observed_exit" : 0,
+         "observed_functions" : [
+            "free",
+            "len",
+            "refine"
+         ],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::free",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from=rootid::View",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.type-only.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_pass",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 0,
+         "log" : "logs/candidate2/order-impl-type.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "observed_exit" : 0,
+         "observed_functions" : [],
+         "observed_structs" : [
+            "View"
+         ],
+         "selection" : "rootid::View",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from={impl rootid::View}",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-type-impl.inherent-impl.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-type-impl.rs"
+         ],
+         "cell" : "cells/order-type-impl.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate2/order-type-impl.inherent-impl.llbc.log",
+         "log_sha256" : "0805ae4ddef14006f68ffce55bdbc1a409154456e9528a608543c5d2bca7f634",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "{impl rootid::View}",
+         "tool" : "candidate2"
+      },
+      {
+         "argv" : [
+            "<candidate2>/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--start-from={impl rootid::View}",
+            "--print-llbc",
+            "--dest-file=<scratch>/c2.order-impl-type.inherent-impl.llbc.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "rootid",
+            "--crate-type",
+            "lib",
+            "order-impl-type.rs"
+         ],
+         "cell" : "cells/order-impl-type.rs",
+         "classification" : "intended_refusal",
+         "classification_note" : "unchanged resolver refusal (\"only supports impl patterns if they are the first element of the path\"); the first measurement of this row passed the pattern unquoted and recorded a CLI parse error instead, so the log was re-measured with the pattern quoted",
+         "cwd" : "cells",
+         "expected_exit" : 2,
+         "log" : "logs/candidate2/order-impl-type.inherent-impl.llbc.log",
+         "log_sha256" : "b41dd313f0a7150530e66b82a0615074429b6e88e289be175d1b97ef5eae1c9c",
+         "observed_exit" : 2,
+         "observed_functions" : [],
+         "observed_structs" : [],
+         "selection" : "{impl rootid::View}",
+         "tool" : "candidate2"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-type-impl:no-selection",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-type-impl:module",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 2,
+         "log" : "logs/candidate9/cells/order-type-impl.inherent-impl.llbc.log",
+         "log_sha256" : "0805ae4ddef14006f68ffce55bdbc1a409154456e9528a608543c5d2bca7f634",
+         "name" : "cell:order-type-impl:inherent-impl",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "name" : "cell:order-type-impl:method-user-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "name" : "cell:order-type-impl:method-user-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 2,
+         "log" : "logs/candidate9/cells/order-type-impl.method-impl-spelling.llbc.log",
+         "log_sha256" : "a90fba4bbfba4b74f5d4b695e9c48c57a55d9c6be77d0f9ef47a9375c699a32c",
+         "name" : "cell:order-type-impl:method-impl-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-type-impl:free-control",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "name" : "cell:order-type-impl:type-only",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-impl-type:no-selection",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-impl-type:module",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 2,
+         "log" : "logs/candidate9/cells/order-impl-type.inherent-impl.llbc.log",
+         "log_sha256" : "b41dd313f0a7150530e66b82a0615074429b6e88e289be175d1b97ef5eae1c9c",
+         "name" : "cell:order-impl-type:inherent-impl",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.method-user-spelling.ullbc.log",
+         "log_sha256" : "d71971c88e68443733ea08b0e9c0ba572ea32eb1b075512b014b2dc5a9d07161",
+         "name" : "cell:order-impl-type:method-user-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.method-user-spelling.llbc.log",
+         "log_sha256" : "19fa81ecc8146a7fa8812947cb202ac96ddff8d6eea8e10a3026744f0c6aa23a",
+         "name" : "cell:order-impl-type:method-user-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 2,
+         "log" : "logs/candidate9/cells/order-impl-type.method-impl-spelling.llbc.log",
+         "log_sha256" : "9091f25c30bf4598bb044ec01916e469a0483aa09f93c519c176aaaf800379b5",
+         "name" : "cell:order-impl-type:method-impl-spelling",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.no-selection.llbc.log",
+         "log_sha256" : "3da5442a602f0f71b65599470c7014eb5a866b457ab5e12ee3fd015cf9b3f920",
+         "name" : "cell:order-impl-type:free-control",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "exit" : 0,
+         "log" : "logs/candidate9/cells/order-type-impl.type-only.llbc.log",
+         "log_sha256" : "1a8f9cd9eb668179f5f9841e182fda3919830d123e601c1cff02bbf6ee4d1fcd",
+         "name" : "cell:order-impl-type:type-only",
+         "note" : "byte-identical to the candidate3/4 rows",
+         "tool" : "candidate9"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "exit" : 101,
+         "expectation_update" : {
+            "diff" : "logs/candidate9/start_from-expectation.diff",
+            "file" : "tests/ui/filtering/start_from.out",
+            "justification" : "the test selects std::iter::once, std::clone::Clone::clone_from, std::slice::Iter::as_slice and u32::wrapping_add; Charon names those items under core, the name seed matched the std spelling against core names and dropped the selected items, and upstream expectation encodes that; identity keeps them: the added lines are exactly those four items and their carriers (Once, Clone, Iter, Sized, Destruct)"
+         },
+         "log" : "logs/candidate9/suites/ui-in-ci.log",
+         "log_sha256" : "a44cfb3dc09abcd9054bf5483453e46186156d0e7108570c819dd74bfa7787e8",
+         "name" : "ui-suite",
+         "result" : "422 passed; 18 failed: exactly the inherited set, zero new (candidate4 tree: 81 failed, 63 new; logs/candidate9/suites/ui-in-ci-candidate4-tree.log)",
+         "tool" : "candidate9"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=tests",
+            "--print-llbc",
+            "--dest-file=<scratch>",
+            "--",
+            "--crate-name",
+            "test_crate",
+            "--crate-type",
+            "lib",
+            "closure-as-fn.rs"
+         ],
+         "exit" : 0,
+         "log" : "logs/candidate9/closure-as-fn-candidate.log",
+         "log_sha256" : "0cea3d87553f5c73bc121ed73bf0c41bd79010e0c29377dba80b00a009fa01f1",
+         "name" : "closure-as-fn-parity",
+         "result" : "byte-identical to the base print (18 items); candidate4 printed 7",
+         "tool" : "candidate9"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "classification" : "inherited_red",
+         "exit" : 101,
+         "log" : "logs/candidate9/suites/cargo-in-ci-noincremental.log",
+         "log_sha256" : "db651078af0a0c8521e903db7574103a553b5d76f50fb12b7154c3e252c19e12",
+         "name" : "cargo-suite",
+         "result" : "3 passed, 8 failed: inherited crate-hash panic (this tree has no artifact-capture patch); multi-targets passes",
+         "tool" : "candidate9"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "test",
+            "--test",
+            "cyclic_retention",
+            "--test",
+            "specialized_traits",
+            "--test",
+            "box_copy",
+            "--test",
+            "box_metadata"
+         ],
+         "exit" : 0,
+         "log" : "logs/candidate9/suites/in-tree.log",
+         "log_sha256" : "2b9db2ad6e9ab71a0faf723905b06185998a4114b5260e35da8255629f54a96a",
+         "name" : "in-tree-suites",
+         "tool" : "candidate9"
+      },
+      {
+         "argv" : [
+            "cargo",
+            "clippy",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+         ],
+         "exit" : 0,
+         "log" : "logs/candidate9/suites/clippy.log",
+         "log_sha256" : "4b49f7bc6d6e0c24f3a23a071eb21d2d151c103947c7de2fe2b191193ef24ff3",
+         "name" : "clippy",
+         "tool" : "candidate9"
+      }
+   ],
+   "retained" : {
+      "charon_driver_sha256" : "962d85360637dbf2976443f6c23b51793f687ca285288ab95dcd082fda7d586c",
+      "charon_sha256" : "29d5b284bdc09dbca1851eb87f55e44f9586cbbfb6b6a2fdda18b84a3f34defc",
+      "dae_llbc_sha256" : "27a56e661296e62573517735c486c89eb4cb96a0e294e4858cc5e514f2166ee0",
+      "dae_print_sha256" : "5482a1ff31223dd9428e8b07bfc8d00e4ef12be45986c7e3a1fcd41b161500a0",
+      "directory" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-root-identity-candidate4-0VsgHr",
+      "note" : "read-only files, sha256sums inside; source binding in its README"
+   },
+   "tool" : {
+      "charon" : "/tmp/rumoca-demand-retention-QVu1kr/charon",
+      "charon_sha256" : "10ca62cdad3f2804801e5b8a7b8e96b4eba76c2242663c508a9205f8f0fe2a9d",
+      "env" : {
+         "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+         "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+         "rustc" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18"
+      }
+   }
+}

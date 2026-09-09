@@ -1,0 +1,9 @@
+   rotation::A: proof ImpliedClause2: (Self::X: rotation::B)
+   rotation::A: type X
+   rotation::B: proof ImpliedClause2: (Self::Y: rotation::A)
+   rotation::B: type Y
+TRAIT core::marker::Destruct header=core::marker::Destruct<Self>
+TRAIT core::marker::MetaSized header=core::marker::MetaSized<Self>
+TRAIT core::marker::Sized header=core::marker::Sized<Self>
+TRAIT rotation::A header=rotation::A<Self>
+TRAIT rotation::B header=rotation::B<Self>

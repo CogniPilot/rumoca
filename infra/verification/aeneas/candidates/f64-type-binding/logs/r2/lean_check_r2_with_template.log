@@ -1,0 +1,6 @@
+AssociatedFloat/TypesExternal exit=0
+AssociatedFloat/Types exit=0
+AssociatedFloat/Funs exit=0
+associated_float.RealKind.Insts.Associated_floatScalarKindF64 : associated_float.ScalarKind associated_float.RealKind
+  Aeneas.Std.F64
+Inspect exit=0

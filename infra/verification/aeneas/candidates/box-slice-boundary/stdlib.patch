@@ -1,0 +1,29 @@
+--- /dev/null
++++ b/backends/lean/Aeneas/Std/Box.lean
+@@ -0,0 +1,18 @@
++import Aeneas.Std.Slice
++
++namespace Aeneas.Std
++
++@[rust_fun
++  "alloc::boxed::convert::{core::convert::From<Box<[@T]>, &'0 [@T]>}::from"]
++def alloc.boxed.FromBoxSliceSharedSlice.from {T : Type}
++    (cloneInst : core.clone.Clone T) (s : Slice T) : Result (Slice T) :=
++  Slice.clone cloneInst.clone s
++
++@[step]
++theorem alloc.boxed.FromBoxSliceSharedSlice.from_spec {T : Type}
++    (cloneInst : core.clone.Clone T) (s : Slice T)
++    (h : ∀ x ∈ s.val, cloneInst.clone x = Result.ok x) :
++    alloc.boxed.FromBoxSliceSharedSlice.from cloneInst s ⦃ s' => s = s' ⦄ := by
++  exact Slice.clone_spec h
++
++end Aeneas.Std
+--- a/backends/lean/Aeneas/Std.lean
++++ b/backends/lean/Aeneas/Std.lean
+@@ -1,4 +1,5 @@
+ import Aeneas.Std.Alloc
++import Aeneas.Std.Box
+ import Aeneas.Std.Array
+ import Aeneas.Std.Core
+ import Aeneas.Std.Primitives

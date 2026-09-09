@@ -1,0 +1,5 @@
+dep-emit-metadata	0	sidecars=[libdep.rmeta.charon-closure-regions.json ]	
+user-consumes	0	sidecars=[libdep.rmeta.charon-closure-regions.json ]	
+user-stale	0	sidecars=[libdep.rmeta.charon-closure-regions.json ]	
+user-missing	1	sidecars=[]	DependencyNotBuiltByCollector
+user-restored	0	sidecars=[libdep.rmeta.charon-closure-regions.json ]	

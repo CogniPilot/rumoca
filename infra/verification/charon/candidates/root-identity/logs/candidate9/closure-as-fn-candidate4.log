@@ -1,0 +1,158 @@
+warning: function `main` is never used
+ --> closure-as-fn.rs:3:4
+  |
+3 | fn main() {
+  |    ^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: 1 warning emitted
+
+# Final LLBC before serialization:
+
+struct () {}
+
+// Full name: test_crate::main::closure
+struct closure {}
+
+// Full name: test_crate::main::closure::{impl Destruct for closure}::drop_glue
+unsafe fn drop_glue<'_0>(_1: &'_0 mut closure)
+{
+    let _0: (); // return
+    let _1: &'1 mut closure; // arg #1
+
+    storage_live(_0)
+    _0 = ()
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::{impl Fn<()> for closure}::call
+fn call<'_0>(_1: &'_0 closure, tupled_args: ())
+{
+    let _0: (); // return
+    let _1: &'1 closure; // arg #1
+    let tupled_args: (); // arg #2
+    let _3: i32; // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(_3)
+    _3 = const 1i32 panic./ const 0i32
+    storage_dead(_3)
+    _0 = ()
+    storage_dead(tupled_args)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::{impl FnMut<()> for closure}::call_mut
+fn call_mut<'_0>(state: &'_0 mut closure, args: ())
+{
+    let _0: (); // return
+    let state: &'_0 mut closure; // arg #1
+    let args: (); // arg #2
+    let _3: &'0 closure; // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(_3)
+    _3 = &(*state)
+    _0 = call<'2>(move _3, move args)
+    ↳⚡ storage_dead(_3)
+        storage_dead(args)
+        storage_dead(state)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(args)
+    storage_dead(state)
+    return
+}
+
+// Full name: test_crate::main::{impl FnOnce<()> for closure}::call_once
+fn call_once(_1: closure, _2: ())
+{
+    let _0: (); // return
+    let _1: closure; // arg #1
+    let _2: (); // arg #2
+    let _3: &'1 mut closure; // anonymous local
+
+    storage_live(_0)
+    storage_live(_3)
+    _0 = ()
+    _3 = &mut _1
+    _0 = call_mut<'2>(move _3, move _2)
+    ↳⚡ drop[drop_glue<'3>] _1
+        ↳⚡ storage_dead(_3)
+            storage_dead(_2)
+            storage_dead(_1)
+            unwind_terminate
+        storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    drop[drop_glue<'4>] _1
+    ↳⚡ storage_dead(_3)
+        storage_dead(_2)
+        storage_dead(_1)
+        unwind_continue
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+}
+
+// Full name: test_crate::main::closure::as_fn
+fn as_fn()
+{
+    let _0: (); // return
+    let args: (); // local
+    let state: closure; // local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(args)
+    storage_live(state)
+    args = ()
+    state = closure {  }
+    _0 = call_once(move state, move args)
+    ↳⚡ storage_dead(state)
+        storage_dead(args)
+        unwind_continue
+    storage_dead(state)
+    storage_dead(args)
+    return
+}
+
+// Full name: test_crate::main
+fn main()
+{
+    let _0: (); // return
+    let f: fn(); // local
+    let _2: closure; // anonymous local
+    let _3: (); // anonymous local
+    let _4: fn(); // anonymous local
+
+    storage_live(_0)
+    _0 = ()
+    storage_live(f)
+    storage_live(_2)
+    _2 = closure {  }
+    f = cast<as_fn, fn()>(const as_fn)
+    storage_dead(_2)
+    fake_read(f)
+    set_type(typeof(f) == fn())
+    storage_live(_3)
+    storage_live(_4)
+    _4 = copy f
+    _3 = (move _4)()
+    ↳⚡ unwind_continue
+    storage_dead(_4)
+    storage_dead(_3)
+    _0 = ()
+    storage_dead(f)
+    return
+}
+
+
+

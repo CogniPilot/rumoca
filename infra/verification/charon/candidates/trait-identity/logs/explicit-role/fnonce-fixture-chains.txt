@@ -1,0 +1,1 @@
+trait_decls#3 ext,copy core::ops::function::FnOnce

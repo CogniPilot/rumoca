@@ -1,0 +1,5692 @@
+[[92mInfo[39m ] Imported: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/dc.llbc
+[?25lApplied prepasses:  [----------------------------------------------------] 0/6 ⠋[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, T, E>] carrier
+   ↳⚡ storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let value: T; // local
+  let _3: T; // anonymous local
+  let _4: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_4)
+  _4 = const false
+  _4 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(value)
+      value = move (carrier as variant drop_control::Carrier::Take)._0
+      storage_live(_3)
+      _3 = move value
+      _0 = core::option::Option::Some { _0: move _3 }
+      storage_dead(_3)
+      storage_dead(value)
+    },
+    drop_control::Carrier::Keep => {
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, T, E>] carrier
+      ↳⚡ storage_dead(_4)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_4)
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+}
+
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let value: T; // local
+  let _3: T; // anonymous local
+  let _4: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_4)
+  _4 = const false
+  _4 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(value)
+      value = move (carrier as variant drop_control::Carrier::Take)._0
+      storage_live(_3)
+      _3 = move value
+      _0 = core::option::Option::Some { _0: move _3 }
+      storage_dead(_3)
+      storage_dead(value)
+    },
+    drop_control::Carrier::Keep => {
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+      ↳⚡ storage_dead(_4)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_4)
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_dead_drop_switches.update_statements, line 781:
+remove_dead_drop_switches: replacing switch with:
+[storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_4)
+_4 = const false
+_4 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_4 = const false
+_4 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_4 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_2 = move (_1 as variant drop_control::Carrier::Take)._0
+storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+
+ _4 = const false
+ _4 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(_4)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+   storage_dead(_4)
+   return
+  },
+ }
+}
+
+Applied prepasses:  [########--------------------------------------------] 1/6 ⠙[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'1 mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'2, T, E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(dropped)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let dropped: &'1 mut bool; // arg #2
+  let value: T; // local
+  let _4: T; // anonymous local
+  let _5: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_5)
+  _5 = const false
+  _5 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(value)
+      value = move (carrier as variant drop_control::Carrier::Take)._0
+      storage_live(_4)
+      _4 = move value
+      _0 = core::option::Option::Some { _0: move _4 }
+      storage_dead(_4)
+      storage_dead(value)
+    },
+    drop_control::Carrier::Keep => {
+      (*dropped) = const true
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'2, T, E>] carrier
+      ↳⚡ storage_dead(_5)
+        storage_dead(dropped)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_5)
+      storage_dead(dropped)
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(_5)
+  storage_dead(dropped)
+  storage_dead(carrier)
+  return
+}
+
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let dropped: &'_ mut bool; // arg #2
+  let value: T; // local
+  let _4: T; // anonymous local
+  let _5: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_5)
+  _5 = const false
+  _5 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(value)
+      value = move (carrier as variant drop_control::Carrier::Take)._0
+      storage_live(_4)
+      _4 = move value
+      _0 = core::option::Option::Some { _0: move _4 }
+      storage_dead(_4)
+      storage_dead(value)
+    },
+    drop_control::Carrier::Keep => {
+      (*dropped) = const true
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+      ↳⚡ storage_dead(_5)
+        storage_dead(dropped)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_5)
+      storage_dead(dropped)
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(_5)
+  storage_dead(dropped)
+  storage_dead(carrier)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(dropped)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(dropped)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_dead_drop_switches.update_statements, line 781:
+remove_dead_drop_switches: replacing switch with:
+[storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_5)
+_5 = const false
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_3)
+    _3 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_4)
+    _4 = move _3
+    _0 = core::option::Option::Some { _0: move _4 }
+    storage_dead(_4)
+    storage_dead(_3)
+  },
+  drop_control::Carrier::Keep => {
+    (*_2) = const true
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_5 = const false
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_3)
+    _3 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_4)
+    _4 = move _3
+    _0 = core::option::Option::Some { _0: move _4 }
+    storage_dead(_4)
+    storage_dead(_3)
+  },
+  drop_control::Carrier::Keep => {
+    (*_2) = const true
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_3)
+    _3 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_4)
+    _4 = move _3
+    _0 = core::option::Option::Some { _0: move _4 }
+    storage_dead(_4)
+    storage_dead(_3)
+  },
+  drop_control::Carrier::Keep => {
+    (*_2) = const true
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_3)
+    _3 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_4)
+    _4 = move _3
+    _0 = core::option::Option::Some { _0: move _4 }
+    storage_dead(_4)
+    storage_dead(_3)
+  },
+  drop_control::Carrier::Keep => {
+    (*_2) = const true
+    _0 = core::option::Option::None {  }
+  },
+}
+storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_5)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_3 = move (_1 as variant drop_control::Carrier::Take)._0
+storage_live(_4)
+_4 = move _3
+_0 = core::option::Option::Some { _0: move _4 }
+storage_dead(_4)
+storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_4)
+_4 = move _3
+_0 = core::option::Option::Some { _0: move _4 }
+storage_dead(_4)
+storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_4 = move _3
+_0 = core::option::Option::Some { _0: move _4 }
+storage_dead(_4)
+storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = core::option::Option::Some { _0: move _4 }
+storage_dead(_4)
+storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_4)
+storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_3)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = core::option::Option::None {  }]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_3)
+    _3 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_4)
+    _4 = move _3
+    _0 = core::option::Option::Some { _0: move _4 }
+    storage_dead(_4)
+    storage_dead(_3)
+    storage_dead(_5)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+  },
+  drop_control::Carrier::Keep => {
+    (*_2) = const true
+    _0 = core::option::Option::None {  }
+    storage_dead(_5)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+  },
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+  },
+ }
+ storage_dead(_5)
+ storage_dead(dropped)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_5)
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_4)
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   storage_dead(dropped)
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let dropped: &'_ mut bool; // arg #2
+ let value: T; // local
+ let _4: T; // anonymous local
+ let _5: bool; // anonymous local
+
+ _5 = const false
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _4 = move value
+   _0 = core::option::Option::Some { _0: move _4 }
+   storage_dead(_4)
+   storage_dead(value)
+   storage_dead(_5)
+   return
+  },
+  drop_control::Carrier::Keep => {
+   (*dropped) = const true
+   _0 = core::option::Option::None {  }
+   storage_dead(_5)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+     drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'1, T, E>] carrier
+     ↳⚡ storage_dead(carrier)
+      unwind_continue
+     storage_dead(carrier)
+     return
+    },
+   }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, T, E>] carrier
+   ↳⚡ storage_dead(carrier)
+    unwind_continue
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let value: T; // local
+  let _3: T; // anonymous local
+
+  storage_live(_0)
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      _0 = core::option::Option::None {  }
+      match carrier {
+        drop_control::Carrier::Take => {
+        },
+        _ => {
+          drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'1, T, E>] carrier
+          ↳⚡ storage_dead(carrier)
+            unwind_continue
+          storage_dead(carrier)
+          return
+        },
+      }
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_live(value)
+  value = move (carrier as variant drop_control::Carrier::Take)._0
+  storage_live(_3)
+  _3 = move value
+  _0 = core::option::Option::Some { _0: move _3 }
+  storage_dead(_3)
+  storage_dead(value)
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, T, E>] carrier
+      ↳⚡ storage_dead(carrier)
+        unwind_continue
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(carrier)
+  return
+}
+
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<T, E>; // arg #1
+  let value: T; // local
+  let _3: T; // anonymous local
+
+  storage_live(_0)
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      _0 = core::option::Option::None {  }
+      match carrier {
+        drop_control::Carrier::Take => {
+        },
+        _ => {
+          drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+          ↳⚡ storage_dead(carrier)
+            unwind_continue
+          storage_dead(carrier)
+          return
+        },
+      }
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_live(value)
+  value = move (carrier as variant drop_control::Carrier::Take)._0
+  storage_live(_3)
+  _3 = move value
+  _0 = core::option::Option::Some { _0: move _3 }
+  storage_dead(_3)
+  storage_dead(value)
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+      ↳⚡ storage_dead(carrier)
+        unwind_continue
+      storage_dead(carrier)
+      return
+    },
+  }
+  storage_dead(carrier)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+     drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+     ↳⚡ storage_dead(carrier)
+      unwind_continue
+     storage_dead(carrier)
+     return
+    },
+   }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(carrier)
+    unwind_continue
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+     drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+     ↳⚡ storage_dead(carrier)
+      unwind_continue
+     storage_dead(carrier)
+     return
+    },
+   }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, T, E>] carrier
+   ↳⚡ storage_dead(carrier)
+    unwind_continue
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_dead_drop_switches.update_statements, line 781:
+remove_dead_drop_switches: replacing switch with:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_dead_drop_switches.update_statements, line 781:
+remove_dead_drop_switches: replacing switch with:
+[storage_dead(_1)
+return]
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    _0 = core::option::Option::None {  }
+    storage_dead(_1)
+    return
+  },
+}
+storage_live(_2)
+_2 = move (_1 as variant drop_control::Carrier::Take)._0
+storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_2)
+_2 = move (_1 as variant drop_control::Carrier::Take)._0
+storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_2 = move (_1 as variant drop_control::Carrier::Take)._0
+storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_3)
+storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_2)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+    storage_dead(_1)
+    return
+  },
+  _ => {
+    _0 = core::option::Option::None {  }
+    storage_dead(_1)
+    return
+  },
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+ storage_live(value)
+ value = move (carrier as variant drop_control::Carrier::Take)._0
+ storage_live(_3)
+ _3 = move value
+ _0 = core::option::Option::Some { _0: move _3 }
+ storage_dead(_3)
+ storage_dead(value)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ storage_live(_0)
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(value)
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   storage_live(_3)
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<T, E>; // arg #1
+ let value: T; // local
+ let _3: T; // anonymous local
+
+ match carrier {
+  drop_control::Carrier::Take => {
+   value = move (carrier as variant drop_control::Carrier::Take)._0
+   _3 = move value
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(value)
+   return
+  },
+  _ => {
+   _0 = core::option::Option::None {  }
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'1 drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+  TypeOutlives0: T: '_0,
+  TypeOutlives1: E: '_0,
+{
+  let _0: bool; // return
+  let carrier: &'1 drop_control::Carrier<T, E>; // arg #1
+
+  storage_live(_0)
+  match (*carrier) {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      _0 = const false
+      storage_dead(carrier)
+      return
+    },
+  }
+  _0 = const true
+  storage_dead(carrier)
+  return
+}
+
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+  TypeOutlives0: T: '_0,
+  TypeOutlives1: E: '_0,
+{
+  let _0: bool; // return
+  let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+  storage_live(_0)
+  match (*carrier) {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      _0 = const false
+      storage_dead(carrier)
+      return
+    },
+  }
+  _0 = const true
+  storage_dead(carrier)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    _0 = const false
+    storage_dead(_1)
+    return
+  },
+}
+_0 = const true
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = const true
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match (*_1) {
+  drop_control::Carrier::Take => {
+    _0 = const true
+    storage_dead(_1)
+    return
+  },
+  _ => {
+    _0 = const false
+    storage_dead(_1)
+    return
+  },
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+ _0 = const true
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   storage_dead(carrier)
+   return
+  },
+  _ => {
+   _0 = const false
+   storage_dead(carrier)
+   return
+  },
+ }
+}
+
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: bool; // return
+ let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+ match (*carrier) {
+  drop_control::Carrier::Take => {
+   _0 = const true
+   return
+  },
+  _ => {
+   _0 = const false
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'1>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+  let first: T; // local
+  let _3: T; // anonymous local
+  let _4: bool; // anonymous local
+  let _5: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_4)
+  storage_live(_5)
+  _4 = const false
+  _5 = const false
+  _4 = const true
+  _5 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(first)
+      first = move (carrier as variant drop_control::Carrier::Take)._0.0
+      storage_live(_3)
+      _3 = move first
+      _0 = core::option::Option::Some { _0: move _3 }
+      storage_dead(_3)
+      storage_dead(first)
+    },
+    drop_control::Carrier::Keep => {
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'0, (T, T), E>] carrier
+      ↳⚡ storage_dead(_5)
+        storage_dead(_4)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(carrier)
+      return
+    },
+  }
+  if copy _5 {
+    drop[{built_in impl core::marker::Destruct for T}::drop_glue<'1>] (carrier as variant drop_control::Carrier::Take)._0.1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(carrier)
+      unwind_continue
+  } else {
+  }
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+}
+
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+  let _0: core::option::Option<T>; // return
+  let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+  let first: T; // local
+  let _3: T; // anonymous local
+  let _4: bool; // anonymous local
+  let _5: bool; // anonymous local
+
+  storage_live(_0)
+  storage_live(_4)
+  storage_live(_5)
+  _4 = const false
+  _5 = const false
+  _4 = const true
+  _5 = const true
+  match carrier {
+    drop_control::Carrier::Take => {
+      storage_live(first)
+      first = move (carrier as variant drop_control::Carrier::Take)._0.0
+      storage_live(_3)
+      _3 = move first
+      _0 = core::option::Option::Some { _0: move _3 }
+      storage_dead(_3)
+      storage_dead(first)
+    },
+    drop_control::Carrier::Keep => {
+      _0 = core::option::Option::None {  }
+    },
+  }
+  match carrier {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+      ↳⚡ storage_dead(_5)
+        storage_dead(_4)
+        storage_dead(carrier)
+        unwind_continue
+      storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(carrier)
+      return
+    },
+  }
+  if copy _5 {
+    drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(carrier)
+      unwind_continue
+  } else {
+  }
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_4)
+storage_live(_5)
+_4 = const false
+_5 = const false
+_4 = const true
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_5)
+_4 = const false
+_5 = const false
+_4 = const true
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_4 = const false
+_5 = const false
+_4 = const true
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_5 = const false
+_4 = const true
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_4 = const true
+_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_5 = const true
+match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+} else {
+}
+_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_5 = const false
+storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+} else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: false
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_5)
+storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_4)
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+} else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: false
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_live(_3)
+_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_3 = move _2
+_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = core::option::Option::Some { _0: move _3 }
+storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_3)
+storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_2)]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match _1 {
+  drop_control::Carrier::Take => {
+    storage_live(_2)
+    _2 = move (_1 as variant drop_control::Carrier::Take)._0.0
+    storage_live(_3)
+    _3 = move _2
+    _0 = core::option::Option::Some { _0: move _3 }
+    storage_dead(_3)
+    storage_dead(_2)
+  },
+  drop_control::Carrier::Keep => {
+    _0 = core::option::Option::None {  }
+  },
+}
+match _1 {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (@Type0, @Type0), @Type1>] _1
+    ↳⚡ storage_dead(_5)
+      storage_dead(_4)
+      storage_dead(_1)
+      unwind_continue
+    storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    return
+  },
+}
+if copy _5 {
+  drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] (_1 as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(_1)
+    unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+} else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(_1)
+  return
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+ } else {
+ }
+ _5 = const false
+ storage_dead(_5)
+ storage_dead(_4)
+ storage_dead(carrier)
+ return
+}
+
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ storage_live(_0)
+ storage_live(_4)
+ storage_live(_5)
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   storage_live(first)
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   storage_live(_3)
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    storage_dead(carrier)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   storage_dead(carrier)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  storage_dead(carrier)
+  return
+ }
+}
+
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+ let _0: core::option::Option<T>; // return
+ let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+ let first: T; // local
+ let _3: T; // anonymous local
+ let _4: bool; // anonymous local
+ let _5: bool; // anonymous local
+
+ _4 = const false
+ _5 = const false
+ _4 = const true
+ _5 = const true
+ match carrier {
+  drop_control::Carrier::Take => {
+   first = move (carrier as variant drop_control::Carrier::Take)._0.0
+   _3 = move first
+   _0 = core::option::Option::Some { _0: move _3 }
+   storage_dead(_3)
+   storage_dead(first)
+  },
+  drop_control::Carrier::Keep => {
+   _0 = core::option::Option::None {  }
+  },
+ }
+ match carrier {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_, (T, T), E>] carrier
+   ↳⚡ storage_dead(_5)
+    storage_dead(_4)
+    unwind_continue
+   storage_dead(_5)
+   storage_dead(_4)
+   return
+  },
+ }
+ if copy _5 {
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+  ↳⚡ storage_dead(_5)
+   storage_dead(_4)
+   unwind_continue
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ } else {
+  _5 = const false
+  storage_dead(_5)
+  storage_dead(_4)
+  return
+ }
+}
+
+Applied prepasses:  [###########################################---------] 5/6 ⠙[[36mTrace[39m] Aeneas__PrePasses.apply_passes.(fun), line 2411:
+Before applying the prepasses:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'1 mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'3>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'2>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.erase_body_regions, line 82:
+Before/after [erase_body_regions]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+  TypeOutlives0: T: '_0,
+  TypeOutlives1: E: '_0,
+{
+  let _0: (); // return
+  let _1: &'1 mut drop_control::Carrier<T, E>; // arg #1
+
+  storage_live(_0)
+  _0 = ()
+  match (*_1) {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[{built_in impl core::marker::Destruct for E}::drop_glue<'3>] ((*_1) as variant drop_control::Carrier::Keep)._0
+      ↳⚡ storage_dead(_1)
+        unwind_continue
+      storage_dead(_1)
+      return
+    },
+  }
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'2>] ((*_1) as variant drop_control::Carrier::Take)._0
+  ↳⚡ storage_dead(_1)
+    unwind_continue
+  storage_dead(_1)
+  return
+}
+
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+  TypeOutlives0: T: '_0,
+  TypeOutlives1: E: '_0,
+{
+  let _0: (); // return
+  let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+  storage_live(_0)
+  _0 = ()
+  match (*_1) {
+    drop_control::Carrier::Take => {
+    },
+    _ => {
+      drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+      ↳⚡ storage_dead(_1)
+        unwind_continue
+      storage_dead(_1)
+      return
+    },
+  }
+  drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+  ↳⚡ storage_dead(_1)
+    unwind_continue
+  storage_dead(_1)
+  return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [erase_body_regions]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_unreachable]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_dead_drop_switches]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.update_loops, line 686:
+Before/after [update_loops]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [update_loop]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[_0 = ()
+match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[{built_in impl core::marker::Destruct for @Type1}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+    ↳⚡ storage_dead(_1)
+      unwind_continue
+    storage_dead(_1)
+    return
+  },
+}
+drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+↳⚡ storage_dead(_1)
+  unwind_continue
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+    drop[{built_in impl core::marker::Destruct for @Type1}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+    ↳⚡ storage_dead(_1)
+      unwind_continue
+    storage_dead(_1)
+    return
+  },
+}
+drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+↳⚡ storage_dead(_1)
+  unwind_continue
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+↳⚡ storage_dead(_1)
+  unwind_continue
+storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 823:
+Switch: can_inline: true
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[storage_dead(_1)
+return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[return]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 813:
+ls:
+[]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins.update_statements, line 829:
+after updating the switch:
+[match (*_1) {
+  drop_control::Carrier::Take => {
+    drop[{built_in impl core::marker::Destruct for @Type0}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+    ↳⚡ storage_dead(_1)
+      unwind_continue
+    storage_dead(_1)
+    return
+  },
+  _ => {
+    drop[{built_in impl core::marker::Destruct for @Type1}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+    ↳⚡ storage_dead(_1)
+      unwind_continue
+    storage_dead(_1)
+    return
+  },
+}]
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_useless_joins, line 858:
+Before/after [remove_useless_joins]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+ drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+ ↳⚡ storage_dead(_1)
+  unwind_continue
+ storage_dead(_1)
+ return
+}
+
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_useless_joins]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+}
+
+[[94mDebug[39m] Aeneas__PrePasses.remove_shallow_borrows_storage_live_dead, line 960:
+Before/after [remove_shallow_borrows]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ storage_live(_0)
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ storage_dead(_1)
+    unwind_continue
+   storage_dead(_1)
+   return
+  },
+ }
+}
+
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [remove_shallow_borrows_storage_live_dead]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_str_borrows]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [simplify_panics]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [decompose_global_accesses]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+[[36mTrace[39m] Aeneas__PrePasses.apply_passes.apply_function_pass, line 2388:
+After applying [refresh_statement_ids]:
+unsafe fn drop_control::Carrier::{impl core::marker::Destruct for drop_control::Carrier<T, E>}::drop_glue<'_0, T, E>(_1: &'_0 mut drop_control::Carrier<T, E>)
+where
+ TypeOutlives0: T: '_0,
+ TypeOutlives1: E: '_0,
+{
+ let _0: (); // return
+ let _1: &'_ mut drop_control::Carrier<T, E>; // arg #1
+
+ _0 = ()
+ match (*_1) {
+  drop_control::Carrier::Take => {
+   drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Take)._0
+   ↳⚡ unwind_continue
+   return
+  },
+  _ => {
+   drop[{built_in impl core::marker::Destruct for E}::drop_glue<'_>] ((*_1) as variant drop_control::Carrier::Keep)._0
+   ↳⚡ unwind_continue
+   return
+  },
+ }
+}
+
+Applied prepasses:  [####################################################] 6/6 ✔️
+[?25h[[36mTrace[39m] Aeneas__PrePasses.apply_passes, line 2432:
+After pre-passes:
+opaque type ()
+
+#[lang_item(Option)]
+#[diagnostic_item("Option")]
+pub enum core::option::Option<T> {
+  None,
+  Some { _0: T },
+}
+
+pub enum drop_control::Carrier<T, E> {
+  Take { _0: T },
+  Keep { _0: E },
+}
+
+pub fn drop_control::take<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+    let _0: core::option::Option<T>; // return
+    let carrier: drop_control::Carrier<T, E>; // arg #1
+    let value: T; // local
+    let _3: T; // anonymous local
+    let _4: bool; // anonymous local
+
+    _4 = const false
+    _4 = const true
+    match carrier {
+        drop_control::Carrier::Take => {
+            value = move (carrier as variant drop_control::Carrier::Take)._0
+            _3 = move value
+            _0 = core::option::Option::Some { _0: move _3 }
+            storage_dead(_3)
+            storage_dead(value)
+            storage_dead(_4)
+            return
+        },
+        drop_control::Carrier::Keep => {
+            _0 = core::option::Option::None {  }
+            storage_dead(_4)
+            return
+        },
+    }
+}
+
+pub fn drop_control::take_reporting<'_0, T, E>(carrier: drop_control::Carrier<T, E>, dropped: &'_0 mut bool) -> core::option::Option<T>
+{
+    let _0: core::option::Option<T>; // return
+    let carrier: drop_control::Carrier<T, E>; // arg #1
+    let dropped: &'_ mut bool; // arg #2
+    let value: T; // local
+    let _4: T; // anonymous local
+    let _5: bool; // anonymous local
+
+    _5 = const false
+    _5 = const true
+    match carrier {
+        drop_control::Carrier::Take => {
+            value = move (carrier as variant drop_control::Carrier::Take)._0
+            _4 = move value
+            _0 = core::option::Option::Some { _0: move _4 }
+            storage_dead(_4)
+            storage_dead(value)
+            storage_dead(_5)
+            return
+        },
+        drop_control::Carrier::Keep => {
+            (*dropped) = const true
+            _0 = core::option::Option::None {  }
+            storage_dead(_5)
+            return
+        },
+    }
+}
+
+pub fn drop_control::take_early<T, E>(carrier: drop_control::Carrier<T, E>) -> core::option::Option<T>
+{
+    let _0: core::option::Option<T>; // return
+    let carrier: drop_control::Carrier<T, E>; // arg #1
+    let value: T; // local
+    let _3: T; // anonymous local
+
+    match carrier {
+        drop_control::Carrier::Take => {
+            value = move (carrier as variant drop_control::Carrier::Take)._0
+            _3 = move value
+            _0 = core::option::Option::Some { _0: move _3 }
+            storage_dead(_3)
+            storage_dead(value)
+            return
+        },
+        _ => {
+            _0 = core::option::Option::None {  }
+            return
+        },
+    }
+}
+
+pub fn drop_control::peek<'_0, T, E>(carrier: &'_0 drop_control::Carrier<T, E>) -> bool
+where
+    TypeOutlives0: T: '_0,
+    TypeOutlives1: E: '_0,
+{
+    let _0: bool; // return
+    let carrier: &'_ drop_control::Carrier<T, E>; // arg #1
+
+    match (*carrier) {
+        drop_control::Carrier::Take => {
+            _0 = const true
+            return
+        },
+        _ => {
+            _0 = const false
+            return
+        },
+    }
+}
+
+pub fn drop_control::take_first<T, E>(carrier: drop_control::Carrier<(T, T), E>) -> core::option::Option<T>
+{
+    let _0: core::option::Option<T>; // return
+    let carrier: drop_control::Carrier<(T, T), E>; // arg #1
+    let first: T; // local
+    let _3: T; // anonymous local
+    let _4: bool; // anonymous local
+    let _5: bool; // anonymous local
+
+    _4 = const false
+    _5 = const false
+    _4 = const true
+    _5 = const true
+    match carrier {
+        drop_control::Carrier::Take => {
+            first = move (carrier as variant drop_control::Carrier::Take)._0.0
+            _3 = move first
+            _0 = core::option::Option::Some { _0: move _3 }
+            storage_dead(_3)
+            storage_dead(first)
+        },
+        drop_control::Carrier::Keep => {
+            _0 = core::option::Option::None {  }
+        },
+    }
+    match carrier {
+        drop_control::Carrier::Take => {
+        },
+        _ => {
+            drop[drop_control::Carrier::{impl#0}::drop_glue<'_, (T, T), E>] carrier
+            ↳⚡ storage_dead(_5)
+                storage_dead(_4)
+                unwind_continue
+            storage_dead(_5)
+            storage_dead(_4)
+            return
+        },
+    }
+    if copy _5 {
+        drop[{built_in impl core::marker::Destruct for T}::drop_glue<'_>] (carrier as variant drop_control::Carrier::Take)._0.1
+        ↳⚡ storage_dead(_5)
+            storage_dead(_4)
+            unwind_continue
+        _5 = const false
+        storage_dead(_5)
+        storage_dead(_4)
+        return
+    } else {
+        _5 = const false
+        storage_dead(_5)
+        storage_dead(_4)
+        return
+    }
+}
+
+
+
+
+[?25lTranslated globals:  [---------------------------------------------------] 0/0 ⠋Translated globals:  [---------------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated opaque functions:  [------------------------------------------] 0/0 ⠋Translated opaque functions:  [------------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated transparent functions:  [-------------------------------------] 0/5 ⠋Translated transparent functions:  [#######------------------------------] 1/5 ⠙Translated transparent functions:  [##############-----------------------] 2/5 ⠙Translated transparent functions:  [#############################--------] 4/5 ⠙[[91mError[39m] There should be no bottoms in the value
+Source: 'infra/verification/charon/fixtures/drop-control.rs', lines 68:0-68:1
+[[93mWarn[39m ] Could not translate the body of function 'drop_control::take_first because of previous error
+Name pattern: 'drop_control::take_first'
+Definition span: 'infra/verification/charon/fixtures/drop-control.rs', lines 63:0-68:1
+Source: 'infra/verification/charon/fixtures/drop-control.rs', lines 68:0-68:1
+Compiler source: interp/Interp.ml, line 621
+
+Translated transparent functions:  [#####################################] 5/5 ⠹Translated transparent functions:  [#####################################] 5/5 ✔️
+[?25h[?25lTranslated trait declarations:  [----------------------------------------] 0/0 ⠋Translated trait declarations:  [----------------------------------------] 0/0 ✔️
+[?25h[?25lTranslated trait impls:  [-----------------------------------------------] 0/0 ⠋Translated trait impls:  [-----------------------------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated opaque functions:  [---------------------------] 0/0 ⠋Post-processed translated opaque functions:  [---------------------------] 0/0 ✔️
+[?25h[?25lPost-processed translated transparent functions:  [----------------------] 0/5 ⠋Post-processed translated transparent functions:  [####------------------] 1/5 ⠋Post-processed translated transparent functions:  [######################] 5/5 ✔️
+[?25h[[92mInfo[39m ] Generated the partial file (because of 1 errors, including 1 unique errors): /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/w-c/Dc.lean
+[[92mInfo[39m ] Generated: /tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/dc/receipt4/w-c/translation.json
+[[92mInfo[39m ] Total execution time: 0.496041 seconds

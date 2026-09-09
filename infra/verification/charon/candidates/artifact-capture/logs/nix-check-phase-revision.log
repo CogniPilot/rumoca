@@ -1,0 +1,2570 @@
+Running phase: unpackPhase
+@nix { "action": "setPhase", "phase": "unpackPhase" }
+unpacking source archive /nix/store/rgri5g8rk5g7rx94m10ijl0nr0ac24i3-source
+source root is source
+Running phase: patchPhase
+@nix { "action": "setPhase", "phase": "patchPhase" }
+moving Cargo.lock to Cargo.lock.orig, then will use /nix/store/dzf1cl60f6lsbckiml6i1x4njlykldm8-Cargo.lock as Cargo.lock
+applying patch /nix/store/6bxiq9slf8dfybw13y4j1mw4rpb7dvar-reconstruct-box-borrows.patch
+patching file src/transform/mod.rs
+patching file src/transform/resugar/reconstruct_box_derefs.rs
+patching file src/transform/resugar/reconstruct_box_copies.rs
+patching file tests/box_metadata.rs
+patching file tests/box_copy.rs
+patching file tests/ui/simple/box-slice-metadata.rs
+patching file tests/ui/simple/box-slice-metadata.out
+patching file tests/ui/simple/box-deref-copy.rs
+patching file tests/ui/simple/box-deref-copy.out
+patching file tests/ui/simple/box-indexed-copy.rs
+patching file tests/ui/simple/box-indexed-copy.out
+patching file tests/ui/dyn/vtable_drop.out
+applying patch /nix/store/xlnkr01s20y9q33hkpn3fwql00sfzw9d-capture-arguments.patch
+patching file src/ast/type_level.rs
+patching file src/ast/type_level/region_instantiation.rs
+patching file src/bin/charon-driver/translate/translate_crate.rs
+patching file src/bin/charon-driver/translate/translate_closures.rs
+patching file src/bin/charon-driver/translate/translate_predicates.rs
+patching file tests/closure_capture_regions.rs
+patching file tests/ui/simple/issue-988-closure-outlives.out
+patching file tests/ui/simple/nested-closure-lifetime.out
+patching file tests/ui/simple/closure-with-remove-adt-clauses.out
+patching file tests/ui/closures.out
+patching file tests/ui/simple/lending-iterator-gat.out
+patching file tests/ui/simple/closure-fn.out
+patching file tests/ui/simple/issue-1040-closure-upvar-lifetime.out
+patching file tests/ui/simple/closure-with-non-upvar-lifetime.out
+patching file tests/ui/simple/closure-capture-ref-by-move.out
+patching file tests/ui/simple/nested-closure.out
+patching file tests/ui/simple/closure-fnmut.out
+patching file tests/ui/no-gen-tuple-structs.out
+patching file tests/ui/issue-323-closure-borrow.out
+patching file tests/ui/monomorphization/closure-fn.out
+patching file tests/ui/monomorphization/closures.out
+applying patch /nix/store/36mfcwq8m9zbjh6j621hvndfzi970r18-constructor.patch
+patching file Cargo.toml
+patching file Cargo.lock
+patching file src/bin/charon-driver/driver.rs
+patching file src/bin/charon-driver/hax/sinto.rs
+patching file src/bin/charon-driver/hax/types/new/full_def.rs
+patching file src/bin/charon-driver/hax/types/ty.rs
+patching file src/bin/charon-driver/translate/closure_constraints.rs
+patching file src/bin/charon-driver/translate/mod.rs
+patching file src/bin/charon-driver/translate/translate_closures.rs
+patching file src/bin/charon-driver/translate/translate_crate.rs
+patching file src/bin/charon-driver/translate/translate_ctx.rs
+patching file src/bin/charon-driver/translate/translate_generics.rs
+patching file tests/closure_required_regions.rs
+applying patch /nix/store/bhx7ikm1myy1rp6m2dfrsbn2ii5sg9ph-transport.patch
+patching file Cargo.lock
+patching file src/bin/charon/main.rs
+patching file src/bin/charon/fact_cache.rs
+patching file src/bin/charon-driver/main.rs
+patching file src/bin/charon-driver/driver.rs
+patching file src/bin/charon-driver/translate/translate_ctx.rs
+patching file src/bin/charon-driver/translate/closure_constraints.rs
+patching file tests/closure_fact_transport.rs
+applying patch /nix/store/rpqxib583b92vwdb7651j2a8gwgr24ky-explicit-self.patch
+patching file src/ast/type_level/substitute.rs
+applying patch /nix/store/gcbdcy1vqrg7kl3gn7d30y0q3dgrmxk1-finite-demands.patch
+patching file src/transform/normalize/expand_associated_types.rs
+patching file src/transform/normalize/expand_associated_types.rs
+File src/transform/normalize/expand_associated_types/cyclic_demands.rs is read-only; trying to patch anyway
+patching file src/transform/normalize/expand_associated_types/cyclic_demands.rs
+patching file closure-region-facts/src/artifact.rs
+patching file closure-region-facts/src/session.rs
+Executing configureCargoCommonVars
+decompressing cargo artifacts from /nix/store/f5jfs4pbziwpw56x2khynq7dbxlpac9x-charon-deps-0.1.248/target.tar.zst to target
+Running phase: updateAutotoolsGnuConfigScriptsPhase
+@nix { "action": "setPhase", "phase": "updateAutotoolsGnuConfigScriptsPhase" }
+Running phase: configurePhase
+@nix { "action": "setPhase", "phase": "configurePhase" }
+will append /build/source/.cargo-home/config.toml with contents of /nix/store/0j2msvsi1v6y8jwxhddgxy4n4ncjcvw7-vendor-cargo-deps/config.toml
+default configurePhase, nothing to do
+Running phase: buildPhase
+@nix { "action": "setPhase", "phase": "buildPhase" }
++++ command cargo --version
+cargo 1.100.0-nightly (8a0d8afba 2026-08-15)
++++ command cargo build --release --message-format json-render-diagnostics --locked
+   Compiling charon v0.1.248 (/build/source)
+   Compiling rustc_trait_elaboration v0.1.0 (/build/source/rustc_trait_elaboration)
+   Compiling closure-region-facts v0.1.0 (/build/source/closure-region-facts)
+   Compiling hax-adt-into v0.3.5 (/build/source/adt-into)
+   Compiling macros v0.1.0 (/build/source/macros)
+    Finished `release` profile [optimized] target(s) in 1m 12s
+searching for bins/libs to install from cargo build log at cargoBuildLogjxVe.json
+installing /build/source/target/release/charon in postBuildInstallFromCargoBuildLogOutTempSKK/bin
+installing /build/source/target/release/generate-asts in postBuildInstallFromCargoBuildLogOutTempSKK/bin
+installing /build/source/target/release/charon-driver in postBuildInstallFromCargoBuildLogOutTempSKK/bin
+searching for bins/libs complete
+buildPhase completed in 1 minutes 12 seconds
+Running phase: checkPhase
+@nix { "action": "setPhase", "phase": "checkPhase" }
++++ command cargo test --profile release --locked
+   Compiling charon v0.1.248 (/build/source)
+    Finished `release` profile [optimized] target(s) in 1m 23s
+     Running unittests src/lib.rs (target/release/build/charon/ccf12ca245adf189/out/charon_lib-ccf12ca245adf189)
+
+running 27 tests
+test ast::bodies::values::test::test_big_endian_scalars ... ok
+test ast::items::layout_guarantees::tests::normalize_arithmetic ... ok
+test ast::items::layout_guarantees::tests::normalize_extrema_partially ... ok
+test ast::items::layout_guarantees::tests::normalize_extrema_identities ... ok
+test ast::items::layout_guarantees::tests::normalize_for_the_selected_target ... ok
+test ast::items::layout_guarantees::tests::normalize_if_inhabited ... ok
+test ast::items::layout_guarantees::tests::normalize_uses_guarantees_not_chosen_values ... ok
+test ast::type_level::region_instantiation::tests::declaration_prefix_and_capture_slots_survive_construction ... ok
+test ast::type_level::region_instantiation::tests::does_not_solve_ambient_variables_with_same_numeric_id ... ok
+test ast::type_level::region_instantiation::tests::empty_binder_requires_exact_identity ... ok
+test ast::type_level::region_instantiation::tests::generic_binders_preserve_bound_and_ambient_variables ... ok
+test ast::type_level::region_instantiation::tests::matches_root_region_and_preserves_distinct_arguments ... ok
+test ast::type_level::region_instantiation::tests::matches_under_nested_binder_without_capturing_its_variables ... ok
+test ast::type_level::region_instantiation::tests::parent_type_substitution_does_not_introduce_inference_parameters ... ok
+test ast::type_level::region_instantiation::tests::partial_construction_refuses_wrong_generic_arities ... ok
+test ast::type_level::region_instantiation::tests::rejects_field_count_type_and_reference_kind_mismatches ... ok
+test ast::type_level::region_instantiation::tests::rejects_incomplete_and_conflicting_arguments ... ok
+test ast::type_level::region_instantiation::tests::self_identity_reproduces_the_declaration_under_nested_binders ... ok
+test name_matcher::parser::test_roundtrip ... ok
+test name_matcher::test_compare ... ok
+test transform::add_missing_info::sccs::tests::test_reorder_sccs1 ... ok
+test transform::normalize::expand_associated_types::demand_tests::distinct_associated_types_keep_distinct_parameters ... ok
+test transform::normalize::expand_associated_types::demand_tests::distinct_clause_witnesses_keep_distinct_parameters ... ok
+test transform::normalize::expand_associated_types::demand_tests::repeated_associated_type_demand_uses_one_parameter ... ok
+test utils::hash_cons::test_hash_cons ... ok
+test utils::hash_cons::test_hash_cons_dedup ... ok
+test utils::hash_cons::test_hash_cons_concurrent ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/charon/main.rs (target/release/build/charon/34c71af2551921e7/out/charon-34c71af2551921e7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/charon-driver/main.rs (target/release/build/charon/0c9c71fb261c9796/out/charon_driver-0c9c71fb261c9796)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/generate-asts/main.rs (target/release/build/charon/f3e617507d919035/out/generate_asts-f3e617507d919035)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bench-popular-crates.rs (target/release/build/charon/84e1477019e031a7/out/bench_popular_crates-84e1477019e031a7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/box_copy.rs (target/release/build/charon/a72b303177c35ede/out/box_copy-a72b303177c35ede)
+
+running 24 tests
+test additional_temporary_read_is_unchanged ... ok
+test adjacent_box_copy_projects_original_owner_and_metadata ... ok
+test adjacent_indexed_copy_projects_original_owner_and_index ... ok
+test adjacent_indexed_borrow_projects_original_owner_and_index ... ok
+test dropped_box_pointer_is_not_discarded ... ok
+test indexed_additional_temporary_read_is_unchanged ... ok
+test foreign_metadata_is_unchanged ... ok
+test extra_box_pointer_use_is_not_discarded ... ok
+test indexed_non_unit_metadata_is_unchanged ... ok
+test indexed_copy_retag_is_preserved ... ok
+test indexed_mutable_borrow_is_unchanged ... ok
+test indexed_owner_replacement_between_copy_and_use_is_unchanged ... ok
+test mutable_borrow_is_unchanged ... ok
+test indexed_raw_pointer_is_unchanged ... ok
+test indexed_storage_end_between_copy_and_use_is_unchanged ... ok
+test owner_replacement_between_copy_and_borrow_is_unchanged ... ok
+test raw_pointer_is_unchanged ... ok
+test projected_box_assignment_is_not_discarded ... ok
+test storage_end_between_copy_and_borrow_is_unchanged ... ok
+test retagged_copy_is_unchanged ... ok
+test unused_retagged_box_copy_is_unchanged ... ok
+test unused_box_pointer_copy_is_discarded ... ok
+test unused_box_copy_into_argument_is_unchanged ... ok
+test two_indexed_rewrites_compose ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/box_metadata.rs (target/release/build/charon/6e4d8dccf0ef0ce3/out/box_metadata-6e4d8dccf0ef0ce3)
+
+running 7 tests
+test adjacent_borrow_preserves_pointee_and_metadata ... ok
+test nonadjacent_borrow_is_unchanged ... ok
+test cross_block_borrow_is_unchanged ... ok
+test multiple_statement_uses_are_unchanged ... ok
+test terminator_metadata_use_is_unchanged ... ok
+test raw_pointer_construction_is_unchanged ... ok
+test owner_replacement_before_borrow_is_unchanged ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/cargo.rs (target/release/build/charon/b237007d3bae0e19/out/cargo-b237007d3bae0e19)
+
+running 11 tests
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+     Removed 0 files
+test unsafe_                                      ... ok
+test toml                                         ... ok
+test multi-targets                                ... ok
+test workspace                                    ... ok
+test error-dependencies                           ... ok
+test issue-396-lib-bin                            ... ok
+test test-attributes                              ... ok
+test issue-412-dup-deps                           ... ok
+test dependencies                                 ... ok
+test build-script                                 ... ok
+test issue-1298-absolute-path-for-generated-files ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/cli.rs (target/release/build/charon/fb46e3a11583b687/out/cli-fb46e3a11583b687)
+
+running 13 tests
+test charon_cargo_p_crate2 ... ok
+test charon_cargo_target_dir ... ok
+test charon_help_output ... ok
+test charon_rustc ... ok
+test charon_toolchain_path ... ok
+test charon_toolchain_version ... ok
+test charon_version ... ok
+test filename_conflict ... ok
+test charon_cargo_target ... ok
+test put_options_after_subcommand ... ok
+test charon_pretty_print ... ok
+test handle_multi_trailing_rs_args ... ok
+test charon_cargo_features ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/closure_capture_regions.rs (target/release/build/charon/b480d90fa3da10ca/out/closure_capture_regions-b480d90fa3da10ca)
+
+running 1 test
+test closure_capture_fields_keep_the_selected_input_lifetime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/closure_fact_transport.rs (target/release/build/charon/5f8a972df05fa186/out/closure_fact_transport-5f8a972df05fa186)
+
+running 5 tests
+test changing_the_driver_mid_cargo_invocation_refuses_before_compilation ... ok
+test rejected_rust_compilation_cannot_publish_a_sidecar ... ok
+test a_post_analysis_link_failure_cannot_publish_facts ... ok
+test exact_artifact_facts_reject_missing_stale_and_malformed_records ... ok
+test cargo_owns_its_namespace_and_preserves_target_directory_precedence ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s
+
+     Running tests/closure_required_regions.rs (target/release/build/charon/53b2e70e803077d2/out/closure_required_regions-53b2e70e803077d2)
+
+running 1 test
+test callable_contracts_keep_direction_and_genuine_binders ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/crate_data.rs (target/release/build/charon/d9b76d00e4867988/out/crate_data-d9b76d00e4867988)
+
+running 16 tests
+test discriminants ... ok
+test adt_constructor_source ... ok
+test declaration_groups ... ok
+test attributes ... ok
+test issue_1184_target_dispatch_unbound_item_generics ... ok
+test file_name ... ok
+test generic_parameter_variance ... ok
+test known_trait_method_call ... ok
+test rename_attribute ... ok
+test predicate_origins ... ok
+test source_text ... ok
+test multiple_deserialize ... ok
+test target_dispatch_source ... ok
+test spans ... ok
+test type_decl ... ok
+test visibility ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/cyclic_retention.rs (target/release/build/charon/a80eb5fb5c698c93/out/cyclic_retention-a80eb5fb5c698c93)
+
+running 3 tests
+test unrelated_active_cycle_is_not_used_as_the_retention_owner ... ok
+test recursive_associated_type_owner_does_not_retain_acyclic_parameters ... ok
+test reversed_declarations_still_use_one_recursive_boundary ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/dynamic-sized-type-info.rs (target/release/build/charon/e5d75c5b6c23f01c/out/dynamic_sized_type_info-e5d75c5b6c23f01c)
+
+running 1 test
+test ptr_metadata ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/explicit_substitution.rs (target/release/build/charon/bf860ae052c71ec2/out/explicit_substitution-bf860ae052c71ec2)
+
+running 7 tests
+test explicit_substitution_does_not_consume_supplied_clause_witnesses ... ok
+test explicit_substitution_preserves_implicit_self ... ok
+test explicit_substitution_respects_a_genuine_inner_binder ... ok
+test full_substitution_shifts_supplied_self_under_inner_binders ... ok
+test explicit_substitution_still_rejects_missing_explicit_arguments - should panic ... ok
+test full_substitution_still_requires_self_witness - should panic ... ok
+test nested_associated_constraint_replaces_explicits_but_keeps_self_path ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout.rs (target/release/build/charon/8fd2c8f2ad553565/out/layout-8fd2c8f2ad553565)
+
+running 1 test
+test type_layout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/popular-crates.rs (target/release/build/charon/23d056db4161d43c/out/popular_crates-23d056db4161d43c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/specialized_traits.rs (target/release/build/charon/d1540c7b3675de22/out/specialized_traits-d1540c7b3675de22)
+
+running 4 tests
+test cyclic_lifting_preserves_distinct_associated_types ... ok
+test specialization_preserves_closed_cyclic_parent_contracts ... ok
+test specialization_preserves_noninverse_cyclic_parent_contracts ... ok
+test specialization_preserves_typechecked_parent_trait_contracts ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/test-rust-name-matcher.rs (target/release/build/charon/4369f7a0bfdb050c/out/test_rust_name_matcher-4369f7a0bfdb050c)
+
+running 2 tests
+test test_partial_mono_name_matcher ... ok
+test test_name_matcher ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/ui.rs (target/release/build/charon/2ad0aaa22537b2c6/out/ui-2ad0aaa22537b2c6)
+
+running 442 tests
+test filtering/start_from_errors.rs                                                   ... ok
+test pattern-types.rs                                                                 ... ok
+test filtering/start-from-if-exists.rs                                                ... ok
+test filtering/inner-items.rs                                                         ... ok
+test lifetime-mutability.rs                                                           ... ok
+test filtering/start_from_attribute.rs                                                ... ok
+test diverging.rs                                                                     ... ok
+test filtering/start_from_pub.rs                                                      ... ok
+test issue-92-nonpositive-variant-indices.rs                                          ... ok
+test type-id.rs                                                                       ... ok
+test monomorphize-mut-no-types.rs                                                     ... ok
+test pointers-in-consts-no-warns.rs                                                   ... ok
+test max_char.rs                                                                      ... ok
+test filtering/start_from_on_module.rs                                                ... ok
+test filtering/opaque_attribute.rs                                                    ... ok
+test issue-166-self-constructors.rs                                                   ... ok
+test unsafe-impl-send.rs                                                              ... ok
+test issue-369-mismatched-genericparams.rs                                            ... ok
+test filtering/opacity.rs                                                             ... ok
+test cross_compile_big_endian.rs                                                      ... ok
+test filtering/match_on_opaque_enum.rs                                                ... ok
+test issue-91-enum-to-discriminant-cast.rs                                            ... ok
+test unsize.rs                                                                        ... ok
+test filtering/start_from.rs                                                          ... ok
+test predicates-on-late-bound-vars.rs                                                 ... ok
+test foreign-constant-aux.rs                                                          ... ignored
+test filtering/opaque-trait.rs                                                        ... ok
+test params.rs                                                                        ... ok
+test issue-165-vec-macro.rs                                                           ... ok
+test external.rs                                                                      ... ok
+test filtering/issue-1270-start-from-pub-skip-foreign-pub.rs                          ... ok
+test foreign-constant.rs                                                              ... ok
+test issue-322-macro-disambiguator.rs                                                 ... ok
+test unwind-llbc.rs                                                                   ... ok
+test issue-73-extern.rs                                                               ... ok
+test rename_attribute_failure.rs                                                      ... ok
+test polonius_map.rs                                                                  ... ok
+test disambiguator.rs                                                                 ... ok
+test call-to-known-trait-method.rs                                                    ... ok
+test desugar_drops_to_calls_mono.rs                                                   ... ok
+test issue-97-missing-parent-item-clause.rs                                           ... ok
+test region-inference-vars.rs                                                         ... ok
+test typenum.rs                                                                       ... ok
+test issue-372-type-param-out-of-range.rs                                             ... ok
+test type_inference_is_order_dependent.rs                                             ... ok
+test issue-93-recursive-traits-with-assoc-types.rs                                    ... ok
+test method-ref.rs                                                                    ... ok
+test rename_attribute.rs                                                              ... ok
+test closure-as-fn.rs                                                                 ... ok
+test issue-320-slice-pattern.rs                                                       ... ok
+test vec-reconstruct-move-values.rs                                                   ... ok
+test demo.rs                                                                          ... ok
+test unions.rs                                                                        ... ok
+test issue-159-heterogeneous-recursive-definitions.rs                                 ... ok
+test unsafe.rs                                                                        ... ok
+test advanced-const-generics.rs                                                       ... ok
+test monomorphize-mut.rs                                                              ... ok
+test dyn/issue-1264-builtin-vtable-poly.rs                                            ... ok
+test ml-name-matcher-tests.rs                                                         ... ok
+test dyn/mono-vtable-blanket-impl.rs                                                  ... ok
+test dyn/mono-vtable-ref-impl.rs                                                      ... ok
+test dyn/issue-1285-supertrait-method-call.rs                                         ... ok
+test dyn/dyn-sized.rs                                                                 ... ok
+test dyn/higher-ranked-dyn-trait-region.rs                                            ... ok
+test dyn/issue-1242-dyn-send-supertrait.rs                                            ... ok
+test dyn/dyn-trait-non-wf.rs                                                          ... ok
+test dyn/opaque-vtable.rs                                                             ... ok
+test dyn/dyn-field.rs                                                                 ... ok
+test dyn/builtin-vtables.rs                                                           ... ok
+test dyn/dyn-hrtb-ice.rs                                                              ... ok
+test dyn/generic-cast-to-dyn.rs                                                       ... ok
+test dyn/box-dyn-fnonce.rs                                                            ... ok
+test dyn/dyn-drop-glue-through-vtable-mono.rs                                         ... ok
+test dyn/dyn-method-with-early-bound-lifetimes.rs                                     ... ok
+test dyn/issue-1236-vtable-fn-ptr.rs                                                  ... ok
+test dyn/mono-vtable-lifetime-impl.rs                                                 ... ok
+test dyn/box-dyn-fnonce-raw.rs                                                        ... ok
+test gosim-demo.rs                                                                    ... ok
+test dyn/dyn-broken-assoc-type-constraint.rs                                          ... ok
+test dyn/dyn-drop-glue-through-vtable.rs                                              ... ok
+test dyn/closure-nested-dyn-ice.rs                                                    ... ok
+test dyn/issue-1074-vtable-supertrait.rs                                              ... ok
+test dyn/vtable_drop.rs                                                               ... ok
+test dyn/vtable-default-method.rs                                                     ... ok
+test issue-45-misc.rs                                                                 ... ok
+test dyn/dyn-cast-to-supertrait.rs                                                    ... ok
+test dyn/vtable-simple.rs                                                             ... ok
+test foreign-type-alias.rs                                                            ... ok
+test dyn/mono-vtable-default-method.rs                                                ... ok
+test dyn/dyn-fn.rs                                                                    ... ok
+test dyn/issue-1264-builtin-vtable.rs                                                 ... ok
+test dyn/dyn-trait.rs                                                                 ... ok
+test dyn/vtables.rs                                                                   ... ok
+test drop_after_overflow.rs                                                           ... ok
+test constructor-ref.rs                                                               ... ok
+test bitwise.rs                                                                       ... ok
+test skip-borrowck.rs                                                                 ... ok
+test desugar_drops_to_calls.rs                                                        ... ok
+test assert-kinds-reconstruct-fallible.rs                                             ... ok
+test dyn/dyn-with-diamond-supertraits.rs                                              ... ok
+test vec-reconstruct-nested.rs                                                        ... ok
+test unsupported/unbound-lifetime.rs                                                  ... ok
+test issue-1041-shift-through-index-mut.rs                                            ... ok
+test type_alias.rs                                                                    ... ok
+test associated_types/assoc-ty-default-with-self-bound.rs                             ... ok
+test no_nested_borrows.rs                                                             ... ok
+test associated_types/assoc-type-with-fn-bound.rs                                     ... ok
+test issue-4-slice-try-into-array.rs                                                  ... ok
+test contracts.rs                                                                     ... ok
+test associated_types/quantified-trait-type-constraint.rs                             ... ok
+test associated_types/lift-assoc-ty-in-alias.rs                                       ... ok
+test associated_types/iter-empty.rs                                                   ... ok
+test associated_types/issue-1260-self-ref-assoc-const.rs                              ... ok
+test associated_types/gat-used-in-method.rs                                           ... ok
+test associated_types/closure-inside-impl-with-bound-with-assoc-ty.rs                 ... ok
+test slice-index-range.rs                                                             ... ok
+test associated_types/mem-discriminant-from-derive.rs                                 ... ok
+test associated_types/generic-impl-with-defaulted-method-with-clause-with-assoc-ty.rs ... ok
+test associated_types/assoc-ty-via-supertrait-and-bounds.rs                           ... ok
+test associated_types/assoc-ty-bound-refers-to-assoc-ty.rs                            ... ok
+test associated_types/issue-968-default-assoc-const.rs                                ... ok
+test associated_types/supertrait-item-bound-has-assoc-ty.rs                           ... ok
+test associated_types/try-trait.rs                                                    ... ok
+test associated_types/assoc-constraint-on-assoc-ty.2.rs                               ... ok
+test associated_types/issue-1068-double-visit.rs                                      ... ok
+test associated_types/issue-1326-assoc-through-supertrait.rs                          ... ok
+test associated_types/assoc-constraint-on-assoc-ty-nested.rs                          ... ok
+test associated_types/issue-1036-failed-assoc-ty-lifting.rs                           ... ok
+test associated_types/method-with-assoc-type-constraint.rs                            ... ok
+test unsupported/issue-79-bound-regions.rs                                            ... ok
+test associated_types/issue-1078-default-assoc-ty-self-ref-clause.rs                  ... ok
+test associated_types/issue-1068-gat-with-assoc-ty.rs                                 ... ok
+test associated_types/assoc-constraint-on-assoc-ty.rs                                 ... ok
+test extern-abi-fn-pointer.rs                                                         ... ok
+test associated_types/associated-types.rs                                             ... ok
+test associated_types/impl-with-dyn-assoc-ty.rs                                       ... ok
+test reconstruct_early_return.rs                                                      ... ok
+test associated_types/issue-1078-default-assoc-ty-self-ref-clause.2.rs                ... ok
+test matches.rs                                                                       ... ok
+test arrays.rs                                                                        ... ok
+test associated_types/dictionary_passing_style_woes.rs                                ... ok
+test associated_types/pointee_metadata.rs                                             ... ok
+test issue-4-traits.rs                                                                ... ok
+test issue-378-ctor-as-fn.rs                                                          ... ok
+test copy_nonoverlapping.rs                                                           ... ok
+test assert-kinds.rs                                                                  ... ok
+test deallocate-all-locals.rs                                                         ... ok
+test find-sized-clause.rs                                                             ... ok
+test unsized-string-consts.rs                                                         ... ok
+test float.rs                                                                         ... ok
+test variadics.rs                                                                     ... ok
+test rvalues.rs                                                                       ... ok
+test gat-causes-unhandled-ty-clause.rs                                                ... ok
+test traits_special.rs                                                                ... ok
+test result-unwrap.rs                                                                 ... ok
+test method-impl-generalization.rs                                                    ... ok
+test comments.rs                                                                      ... ok
+test projection-index-from-end.rs                                                     ... ok
+test issue-70-override-provided-method.3.rs                                           ... ok
+test plain-panic-str.rs                                                               ... ok
+test ml-mono-name-matcher-tests.rs                                                    ... ok
+test consts/pointer-cast-const-pattern.rs                                             ... ok
+test consts/evaluate-consts.rs                                                        ... ok
+test statics.rs                                                                       ... ok
+test send_bound.rs                                                                    ... ok
+test consts/evaluate-consts-mono.rs                                                   ... ok
+test issue-114-opaque-bodies.rs                                                       ... ok
+test constants.rs                                                                     ... ok
+test issue-118-generic-copy.rs                                                        ... ok
+test consts/evaluate-consts-recursive-static.rs                                       ... ok
+test consts/ref-constant.rs                                                           ... ok
+test iterator.rs                                                                      ... ok
+test assoc-const-with-generics.rs                                                     ... ok
+test consts/evaluate-consts-inline.rs                                                 ... ok
+test consts/ptr-null-constevalval.rs                                                  ... ok
+test closures.rs                                                                      ... FAILED
+test simple/rpitit-with-lifetime-bound.rs                                             ... ok
+test issue-395-failed-to-normalize.rs                                                 ... ok
+test consts/string-new-constevalval.rs                                                ... ok
+test simple/promoted-literal-addition-overflow.rs                                     ... ok
+test scopes.rs                                                                        ... ok
+test simple/issue-988-closure-outlives.rs                                             ... FAILED
+test simple/hello-world.rs                                                            ... ok
+test simple/closure-inside-inline-const.rs                                            ... ok
+test simple/place_mention.rs                                                          ... ok
+test simple/nested-closure-lifetime.rs                                                ... FAILED
+test simple/uncheck-ops.rs                                                            ... ok
+test raw-boxes.rs                                                                     ... ok
+test simple/pass-higher-kinded-fn-item-as-closure.rs                                  ... ok
+test simple/remove-adt-clauses-closure-keep-assoc.rs                                  ... ok
+test simple/extern-same-name-across-modules.rs                                        ... ok
+test simple/promoted-literal-addition.rs                                              ... ok
+test simple/slice_index.rs                                                            ... ok
+test simple/opaque-trait-with-clause-in-method.rs                                     ... ok
+test simple/closure-uses-ambient-self-clause.rs                                       ... ok
+test simple/closure-with-remove-adt-clauses.rs                                        ... FAILED
+test simple/promoted-in-generic-fn.rs                                                 ... ok
+test simple/gat-check-binder-levels.rs                                                ... ok
+test simple/fewer-clauses-in-method-impl.2.rs                                         ... ok
+test simple/promoted-closure.rs                                                       ... ok
+test simple/trivial_generic_function.rs                                               ... ok
+test simple/promoted.rs                                                               ... ok
+test simple/box-deref-copy.rs                                                         ... ok
+test simple/drop-glue-with-const-generic.rs                                           ... ok
+test simple/promoted-u32-slice.rs                                                     ... ok
+test simple/default-method-with-clause-and-marker-trait.rs                            ... ok
+test simple/wrapping-ops.rs                                                           ... ok
+test simple/closure-inside-impl.rs                                                    ... ok
+test simple/call-foreign-defaulted-method.rs                                          ... ok
+test simple/well-formedness-bound.rs                                                  ... ok
+test simple/defaulted-rpitit.2.rs                                                     ... ok
+test simple/addition.rs                                                               ... ok
+test simple/range-iter.rs                                                             ... ok
+test simple/impl-trait-in-arg.rs                                                      ... ok
+test simple/const-subslice.rs                                                         ... ok
+test simple/alias-ty-missing-hrtb.rs                                                  ... ok
+test simple/closure-with-drops.rs                                                     ... ok
+test simple/box-deref-elaborated.rs                                                   ... ok
+test quantified-clause.rs                                                             ... ok
+test simple/lending-iterator-gat.rs                                                   ... FAILED
+test simple/defaulted-rpitit.3.rs                                                     ... ok
+test simple/closure-fnonce.rs                                                         ... ok
+test simple/match-on-float.rs                                                         ... ok
+test simple/comma-delimited-start-from.rs                                             ... ok
+test simple/generic-impl-with-method.rs                                               ... ok
+test simple/promoted_in_closure.rs                                                    ... ok
+test simple/slice_increment.rs                                                        ... ok
+test simple/lifetime-unification-from-trait-impl.rs                                   ... ok
+test simple/metadata-without-marker-trait.rs                                          ... ok
+test simple/basic-mono.rs                                                             ... ok
+test simple/vec-push.rs                                                               ... ok
+test simple/drop-cow.rs                                                               ... ok
+test simple/match-on-char.rs                                                          ... ok
+test simple/ref-in-const.rs                                                           ... ok
+test simple/fn_ptr_trait.rs                                                           ... ok
+test simple/promoted-inside-impl.rs                                                   ... ok
+test simple/trait-alias.rs                                                            ... ok
+test simple/offset-of.rs                                                              ... ok
+test simple/closure-fn.rs                                                             ... FAILED
+test simple/call-method-via-supertrait-bound.rs                                       ... ok
+test simple/array_index.rs                                                            ... ok
+test simple/drop-string.rs                                                            ... ok
+test simple/intrinsic-same-name-across-modules.rs                                     ... ok
+test simple/closure-with-non-upvar-lifetime.rs                                        ... FAILED
+test simple/box-indexed-copy.rs                                                       ... ok
+test simple/partial-drop.rs                                                           ... ok
+test simple/vec-with-capacity.rs                                                      ... ok
+test simple/double-promotion.rs                                                       ... ok
+test simple/struct-with-drops.rs                                                      ... ok
+test simple/drop-string-desugar.rs                                                    ... ok
+test simple/issue-1040-closure-upvar-lifetime.rs                                      ... FAILED
+test simple/nested-closure-trait-ref.rs                                               ... ok
+test simple/conditional-method.rs                                                     ... ok
+test simple/closure-capture-ref-by-move.rs                                            ... FAILED
+test simple/ptr_to_promoted.rs                                                        ... ok
+test simple/drop-glue-with-const-generic-silenced.rs                                  ... ok
+test simple/monomorphized-intrinsic.rs                                                ... ok
+test simple/defaulted-rpitit.rs                                                       ... ok
+test simple/trait-default-const.rs                                                    ... ok
+test simple/box-slice-metadata.rs                                                     ... ok
+test simple/additions.rs                                                              ... ok
+test simple/slice_index_range.rs                                                      ... ok
+test simple/promoted_in_default_method.rs                                             ... ok
+test simple/nested-inline-const.rs                                                    ... ok
+test simple/multiple-promoteds.rs                                                     ... ok
+test simple/rpitit-with-lifetime.rs                                                   ... ok
+test simple/manual-drop-impl.rs                                                       ... ok
+test simple/fn-ptr.rs                                                                 ... ok
+test simple/ptr-from-raw-parts.rs                                                     ... ok
+test simple/gat-complex-lifetimes.rs                                                  ... ok
+test simple/foreign-inline-const.rs                                                   ... FAILED
+test simple/non-lifetime-gats.rs                                                      ... ok
+test simple/call-inherent-method-with-trait-bound.rs                                  ... ok
+test simple/remove-adt-clauses-supertrait.rs                                          ... ok
+test simple/rpitit-with-const-generic.rs                                              ... ok
+test simple/box-deref-optimized.rs                                                    ... ok
+test simple/conditional-drop.rs                                                       ... ok
+test simple/rpitit.rs                                                                 ... ok
+test simple/const_pat_value.rs                                                        ... ok
+test simple/coroutine.rs                                                              ... ok
+test simple/mono-enum-with-single-variant.rs                                          ... ok
+test simple/builtin-drop-mono.rs                                                      ... ok
+test simple/builtin-drop.rs                                                           ... ok
+test simple/generic-offset-of.rs                                                      ... ok
+test simple/fewer-clauses-in-method-impl.rs                                           ... ok
+test simple/assoc-const-with-self-clause.rs                                           ... ok
+test simple/thread-local.rs                                                           ... ok
+test simple/hide-drops.rs                                                             ... ok
+test simple/default-method-with-clause-and-marker-trait.2.rs                          ... ok
+test simple/gat-default.rs                                                            ... ok
+test simple/catch-unwind.rs                                                           ... ok
+test simple/supertrait-impl-with-assoc-type-constraint.rs                             ... ok
+test simple/closure-fnmut.rs                                                          ... FAILED
+test simple/min.rs                                                                    ... ok
+test simple/remove-adt-clauses.rs                                                     ... ok
+test simple/gat-implied-clause.rs                                                     ... ok
+test simple/inline-asm.rs                                                             ... ok
+test simple/ptr_metadata.rs                                                           ... ok
+test simple/coinductive-perfect-derive.rs                                             ... ok
+test simple/explicit_destruct_bound.rs                                                ... ok
+test simple/remove-adt-clauses-keep-assoc.rs                                          ... ok
+test simple/generic-impl-with-defaulted-method.rs                                     ... ok
+test simple/promoted-closure-no-warns.rs                                              ... ok
+test multi-target/issue-1248-const-initializers.rs                                    ... ok
+test simple/box-new.rs                                                                ... ok
+test no-gen-tuple-structs.rs                                                          ... FAILED
+test multi-target/cstr.rs                                                             ... ok
+test simple/nested-closure.rs                                                         ... FAILED
+test multi-target/issue-1157-single-target-suffix.rs                                  ... ok
+test multi-target/issue-1185-4-wrapping-add.rs                                        ... ok
+test hide-marker-traits.rs                                                            ... ok
+test multi-target/issue-1213-merge-methods-when-missing-simple.rs                     ... ok
+test simple/single-variant-enum-drop-glue.rs                                          ... ok
+test multi-target/issue-1185-2-generic-make.rs                                        ... ok
+test multi-target/issue-1185-3-box-drop-glue.rs                                       ... ok
+test multi-target/default-trait-assoc-const.rs                                        ... ok
+test impl-trait.rs                                                                    ... ok
+test multi-target/issue-1133-assoc-const.rs                                           ... ok
+test simple/generic-discriminant.rs                                                   ... ok
+test string-literal.rs                                                                ... ok
+test multi-target/multi-targets-3-dedup.rs                                            ... ok
+test multi-target/issue-1158-partial-dedup.rs                                         ... ok
+test multi-target/evaluate-consts-size-of.rs                                          ... ok
+test multi-target/multi-targets.rs                                                    ... ok
+test multi-target/issue-1186-conditional-repr.rs                                      ... ok
+test multi-target/issue-1182-dedup-impls.rs                                           ... ok
+test multi-target/sysroot.rs                                                          ... ok
+test partial-monomorphization/issue-1204-partial-mono-tuples.rs                       ... ok
+test simple/trait-default-const-cross-crate.rs                                        ... ok
+test multi-target/issue-1185-1-inline-const.rs                                        ... ok
+test partial-monomorphization/mono-mut-tuple.rs                                       ... ok
+test multi-target/issue-1307-required-method.rs                                       ... ok
+test issue-323-closure-borrow.rs                                                      ... FAILED
+test traits/default-method-with-item-bound.5.rs                                       ... ok
+test traits/default-method-with-item-bound.6.rs                                       ... ok
+test traits/remove-self-clause-on-closure.rs                                          ... ok
+test traits/issue-513-method-late-bound-mismatch.rs                                   ... ok
+test borrowck-statements.rs                                                           ... ok
+test traits/default-method-with-item-bound.3.rs                                       ... ok
+test traits/default-method-with-item-bound.rs                                         ... ok
+test traits/recursive-projection-overflow.rs                                          ... ok
+test issue-72-hash-missing-impl.rs                                                    ... ok
+test traits/default-method-with-item-bound.2.rs                                       ... ok
+test traits/issue-513-gat-clause-mismatch.rs                                          ... ok
+test traits/issue-513-method-clause-mismatch-and-default-call.rs                      ... ok
+test control-flow/empty-loop.rs                                                       ... ok
+test traits/remove-unused-clauses.rs                                                  ... ok
+test stealing.rs                                                                      ... ok
+test traits/pointee-metadata-bounds.rs                                                ... ok
+test traits/issue-513-method-clause-mismatch.rs                                       ... ok
+test arrays_const_generics.rs                                                         ... ok
+test traits/issue-513-gat-clause-mismatch-use-clause.rs                               ... ok
+test traits/default-method-with-item-bound.4.rs                                       ... ok
+test control-flow/issue-507-cfg.rs                                                    ... ok
+test control-flow/duplicated-statement.rs                                             ... ok
+test control-flow/issue-1051-return-break.rs                                          ... ok
+test ptr-offset.rs                                                                    ... ok
+test control-flow/lazy-boolean-op-in-if.rs                                            ... ok
+test traits.rs                                                                        ... ok
+test control-flow/simple-fallthrough.rs                                               ... ok
+test regressions/issue-792-trait-ref-panic-when-tracing.rs                            ... ok
+test control-flow/loop-break.rs                                                       ... ok
+test regressions/inline-const-fn-item.rs                                              ... ok
+test control-flow/ambiguous-loop-exit.rs                                              ... ok
+test control-flow/issue-899-forward-jump-incorrectly-reconstructed.rs                 ... ok
+test ml-partial-mono-name-matcher-tests.rs                                            ... ok
+test regressions/issue-1294-remove-clause-underflow.rs                                ... ok
+test regressions/issue-1075-primty-def-id.rs                                          ... ok
+test regressions/issue-1297-box-new-allocator-ty.rs                                   ... ok
+test regressions/issue-1233-foreign-static.rs                                         ... ok
+test regressions/issue-1067-filename-ice.rs                                           ... ok
+test traits/impossible-recursive-trait-proof.rs                                       ... ok
+test traits/incorrect-cyclic-wf.rs                                                    ... ok
+test vec-reconstruct-multiple-adjacent.rs                                             ... ok
+test regressions/issue-1089-inline-const-precise-drops.rs                             ... ok
+test regressions/reconstruct-fallible.rs                                              ... ok
+test regressions/inline-const-nonnull.rs                                              ... ok
+test regressions/issue-1010-missing-lifetime.rs                                       ... ok
+test pointers-in-consts.rs                                                            ... ok
+test regressions/issue-393-vec-with-control-flow.rs                                   ... ok
+test regressions/issue-967-assoc-type-coherence.rs                                    ... ok
+test regressions/invalid-reconstruct-assert.rs                                        ... ok
+test regressions/issue-1391-duplicate-dyn-types.rs                                    ... ok
+test regressions/issue-1073-out-of-bounds-body-region.rs                              ... ok
+test control-flow/ullbc-control-flow.rs                                               ... ok
+test explicit-drop-bounds.rs                                                          ... ok
+test regressions/issue-1296-exclude-needed-builtin-ty.rs                              ... ok
+test regressions/issue-1394-box-self-dyn-mono.rs                                      ... ok
+test cross_compile_32_bit.rs                                                          ... ok
+test monomorphization/trait_impls.rs                                                  ... ok
+test monomorphization/simpl-trait-assoc-types-2.rs                                    ... ok
+test control-flow/issue-1051-missing-loop-jump.rs                                     ... ok
+test monomorphization/simple_trait_with_trait_alias_generics.rs                       ... ok
+test monomorphization/simple_trait.rs                                                 ... ok
+test multi-target/multi-targets-file-ids.rs                                           ... ok
+test monomorphization/issue-1262-defaulted-method-indirection.rs                      ... ok
+test control-flow/issue-297-cfg.rs                                                    ... ok
+test monomorphization/simple_trait_with_trait_alias.rs                                ... ok
+test monomorphization/rec-adt.rs                                                      ... ok
+test monomorphization/closure-fnonce.rs                                               ... ok
+test monomorphization/issue-1159-assoc-const.rs                                       ... ok
+test remove-dynamic-checks.rs                                                         ... ok
+test monomorphization/trait_impls_ullbc.rs                                            ... ok
+test monomorphization/fn_ptr_generics.rs                                              ... ok
+test monomorphization/unsatisfied-method-bounds.rs                                    ... ok
+test monomorphization/global_with_generics.rs                                         ... ok
+test monomorphization/bound_lifetime.rs                                               ... ok
+test monomorphization/closure-fn.rs                                                   ... FAILED
+test issue-114-opaque-bodies-aux.rs                                                   ... ignored
+test monomorphization/simple-trait-two-methods.rs                                     ... ok
+test monomorphization/issue-722-poly-items-in-names.rs                                ... ok
+test monomorphization/issue-917-inline-const-with-poly-type.rs                        ... ok
+test monomorphization/adt_proj.rs                                                     ... ok
+test monomorphization/lifetime-bound-call.rs                                          ... ok
+test monomorphization/simple-trait-assoc-types.rs                                     ... ok
+test monomorphization/issue-922-assoc-const-with-default.rs                           ... ok
+test monomorphization/simple-trait-generics.rs                                        ... ok
+test monomorphization/simple-trait-generics-assoc-2.rs                                ... ok
+test monomorphization/fndefs-casts.rs                                                 ... ok
+test monomorphization/simple-trait-generics-2.rs                                      ... ok
+test monomorphization/simple-trait-generics-assoc.rs                                  ... ok
+test monomorphization/closures.rs                                                     ... FAILED
+test monomorphization/dyn-trait.rs                                                    ... ok
+test monomorphization/simple-trait-assoc-types-3.rs                                   ... ok
+test monomorphization/generic-method.rs                                               ... ok
+test control-flow/loops.rs                                                            ... ok
+test issue-70-override-provided-method.2-nodup.rs                                     ... ok
+test issue-120-bare-discriminant-read.rs                                              ... ok
+test issue-70-override-provided-method.2.rs                                           ... ok
+test multi-target/multi-target-from-symcrypt.rs                                       ... ok
+test ml-multi-target-name-matcher-tests.rs                                            ... ok
+test multi-target/issue-1213-merge-methods-when-missing.rs                            ... ok
+test issue-94-recursive-trait-defns.rs                                                ... ok
+test ptr_no_provenance.rs                                                             ... ok
+test nondiverging-intrinsics.rs                                                       ... ok
+test rust-name-matcher-tests.rs                                                       ... ok
+test closures_with_where.rs                                                           ... ok
+test panics.rs                                                                        ... ok
+test issue-394-rpit-with-lifetime.rs                                                  ... FAILED
+test simple-cmp.rs                                                                    ... ok
+test issue-70-override-provided-method.rs                                             ... ok
+test monomorphization/issue-708-from-str-mismatched-generics.rs                       ... FAILED
+
+failures:
+
+---- closures.rs ----
+
+---- expected: tests/ui/closures.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | struct (_,)<A> {
+   4    4 |   _0: A,
+   5    5 | }
+          ⋮
+1253 1253 |     TraitClause1: (T: Trait<'a>),
+1254 1254 |     TypeOutlives0: T: '_1,
+1255 1255 |     RegionOutlives0: 'a: '_1,
+1256 1256 | {
+1257 1257 |     let _0: (); // return
+1258      -     let _1: &'2 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+     1258 +     let _1: &'4 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1259 1259 | 
+1260 1260 |     storage_live(_0)
+1261 1261 |     _0 = ()
+1262 1262 |     storage_dead(_1)
+1263 1263 |     return
+          ⋮
+1271 1271 |     TypeOutlives0: T: '_2,
+1272 1272 |     TypeOutlives1: T: '_1,
+1273 1273 |     RegionOutlives0: 'a: '_2,
+1274 1274 | {
+1275 1275 |     let _0: &'0 T; // return
+1276      -     let _1: &'3 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+     1276 +     let _1: &'5 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1277 1277 |     let tupled_args: (&'_1 T,); // arg #2
+1278      -     let y: &'5 T; // local
+     1278 +     let y: &'7 T; // local
+1279 1279 | 
+1280 1280 |     storage_live(_0)
+1281 1281 |     storage_live(y)
+1282 1282 |     y = move tupled_args._0
+1283 1283 |     _0 = copy y
+          ⋮
+1297 1297 |     RegionOutlives0: 'a: '_2,
+1298 1298 | {
+1299 1299 |     let _0: &'_1 T; // return
+1300 1300 |     let state: &'_2 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1301 1301 |     let args: (&'_1 T,); // arg #2
+1302      -     let _3: &'1 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+     1302 +     let _3: &'0 test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+1303 1303 | 
+1304 1304 |     storage_live(_0)
+1305 1305 |     storage_live(_3)
+1306 1306 |     _3 = &(*state)
+1307      -     _0 = {impl Fn<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '7, T>[TraitClause0, TraitClause1](move _3, move args)
+     1307 +     _0 = {impl Fn<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call<'a, '_1, '2, T>[TraitClause0, TraitClause1](move _3, move args)
+1308 1308 |     ↳⚡ storage_dead(_3)
+1309 1309 |         storage_dead(args)
+1310 1310 |         storage_dead(state)
+1311 1311 |         unwind_continue
+1312 1312 |     storage_dead(_3)
+          ⋮
+1322 1322 |     TraitClause1: (T: Trait<'a>),
+1323 1323 |     TypeOutlives0: T: '_1,
+1324 1324 | {
+1325 1325 |     let _0: &'0 T; // return
+1326 1326 |     let _1: test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // arg #1
+1327      -     let _2: (&'2 T,); // arg #2
+1328      -     let _3: &'5 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+     1327 +     let _2: (&'4 T,); // arg #2
+     1328 +     let _3: &'7 mut test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]; // anonymous local
+1329 1329 | 
+1330 1330 |     storage_live(_0)
+1331 1331 |     storage_live(_3)
+1332 1332 |     _3 = &mut _1
+1333      -     _0 = {impl FnMut<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '16, T>[TraitClause0, TraitClause1](move _3, move _2)
+1334      -     ↳⚡ drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '22, T>[TraitClause0, TraitClause1]] _1
+     1333 +     _0 = {impl FnMut<(&'_ T,), &'_ T> for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '18, T>[TraitClause0, TraitClause1](move _3, move _2)
+     1334 +     ↳⚡ drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '24, T>[TraitClause0, TraitClause1]] _1
+1335 1335 |         ↳⚡ storage_dead(_3)
+1336 1336 |             storage_dead(_2)
+1337 1337 |             storage_dead(_1)
+1338 1338 |             unwind_terminate
+1339 1339 |         storage_dead(_3)
+1340 1340 |         storage_dead(_2)
+1341 1341 |         storage_dead(_1)
+1342 1342 |         unwind_continue
+1343      -     drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '28, T>[TraitClause0, TraitClause1]] _1
+     1343 +     drop[{impl Destruct for test_crate::test_closure_ref_early_bound::closure<'a, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '30, T>[TraitClause0, TraitClause1]] _1
+1344 1344 |     ↳⚡ storage_dead(_3)
+1345 1345 |         storage_dead(_2)
+1346 1346 |         storage_dead(_1)
+1347 1347 |         unwind_continue
+1348 1348 |     storage_dead(_3)
+          ⋮
+2594 2594 | pub fn test_closure_capture(x: u32, y: u32) -> u32
+2595 2595 | {
+2596 2596 |     let _0: u32; // return
+2597 2597 |     let x: u32; // arg #1
+2598 2598 |     let y: u32; // arg #2
+2599      -     let f: &'6 test_crate::test_closure_capture::closure<'7, '8>; // local
+2600      -     let _4: test_crate::test_closure_capture::closure<'9, '10>; // anonymous local
+     2599 +     let f: &'5 test_crate::test_closure_capture::closure<'6, '7>; // local
+     2600 +     let _4: test_crate::test_closure_capture::closure<'8, '9>; // anonymous local
+2601 2601 |     let _5: &'11 u32; // anonymous local
+2602 2602 |     let _6: &'12 u32; // anonymous local
+2603 2603 |     let _7: &'13 test_crate::test_closure_capture::closure<'14, '15>; // anonymous local
+2604 2604 |     let _8: (u32,); // anonymous local
+2605 2605 | 
+          ⋮
+2617 2617 |     fake_read(f)
+2618 2618 |     storage_live(_7)
+2619 2619 |     _7 = &(*f)
+2620 2620 |     storage_live(_8)
+2621 2621 |     _8 = (const 0u32,)
+2622      -     _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'26, '27, '28>(move _7, move _8)
+     2622 +     _0 = {impl Fn<(u32,), u32> for test_crate::test_closure_capture::closure<'_0, '_1>}::call<'24, '25, '26>(move _7, move _8)
+2623 2623 |     ↳⚡ storage_dead(y)
+2624 2624 |         storage_dead(x)
+2625 2625 |         unwind_continue
+2626 2626 |     storage_dead(_8)
+2627 2627 |     storage_dead(_7)
+          ⋮
+3120 3120 | // Full name: test_crate::test_fnmut_with_ref
+3121 3121 | fn test_fnmut_with_ref()
+3122 3122 | {
+3123 3123 |     let _0: (); // return
+3124 3124 |     let sum: usize; // local
+3125      -     let closure: test_crate::test_fnmut_with_ref::closure<'2>; // local
+     3125 +     let closure: test_crate::test_fnmut_with_ref::closure<'1>; // local
+3126 3126 |     let _3: &'3 mut usize; // anonymous local
+3127 3127 |     let _4: (); // anonymous local
+3128 3128 |     let _5: &'6 mut test_crate::test_fnmut_with_ref::closure<'7>; // anonymous local
+3129 3129 |     let _6: (&'10 usize,); // anonymous local
+3130 3130 |     let _7: &'11 usize; // anonymous local
+3131 3131 |     let _8: &'12 usize; // anonymous local
+3132 3132 |     let _9: &'13 usize; // anonymous local
+3133 3133 |     let _10: &'15 usize; // anonymous local
+3134      -     let _11: &'27 usize; // anonymous local
+     3134 +     let _11: &'25 usize; // anonymous local
+3135 3135 |     let _12: usize; // anonymous local
+3136 3136 | 
+3137 3137 |     storage_live(_10)
+3138 3138 |     storage_live(_11)
+3139 3139 |     storage_live(_12)
+          ⋮
+3160 3160 |     storage_live(_8)
+3161 3161 |     _9 = move _10
+3162 3162 |     _8 = &(*_9)
+3163 3163 |     _7 = &(*_8)
+3164 3164 |     _6 = (move _7,)
+3165      -     _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'24, '25, '26>(move _5, move _6)
+     3165 +     _4 = {impl FnMut<(&'_ usize,), ()> for test_crate::test_fnmut_with_ref::closure<'_0>}::call_mut<'22, '23, '24>(move _5, move _6)
+3166 3166 |     ↳⚡ storage_dead(_9)
+3167 3167 |         unwind_continue
+3168 3168 |     storage_dead(_7)
+3169 3169 |     storage_dead(_6)
+3170 3170 |     storage_dead(_5)
+          ⋮
+3253 3253 |     non-dyn-compatible
+3254 3254 | }
+3255 3255 | 
+3256 3256 | 
+3257 3257 | 
+
+
+
+---- simple/issue-988-closure-outlives.rs ----
+
+---- expected: tests/ui/simple/issue-988-closure-outlives.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 138  138 |     _5 = &read
+ 139  139 |     storage_live(_6)
+ 140  140 |     storage_live(_7)
+ 141  141 |     _7 = copy i
+ 142  142 |     _6 = (move _7,)
+ 143      -     _0 = call<'14, '15>(move _5, move _6)
+      143 +     _0 = call<'12, '13>(move _5, move _6)
+ 144  144 |     ↳⚡ storage_dead(i)
+ 145  145 |         storage_dead(a)
+ 146  146 |         unwind_continue
+ 147  147 |     storage_dead(_7)
+ 148  148 |     storage_dead(_6)
+          ⋮
+ 260  260 |     non-dyn-compatible
+ 261  261 | }
+ 262  262 | 
+ 263  263 | 
+ 264  264 | 
+
+
+
+---- simple/nested-closure-lifetime.rs ----
+
+---- expected: tests/ui/simple/nested-closure-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 107  107 |     TraitClause0: (T: Sized),
+ 108  108 |     TraitClause1: (T: Clone),
+ 109  109 |     TypeOutlives0: T: '_0,
+ 110  110 |     TypeOutlives1: T: '_3,
+ 111  111 |     TypeOutlives2: T: '_2,
+ 112      -     RegionOutlives0: '_0: '_3,
+      112 +     RegionOutlives0: '_2: '_1,
+      113 +     RegionOutlives1: '_0: '_1,
+      114 +     RegionOutlives2: '_0: '_2,
+      115 +     RegionOutlives3: '_0: '_3,
+ 113  116 | {
+ 114  117 |     let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
+ 115  118 |     let _1: &'3 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 116  119 |     let tupled_args: (); // arg #2
+ 117  120 | 
+          ⋮
+ 127  130 | where
+ 128  131 |     TraitClause0: (T: Sized),
+ 129  132 |     TraitClause1: (T: Clone),
+ 130  133 |     TypeOutlives0: T: 'a,
+ 131  134 | {
+ 132      -     let _0: test_crate::foo::closure::closure<'2, T>[TraitClause0, TraitClause1]; // return
+      135 +     let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
+ 133  136 |     let x: &'3 T; // arg #1
+ 134  137 |     let f: test_crate::foo::closure<'5, T>[TraitClause0, TraitClause1]; // local
+ 135  138 |     let _3: &'8 test_crate::foo::closure<'9, T>[TraitClause0, TraitClause1]; // anonymous local
+ 136  139 |     let _4: (); // anonymous local
+ 137  140 | 
+          ⋮
+ 141  144 |     fake_read(f)
+ 142  145 |     storage_live(_3)
+ 143  146 |     _3 = &f
+ 144  147 |     storage_live(_4)
+ 145  148 |     _4 = ()
+ 146      -     _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'15, '16, '17, '18, T>[TraitClause0, TraitClause1](move _3, move _4)
+      149 +     _0 = {impl Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}::call<'13, '14, '15, '16, T>[TraitClause0, TraitClause1](move _3, move _4)
+ 147  150 |     ↳⚡ storage_dead(x)
+ 148  151 |         unwind_continue
+ 149  152 |     storage_dead(_4)
+ 150  153 |     storage_dead(_3)
+ 151  154 |     storage_dead(f)
+          ⋮
+ 177  180 |     TraitClause0: (T: Sized),
+ 178  181 |     TraitClause1: (T: Clone),
+ 179  182 |     TypeOutlives0: T: '_0,
+ 180  183 |     TypeOutlives1: T: '_3,
+ 181  184 |     TypeOutlives2: T: '_2,
+ 182      -     RegionOutlives0: '_0: '_3,
+      185 +     RegionOutlives0: '_2: '_1,
+      186 +     RegionOutlives1: '_0: '_1,
+      187 +     RegionOutlives2: '_0: '_2,
+      188 +     RegionOutlives3: '_0: '_3,
+ 183  189 | {
+ 184  190 |     let _0: test_crate::foo::closure::closure<'_2, T>[TraitClause0, TraitClause1]; // return
+ 185  191 |     let state: &'_3 mut test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 186  192 |     let args: (); // arg #2
+ 187  193 |     let _3: &'0 test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 205  211 | where
+ 206  212 |     TraitClause0: (T: Sized),
+ 207  213 |     TraitClause1: (T: Clone),
+ 208  214 |     TypeOutlives0: T: '_0,
+ 209  215 |     TypeOutlives1: T: '_2,
+      216 +     RegionOutlives0: '_2: '_1,
+      217 +     RegionOutlives1: '_0: '_1,
+      218 +     RegionOutlives2: '_0: '_2,
+ 210  219 | {
+ 211  220 |     let _0: test_crate::foo::closure::closure<'1, T>[TraitClause0, TraitClause1]; // return
+ 212  221 |     let _1: test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 213  222 |     let _2: (); // arg #2
+ 214  223 |     let _3: &'3 mut test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 241  250 | impl<'_0, '_1, '_2, T> FnOnce<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]
+ 242  251 | where
+ 243  252 |     TraitClause0: (T: Sized),
+ 244  253 |     TraitClause1: (T: Clone),
+ 245  254 |     TypeOutlives0: T: '_0,
+      255 +     RegionOutlives0: '_2: '_1,
+      256 +     RegionOutlives1: '_0: '_1,
+      257 +     RegionOutlives2: '_0: '_2,
+ 246  258 | {
+ 247  259 |     proof ImpliedClause0: (test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 248  260 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 249  261 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 250  262 |     proof ImpliedClause3: (test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]: Sized) = {built_in impl Sized for test_crate::foo::closure::closure<'_, T>[TraitClause0, TraitClause1]}
+          ⋮
+ 257  269 | impl<'_0, '_1, '_2, T> FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]
+ 258  270 | where
+ 259  271 |     TraitClause0: (T: Sized),
+ 260  272 |     TraitClause1: (T: Clone),
+ 261  273 |     TypeOutlives0: T: '_0,
+      274 +     RegionOutlives0: '_2: '_1,
+      275 +     RegionOutlives1: '_0: '_1,
+      276 +     RegionOutlives2: '_0: '_2,
+ 262  277 | {
+ 263  278 |     proof ImpliedClause0: (test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 264  279 |     proof ImpliedClause1: (test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]: FnOnce<()>) = {impl FnOnce<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}<'_0, '_1, '_2, T>[TraitClause0, TraitClause1]
+ 265  280 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 266  281 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 272  287 | impl<'_0, '_1, '_2, T> Fn<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]
+ 273  288 | where
+ 274  289 |     TraitClause0: (T: Sized),
+ 275  290 |     TraitClause1: (T: Clone),
+ 276  291 |     TypeOutlives0: T: '_0,
+      292 +     RegionOutlives0: '_2: '_1,
+      293 +     RegionOutlives1: '_0: '_1,
+      294 +     RegionOutlives2: '_0: '_2,
+ 277  295 | {
+ 278  296 |     proof ImpliedClause0: (test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 279  297 |     proof ImpliedClause1: (test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]: FnMut<()>) = {impl FnMut<()> for test_crate::foo::closure<'_0, T>[TraitClause0, TraitClause1]}<'_0, '_1, '_2, T>[TraitClause0, TraitClause1]
+ 280  298 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 281  299 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 318  336 |     TraitClause0: (T: Sized),
+ 319  337 |     TraitClause1: (T: Clone),
+ 320  338 |     TypeOutlives0: T: '_0,
+ 321  339 |     TypeOutlives1: T: '_2,
+ 322  340 |     TypeOutlives2: T: '_1,
+ 323      -     RegionOutlives0: '_0: '_2,
+      341 +     RegionOutlives0: '_0: '_1,
+      342 +     RegionOutlives1: '_0: '_2,
+ 324  343 | {
+ 325      -     let _0: &'0 T; // return
+ 326      -     let _1: &'2 test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+      344 +     let _0: &'1 T; // return
+      345 +     let _1: &'3 test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 327  346 |     let tupled_args: (); // arg #2
+ 328  347 | 
+ 329  348 |     storage_live(_0)
+ 330  349 |     _0 = copy (*_1)._0
+ 331  350 |     storage_dead(tupled_args)
+          ⋮
+ 339  358 |     TraitClause0: (T: Sized),
+ 340  359 |     TraitClause1: (T: Clone),
+ 341  360 |     TypeOutlives0: T: '_0,
+ 342  361 |     TypeOutlives1: T: '_2,
+ 343  362 |     TypeOutlives2: T: '_1,
+ 344      -     RegionOutlives0: '_0: '_2,
+      363 +     RegionOutlives0: '_0: '_1,
+      364 +     RegionOutlives1: '_0: '_2,
+ 345  365 | {
+ 346  366 |     let _0: &'_1 T; // return
+ 347  367 |     let state: &'_2 mut test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 348  368 |     let args: (); // arg #2
+ 349  369 |     let _3: &'0 test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 367  387 | where
+ 368  388 |     TraitClause0: (T: Sized),
+ 369  389 |     TraitClause1: (T: Clone),
+ 370  390 |     TypeOutlives0: T: '_0,
+ 371  391 |     TypeOutlives1: T: '_1,
+      392 +     RegionOutlives0: '_0: '_1,
+ 372  393 | {
+ 373      -     let _0: &'0 T; // return
+      394 +     let _0: &'1 T; // return
+ 374  395 |     let _1: test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // arg #1
+ 375  396 |     let _2: (); // arg #2
+ 376      -     let _3: &'2 mut test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+      397 +     let _3: &'3 mut test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]; // anonymous local
+ 377  398 | 
+ 378  399 |     storage_live(_0)
+ 379  400 |     storage_live(_3)
+ 380  401 |     _3 = &mut _1
+ 381      -     _0 = {impl FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '4, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 382      -     ↳⚡ drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '5, T>[TraitClause0, TraitClause1]] _1
+      402 +     _0 = {impl FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::call_mut<'_0, '_1, '5, T>[TraitClause0, TraitClause1](move _3, move _2)
+      403 +     ↳⚡ drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '6, T>[TraitClause0, TraitClause1]] _1
+ 383  404 |         ↳⚡ storage_dead(_3)
+ 384  405 |             storage_dead(_2)
+ 385  406 |             storage_dead(_1)
+ 386  407 |             unwind_terminate
+ 387  408 |         storage_dead(_3)
+ 388  409 |         storage_dead(_2)
+ 389  410 |         storage_dead(_1)
+ 390  411 |         unwind_continue
+ 391      -     drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '6, T>[TraitClause0, TraitClause1]] _1
+      412 +     drop[{impl Destruct for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}::drop_glue<'_0, '7, T>[TraitClause0, TraitClause1]] _1
+ 392  413 |     ↳⚡ storage_dead(_3)
+ 393  414 |         storage_dead(_2)
+ 394  415 |         storage_dead(_1)
+ 395  416 |         unwind_continue
+ 396  417 |     storage_dead(_3)
+          ⋮
+ 403  424 | impl<'_0, '_1, T> FnOnce<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]
+ 404  425 | where
+ 405  426 |     TraitClause0: (T: Sized),
+ 406  427 |     TraitClause1: (T: Clone),
+ 407  428 |     TypeOutlives0: T: '_0,
+      429 +     RegionOutlives0: '_0: '_1,
+ 408  430 | {
+ 409  431 |     proof ImpliedClause0: (test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 410  432 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 411  433 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 412  434 |     proof ImpliedClause3: (&'_ T: Sized) = {built_in impl Sized for &'_ T}
+          ⋮
+ 419  441 | impl<'_0, '_1, T> FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]
+ 420  442 | where
+ 421  443 |     TraitClause0: (T: Sized),
+ 422  444 |     TraitClause1: (T: Clone),
+ 423  445 |     TypeOutlives0: T: '_0,
+      446 +     RegionOutlives0: '_0: '_1,
+ 424  447 | {
+ 425  448 |     proof ImpliedClause0: (test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 426  449 |     proof ImpliedClause1: (test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]: FnOnce<()>) = {impl FnOnce<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}<'_0, '_1, T>[TraitClause0, TraitClause1]
+ 427  450 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 428  451 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 434  457 | impl<'_0, '_1, T> Fn<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]
+ 435  458 | where
+ 436  459 |     TraitClause0: (T: Sized),
+ 437  460 |     TraitClause1: (T: Clone),
+ 438  461 |     TypeOutlives0: T: '_0,
+      462 +     RegionOutlives0: '_0: '_1,
+ 439  463 | {
+ 440  464 |     proof ImpliedClause0: (test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}
+ 441  465 |     proof ImpliedClause1: (test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]: FnMut<()>) = {impl FnMut<()> for test_crate::foo::closure::closure<'_0, T>[TraitClause0, TraitClause1]}<'_0, '_1, T>[TraitClause0, TraitClause1]
+ 442  466 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 443  467 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 456  480 |     non-dyn-compatible
+ 457  481 | }
+ 458  482 | 
+ 459  483 | 
+ 460  484 | 
+
+
+
+---- simple/closure-with-remove-adt-clauses.rs ----
+
+---- expected: tests/ui/simple/closure-with-remove-adt-clauses.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 296  296 |     TraitClause0: (T: Sized),
+ 297  297 |     TraitClause1: (T: Copy),
+ 298  298 | {
+ 299  299 |     let _0: (); // return
+ 300  300 |     let x: T; // arg #1
+ 301      -     let _c: test_crate::g::closure<'2, T>; // local
+      301 +     let _c: test_crate::g::closure<'1, T>; // local
+ 302  302 |     let _3: &'3 T; // anonymous local
+ 303  303 | 
+ 304  304 |     storage_live(_0)
+ 305  305 |     _0 = ()
+ 306  306 |     storage_live(_c)
+          ⋮
+ 473  473 |     non-dyn-compatible
+ 474  474 | }
+ 475  475 | 
+ 476  476 | 
+ 477  477 | 
+
+
+
+---- simple/lending-iterator-gat.rs ----
+
+---- expected: tests/ui/simple/lending-iterator-gat.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 500  500 |     let iter: Option<&'7 i32>[{built_in impl Sized for &'7 i32}]; // local
+ 501  501 |     let _3: &'11 i32; // anonymous local
+ 502  502 |     let sum: i32; // local
+ 503  503 |     let _5: (); // anonymous local
+ 504  504 |     let _6: Option<&'12 i32>[{built_in impl Sized for &'12 i32}]; // anonymous local
+ 505      -     let _7: closure<'18>; // anonymous local
+      505 +     let _7: closure<'17>; // anonymous local
+ 506  506 |     let _8: &'19 mut i32; // anonymous local
+ 507  507 |     let _9: (&'27 i32, &'28 i32); // anonymous local
+ 508  508 |     let _10: &'32 i32; // anonymous local
+ 509  509 |     let _11: &'33 i32; // anonymous local
+ 510  510 |     let left_val: &'34 i32; // local
+          ⋮
+ 520  520 |     let _22: &'39 i32; // anonymous local
+ 521  521 |     let _23: Option<Arguments<'47>>[{built_in impl Sized for Arguments<'47>}]; // anonymous local
+ 522  522 |     let _24: &'51 i32; // anonymous local
+ 523  523 |     let _25: &'52 i32; // anonymous local
+ 524  524 |     let _26: &'53 i32; // anonymous local
+ 525      -     let _27: &'127 i32; // anonymous local
+ 526      -     let _28: &'141 i32; // anonymous local
+      525 +     let _27: &'122 i32; // anonymous local
+      526 +     let _28: &'136 i32; // anonymous local
+ 527  527 |     let _29: i32; // anonymous local
+ 528      -     let _30: &'142 i32; // anonymous local
+      528 +     let _30: &'137 i32; // anonymous local
+ 529  529 |     let _31: i32; // anonymous local
+ 530  530 | 
+ 531  531 |     storage_live(_26)
+ 532  532 |     storage_live(_28)
+ 533  533 |     storage_live(_29)
+          ⋮
+ 557  557 |     storage_live(_7)
+ 558  558 |     storage_live(_8)
+ 559  559 |     _8 = &mut sum
+ 560  560 |     _7 = closure { _0: move _8 }
+ 561  561 |     storage_dead(_8)
+ 562      -     _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'74>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'74>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'74, '125>](move _6, move _7)
+      562 +     _5 = for_each<Option<&'71 i32>[{built_in impl Sized for &'71 i32}], closure<'73>>[{built_in impl Sized for Option<&'71 i32>[{built_in impl Sized for &'71 i32}]}, {built_in impl Sized for closure<'73>}, impl_LendingIterator_for_Option<'71, i32>[{built_in impl Sized for i32}], impl_FnMut_tuple_for_closure<'73, '120>](move _6, move _7)
+ 563  563 |     ↳⚡ storage_dead(_25)
+ 564  564 |         storage_dead(_24)
+ 565  565 |         storage_dead(_23)
+ 566  566 |         storage_dead(_22)
+ 567  567 |         storage_dead(_21)
+          ⋮
+ 668  668 |     non-dyn-compatible
+ 669  669 | }
+ 670  670 | 
+ 671  671 | 
+ 672  672 | 
+
+
+
+---- simple/closure-fn.rs ----
+
+---- expected: tests/ui/simple/closure-fn.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 344  344 | fn main()
+ 345  345 | {
+ 346  346 |     let _0: (); // return
+ 347  347 |     let v: u8; // local
+ 348  348 |     let z: u8; // local
+ 349      -     let f: closure<'3, '4>; // local
+      349 +     let f: closure<'2, '3>; // local
+ 350  350 |     let _4: &'5 u8; // anonymous local
+ 351  351 |     let _5: &'6 u8; // anonymous local
+ 352  352 |     let _6: u8; // anonymous local
+ 353  353 |     let _7: &'10 closure<'11, '12>; // anonymous local
+ 354  354 |     let _8: (u8, u8); // anonymous local
+          ⋮
+ 381  381 |     storage_live(_6)
+ 382  382 |     storage_live(_7)
+ 383  383 |     _7 = &f
+ 384  384 |     storage_live(_8)
+ 385  385 |     _8 = (const 10u8, const 20u8)
+ 386      -     _6 = call<'38, '39, '40>(move _7, move _8)
+      386 +     _6 = call<'36, '37, '38>(move _7, move _8)
+ 387  387 |     ↳⚡ unwind_continue
+ 388  388 |     storage_dead(_8)
+ 389  389 |     storage_dead(_7)
+ 390  390 |     storage_dead(_6)
+ 391  391 |     storage_live(_9)
+ 392  392 |     storage_live(_10)
+ 393  393 |     storage_live(_11)
+ 394  394 |     _11 = &f
+ 395  395 |     _10 = &(*_11)
+ 396      -     _9 = apply_to<'69, closure<'46, '47>>[{built_in impl Sized for closure<'46, '47>}, impl_Fn_tuple_for_closure<'46, '47>](move _10)
+      396 +     _9 = apply_to<'62, closure<'43, '44>>[{built_in impl Sized for closure<'43, '44>}, impl_Fn_tuple_for_closure<'43, '44>](move _10)
+ 397  397 |     ↳⚡ unwind_continue
+ 398  398 |     storage_dead(_10)
+ 399  399 |     storage_dead(_11)
+ 400  400 |     storage_dead(_9)
+ 401  401 |     storage_live(_12)
+ 402  402 |     storage_live(_13)
+ 403  403 |     storage_live(_14)
+ 404  404 |     _14 = &mut f
+ 405  405 |     _13 = &two-phase-mut (*_14)
+ 406      -     _12 = apply_to_mut<'98, closure<'75, '76>>[{built_in impl Sized for closure<'75, '76>}, impl_FnMut_tuple_for_closure<'75, '76>](move _13)
+      406 +     _12 = apply_to_mut<'86, closure<'67, '68>>[{built_in impl Sized for closure<'67, '68>}, impl_FnMut_tuple_for_closure<'67, '68>](move _13)
+ 407  407 |     ↳⚡ unwind_continue
+ 408  408 |     storage_dead(_13)
+ 409  409 |     storage_dead(_14)
+ 410  410 |     storage_dead(_12)
+ 411  411 |     storage_live(_15)
+ 412  412 |     storage_live(_16)
+ 413  413 |     _16 = copy f
+ 414      -     _15 = apply_to_once<closure<'102, '103>>[{built_in impl Sized for closure<'102, '103>}, impl_FnOnce_tuple_for_closure<'102, '103>](move _16)
+      414 +     _15 = apply_to_once<closure<'89, '90>>[{built_in impl Sized for closure<'89, '90>}, impl_FnOnce_tuple_for_closure<'89, '90>](move _16)
+ 415  415 |     ↳⚡ unwind_continue
+ 416  416 |     storage_dead(_16)
+ 417  417 |     storage_dead(_15)
+ 418  418 |     _0 = ()
+ 419  419 |     storage_dead(f)
+          ⋮
+ 428  428 |     non-dyn-compatible
+ 429  429 | }
+ 430  430 | 
+ 431  431 | 
+ 432  432 | 
+
+
+
+---- simple/closure-with-non-upvar-lifetime.rs ----
+
+---- expected: tests/ui/simple/closure-with-non-upvar-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+  94   94 | {
+  95   95 |     let _0: u8; // return
+  96   96 |     let _1: &'1 closure<'_0, '_1>; // arg #1
+  97   97 |     let tupled_args: (usize,); // arg #2
+  98   98 |     let i: usize; // local
+  99      -     let _4: &'2 &'3 [u8]; // anonymous local
+       99 +     let _4: &'5 &'6 [u8]; // anonymous local
+ 100  100 |     let _5: usize; // anonymous local
+ 101  101 |     let _6: &'_ [u8]; // anonymous local
+ 102  102 |     let _7: &'_ u8; // anonymous local
+ 103  103 | 
+ 104  104 |     storage_live(_0)
+          ⋮
+ 128  128 | fn call_fn<'_0>(a: &'_0 [u8], i: usize) -> u8
+ 129  129 | {
+ 130  130 |     let _0: u8; // return
+ 131  131 |     let a: &'1 [u8]; // arg #1
+ 132  132 |     let i: usize; // arg #2
+ 133      -     let read: closure<'6, '7>; // local
+      133 +     let read: closure<'4, '5>; // local
+ 134  134 |     let _4: &'8 &'9 [u8]; // anonymous local
+ 135  135 |     let _5: &'13 closure<'14, '15>; // anonymous local
+ 136  136 |     let _6: (usize,); // anonymous local
+ 137  137 |     let _7: usize; // anonymous local
+ 138  138 | 
+          ⋮
+ 147  147 |     _5 = &read
+ 148  148 |     storage_live(_6)
+ 149  149 |     storage_live(_7)
+ 150  150 |     _7 = copy i
+ 151  151 |     _6 = (move _7,)
+ 152      -     _0 = call<'28, '29, '30>(move _5, move _6)
+      152 +     _0 = call<'22, '23, '24>(move _5, move _6)
+ 153  153 |     ↳⚡ storage_dead(i)
+ 154  154 |         storage_dead(a)
+ 155  155 |         unwind_continue
+ 156  156 |     storage_dead(_7)
+ 157  157 |     storage_dead(_6)
+          ⋮
+ 287  287 |     non-dyn-compatible
+ 288  288 | }
+ 289  289 | 
+ 290  290 | 
+ 291  291 | 
+
+
+
+---- simple/issue-1040-closure-upvar-lifetime.rs ----
+
+---- expected: tests/ui/simple/issue-1040-closure-upvar-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 114  114 | }
+ 115  115 | 
+ 116  116 | // Full name: test_crate::foo::{impl Fn<()> for closure<'_0>}::call
+ 117  117 | fn call<'_0, '_1, '_2>(_1: &'_2 closure<'_0>, tupled_args: ()) -> &'_1 u8
+ 118  118 | where
+ 119      -     RegionOutlives0: '_0: '_2,
+      119 +     RegionOutlives0: '_0: '_1,
+      120 +     RegionOutlives1: '_0: '_2,
+ 120  121 | {
+ 121      -     let _0: &'0 u8; // return
+ 122      -     let _1: &'2 closure<'_0>; // arg #1
+      122 +     let _0: &'1 u8; // return
+      123 +     let _1: &'3 closure<'_0>; // arg #1
+ 123  124 |     let tupled_args: (); // arg #2
+ 124  125 | 
+ 125  126 |     storage_live(_0)
+ 126  127 |     _0 = &(*(*_1)._0)
+ 127  128 |     storage_dead(tupled_args)
+          ⋮
+ 130  131 | }
+ 131  132 | 
+ 132  133 | // Full name: test_crate::foo::{impl FnMut<()> for closure<'_0>}::call_mut
+ 133  134 | fn call_mut<'_0, '_1, '_2>(state: &'_2 mut closure<'_0>, args: ()) -> &'_1 u8
+ 134  135 | where
+ 135      -     RegionOutlives0: '_0: '_2,
+      136 +     RegionOutlives0: '_0: '_1,
+      137 +     RegionOutlives1: '_0: '_2,
+ 136  138 | {
+ 137  139 |     let _0: &'_1 u8; // return
+ 138  140 |     let state: &'_2 mut closure<'_0>; // arg #1
+ 139  141 |     let args: (); // arg #2
+ 140  142 |     let _3: &'0 closure<'_0>; // anonymous local
+          ⋮
+ 153  155 |     return
+ 154  156 | }
+ 155  157 | 
+ 156  158 | // Full name: test_crate::foo::{impl FnOnce<()> for closure<'_0>}::call_once
+ 157  159 | fn call_once<'_0, '_1>(_1: closure<'_0>, _2: ()) -> &'_1 u8
+      160 + where
+      161 +     RegionOutlives0: '_0: '_1,
+ 158  162 | {
+ 159      -     let _0: &'0 u8; // return
+      163 +     let _0: &'1 u8; // return
+ 160  164 |     let _1: closure<'_0>; // arg #1
+ 161  165 |     let _2: (); // arg #2
+ 162      -     let _3: &'2 mut closure<'_0>; // anonymous local
+      166 +     let _3: &'3 mut closure<'_0>; // anonymous local
+ 163  167 | 
+ 164  168 |     storage_live(_0)
+ 165  169 |     storage_live(_3)
+ 166  170 |     _3 = &mut _1
+ 167      -     _0 = call_mut<'_0, '_1, '4>(move _3, move _2)
+ 168      -     ↳⚡ drop[drop_glue<'_0, '5>] _1
+      171 +     _0 = call_mut<'_0, '_1, '5>(move _3, move _2)
+      172 +     ↳⚡ drop[drop_glue<'_0, '6>] _1
+ 169  173 |         ↳⚡ storage_dead(_3)
+ 170  174 |             storage_dead(_2)
+ 171  175 |             storage_dead(_1)
+ 172  176 |             unwind_terminate
+ 173  177 |         storage_dead(_3)
+ 174  178 |         storage_dead(_2)
+ 175  179 |         storage_dead(_1)
+ 176  180 |         unwind_continue
+ 177      -     drop[drop_glue<'_0, '6>] _1
+      181 +     drop[drop_glue<'_0, '7>] _1
+ 178  182 |     ↳⚡ storage_dead(_3)
+ 179  183 |         storage_dead(_2)
+ 180  184 |         storage_dead(_1)
+ 181  185 |         unwind_continue
+ 182  186 |     storage_dead(_3)
+          ⋮
+ 184  188 |     storage_dead(_1)
+ 185  189 |     return
+ 186  190 | }
+ 187  191 | 
+ 188  192 | // Full name: test_crate::foo::{impl FnOnce<()> for closure<'_0>}
+ 189      - impl<'_0, '_1> "impl_FnOnce_unit_for_closure" FnOnce<()> for closure<'_0> {
+      193 + impl<'_0, '_1> "impl_FnOnce_unit_for_closure" FnOnce<()> for closure<'_0>
+      194 + where
+      195 +     RegionOutlives0: '_0: '_1,
+      196 + {
+ 190  197 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 191  198 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 192  199 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 193  200 |     proof ImpliedClause3: (&'_ u8: Sized) = {built_in impl Sized for &'_ u8}
+ 194  201 |     type Output = &'_ u8
+ 195  202 |     fn call_once = call_once<'_0, '_1>
+ 196  203 |     vtable: impl_FnOnce_unit_for_closure::{vtable}<'_0, '_1>
+ 197  204 | }
+ 198  205 | 
+ 199  206 | // Full name: test_crate::foo::{impl FnMut<()> for closure<'_0>}
+ 200      - impl<'_0, '_1> "impl_FnMut_unit_for_closure" FnMut<()> for closure<'_0> {
+      207 + impl<'_0, '_1> "impl_FnMut_unit_for_closure" FnMut<()> for closure<'_0>
+      208 + where
+      209 +     RegionOutlives0: '_0: '_1,
+      210 + {
+ 201  211 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 202  212 |     proof ImpliedClause1: (closure<'_0>: FnOnce<()>) = impl_FnOnce_unit_for_closure<'_0, '_1>
+ 203  213 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 204  214 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+ 205  215 |     fn call_mut<'_0_1> = call_mut<'_0, '_1, '_0_1>
+ 206  216 |     vtable: impl_FnMut_unit_for_closure::{vtable}<'_0, '_1>
+ 207  217 | }
+ 208  218 | 
+ 209  219 | // Full name: test_crate::foo::{impl Fn<()> for closure<'_0>}
+ 210      - impl<'_0, '_1> "impl_Fn_unit_for_closure" Fn<()> for closure<'_0> {
+      220 + impl<'_0, '_1> "impl_Fn_unit_for_closure" Fn<()> for closure<'_0>
+      221 + where
+      222 +     RegionOutlives0: '_0: '_1,
+      223 + {
+ 211  224 |     proof ImpliedClause0: (closure<'_0>: MetaSized) = {built_in impl MetaSized for closure<'_0>}
+ 212  225 |     proof ImpliedClause1: (closure<'_0>: FnMut<()>) = impl_FnMut_unit_for_closure<'_0, '_1>
+ 213  226 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 214  227 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+ 215  228 |     fn call<'_0_1> = call<'_0, '_1, '_0_1>
+          ⋮
+ 222  235 |     non-dyn-compatible
+ 223  236 | }
+ 224  237 | 
+ 225  238 | 
+ 226  239 | 
+
+
+
+---- simple/closure-capture-ref-by-move.rs ----
+
+---- expected: tests/ui/simple/closure-capture-ref-by-move.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 120  120 |     storage_live(_4)
+ 121  121 |     storage_live(_5)
+ 122  122 |     _5 = &mut closure
+ 123  123 |     storage_live(_6)
+ 124  124 |     _6 = ()
+ 125      -     _4 = call_mut<'13, '14>(move _5, move _6)
+      125 +     _4 = call_mut<'11, '12>(move _5, move _6)
+ 126  126 |     ↳⚡ unwind_continue
+ 127  127 |     storage_dead(_6)
+ 128  128 |     storage_dead(_5)
+ 129  129 |     storage_dead(_4)
+ 130  130 |     _0 = ()
+          ⋮
+ 208  208 |     non-dyn-compatible
+ 209  209 | }
+ 210  210 | 
+ 211  211 | 
+ 212  212 | 
+
+
+
+---- simple/foreign-inline-const.rs ----
+Command: `charon ui_test tests/ui/simple/foreign-inline-const.rs`
+Compilation failed:
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/build/source/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#0}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/build/source/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#1}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/build/source/tests/ui/simple/libclosure_inside_inline_const.rlib")
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+note: the error occurred when translating `closure_inside_inline_const::foo::{const}::{impl#2}`, which is (transitively) used at the following location(s):
+ --> tests/ui/simple/foreign-inline-const.rs:4:5
+  |
+4 |     closure_inside_inline_const::foo::<T>();
+  |     ---------------------------------------
+error: Item `closure_inside_inline_const::foo::{constant#0}::{closure#0}` caused errors; ignoring.
+ --> tests/ui/simple/closure-inside-inline-const.rs:8:18
+
+ERROR Charon failed to translate this code (6 errors)
+
+
+---- simple/closure-fnmut.rs ----
+
+---- expected: tests/ui/simple/closure-fnmut.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 217  217 | fn main()
+ 218  218 | {
+ 219  219 |     let _0: (); // return
+ 220  220 |     let z: u8; // local
+ 221  221 |     let _2: u8; // anonymous local
+ 222      -     let _3: closure<'2>; // anonymous local
+      222 +     let _3: closure<'1>; // anonymous local
+ 223  223 |     let _4: &'3 mut u8; // anonymous local
+ 224  224 | 
+ 225  225 |     storage_live(_0)
+ 226  226 |     _0 = ()
+ 227  227 |     storage_live(z)
+          ⋮
+ 231  231 |     storage_live(_3)
+ 232  232 |     storage_live(_4)
+ 233  233 |     _4 = &mut z
+ 234  234 |     _3 = closure { _0: move _4 }
+ 235  235 |     storage_dead(_4)
+ 236      -     _2 = apply_to_zero_mut<closure<'7>>[{built_in impl Sized for closure<'7>}, impl_FnMut_tuple_for_closure<'7>](move _3)
+      236 +     _2 = apply_to_zero_mut<closure<'6>>[{built_in impl Sized for closure<'6>}, impl_FnMut_tuple_for_closure<'6>](move _3)
+ 237  237 |     ↳⚡ unwind_continue
+ 238  238 |     storage_dead(_3)
+ 239  239 |     storage_dead(_2)
+ 240  240 |     _0 = ()
+ 241  241 |     storage_dead(z)
+          ⋮
+ 248  248 |     non-dyn-compatible
+ 249  249 | }
+ 250  250 | 
+ 251  251 | 
+ 252  252 | 
+
+
+
+---- no-gen-tuple-structs.rs ----
+
+---- expected: tests/ui/no-gen-tuple-structs.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 367  367 | // Full name: test_crate::use_closure
+ 368  368 | fn use_closure(z: u32) -> u32
+ 369  369 | {
+ 370  370 |     let _0: u32; // return
+ 371  371 |     let z: u32; // arg #1
+ 372      -     let _2: closure<'2>; // anonymous local
+      372 +     let _2: closure<'1>; // anonymous local
+ 373  373 |     let _3: &'3 u32; // anonymous local
+ 374  374 | 
+ 375  375 |     storage_live(_0)
+ 376  376 |     storage_live(_2)
+ 377  377 |     storage_live(_3)
+ 378  378 |     _3 = &z
+ 379  379 |     _2 = closure { _0: move _3 }
+ 380  380 |     storage_dead(_3)
+ 381      -     _0 = call_closure<closure<'7>>[{built_in impl Sized for closure<'7>}, impl_Fn_unit_for_closure<'7>](move _2)
+      381 +     _0 = call_closure<closure<'6>>[{built_in impl Sized for closure<'6>}, impl_Fn_unit_for_closure<'6>](move _2)
+ 382  382 |     ↳⚡ storage_dead(z)
+ 383  383 |         unwind_continue
+ 384  384 |     storage_dead(_2)
+ 385  385 |     storage_dead(z)
+ 386  386 |     return
+          ⋮
+ 392  392 |     non-dyn-compatible
+ 393  393 | }
+ 394  394 | 
+ 395  395 | 
+ 396  396 | 
+
+
+
+---- simple/nested-closure.rs ----
+
+---- expected: tests/ui/simple/nested-closure.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 114  114 |     TypeOutlives1: T: '_3,
+ 115  115 |     RegionOutlives0: 'a: '_3,
+ 116  116 |     RegionOutlives1: '_1: '_3,
+ 117  117 | {
+ 118  118 |     let _0: T; // return
+ 119      -     let _1: &'1 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      119 +     let _1: &'2 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 120  120 |     let tupled_args: (&'_2 u32,); // arg #2
+ 121      -     let _z: &'2 u32; // local
+ 122      -     let _4: &'3 T; // anonymous local
+      121 +     let _z: &'3 u32; // local
+      122 +     let _4: &'5 T; // anonymous local
+ 123  123 | 
+ 124  124 |     storage_live(_0)
+ 125  125 |     storage_live(_z)
+ 126  126 |     _z = move tupled_args._0
+ 127  127 |     storage_live(_4)
+ 128  128 |     _4 = &(*(*_1)._0)
+ 129      -     _0 = TraitClause1::clone<'5>(move _4)
+      129 +     _0 = TraitClause1::clone<'7>(move _4)
+ 130  130 |     ↳⚡ storage_dead(_z)
+ 131  131 |         storage_dead(tupled_args)
+ 132  132 |         storage_dead(_1)
+ 133  133 |         unwind_continue
+ 134  134 |     storage_dead(_4)
+          ⋮
+ 153  153 |     TraitClause0: (T: Sized),
+ 154  154 |     TraitClause1: (T: Clone),
+ 155  155 |     TypeOutlives0: T: '_1,
+ 156  156 |     TypeOutlives1: T: '_5,
+ 157  157 |     TypeOutlives2: T: '_4,
+ 158      -     RegionOutlives0: 'a: '_5,
+ 159      -     RegionOutlives1: '_1: '_5,
+      158 +     RegionOutlives0: 'a: '_3,
+      159 +     RegionOutlives1: '_3: 'a,
+      160 +     RegionOutlives2: '_1: '_4,
+      161 +     RegionOutlives3: 'a: '_5,
+      162 +     RegionOutlives4: '_1: '_5,
+ 160  163 | {
+ 161  164 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 162      -     let _1: &'5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      165 +     let _1: &'6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 163  166 |     let tupled_args: (&'_2 u32,); // arg #2
+ 164      -     let _y: &'6 u32; // local
+ 165      -     let _4: &'7 T; // anonymous local
+      167 +     let _y: &'7 u32; // local
+      168 +     let _4: &'9 T; // anonymous local
+ 166  169 | 
+ 167  170 |     storage_live(_0)
+ 168  171 |     storage_live(_y)
+ 169  172 |     _y = move tupled_args._0
+ 170  173 |     storage_live(_4)
+          ⋮
+ 192  195 |     TraitClause0: (T: Sized),
+ 193  196 |     TraitClause1: (T: Clone),
+ 194  197 |     TypeOutlives0: T: '_1,
+ 195  198 |     TypeOutlives1: T: '_6,
+ 196  199 |     TypeOutlives2: T: '_5,
+ 197      -     RegionOutlives0: 'a: '_6,
+ 198      -     RegionOutlives1: '_1: '_6,
+      200 +     RegionOutlives0: 'a: '_2,
+      201 +     RegionOutlives1: 'a: '_3,
+      202 +     RegionOutlives2: '_2: 'a,
+      203 +     RegionOutlives3: '_2: '_3,
+      204 +     RegionOutlives4: '_3: 'a,
+      205 +     RegionOutlives5: '_3: '_2,
+      206 +     RegionOutlives6: '_5: '_4,
+      207 +     RegionOutlives7: '_1: '_4,
+      208 +     RegionOutlives8: '_1: '_5,
+      209 +     RegionOutlives9: 'a: '_6,
+      210 +     RegionOutlives10: '_1: '_6,
+ 199  211 | {
+ 200  212 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 201      -     let _1: &'5 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      213 +     let _1: &'6 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 202  214 |     let tupled_args: (); // arg #2
+ 203      -     let _3: &'6 T; // anonymous local
+      215 +     let _3: &'8 T; // anonymous local
+ 204  216 | 
+ 205  217 |     storage_live(_0)
+ 206  218 |     storage_live(_3)
+ 207  219 |     _3 = &(*(*_1)._0)
+ 208  220 |     _0 = test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure { _0: move _3 }
+          ⋮
+ 236  248 |     let _13: (&'41 u32,); // anonymous local
+ 237  249 |     let _14: &'42 u32; // anonymous local
+ 238  250 |     let _15: &'43 u32; // anonymous local
+ 239  251 |     let _16: &'44 u32; // anonymous local
+ 240  252 |     let _17: &'45 u32; // anonymous local
+ 241      -     let _18: &'63 u32; // anonymous local
+ 242      -     let _19: &'81 u32; // anonymous local
+ 243      -     let _20: &'96 u32; // anonymous local
+      253 +     let _18: &'61 u32; // anonymous local
+      254 +     let _19: &'77 u32; // anonymous local
+      255 +     let _20: &'90 u32; // anonymous local
+ 244  256 |     let _21: u32; // anonymous local
+ 245      -     let _22: &'97 u32; // anonymous local
+      257 +     let _22: &'91 u32; // anonymous local
+ 246  258 |     let _23: u32; // anonymous local
+ 247  259 | 
+ 248  260 |     storage_live(_0)
+ 249  261 |     storage_live(_16)
+ 250  262 |     storage_live(_17)
+          ⋮
+ 260  272 |     storage_live(_7)
+ 261  273 |     storage_live(_8)
+ 262  274 |     _8 = &clo
+ 263  275 |     storage_live(_9)
+ 264  276 |     _9 = ()
+ 265      -     _7 = impl_Fn_unit_for_closure::call<'54, '56, '57, '58, '59, '60, '61, T>[TraitClause0, TraitClause1](move _8, move _9)
+      277 +     _7 = impl_Fn_unit_for_closure::call<'53, '54, '55, '56, '57, '58, '59, T>[TraitClause0, TraitClause1](move _8, move _9)
+ 266  278 |     ↳⚡ storage_dead(_17)
+ 267  279 |         storage_dead(_16)
+ 268  280 |         storage_dead(x)
+ 269  281 |         unwind_continue
+ 270  282 |     storage_live(_18)
+          ⋮
+ 281  293 |     storage_live(_12)
+ 282  294 |     _17 = move _18
+ 283  295 |     _12 = &(*_17)
+ 284  296 |     _11 = &(*_12)
+ 285  297 |     _10 = (move _11,)
+ 286      -     _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'73, '75, '76, '77, '78, '79, T>[TraitClause0, TraitClause1](move _6, move _10)
+      298 +     _5 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'70, '71, '72, '73, '74, '75, T>[TraitClause0, TraitClause1](move _6, move _10)
+ 287  299 |     ↳⚡ storage_dead(_17)
+ 288  300 |         storage_dead(_16)
+ 289  301 |         storage_dead(x)
+ 290  302 |         unwind_continue
+ 291  303 |     storage_live(_19)
+          ⋮
+ 303  315 |     storage_live(_15)
+ 304  316 |     _16 = move _19
+ 305  317 |     _15 = &(*_16)
+ 306  318 |     _14 = &(*_15)
+ 307  319 |     _13 = (move _14,)
+ 308      -     _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'91, '93, '94, '95, T>[TraitClause0, TraitClause1](move _4, move _13)
+      320 +     _0 = {impl Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call<'86, '87, '88, '89, T>[TraitClause0, TraitClause1](move _4, move _13)
+ 309  321 |     ↳⚡ storage_dead(_17)
+ 310  322 |         storage_dead(_16)
+ 311  323 |         storage_dead(x)
+ 312  324 |         unwind_continue
+ 313  325 |     storage_dead(_14)
+          ⋮
+ 339  351 |     TypeOutlives1: T: '_2,
+ 340  352 |     RegionOutlives0: 'a: '_2,
+ 341  353 |     RegionOutlives1: '_1: '_2,
+ 342  354 | {
+ 343  355 |     let _0: (); // return
+ 344      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      356 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 345  357 | 
+ 346  358 |     storage_live(_0)
+ 347  359 |     _0 = ()
+ 348  360 |     storage_dead(_1)
+ 349  361 |     return
+          ⋮
+ 355  367 |     TraitClause0: (T: Sized),
+ 356  368 |     TraitClause1: (T: Clone),
+ 357  369 |     TypeOutlives0: T: '_1,
+ 358  370 |     TypeOutlives1: T: '_6,
+ 359  371 |     TypeOutlives2: T: '_5,
+ 360      -     RegionOutlives0: 'a: '_6,
+ 361      -     RegionOutlives1: '_1: '_6,
+      372 +     RegionOutlives0: 'a: '_2,
+      373 +     RegionOutlives1: 'a: '_3,
+      374 +     RegionOutlives2: '_2: 'a,
+      375 +     RegionOutlives3: '_2: '_3,
+      376 +     RegionOutlives4: '_3: 'a,
+      377 +     RegionOutlives5: '_3: '_2,
+      378 +     RegionOutlives6: '_5: '_4,
+      379 +     RegionOutlives7: '_1: '_4,
+      380 +     RegionOutlives8: '_1: '_5,
+      381 +     RegionOutlives9: 'a: '_6,
+      382 +     RegionOutlives10: '_1: '_6,
+ 362  383 | {
+ 363  384 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_2, '_5, T>[TraitClause0, TraitClause1]; // return
+ 364  385 |     let state: &'_6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 365  386 |     let args: (); // arg #2
+ 366  387 |     let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 384  405 | where
+ 385  406 |     TraitClause0: (T: Sized),
+ 386  407 |     TraitClause1: (T: Clone),
+ 387  408 |     TypeOutlives0: T: '_1,
+ 388  409 |     TypeOutlives1: T: '_5,
+      410 +     RegionOutlives0: 'a: '_2,
+      411 +     RegionOutlives1: 'a: '_3,
+      412 +     RegionOutlives2: '_2: 'a,
+      413 +     RegionOutlives3: '_2: '_3,
+      414 +     RegionOutlives4: '_3: 'a,
+      415 +     RegionOutlives5: '_3: '_2,
+      416 +     RegionOutlives6: '_5: '_4,
+      417 +     RegionOutlives7: '_1: '_4,
+      418 +     RegionOutlives8: '_1: '_5,
+ 389  419 | {
+ 390  420 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 391  421 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 392  422 |     let _2: (); // arg #2
+ 393      -     let _3: &'5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      423 +     let _3: &'6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 394  424 | 
+ 395  425 |     storage_live(_0)
+ 396  426 |     storage_live(_3)
+ 397  427 |     _3 = &mut _1
+ 398      -     _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '12, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 399      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+      428 +     _0 = impl_FnMut_unit_for_closure::call_mut<'a, '_1, '_2, '_3, '_4, '_5, '13, T>[TraitClause0, TraitClause1](move _3, move _2)
+      429 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '16, T>[TraitClause0, TraitClause1]] _1
+ 400  430 |         ↳⚡ storage_dead(_3)
+ 401  431 |             storage_dead(_2)
+ 402  432 |             storage_dead(_1)
+ 403  433 |             unwind_terminate
+ 404  434 |         storage_dead(_3)
+ 405  435 |         storage_dead(_2)
+ 406  436 |         storage_dead(_1)
+ 407  437 |         unwind_continue
+ 408      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+      438 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '19, T>[TraitClause0, TraitClause1]] _1
+ 409  439 |     ↳⚡ storage_dead(_3)
+ 410  440 |         storage_dead(_2)
+ 411  441 |         storage_dead(_1)
+ 412  442 |         unwind_continue
+ 413  443 |     storage_dead(_3)
+          ⋮
+ 420  450 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_FnOnce_unit_for_closure" FnOnce<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 421  451 | where
+ 422  452 |     TraitClause0: (T: Sized),
+ 423  453 |     TraitClause1: (T: Clone),
+ 424  454 |     TypeOutlives0: T: '_1,
+      455 +     RegionOutlives0: 'a: '_2,
+      456 +     RegionOutlives1: 'a: '_3,
+      457 +     RegionOutlives2: '_2: 'a,
+      458 +     RegionOutlives3: '_2: '_3,
+      459 +     RegionOutlives4: '_3: 'a,
+      460 +     RegionOutlives5: '_3: '_2,
+      461 +     RegionOutlives6: '_5: '_4,
+      462 +     RegionOutlives7: '_1: '_4,
+      463 +     RegionOutlives8: '_1: '_5,
+ 425  464 | {
+ 426  465 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 427  466 |     proof ImpliedClause1: ((): Sized) = {built_in impl Sized for ()}
+ 428  467 |     proof ImpliedClause2: ((): Tuple) = {built_in impl Tuple for ()}
+ 429  468 |     proof ImpliedClause3: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]: Sized) = {built_in impl Sized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]}
+          ⋮
+ 436  475 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_FnMut_unit_for_closure" FnMut<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 437  476 | where
+ 438  477 |     TraitClause0: (T: Sized),
+ 439  478 |     TraitClause1: (T: Clone),
+ 440  479 |     TypeOutlives0: T: '_1,
+      480 +     RegionOutlives0: 'a: '_2,
+      481 +     RegionOutlives1: 'a: '_3,
+      482 +     RegionOutlives2: '_2: 'a,
+      483 +     RegionOutlives3: '_2: '_3,
+      484 +     RegionOutlives4: '_3: 'a,
+      485 +     RegionOutlives5: '_3: '_2,
+      486 +     RegionOutlives6: '_5: '_4,
+      487 +     RegionOutlives7: '_1: '_4,
+      488 +     RegionOutlives8: '_1: '_5,
+ 441  489 | {
+ 442  490 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 443  491 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnOnce<()>) = impl_FnOnce_unit_for_closure<'a, '_1, '_2, '_3, '_4, '_5, T>[TraitClause0, TraitClause1]
+ 444  492 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 445  493 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 451  499 | impl<'a, '_1, '_2, '_3, '_4, '_5, T> "impl_Fn_unit_for_closure" Fn<()> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 452  500 | where
+ 453  501 |     TraitClause0: (T: Sized),
+ 454  502 |     TraitClause1: (T: Clone),
+ 455  503 |     TypeOutlives0: T: '_1,
+      504 +     RegionOutlives0: 'a: '_2,
+      505 +     RegionOutlives1: 'a: '_3,
+      506 +     RegionOutlives2: '_2: 'a,
+      507 +     RegionOutlives3: '_2: '_3,
+      508 +     RegionOutlives4: '_3: 'a,
+      509 +     RegionOutlives5: '_3: '_2,
+      510 +     RegionOutlives6: '_5: '_4,
+      511 +     RegionOutlives7: '_1: '_4,
+      512 +     RegionOutlives8: '_1: '_5,
+ 456  513 | {
+ 457  514 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 458  515 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnMut<()>) = impl_FnMut_unit_for_closure<'a, '_1, '_2, '_3, '_4, '_5, T>[TraitClause0, TraitClause1]
+ 459  516 |     proof ImpliedClause2: ((): Sized) = {built_in impl Sized for ()}
+ 460  517 |     proof ImpliedClause3: ((): Tuple) = {built_in impl Tuple for ()}
+          ⋮
+ 482  539 |     TypeOutlives1: T: '_2,
+ 483  540 |     RegionOutlives0: 'a: '_2,
+ 484  541 |     RegionOutlives1: '_1: '_2,
+ 485  542 | {
+ 486  543 |     let _0: (); // return
+ 487      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      544 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 488  545 | 
+ 489  546 |     storage_live(_0)
+ 490  547 |     _0 = ()
+ 491  548 |     storage_dead(_1)
+ 492  549 |     return
+          ⋮
+ 498  555 |     TraitClause0: (T: Sized),
+ 499  556 |     TraitClause1: (T: Clone),
+ 500  557 |     TypeOutlives0: T: '_1,
+ 501  558 |     TypeOutlives1: T: '_5,
+ 502  559 |     TypeOutlives2: T: '_4,
+ 503      -     RegionOutlives0: 'a: '_5,
+ 504      -     RegionOutlives1: '_1: '_5,
+      560 +     RegionOutlives0: 'a: '_3,
+      561 +     RegionOutlives1: '_3: 'a,
+      562 +     RegionOutlives2: '_1: '_4,
+      563 +     RegionOutlives3: 'a: '_5,
+      564 +     RegionOutlives4: '_1: '_5,
+ 505  565 | {
+ 506  566 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_3, '_4, T>[TraitClause0, TraitClause1]; // return
+ 507  567 |     let state: &'_5 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 508  568 |     let args: (&'_2 u32,); // arg #2
+ 509  569 |     let _3: &'0 test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+          ⋮
+ 527  587 | where
+ 528  588 |     TraitClause0: (T: Sized),
+ 529  589 |     TraitClause1: (T: Clone),
+ 530  590 |     TypeOutlives0: T: '_1,
+ 531  591 |     TypeOutlives1: T: '_4,
+      592 +     RegionOutlives0: 'a: '_3,
+      593 +     RegionOutlives1: '_3: 'a,
+      594 +     RegionOutlives2: '_1: '_4,
+ 532  595 | {
+ 533  596 |     let _0: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'2, '3, T>[TraitClause0, TraitClause1]; // return
+ 534  597 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 535      -     let _2: (&'4 u32,); // arg #2
+ 536      -     let _3: &'6 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      598 +     let _2: (&'5 u32,); // arg #2
+      599 +     let _3: &'7 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 537  600 | 
+ 538  601 |     storage_live(_0)
+ 539  602 |     storage_live(_3)
+ 540  603 |     _3 = &mut _1
+ 541      -     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '15, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 542      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '18, T>[TraitClause0, TraitClause1]] _1
+      604 +     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '_3, '_4, '16, T>[TraitClause0, TraitClause1](move _3, move _2)
+      605 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '19, T>[TraitClause0, TraitClause1]] _1
+ 543  606 |         ↳⚡ storage_dead(_3)
+ 544  607 |             storage_dead(_2)
+ 545  608 |             storage_dead(_1)
+ 546  609 |             unwind_terminate
+ 547  610 |         storage_dead(_3)
+ 548  611 |         storage_dead(_2)
+ 549  612 |         storage_dead(_1)
+ 550  613 |         unwind_continue
+ 551      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '21, T>[TraitClause0, TraitClause1]] _1
+      614 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '22, T>[TraitClause0, TraitClause1]] _1
+ 552  615 |     ↳⚡ storage_dead(_3)
+ 553  616 |         storage_dead(_2)
+ 554  617 |         storage_dead(_1)
+ 555  618 |         unwind_continue
+ 556  619 |     storage_dead(_3)
+          ⋮
+ 563  626 | impl<'a, '_1, '_2, '_3, '_4, T> FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 564  627 | where
+ 565  628 |     TraitClause0: (T: Sized),
+ 566  629 |     TraitClause1: (T: Clone),
+ 567  630 |     TypeOutlives0: T: '_1,
+      631 +     RegionOutlives0: 'a: '_3,
+      632 +     RegionOutlives1: '_3: 'a,
+      633 +     RegionOutlives2: '_1: '_4,
+ 568  634 | {
+ 569  635 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 570  636 |     proof ImpliedClause1: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 571  637 |     proof ImpliedClause2: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+ 572  638 |     proof ImpliedClause3: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]: Sized) = {built_in impl Sized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'_, '_, T>[TraitClause0, TraitClause1]}
+          ⋮
+ 579  645 | impl<'a, '_1, '_2, '_3, '_4, T> FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 580  646 | where
+ 581  647 |     TraitClause0: (T: Sized),
+ 582  648 |     TraitClause1: (T: Clone),
+ 583  649 |     TypeOutlives0: T: '_1,
+      650 +     RegionOutlives0: 'a: '_3,
+      651 +     RegionOutlives1: '_3: 'a,
+      652 +     RegionOutlives2: '_1: '_4,
+ 584  653 | {
+ 585  654 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 586  655 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnOnce<(&'_ u32,)>) = {impl FnOnce<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}<'a, '_1, '_2, '_3, '_4, T>[TraitClause0, TraitClause1]
+ 587  656 |     proof ImpliedClause2: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 588  657 |     proof ImpliedClause3: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+          ⋮
+ 594  663 | impl<'a, '_1, '_2, '_3, '_4, T> Fn<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]
+ 595  664 | where
+ 596  665 |     TraitClause0: (T: Sized),
+ 597  666 |     TraitClause1: (T: Clone),
+ 598  667 |     TypeOutlives0: T: '_1,
+      668 +     RegionOutlives0: 'a: '_3,
+      669 +     RegionOutlives1: '_3: 'a,
+      670 +     RegionOutlives2: '_1: '_4,
+ 599  671 | {
+ 600  672 |     proof ImpliedClause0: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: MetaSized) = {built_in impl MetaSized for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}
+ 601  673 |     proof ImpliedClause1: (test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]: FnMut<(&'_ u32,)>) = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}<'a, '_1, '_2, '_3, '_4, T>[TraitClause0, TraitClause1]
+ 602  674 |     proof ImpliedClause2: ((&'_ u32,): Sized) = {built_in impl Sized for (&'_ u32,)}
+ 603  675 |     proof ImpliedClause3: ((&'_ u32,): Tuple) = {built_in impl Tuple for (&'_ u32,)}
+          ⋮
+ 625  697 |     TypeOutlives1: T: '_2,
+ 626  698 |     RegionOutlives0: 'a: '_2,
+ 627  699 |     RegionOutlives1: '_1: '_2,
+ 628  700 | {
+ 629  701 |     let _0: (); // return
+ 630      -     let _1: &'1 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+      702 +     let _1: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 631  703 | 
+ 632  704 |     storage_live(_0)
+ 633  705 |     _0 = ()
+ 634  706 |     storage_dead(_1)
+ 635  707 |     return
+          ⋮
+ 671  743 |     TraitClause1: (T: Clone),
+ 672  744 |     TypeOutlives0: T: '_1,
+ 673  745 | {
+ 674  746 |     let _0: T; // return
+ 675  747 |     let _1: test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // arg #1
+ 676      -     let _2: (&'0 u32,); // arg #2
+ 677      -     let _3: &'2 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+      748 +     let _2: (&'1 u32,); // arg #2
+      749 +     let _3: &'3 mut test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]; // anonymous local
+ 678  750 | 
+ 679  751 |     storage_live(_0)
+ 680  752 |     storage_live(_3)
+ 681  753 |     _3 = &mut _1
+ 682      -     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '9, T>[TraitClause0, TraitClause1](move _3, move _2)
+ 683      -     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '12, T>[TraitClause0, TraitClause1]] _1
+      754 +     _0 = {impl FnMut<(&'_ u32,)> for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::call_mut<'a, '_1, '_2, '10, T>[TraitClause0, TraitClause1](move _3, move _2)
+      755 +     ↳⚡ drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '13, T>[TraitClause0, TraitClause1]] _1
+ 684  756 |         ↳⚡ storage_dead(_3)
+ 685  757 |             storage_dead(_2)
+ 686  758 |             storage_dead(_1)
+ 687  759 |             unwind_terminate
+ 688  760 |         storage_dead(_3)
+ 689  761 |         storage_dead(_2)
+ 690  762 |         storage_dead(_1)
+ 691  763 |         unwind_continue
+ 692      -     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '15, T>[TraitClause0, TraitClause1]] _1
+      764 +     drop[{impl Destruct for test_crate::{Foo<'a, T>[TraitClause0]}::test_nested_closures::closure::closure::closure<'a, '_1, T>[TraitClause0, TraitClause1]}::drop_glue<'a, '_1, '16, T>[TraitClause0, TraitClause1]] _1
+ 693  765 |     ↳⚡ storage_dead(_3)
+ 694  766 |         storage_dead(_2)
+ 695  767 |         storage_dead(_1)
+ 696  768 |         unwind_continue
+ 697  769 |     storage_dead(_3)
+          ⋮
+ 757  829 |     non-dyn-compatible
+ 758  830 | }
+ 759  831 | 
+ 760  832 | 
+ 761  833 | 
+
+
+
+---- issue-323-closure-borrow.rs ----
+
+---- expected: tests/ui/issue-323-closure-borrow.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 123  123 | {
+ 124  124 |     let _0: (); // return
+ 125  125 |     let _1: &'1 mut closure<'_0>; // arg #1
+ 126  126 |     let tupled_args: (); // arg #2
+ 127  127 |     let _3: (); // anonymous local
+ 128      -     let _4: &'2 mut Rng; // anonymous local
+      128 +     let _4: &'3 mut Rng; // anonymous local
+ 129  129 | 
+ 130  130 |     storage_live(_0)
+ 131  131 |     _0 = ()
+ 132  132 |     storage_live(_3)
+ 133  133 |     storage_live(_4)
+ 134  134 |     _4 = &two-phase-mut (*(*_1)._0)
+ 135      -     _3 = next_u64<'5>(move _4)
+      135 +     _3 = next_u64<'6>(move _4)
+ 136  136 |     ↳⚡ storage_dead(tupled_args)
+ 137  137 |         storage_dead(_1)
+ 138  138 |         unwind_continue
+ 139  139 |     storage_dead(_4)
+ 140  140 |     storage_dead(_3)
+          ⋮
+ 204  204 |     non-dyn-compatible
+ 205  205 | }
+ 206  206 | 
+ 207  207 | 
+ 208  208 | 
+
+
+
+---- monomorphization/closure-fn.rs ----
+
+---- expected: tests/ui/monomorphization/closure-fn.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | opaque type core::marker::MetaSized::{vtable}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+ 129  129 |     storage_live(_0)
+ 130  130 |     storage_live(_2)
+ 131  131 |     _2 = &(*f)
+ 132  132 |     storage_live(_3)
+ 133  133 |     _3 = (const 10u8, const 20u8)
+ 134      -     _0 = impl_Fn_for_closure<'17, '18>::call<'19>(move _2, move _3)
+      134 +     _0 = impl_Fn_for_closure<'15, '16>::call<'17>(move _2, move _3)
+ 135  135 |     ↳⚡ storage_dead(f)
+ 136  136 |         unwind_continue
+ 137  137 |     storage_dead(_3)
+ 138  138 |     storage_dead(_2)
+ 139  139 |     storage_dead(f)
+          ⋮
+ 151  151 |     storage_live(_0)
+ 152  152 |     storage_live(_2)
+ 153  153 |     _2 = &mut (*f)
+ 154  154 |     storage_live(_3)
+ 155  155 |     _3 = (const 10u8, const 20u8)
+ 156      -     _0 = impl_FnMut_for_closure<'17, '18>::call_mut<'19>(move _2, move _3)
+      156 +     _0 = impl_FnMut_for_closure<'15, '16>::call_mut<'17>(move _2, move _3)
+ 157  157 |     ↳⚡ storage_dead(f)
+ 158  158 |         unwind_continue
+ 159  159 |     storage_dead(_3)
+ 160  160 |     storage_dead(_2)
+ 161  161 |     storage_dead(f)
+          ⋮
+ 188  188 |     storage_live(_0)
+ 189  189 |     storage_live(_2)
+ 190  190 |     _2 = move f
+ 191  191 |     storage_live(_3)
+ 192  192 |     _3 = (const 10u8, const 20u8)
+ 193      -     _0 = impl_FnOnce_for_closure<'10, '11>::call_once(move _2, move _3)
+ 194      -     ↳⚡ conditional_drop[drop_glue<'17, '18, '19>] _2
+      193 +     _0 = impl_FnOnce_for_closure<'8, '9>::call_once(move _2, move _3)
+      194 +     ↳⚡ conditional_drop[drop_glue<'14, '15, '16>] _2
+ 195  195 |         ↳⚡ storage_dead(f)
+ 196  196 |             unwind_terminate
+ 197      -         conditional_drop[drop_glue<'33, '34, '35>] f
+      197 +         conditional_drop[drop_glue<'28, '29, '30>] f
+ 198  198 |         ↳⚡ storage_dead(f)
+ 199  199 |             unwind_terminate
+ 200  200 |         storage_dead(f)
+ 201  201 |         unwind_continue
+ 202  202 |     storage_dead(_3)
+ 203  203 |     storage_dead(_2)
+ 204      -     conditional_drop[drop_glue<'25, '26, '27>] f
+      204 +     conditional_drop[drop_glue<'21, '22, '23>] f
+ 205  205 |     ↳⚡ storage_dead(f)
+ 206  206 |         unwind_continue
+ 207  207 |     storage_dead(f)
+ 208  208 |     return
+ 209  209 | }
+          ⋮
+ 212  212 | fn main()
+ 213  213 | {
+ 214  214 |     let _0: (); // return
+ 215  215 |     let v: u8; // local
+ 216  216 |     let z: u8; // local
+ 217      -     let f: closure<'3, '4>; // local
+      217 +     let f: closure<'2, '3>; // local
+ 218  218 |     let _4: &'5 u8; // anonymous local
+ 219  219 |     let _5: &'6 u8; // anonymous local
+ 220  220 |     let _6: u8; // anonymous local
+ 221  221 |     let _7: &'10 closure<'11, '12>; // anonymous local
+ 222  222 |     let _8: (u8, u8); // anonymous local
+          ⋮
+ 249  249 |     storage_live(_6)
+ 250  250 |     storage_live(_7)
+ 251  251 |     _7 = &f
+ 252  252 |     storage_live(_8)
+ 253  253 |     _8 = (const 10u8, const 20u8)
+ 254      -     _6 = impl_Fn_for_closure<'38, '39>::call<'40>(move _7, move _8)
+      254 +     _6 = impl_Fn_for_closure<'36, '37>::call<'38>(move _7, move _8)
+ 255  255 |     ↳⚡ unwind_continue
+ 256  256 |     storage_dead(_8)
+ 257  257 |     storage_dead(_7)
+ 258  258 |     storage_dead(_6)
+ 259  259 |     storage_live(_9)
+ 260  260 |     storage_live(_10)
+ 261  261 |     storage_live(_11)
+ 262  262 |     _11 = &f
+ 263  263 |     _10 = &(*_11)
+ 264      -     _9 = apply_to::<closure<'_, '_>><'44>(move _10)
+      264 +     _9 = apply_to::<closure<'_, '_>><'42>(move _10)
+ 265  265 |     ↳⚡ unwind_continue
+ 266  266 |     storage_dead(_10)
+ 267  267 |     storage_dead(_11)
+ 268  268 |     storage_dead(_9)
+ 269  269 |     storage_live(_12)
+ 270  270 |     storage_live(_13)
+ 271  271 |     storage_live(_14)
+ 272  272 |     _14 = &mut f
+ 273  273 |     _13 = &two-phase-mut (*_14)
+ 274      -     _12 = apply_to_mut::<closure<'_, '_>><'48>(move _13)
+      274 +     _12 = apply_to_mut::<closure<'_, '_>><'46>(move _13)
+ 275  275 |     ↳⚡ unwind_continue
+ 276  276 |     storage_dead(_13)
+ 277  277 |     storage_dead(_14)
+ 278  278 |     storage_dead(_12)
+ 279  279 |     storage_live(_15)
+          ⋮
+ 414  414 |     return
+ 415  415 | }
+ 416  416 | 
+ 417  417 | 
+ 418  418 | 
+
+
+
+---- monomorphization/closures.rs ----
+
+---- expected: tests/ui/monomorphization/closures.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | opaque type core::marker::MetaSized::{vtable}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+ 148  148 |     storage_live(_0)
+ 149  149 |     storage_live(_2)
+ 150  150 |     _2 = &f
+ 151  151 |     storage_live(_3)
+ 152  152 |     _3 = (const 0u8,)
+ 153      -     _0 = impl_Fn_for_closure<'9>::call<'10>(move _2, move _3)
+ 154      -     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'14, '15>] f
+      153 +     _0 = impl_Fn_for_closure<'7>::call<'8>(move _2, move _3)
+      154 +     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'11, '12>] f
+ 155  155 |         ↳⚡ storage_dead(f)
+ 156  156 |             unwind_terminate
+ 157  157 |         storage_dead(f)
+ 158  158 |         unwind_continue
+ 159  159 |     storage_dead(_3)
+ 160  160 |     storage_dead(_2)
+ 161      -     conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'19, '20>] f
+      161 +     conditional_drop[{impl Destruct for test_crate::main::closure<'_0>}::drop_glue<'15, '16>] f
+ 162  162 |     ↳⚡ storage_dead(f)
+ 163  163 |         unwind_continue
+ 164  164 |     storage_dead(f)
+ 165  165 |     return
+ 166  166 | }
+          ⋮
+ 211  211 |     storage_live(_0)
+ 212  212 |     storage_live(_2)
+ 213  213 |     _2 = &mut f
+ 214  214 |     storage_live(_3)
+ 215  215 |     _3 = (const 0u8,)
+ 216      -     _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'9>::call_mut<'10>(move _2, move _3)
+ 217      -     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'14, '15>] f
+      216 +     _0 = {impl FnMut<(u8,)> for test_crate::main::closure#1<'_0>}<'7>::call_mut<'8>(move _2, move _3)
+      217 +     ↳⚡ conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'11, '12>] f
+ 218  218 |         ↳⚡ storage_dead(f)
+ 219  219 |             unwind_terminate
+ 220  220 |         storage_dead(f)
+ 221  221 |         unwind_continue
+ 222  222 |     storage_dead(_3)
+ 223  223 |     storage_dead(_2)
+ 224      -     conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'19, '20>] f
+      224 +     conditional_drop[{impl Destruct for test_crate::main::closure#1<'_0>}::drop_glue<'15, '16>] f
+ 225  225 |     ↳⚡ storage_dead(f)
+ 226  226 |         unwind_continue
+ 227  227 |     storage_dead(f)
+ 228  228 |     return
+ 229  229 | }
+          ⋮
+ 287  287 | fn main()
+ 288  288 | {
+ 289  289 |     let _0: (); // return
+ 290  290 |     let z_1: u8; // local
+ 291  291 |     let _2: u8; // anonymous local
+ 292      -     let _3: test_crate::main::closure<'2>; // anonymous local
+      292 +     let _3: test_crate::main::closure<'1>; // anonymous local
+ 293  293 |     let _4: &'3 u8; // anonymous local
+ 294  294 |     let z_5: u8; // local
+ 295  295 |     let _6: u8; // anonymous local
+ 296      -     let _7: test_crate::main::closure#1<'6>; // anonymous local
+      296 +     let _7: test_crate::main::closure#1<'5>; // anonymous local
+ 297  297 |     let _8: &'7 mut u8; // anonymous local
+ 298  298 |     let z_9: Thing; // local
+ 299  299 |     let _10: u8; // anonymous local
+ 300  300 |     let _11: test_crate::main::closure#2; // anonymous local
+ 301  301 | 
+          ⋮
+ 558  558 |     return
+ 559  559 | }
+ 560  560 | 
+ 561  561 | 
+ 562  562 | 
+
+
+
+---- issue-394-rpit-with-lifetime.rs ----
+
+---- expected: tests/ui/issue-394-rpit-with-lifetime.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | struct () {}
+   4    4 | 
+   5    5 | // Full name: core::marker::MetaSized
+          ⋮
+  92   92 | fn call_mut<'a, '_1>(_1: &'_1 mut closure<'a>, tupled_args: ()) -> Option<u8>[{built_in impl Sized for u8}]
+  93   93 | where
+  94   94 |     RegionOutlives0: 'a: '_1,
+  95   95 | {
+  96   96 |     let _0: Option<u8>[{built_in impl Sized for u8}]; // return
+  97      -     let _1: &'1 mut closure<'a>; // arg #1
+       97 +     let _1: &'2 mut closure<'a>; // arg #1
+  98   98 |     let tupled_args: (); // arg #2
+  99   99 | 
+ 100  100 |     storage_live(_0)
+ 101  101 |     _0 = Option::None {  }
+ 102  102 |     storage_dead(tupled_args)
+          ⋮
+ 108  108 | unsafe fn drop_glue<'a, '_1>(_1: &'_1 mut closure<'a>)
+ 109  109 | where
+ 110  110 |     RegionOutlives0: 'a: '_1,
+ 111  111 | {
+ 112  112 |     let _0: (); // return
+ 113      -     let _1: &'1 mut closure<'a>; // arg #1
+      113 +     let _1: &'2 mut closure<'a>; // arg #1
+ 114  114 | 
+ 115  115 |     storage_live(_0)
+ 116  116 |     _0 = ()
+ 117  117 |     storage_dead(_1)
+ 118  118 |     return
+          ⋮
+ 122  122 | fn call_once<'a>(_1: closure<'a>, _2: ()) -> Option<u8>[{built_in impl Sized for u8}]
+ 123  123 | {
+ 124  124 |     let _0: Option<u8>[{built_in impl Sized for u8}]; // return
+ 125  125 |     let _1: closure<'a>; // arg #1
+ 126  126 |     let _2: (); // arg #2
+ 127      -     let _3: &'1 mut closure<'a>; // anonymous local
+      127 +     let _3: &'2 mut closure<'a>; // anonymous local
+ 128  128 | 
+ 129  129 |     storage_live(_0)
+ 130  130 |     storage_live(_3)
+ 131  131 |     _3 = &mut _1
+ 132      -     _0 = call_mut<'a, '4>(move _3, move _2)
+ 133      -     ↳⚡ drop[drop_glue<'a, '7>] _1
+      132 +     _0 = call_mut<'a, '5>(move _3, move _2)
+      133 +     ↳⚡ drop[drop_glue<'a, '8>] _1
+ 134  134 |         ↳⚡ storage_dead(_3)
+ 135  135 |             storage_dead(_2)
+ 136  136 |             storage_dead(_1)
+ 137  137 |             unwind_terminate
+ 138  138 |         storage_dead(_3)
+ 139  139 |         storage_dead(_2)
+ 140  140 |         storage_dead(_1)
+ 141  141 |         unwind_continue
+ 142      -     drop[drop_glue<'a, '10>] _1
+      142 +     drop[drop_glue<'a, '11>] _1
+ 143  143 |     ↳⚡ storage_dead(_3)
+ 144  144 |         storage_dead(_2)
+ 145  145 |         storage_dead(_1)
+ 146  146 |         unwind_continue
+ 147  147 |     storage_dead(_3)
+          ⋮
+ 192  192 |     non-dyn-compatible
+ 193  193 | }
+ 194  194 | 
+ 195  195 | 
+ 196  196 | 
+
+
+
+---- monomorphization/issue-708-from-str-mismatched-generics.rs ----
+Command: `charon ui_test tests/ui/monomorphization/issue-708-from-str-mismatched-generics.rs`
+Compilation failed:
+error: Closure region facts unavailable: DependencyNotBuiltByCollector("/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-07da9a9804d761db.rmeta")
+ --> /rustc/library/alloc/src/raw_vec/mod.rs:901:44
+
+note: the error occurred when translating `alloc::raw_vec::layout_array::{impl#23}`, which is (transitively) used at the following location(s):
+ --> tests/ui/monomorphization/issue-708-from-str-mismatched-generics.rs:7:13
+  |
+7 |     let _ = std::path::PathBuf::from("foo");
+  |             -------------------------------
+8 |     let _ = String::from("Hello, world!");
+  |             -----------------------------
+error: Item `alloc::raw_vec::layout_array::{closure#0}` caused errors; ignoring.
+ --> /rustc/library/alloc/src/raw_vec/mod.rs:901:44
+
+ERROR Charon failed to translate this code (2 errors)
+
+
+
+failures:
+    closures.rs
+    simple/issue-988-closure-outlives.rs
+    simple/nested-closure-lifetime.rs
+    simple/closure-with-remove-adt-clauses.rs
+    simple/lending-iterator-gat.rs
+    simple/closure-fn.rs
+    simple/closure-with-non-upvar-lifetime.rs
+    simple/issue-1040-closure-upvar-lifetime.rs
+    simple/closure-capture-ref-by-move.rs
+    simple/foreign-inline-const.rs
+    simple/closure-fnmut.rs
+    no-gen-tuple-structs.rs
+    simple/nested-closure.rs
+    issue-323-closure-borrow.rs
+    monomorphization/closure-fn.rs
+    monomorphization/closures.rs
+    issue-394-rpit-with-lifetime.rs
+    monomorphization/issue-708-from-str-mismatched-generics.rs
+
+test result: FAILED. 422 passed; 18 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.19s
+
+error: test failed, to rerun pass `--test ui`

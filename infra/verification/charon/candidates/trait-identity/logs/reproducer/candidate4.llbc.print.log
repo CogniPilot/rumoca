@@ -1,0 +1,201 @@
+# Final LLBC before serialization:
+
+// Full name: core::convert::From
+#[lang_item(From)]
+#[diagnostic_item("From")]
+pub trait From<Self, T>
+{
+    fn from;
+    non-dyn-compatible
+}
+
+// Full name: core::convert::{impl From<T> for T}::from
+pub fn from<T>(_1: T) -> T
+= <opaque>
+
+// Full name: core::convert::{impl From<T> for T}
+impl<T> "impl_From_for_T" From<T> for T {
+    fn from = from<T>
+    non-dyn-compatible
+}
+
+// Full name: core::convert::Infallible
+pub enum Infallible {
+}
+
+// Full name: core::ops::control_flow::ControlFlow
+#[diagnostic_item("ControlFlow")]
+pub enum ControlFlow<B, C> {
+  Continue { _0: C },
+  Break { _0: B },
+}
+
+// Full name: core::result::Result
+#[diagnostic_item("Result")]
+pub enum Result<T, E> {
+  Ok { _0: T },
+  Err { _0: E },
+}
+
+// Full name: core::result::{impl Try<T, Result<Infallible, E>, Result<T, E>> for Result<T, E>}::branch
+pub fn branch<T, E>(_1: Result<T, E>) -> ControlFlow<Result<Infallible, E>, T>
+= <opaque>
+
+// Full name: core::result::{impl FromResidual<Result<Infallible, E>> for Result<T, F>}::from_residual
+#[track_caller]
+pub fn from_residual<T, E, F>(_1: Result<Infallible, E>) -> Result<T, F>
+where
+    TraitClause0: (F: From<E>),
+= <opaque>
+
+opaque type ()
+
+// Full name: try_branch::parse
+pub fn parse(x: u32) -> Result<u32, u8>
+{
+    let _0: Result<u32, u8>; // return
+    let x: u32; // arg #1
+    let _2: bool; // anonymous local
+    let _3: u32; // anonymous local
+    let _4: u32; // anonymous local
+    let _5: u32; // anonymous local
+    let _6: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(_6)
+    storage_live(_2)
+    storage_live(_3)
+    _3 = copy x
+    _2 = move _3 > const 9u32
+    if move _2 {
+    } else {
+        storage_dead(_3)
+        storage_live(_4)
+        storage_live(_5)
+        _5 = copy x
+        _6 = copy _5 panic.+ const 1u32
+        _4 = move _6
+        storage_dead(_5)
+        _0 = Result::Ok { _0: move _4 }
+        storage_dead(_4)
+        storage_dead(_2)
+        storage_dead(_6)
+        storage_dead(x)
+        return
+    }
+    storage_dead(_3)
+    _0 = Result::Err { _0: const 1u8 }
+    storage_dead(_2)
+    storage_dead(_6)
+    storage_dead(x)
+    return
+}
+
+// Full name: try_branch::twice
+pub fn twice(x: u32) -> Result<u32, u8>
+{
+    let _0: Result<u32, u8>; // return
+    let x: u32; // arg #1
+    let a: u32; // local
+    let _3: ControlFlow<Result<Infallible, u8>, u32>; // anonymous local
+    let _4: Result<u32, u8>; // anonymous local
+    let _5: u32; // anonymous local
+    let residual_6: Result<Infallible, u8>; // local
+    let _7: Result<Infallible, u8>; // anonymous local
+    let val_8: u32; // local
+    let b: u32; // local
+    let _10: ControlFlow<Result<Infallible, u8>, u32>; // anonymous local
+    let _11: Result<u32, u8>; // anonymous local
+    let _12: u32; // anonymous local
+    let residual_13: Result<Infallible, u8>; // local
+    let _14: Result<Infallible, u8>; // anonymous local
+    let val_15: u32; // local
+    let _16: u32; // anonymous local
+
+    storage_live(_0)
+    storage_live(a)
+    storage_live(_3)
+    storage_live(_4)
+    storage_live(_5)
+    _5 = copy x
+    _4 = parse(move _5)
+    ↳⚡ storage_dead(x)
+        unwind_continue
+    storage_dead(_5)
+    _3 = branch<u32, u8>(move _4)
+    ↳⚡ storage_dead(x)
+        unwind_continue
+    storage_dead(_4)
+    match _3 {
+        ControlFlow::Continue => {
+            storage_live(val_8)
+            val_8 = copy (_3 as variant ControlFlow::Continue)._0
+            a = copy val_8
+            storage_dead(val_8)
+            fake_read(a)
+            storage_dead(_3)
+            storage_live(b)
+            storage_live(_10)
+            storage_live(_11)
+            storage_live(_12)
+            _12 = copy a
+            _11 = parse(move _12)
+            ↳⚡ storage_dead(x)
+                unwind_continue
+            storage_dead(_12)
+            _10 = branch<u32, u8>(move _11)
+            ↳⚡ storage_dead(x)
+                unwind_continue
+            storage_dead(_11)
+            match _10 {
+                ControlFlow::Continue => {
+                    storage_live(val_15)
+                    val_15 = copy (_10 as variant ControlFlow::Continue)._0
+                    b = copy val_15
+                    storage_dead(val_15)
+                    fake_read(b)
+                    storage_dead(_10)
+                    storage_live(_16)
+                    _16 = copy b
+                    _0 = Result::Ok { _0: move _16 }
+                    storage_dead(_16)
+                    storage_dead(b)
+                    storage_dead(a)
+                    storage_dead(x)
+                    return
+                },
+                ControlFlow::Break => {
+                    storage_live(residual_13)
+                    residual_13 = copy (_10 as variant ControlFlow::Break)._0
+                    storage_live(_14)
+                    _14 = copy residual_13
+                    _0 = from_residual<u32, u8, u8>[impl_From_for_T<u8>](move _14)
+                    ↳⚡ storage_dead(x)
+                        unwind_continue
+                    storage_dead(_14)
+                    storage_dead(residual_13)
+                    storage_dead(_10)
+                    storage_dead(b)
+                },
+            }
+        },
+        ControlFlow::Break => {
+            storage_live(residual_6)
+            residual_6 = copy (_3 as variant ControlFlow::Break)._0
+            storage_live(_7)
+            _7 = copy residual_6
+            _0 = from_residual<u32, u8, u8>[impl_From_for_T<u8>](move _7)
+            ↳⚡ storage_dead(x)
+                unwind_continue
+            storage_dead(_7)
+            storage_dead(residual_6)
+            storage_dead(_3)
+        },
+    }
+    storage_dead(a)
+    storage_dead(x)
+    return
+}
+
+
+

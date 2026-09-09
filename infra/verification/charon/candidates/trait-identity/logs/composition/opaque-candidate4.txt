@@ -1,0 +1,11 @@
+BoxSlice.Insts.CoreConvertFromShared0Slice.from
+alloc.vec.Vec.into_boxed_slice
+core.num.niche_types.NonZeroU32Inner.Insts.CoreCloneClone.clone
+core.num.nonzero.NonZero.Insts.CoreCmpPartialEqNonZero.eq
+core.option.Option.Insts.CoreCloneClone.clone
+core.option.Option.expect0VariableId
+core.option.Option.expect0VariableView
+core.option.OptionOption.flatten
+core.option.OptionShared0T.copied
+core.result.Result.Insts.CoreOpsTry_traitTryTResultInfallibleEResult.branch
+core.result.Result.ok

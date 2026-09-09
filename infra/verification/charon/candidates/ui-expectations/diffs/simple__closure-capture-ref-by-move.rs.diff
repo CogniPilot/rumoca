@@ -1,0 +1,31 @@
+---- simple/closure-capture-ref-by-move.rs ----
+
+---- expected: tests/ui/simple/closure-capture-ref-by-move.out
+++++ actual:   charon output
+   1    1 | # Final LLBC before serialization:
+   2    2 | 
+   3    3 | // Full name: core::marker::MetaSized
+   4    4 | #[fundamental]
+   5    5 | #[lang_item(MetaSized)]
+          ⋮
+ 120  120 |     storage_live(_4)
+ 121  121 |     storage_live(_5)
+ 122  122 |     _5 = &mut closure
+ 123  123 |     storage_live(_6)
+ 124  124 |     _6 = ()
+ 125      -     _4 = call_mut<'13, '14>(move _5, move _6)
+      125 +     _4 = call_mut<'11, '12>(move _5, move _6)
+ 126  126 |     ↳⚡ unwind_continue
+ 127  127 |     storage_dead(_6)
+ 128  128 |     storage_dead(_5)
+ 129  129 |     storage_dead(_4)
+ 130  130 |     _0 = ()
+          ⋮
+ 208  208 |     non-dyn-compatible
+ 209  209 | }
+ 210  210 | 
+ 211  211 | 
+ 212  212 | 
+
+
+

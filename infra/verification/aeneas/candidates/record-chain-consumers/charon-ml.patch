@@ -1,0 +1,355 @@
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/generated/Generated_FullAst.ml charon-ml/src/generated/Generated_FullAst.ml
+--- a/charon-ml/src/generated/Generated_FullAst.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/generated/Generated_FullAst.ml	2026-09-08 17:59:56.725460057 -0400
+@@ -251,6 +251,33 @@
+       (** Try evaluating consts and statics to their final value. If evaluation
+           fails, we fall back to the initializer call. *)
+ 
++(** The disposition of a selected root a pass consumed rather than kept, issued
++    at the site that consumed it, so that the absence of the item from the
++    artifact is accounted for. Each variant names the identities its consumption
++    involves. *)
++and consumed_root =
++  | AnonConstToCall of global_decl_id * fun_decl_id
++      (** A promoted constant whose uses became calls to its initializer
++          ([anon_const_to_call]).
++
++          Fields:
++          - [root]
++          - [init_fun] *)
++  | Inlined of fun_decl_id * fun_decl_id
++      (** A function body inlined into a host function
++          ([inline_selected_functions]); one record per host it was inlined
++          into.
++
++          Fields:
++          - [root]
++          - [into] *)
++  | Invisible of item_id
++      (** An exactly selected item the opacity rules make invisible; never
++          translated.
++
++          Fields:
++          - [root] *)
++
+ (** A (group of) top-level declaration(s), properly reordered. *)
+ and declaration_group =
+   | TypeGroup of type_decl_id g_declaration_group
+@@ -398,5 +425,17 @@
+           method implementations apart.
+ 
+           [Some] after translation unless [--no-reorder-decls] is passed. *)
++  roots : item_id list;
++      (** The selected roots: the items the selection named or that lie under a
++          selected container, and the copies partial monomorphization made of
++          them. They seed the declaration order and cross the multi-target merge
++          by identity, remapped like every other reference. *)
++  explicit_roots : item_id list;
++      (** The roots the selection named exactly. A pass that removes one of
++          these without recording its disposition in [consumed_roots] is an
++          error. *)
++  consumed_roots : consumed_root list;
++      (** The dispositions of selected roots a pass consumed: which pass took
++          the item and, when the item lives on inside another, which one. *)
+ }
+ [@@deriving show]
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/generated/Generated_OfJson.ml charon-ml/src/generated/Generated_OfJson.ml
+--- a/charon-ml/src/generated/Generated_OfJson.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/generated/Generated_OfJson.ml	2026-09-08 17:59:57.291461595 -0400
+@@ -1014,6 +1014,9 @@
+     | `Assoc [ ("Builtin", _0) ] ->
+         let* _0 = builtin_path_elem_of_json ctx _0 in
+         Ok (PeBuiltin _0)
++    | `Assoc [ ("Extended", _0) ] ->
++        let* _0 = box_of_json (binder_of_json generic_args_of_json) ctx _0 in
++        Ok (PeExtended _0)
+     | _ -> Error "")
+ 
+ and place_of_json (ctx : of_json_ctx) (js : json) : (place, string) result =
+@@ -2406,6 +2409,26 @@
+     | `String "Values" -> Ok Values
+     | _ -> Error "")
+ 
++and consumed_root_of_json (ctx : of_json_ctx) (js : json) :
++    (consumed_root, string) result =
++  combine_error_msgs js __FUNCTION__
++    (match js with
++    | `Assoc
++        [
++          ("AnonConstToCall", `Assoc [ ("root", root); ("init_fun", init_fun) ]);
++        ] ->
++        let* root = global_decl_id_of_json ctx root in
++        let* init_fun = fun_decl_id_of_json ctx init_fun in
++        Ok (AnonConstToCall (root, init_fun))
++    | `Assoc [ ("Inlined", `Assoc [ ("root", root); ("into", into) ]) ] ->
++        let* root = fun_decl_id_of_json ctx root in
++        let* into = fun_decl_id_of_json ctx into in
++        Ok (Inlined (root, into))
++    | `Assoc [ ("Invisible", `Assoc [ ("root", root) ]) ] ->
++        let* root = item_id_of_json ctx root in
++        Ok (Invisible root)
++    | _ -> Error "")
++
+ and declaration_group_of_json (ctx : of_json_ctx) (js : json) :
+     (declaration_group, string) result =
+   combine_error_msgs js __FUNCTION__
+@@ -3644,6 +3667,9 @@
+           ("trait_decls", trait_decls);
+           ("trait_impls", trait_impls);
+           ("ordered_decls", ordered_decls);
++          ("roots", roots);
++          ("explicit_roots", explicit_roots);
++          ("consumed_roots", consumed_roots);
+         ] ->
+         let* crate_name = string_of_json ctx crate_name in
+         let* options = cli_options_of_json ctx options in
+@@ -3707,6 +3733,11 @@
+             (list_of_json declaration_group_of_json)
+             ctx ordered_decls
+         in
++        let* roots = list_of_json item_id_of_json ctx roots in
++        let* explicit_roots = list_of_json item_id_of_json ctx explicit_roots in
++        let* consumed_roots =
++          list_of_json consumed_root_of_json ctx consumed_roots
++        in
+         Ok
+           ({
+              crate_name;
+@@ -3722,6 +3753,9 @@
+              trait_decls;
+              trait_impls;
+              ordered_decls;
++             roots;
++             explicit_roots;
++             consumed_roots;
+            }
+             : translated_crate)
+     | _ -> Error "")
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/generated/Generated_OfPostcard.ml charon-ml/src/generated/Generated_OfPostcard.ml
+--- a/charon-ml/src/generated/Generated_OfPostcard.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/generated/Generated_OfPostcard.ml	2026-09-08 17:59:57.680462653 -0400
+@@ -938,6 +938,11 @@
+      | 4 ->
+          let* _0 = builtin_path_elem_of_postcard ctx st in
+          Ok (PeBuiltin _0)
++     | 5 ->
++         let* _0 =
++           box_of_postcard (binder_of_postcard generic_args_of_postcard) ctx st
++         in
++         Ok (PeExtended _0)
+      | _ -> Error ("unknown enum variant tag: " ^ string_of_int __tag))
+ 
+ and place_of_postcard (ctx : of_postcard_ctx) (st : postcard_state) :
+@@ -2030,6 +2035,24 @@
+      | 1 -> Ok Values
+      | _ -> Error ("unknown enum variant tag: " ^ string_of_int __tag))
+ 
++and consumed_root_of_postcard (ctx : of_postcard_ctx) (st : postcard_state) :
++    (consumed_root, string) result =
++  combine_error_msgs st __FUNCTION__
++    (let* __tag = int_of_postcard ctx st in
++     match __tag with
++     | 0 ->
++         let* root = global_decl_id_of_postcard ctx st in
++         let* init_fun = fun_decl_id_of_postcard ctx st in
++         Ok (AnonConstToCall (root, init_fun))
++     | 1 ->
++         let* root = fun_decl_id_of_postcard ctx st in
++         let* into = fun_decl_id_of_postcard ctx st in
++         Ok (Inlined (root, into))
++     | 2 ->
++         let* root = item_id_of_postcard ctx st in
++         Ok (Invisible root)
++     | _ -> Error ("unknown enum variant tag: " ^ string_of_int __tag))
++
+ and declaration_group_of_postcard (ctx : of_postcard_ctx) (st : postcard_state)
+     : (declaration_group, string) result =
+   combine_error_msgs st __FUNCTION__
+@@ -3112,6 +3135,9 @@
+          (list_of_postcard declaration_group_of_postcard)
+          ctx st
+      in
++     let* roots = list_of_postcard item_id_of_postcard ctx st in
++     let* explicit_roots = list_of_postcard item_id_of_postcard ctx st in
++     let* consumed_roots = list_of_postcard consumed_root_of_postcard ctx st in
+      Ok
+        ({
+           crate_name;
+@@ -3127,6 +3153,9 @@
+           trait_decls;
+           trait_impls;
+           ordered_decls;
++          roots;
++          explicit_roots;
++          consumed_roots;
+         }
+          : translated_crate))
+ 
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/generated/Generated_Types.ml charon-ml/src/generated/Generated_Types.ml
+--- a/charon-ml/src/generated/Generated_Types.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/generated/Generated_Types.ml	2026-09-08 17:59:57.868463164 -0400
+@@ -1374,6 +1374,13 @@
+           multi-target mode. *)
+   | PeBuiltin of builtin_path_elem
+       (** A path element for a builtin, like tuples *)
++  | PeExtended of generic_args binder
++      (** The generics of this item were extended in place (associated types
++          lifted into type parameters). The binder binds the extended
++          parameters; its arguments are the original parameters. The item keeps
++          its original identity; consumers fold this record last, after any
++          [Instantiated] record that follows it. Last so the earlier variants
++          keep their tags. *)
+ 
+ (** The metadata stored in a pointer. That's the information stored in pointers
+     alongside their address. It's empty for [Sized] types, and interesting for
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/NameMatcher.ml charon-ml/src/NameMatcher.ml
+--- a/charon-ml/src/NameMatcher.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/NameMatcher.ml	2026-09-08 15:50:40.301468979 -0400
+@@ -456,13 +456,7 @@
+      modified; it records the map from the new generics to the old ones. Name
+      matching is expressed over the original item, so translate the generics of
+      the instantiated item back to the original generics before matching. *)
+-  let n, g =
+-    match List.rev n with
+-    | PeInstantiated binder :: rest_rev ->
+-        let g = Substitute.instantiate_name_generics binder g in
+-        (List.rev rest_rev, g)
+-    | _ -> (n, g)
+-  in
++  let n, g = Substitute.fold_name_records n g in
+   match (p, n) with
+   | [], [] ->
+       failwith
+@@ -929,11 +923,18 @@
+ 
+ and name_with_generics_to_pattern_aux (ctx : ctx) (c : to_pat_config)
+     (m : constraints) (n : T.name) (generics : T.generic_args) : pattern =
++  (* Extraction names present the item: fold the copy records so a copy shows
++     the arguments that distinguish it, and drop the extension records, which
++     are provenance of the original identity. Patterns denote identity: fold
++     every record, as [match_name_with_generics] does, so the pattern matches
++     the name. *)
+   let n, generics =
+-    match List.rev n with
+-    | PeInstantiated binder :: rest_rev ->
+-        (List.rev rest_rev, Substitute.instantiate_name_generics binder generics)
+-    | _ -> (n, generics)
++    match c.tgt with
++    | TkName | TkPretty ->
++        let n, generics = Substitute.fold_copy_records n generics in
++        let n, _ = Substitute.split_name_records n in
++        (n, generics)
++    | TkPattern -> Substitute.fold_name_records n generics
+   in
+   let generics = generic_args_to_pattern ctx c m generics in
+   name_with_generic_args_to_pattern_aux ctx c n (Some generics)
+@@ -953,9 +954,9 @@
+       | None -> [ PIdent (tgt, 0, []) ]
+       | Some args -> [ PIdent (tgt, 0, args) ]
+     end
+-  | PeInstantiated _ ->
+-      (* In pattern generation, we skip monomorphized elements since patterns
+-         are meant to match the logical structure, not the instantiation details *)
++  | PeInstantiated _ | PeExtended _ ->
++      (* In pattern generation, we skip instantiation records met mid-path since
++         patterns match the logical structure; trailing records were folded. *)
+       []
+   | PeBuiltin PeStr -> begin
+       match generics with
+@@ -1459,12 +1460,7 @@
+   let match_name_with_generics_prefix (ctx : ctx) (c : match_config)
+       (p : pattern) (n : T.name) (g : T.generic_args) :
+       (T.name * T.generic_args) option =
+-    let logical_name, instantiation_suffix =
+-      match List.rev n with
+-      | (PeInstantiated _ as suffix) :: rest_rev ->
+-          (List.rev rest_rev, [ suffix ])
+-      | _ -> (n, [])
+-    in
++    let logical_name, instantiation_suffix = Substitute.split_name_records n in
+     if List.length p = List.length logical_name then
+       if match_name_with_generics ctx c p n g then
+         Some ([], TypesUtils.empty_generic_args)
+@@ -1480,10 +1476,10 @@
+     let (Node (node_v, children)) = m in
+     (* Check if we reached the destination *)
+     match name with
+-    | [] | [ PeInstantiated _ ] ->
+-        (* For tree search, we also consider monomorphized elements as terminal
+-           since they represent instantiation details, not logical structure.
+-           The monomorphized matching is always handled by the calling context. *)
++    | _ when List.for_all Substitute.is_name_record name ->
++        (* For tree search, a tail made only of instantiation records is
++           terminal: records are instantiation details, not logical structure.
++           The record matching is always handled by the calling context. *)
+         if g = TypesUtils.empty_generic_args then node_v else None
+     | _ ->
+         (* Explore the children *)
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/PrintFmt.ml charon-ml/src/PrintFmt.ml
+--- a/charon-ml/src/PrintFmt.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/PrintFmt.ml	2026-09-08 15:16:19.834059236 -0400
+@@ -897,6 +897,7 @@
+           Format.fprintf fmt "{%a}" (pp_impl_elem env) (ImplElemTrait impl_id)
+     end
+   | PeImpl impl -> Format.fprintf fmt "{%a}" (pp_impl_elem env) impl
++  | PeExtended _ -> ()
+   | PeInstantiated binder ->
+       let anon_params =
+         {
+diff -ruN '--exclude=_build' /nix/store/2058cyr4b25jmx5809k7i36ijfh4cflw-source/charon-ml/src/Substitute.ml charon-ml/src/Substitute.ml
+--- a/charon-ml/src/Substitute.ml	1969-12-31 19:00:01.000000000 -0500
++++ b/charon-ml/src/Substitute.ml	2026-09-08 15:42:26.445856436 -0400
+@@ -513,17 +513,48 @@
+     apply_args_to_binder g st_substitute_visitor#visit_generic_args binder
+   end
+ 
++(** Whether a path element is an instantiation record. *)
++let is_name_record (e : path_elem) : bool =
++  match e with
++  | PeInstantiated _ | PeExtended _ -> true
++  | _ -> false
++
++(** Fold every trailing instantiation record of a name, last to first,
++    translating the generics of the instantiated item back to the generics of
++    the original item. Returns the name without its records. *)
++let rec fold_name_records (n : name) (g : generic_args) : name * generic_args =
++  match List.rev n with
++  | (PeInstantiated binder | PeExtended binder) :: rest_rev ->
++      fold_name_records (List.rev rest_rev) (instantiate_name_generics binder g)
++  | _ -> (n, g)
++
++(** Fold only the trailing copy records ([PeInstantiated]) of a name, last to
++    first, stopping at the first extension record. A name made this way keeps
++    the arguments of a copy at the arity of the item it was copied from, which
++    is what distinguishes copies from each other; the extension records that
++    remain are provenance and are dropped by the caller. *)
++let rec fold_copy_records (n : name) (g : generic_args) : name * generic_args =
++  match List.rev n with
++  | PeInstantiated binder :: rest_rev ->
++      fold_copy_records (List.rev rest_rev) (instantiate_name_generics binder g)
++  | _ -> (n, g)
++
++(** Split a name into its logical part and its trailing records, in order. *)
++let split_name_records (n : name) : name * name =
++  let rec go (rev : path_elem list) (records : path_elem list) =
++    match rev with
++    | ((PeInstantiated _ | PeExtended _) as r) :: rest -> go rest (r :: records)
++    | _ -> (List.rev rev, records)
++  in
++  go (List.rev n) []
++
+ (** The arguments this type was declared with, i.e. the ones it had before
+     (partial) monomorphization: monomorphization moves the arguments of an item
+     into its name, so we look for them there. *)
+ let type_decl_ref_generics (type_decls : type_decl TypeDeclId.Map.t)
+     (tref : type_decl_ref) : generic_args =
+   match TypeDeclId.Map.find_opt tref.id type_decls with
+-  | Some decl -> (
+-      match List.rev decl.item_meta.name with
+-      | PeInstantiated binder :: _ ->
+-          instantiate_name_generics binder tref.generics
+-      | _ -> tref.generics)
++  | Some decl -> snd (fold_name_records decl.item_meta.name tref.generics)
+   | None -> tref.generics
+ 
+ (** Merge two levels of binders into a single one that binds the concatenated

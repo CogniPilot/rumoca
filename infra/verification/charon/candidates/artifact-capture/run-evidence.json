@@ -1,0 +1,2754 @@
+{
+   "attempt1_rows" : [
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe",
+            "--crate-type",
+            "bin",
+            "-o",
+            "<out>/exe",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 101,
+         "log" : "logs/base/exe-noincr.log",
+         "log_sha256" : "3b9ea2234c8ea6fb8aa16d4f0a129624aa7793410e85552a277c4f4fe34ed81c",
+         "name" : "exe-noincr",
+         "panicked" : true,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe2.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe2",
+            "--crate-type",
+            "bin",
+            "-C",
+            "incremental=<out>/incr",
+            "-o",
+            "<out>/exe2",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/exe-incr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-incr",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe3.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe3",
+            "--crate-type",
+            "bin",
+            "--emit=metadata,link",
+            "-o",
+            "<out>/exe3",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 101,
+         "log" : "logs/base/exe-metadata.log",
+         "log_sha256" : "94cef252051fd155f280347faa2b3adbcaefe3f59a7c68b41260cf993d5699c5",
+         "name" : "exe-metadata",
+         "panicked" : true,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/lib-rlib.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-rlib",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/depm.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "depm",
+            "--crate-type",
+            "lib",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/lib-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/base/user-consumes.log",
+         "log_sha256" : "2ff8ce7beba345803e042819bcef638a567adcda81cf8b9661cd9a7647913f8c",
+         "name" : "user-consumes",
+         "note" : "first consumption attempt against the rlib, which has no sidecar in direct mode; refused, see the metadata variant",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector(\"/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out-base/libdep.rlib\")",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/broken.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "broken",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/broken.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 2,
+         "log" : "logs/base/lib-broken.log",
+         "log_sha256" : "2ea80a1330a4341855f4803e696ee2da625d4f7bec5b351b6e727f29f26294d5",
+         "name" : "lib-broken",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe",
+            "--crate-type",
+            "bin",
+            "-o",
+            "<out>/exe",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/exe-noincr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-noincr",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe2.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe2",
+            "--crate-type",
+            "bin",
+            "-C",
+            "incremental=<out>/incr",
+            "-o",
+            "<out>/exe2",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/exe-incr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-incr",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe3.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe3",
+            "--crate-type",
+            "bin",
+            "--emit=metadata,link",
+            "-o",
+            "<out>/exe3",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 2,
+         "log" : "logs/repaired/exe-metadata.log",
+         "log_sha256" : "f8808c203b0f1bf70e7da2792ad06344d49eab899cd911092c0350a42c187999",
+         "name" : "exe-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/lib-rlib.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-rlib",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/depm.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "depm",
+            "--crate-type",
+            "lib",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/lib-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired/user-consumes.log",
+         "log_sha256" : "656ef277741424ac6011c18f1d176108c8a888045c9c527730d2b1d37d08c6c9",
+         "name" : "user-consumes",
+         "note" : "first consumption attempt against the rlib, which has no sidecar in direct mode; refused, see the metadata variant",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector(\"/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out-repaired/libdep.rlib\")",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/broken.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "broken",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/broken.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 2,
+         "log" : "logs/repaired/lib-broken.log",
+         "log_sha256" : "2ea80a1330a4341855f4803e696ee2da625d4f7bec5b351b6e727f29f26294d5",
+         "name" : "lib-broken",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--emit=metadata,link",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/2-base_dep-emit-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "dep-emit-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/2-base_user-consumes.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-consumes",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/2-base_user-stale.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-stale",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "tamper attempt that did not match (digests carry a sha256= prefix); row kept as an untouched-sidecar load",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/base/2-base_user-missing.log",
+         "log_sha256" : "4ac8ccc4b56c839702f39e41b6e12d537ae72833a55d9d3cfda67092b51667a1",
+         "name" : "user-missing",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector",
+         "setup" : "the sidecar removed",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/base/2-base_user-restored.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-restored",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "the saved sidecar copied back",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--emit=metadata,link",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/2-repaired_dep-emit-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "dep-emit-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/2-repaired_user-consumes.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-consumes",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/2-repaired_user-stale.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-stale",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "tamper attempt that did not match (digests carry a sha256= prefix); row kept as an untouched-sidecar load",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired/2-repaired_user-missing.log",
+         "log_sha256" : "b43ccc2ecb195bb2318a8965d3cd7f02732cc101d069c869e689ed971fd7da91",
+         "name" : "user-missing",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector",
+         "setup" : "the sidecar removed",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired/2-repaired_user-restored.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-restored",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "the saved sidecar copied back",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/base/2-base_stale-artifact_digest.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-artifact_digest",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its artifact_digest replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered artifact_digest)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/base/2-base_stale-crate_hash.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-crate_hash",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its crate_hash replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered crate_hash)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exem",
+            "--crate-type",
+            "bin",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 101,
+         "log" : "logs/base/3-base_log",
+         "log_sha256" : "6a97884fd872d04e28905d9af20013432a52c45b078e2ff6b51ca36f2f0dbbc1",
+         "name" : "exe-metadata-only",
+         "panicked" : true,
+         "refusal" : "panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired/2-repaired_stale-artifact_digest.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-artifact_digest",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its artifact_digest replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered artifact_digest)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired/2-repaired_stale-crate_hash.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-crate_hash",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its crate_hash replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered crate_hash)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exem",
+            "--crate-type",
+            "bin",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired/3-repaired_log",
+         "log_sha256" : "e740118b9fb560099dad5592f20d38ec049a09a8aee0cd83eb366aadb7cf6145",
+         "name" : "exe-metadata-only",
+         "panicked" : false,
+         "refusal" : "InvalidArtifact(\"rustc computed no crate hash for an artifact that publishes facts\"",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "cwd" : "<scratch base tree>, tests/cargo/*/target removed first",
+         "exit" : 101,
+         "log" : "logs/base/cargo-suite-in-ci-noincremental.log",
+         "log_sha256" : "534c33d3dd5d66f4c76bde5497d06343b85549cbb93a557c86562c2ea55bc54a",
+         "name" : "cargo-suite",
+         "result" : "test result: FAILED. 3 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s",
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "cwd" : "<scratch repaired tree>, tests/cargo/*/target removed first",
+         "exit" : 0,
+         "log" : "logs/repaired/cargo-suite-in-ci-noincremental.log",
+         "log_sha256" : "35b76676634d57732176b88c1604ea24ef899cd61f2ac524c47e4ef255e8a96f",
+         "name" : "cargo-suite",
+         "result" : "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.68s",
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "cwd" : "<scratch base tree>",
+         "exit" : 101,
+         "log" : "logs/base/ui-suite-in-ci.log",
+         "log_sha256" : "be0553c303d84d8e19faad06fc0c1eee6d2455703730bd0063613ff7c1d58255",
+         "name" : "ui-suite",
+         "result" : "422 passed; 18 failed; 2 ignored",
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "cwd" : "<scratch repaired tree>",
+         "exit" : 101,
+         "log" : "logs/repaired/ui-suite-in-ci.log",
+         "log_sha256" : "1467bdd3b324e50c99b29c521fdcefc0feba60a9b2f490747acd2eb4124d3284",
+         "name" : "ui-suite",
+         "result" : "422 passed; 18 failed; 2 ignored",
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe",
+            "--crate-type",
+            "bin",
+            "-o",
+            "<out>/exe",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/exe-noincr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-noincr",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe2.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe2",
+            "--crate-type",
+            "bin",
+            "-C",
+            "incremental=<out>/incr",
+            "-o",
+            "<out>/exe2",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/exe-incr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-incr",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe3.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe3",
+            "--crate-type",
+            "bin",
+            "--emit=metadata,link",
+            "-o",
+            "<out>/exe3",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 2,
+         "log" : "logs/repaired2/exe-metadata.log",
+         "log_sha256" : "a9b790788202913aece83609953b3227d654f67cd32a8c4b6514527caa0e024e",
+         "name" : "exe-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/lib-rlib.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-rlib",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/depm.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "depm",
+            "--crate-type",
+            "lib",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/lib-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired2/user-consumes.log",
+         "log_sha256" : "d0cfcb9777454d271ab1328c31e8a7034dafba5bde024df4b8fa2b2bed7273b6",
+         "name" : "user-consumes",
+         "note" : "first consumption attempt against the rlib, which has no sidecar in direct mode; refused, see the metadata variant",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector(\"/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/ac-controls/out-repaired/libdep.rlib\")",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/broken.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "broken",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "<out>",
+            "controls/broken.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 2,
+         "log" : "logs/repaired2/lib-broken.log",
+         "log_sha256" : "2ea80a1330a4341855f4803e696ee2da625d4f7bec5b351b6e727f29f26294d5",
+         "name" : "lib-broken",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdepm.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--emit=metadata,link",
+            "--out-dir",
+            "<out>",
+            "controls/dep.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/2-dep-emit-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "dep-emit-metadata",
+         "panicked" : false,
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/2-user-consumes.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-consumes",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/2-user-stale.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-stale",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "tamper attempt that did not match (digests carry a sha256= prefix); row kept as an untouched-sidecar load",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired2/2-user-missing.log",
+         "log_sha256" : "b663c668fd47eeee8b376eeffe593a02278de78c44a2f6e37e700e2535c6e6a3",
+         "name" : "user-missing",
+         "panicked" : false,
+         "refusal" : "DependencyNotBuiltByCollector",
+         "setup" : "the sidecar removed",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/2-user-restored.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-restored",
+         "panicked" : false,
+         "refusal" : "",
+         "setup" : "the saved sidecar copied back",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired2/2-stale-artifact_digest.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-artifact_digest",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its artifact_digest replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered artifact_digest)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=<out>/libdep.rlib",
+            "--out-dir",
+            "<out>",
+            "controls/user.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired2/2-stale-crate_hash.log",
+         "log_sha256" : "51d5516a1be28174f8db951d60b443da7515da04e2a5a3d339232c717833ebdf",
+         "name" : "user-stale-crate_hash",
+         "refusal" : "stale or mismatched dependency facts",
+         "setup" : "the sidecar libdep.rmeta.charon-closure-regions.json has the first eight hex digits of its crate_hash replaced",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json (tampered crate_hash)"
+         ],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=<out>/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exem",
+            "--crate-type",
+            "bin",
+            "--emit=metadata",
+            "--out-dir",
+            "<out>",
+            "controls/exe.rs"
+         ],
+         "cwd" : "<out> = a fresh scratch output directory per row set",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "PATH" : "pinned rustc nightly-2026-08-18 bin and gcc wrapper first"
+         },
+         "exit" : 1,
+         "log" : "logs/repaired2/3-exe-metadata-only.log",
+         "log_sha256" : "e740118b9fb560099dad5592f20d38ec049a09a8aee0cd83eb366aadb7cf6145",
+         "name" : "exe-metadata-only",
+         "panicked" : false,
+         "refusal" : "InvalidArtifact(\"rustc computed no crate hash for an artifact that publishes facts\"",
+         "sidecars" : [],
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "cwd" : "<scratch repaired tree>, tests/cargo/*/target removed first",
+         "exit" : 0,
+         "log" : "logs/repaired2/cargo-suite-in-ci-noincremental.log",
+         "log_sha256" : "023657d23c18c755a387eb25f14fec86f0a08ce05dacd6ec687cef192e4d84ea",
+         "name" : "cargo-suite",
+         "result" : "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.62s",
+         "status" : "attempt 1, superseded by the frozen-pair rows; retained unchanged",
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "cwd" : "<scratch repaired tree>",
+         "exit" : 101,
+         "log" : "logs/repaired2/ui-suite-in-ci.log",
+         "name" : "ui-suite",
+         "result" : "422 passed; 18 failed; 2 ignored",
+         "status" : "attempt 1 row that referenced a log never produced: the ui suite was not rerun on the opaque carrier at that time; corrected by the suite rows below",
+         "tool" : "repaired2"
+      }
+   ],
+   "classification_note" : "base rows are the before state; a repaired row is a pass when it neither panics nor fabricates: executables publish nothing, metadata-emitting libraries publish a sidecar, a dependent loads it, tampered digests and a missing sidecar refuse, an executable asked for metadata refuses with the typed no-crate-hash error",
+   "controls" : {
+      "note" : "under the Miri sysroot the driver disables codegen for a translated crate, so a plain --crate-type lib writes no rlib sidecar in direct mode on either driver; libraries publish through --emit=metadata, which is what the consumption controls use The commands are the argv of each row; the fixtures are controls/*.rs. No script is retained."
+   },
+   "frozen_tools" : {
+      "base" : {
+         "charon" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "charon_driver" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon-driver",
+         "charon_driver_sha256" : "01a8c7a0190d269caecd349482c0bb18ce3a336e6987426e858ee34efe1efc40",
+         "charon_sha256" : "873dbbde47c514402790538bbab3a4ec0562590536022b201426997a7f3a7e0a",
+         "source" : "composed retention source (charon 10ca62cd chain), cargo dev profile, no patch"
+      },
+      "directory" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl",
+      "note" : "read-only files; every row in `rows` names one of these executables by absolute path with absolute cwd and full env",
+      "repaired2" : {
+         "charon" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "charon_driver" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon-driver",
+         "charon_driver_sha256" : "7f6d684f680261fb6af8f638b343a1e70a8148352a588ff435270084ff1cbc81",
+         "charon_sha256" : "e5673df9f7a256de18aef5f5131c133c61590850f3cfd97deb50c1385ee79cf1",
+         "patch" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/artifact-capture.patch",
+         "source" : "same source plus artifact-capture.patch (opaque carrier revision)"
+      },
+      "sha256sums" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/sha256sums"
+   },
+   "nix_build" : {
+      "attribution" : "inherited: the same 18 fail under IN_CI=1 on the base tree and on the repaired tree locally (logs/base/ui-suite-in-ci.log, logs/repaired/ui-suite-in-ci.log); all are closure and lifetime snapshots whose expected files no chain patch updates",
+      "command" : [
+         "nix",
+         "build",
+         "--impure",
+         "--no-link",
+         "--print-out-paths",
+         "--cores",
+         "4",
+         "--max-jobs",
+         "1",
+         "--file",
+         "<packet>/build.nix"
+      ],
+      "derivation" : "/nix/store/27hjcbwvhpbdn35f966isacx6bb8j08j-charon-0.1.248.drv",
+      "log" : "logs/nix-check-phase.log",
+      "log_sha256" : "4ff2da7299aa2ef21e5e6667abe0a80fb331535029d9986783217fefe6d68d2e",
+      "result" : "tests/cargo 11 passed (multi-targets ok); tests/ui 422 passed, 18 failed; no store path",
+      "ui_failing" : [
+         "closures.rs",
+         "issue-323-closure-borrow.rs",
+         "issue-394-rpit-with-lifetime.rs",
+         "monomorphization/closure-fn.rs",
+         "monomorphization/closures.rs",
+         "monomorphization/issue-708-from-str-mismatched-generics.rs",
+         "no-gen-tuple-structs.rs",
+         "simple/closure-capture-ref-by-move.rs",
+         "simple/closure-fnmut.rs",
+         "simple/closure-fn.rs",
+         "simple/closure-with-non-upvar-lifetime.rs",
+         "simple/closure-with-remove-adt-clauses.rs",
+         "simple/foreign-inline-const.rs",
+         "simple/issue-1040-closure-upvar-lifetime.rs",
+         "simple/issue-988-closure-outlives.rs",
+         "simple/lending-iterator-gat.rs",
+         "simple/nested-closure-lifetime.rs",
+         "simple/nested-closure.rs"
+      ]
+   },
+   "nix_build_revision" : {
+      "cargo_suite" : "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s",
+      "derivation" : "/nix/store/y4fymkicxhac4iiqp5c6vn2wsyk9k5rp-charon-0.1.248.drv",
+      "log" : "logs/nix-check-phase-revision.log",
+      "log_sha256" : "b66817f31333c02abbbdfbf44498f56b32b9ee3aefd97d5dfd72a20f96439fa1",
+      "patch_taken" : "f02a813c (identical hunks to the retained 4650334e, plus stray diff header lines)",
+      "result" : "same as the first build: cargo suite passes, the inherited 18 ui expectations fail, no store path",
+      "ui_suite" : "test result: FAILED. 422 passed; 18 failed; 2 ignored; 0 measured; 0 filtered out; finished in 2.19s"
+   },
+   "packet" : "charon/candidates/artifact-capture",
+   "patch" : {
+      "file" : "artifact-capture.patch",
+      "files" : [
+         "closure-region-facts/src/artifact.rs",
+         "closure-region-facts/src/session.rs"
+      ],
+      "revision_note" : "patch reissued after the opaque-carrier revision and cleaned of suite outputs (.llbc/.ullbc/.postcard/.rlib); an earlier nix build took a byte-different file with identical hunks and garbage diff lines (f02a813c), recorded under nix_build",
+      "sha256" : "4650334e284c25d8795cc41f9ee846dead74e9af42ab758fb78fa39302501b0a"
+   },
+   "rows" : [
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe",
+            "--crate-type",
+            "bin",
+            "-o",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/exe",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 101,
+         "log" : "logs/frozen/base/exe-noincr.log",
+         "log_sha256" : "950667bfc0096baa35e18952426e0e0b962e17b2db5740d5c2046547ff8e31a6",
+         "name" : "exe-noincr",
+         "refusal" : "panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:",
+         "sidecars" : [],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/exe2.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe2",
+            "--crate-type",
+            "bin",
+            "-C",
+            "incremental=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/incr",
+            "-o",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/exe2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/base/exe-incr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-incr",
+         "refusal" : "",
+         "sidecars" : [],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/exem.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exem",
+            "--crate-type",
+            "bin",
+            "--emit=metadata",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 101,
+         "log" : "logs/frozen/base/exe-metadata-only.log",
+         "log_sha256" : "517139ad9b96b0dc675515ecc13fabb4404ac928ddbc521033a1ae7b26f68769",
+         "name" : "exe-metadata-only",
+         "refusal" : "panicked at /rustc-dev/8fa1c96cfd489e4c27654c144ae871ce2c4db6c6/compiler/rustc_hir/src/stable_hash_impls.rs:35:18:",
+         "sidecars" : [],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/depr.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "depr",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/base/lib-rlib-direct.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-rlib-direct",
+         "refusal" : "",
+         "sidecars" : [],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--emit=metadata,link",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/base/dep-emit-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "dep-emit-metadata",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/base/user-consumes.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-consumes",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/u_artifact_digest.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_artifact_digest",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/base/user-stale-artifact_digest.log",
+         "log_sha256" : "0abd958fa4b076faafda53bc876830b6d1e1d5bbd33e03f0186d4d64d2847499",
+         "name" : "user-stale-artifact_digest",
+         "refusal" : "InvalidArtifact(\"stale or mismatched dependency facts",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/u_crate_hash.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_crate_hash",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/base/user-stale-crate_hash.log",
+         "log_sha256" : "0abd958fa4b076faafda53bc876830b6d1e1d5bbd33e03f0186d4d64d2847499",
+         "name" : "user-stale-crate_hash",
+         "refusal" : "InvalidArtifact(\"stale or mismatched dependency facts",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/u_missing.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_missing",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/base/user-missing.log",
+         "log_sha256" : "b70ef6af31fb8cb4d5b03ef8a568b1d5dbb4c745135a74178f7d7a00ea542035",
+         "name" : "user-missing",
+         "refusal" : "DependencyNotBuiltByCollector",
+         "sidecars" : [],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/u_restored.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_restored",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/base/user-restored.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-restored",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base/broken.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "broken",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/broken.rs"
+         ],
+         "classification" : "before",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/base",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/base/bin/charon",
+         "exit" : 2,
+         "log" : "logs/frozen/base/lib-broken.log",
+         "log_sha256" : "3b288d752227f588d242a3da02caad76921c5210f0a96006de4e0b3e3deb820f",
+         "name" : "lib-broken",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "base"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/exe.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe",
+            "--crate-type",
+            "bin",
+            "-o",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/exe",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/exe-noincr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-noincr",
+         "refusal" : "",
+         "sidecars" : [],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/exe2.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exe2",
+            "--crate-type",
+            "bin",
+            "-C",
+            "incremental=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/incr",
+            "-o",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/exe2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/exe-incr.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "exe-incr",
+         "refusal" : "",
+         "sidecars" : [],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/exem.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "exem",
+            "--crate-type",
+            "bin",
+            "--emit=metadata",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/exe.rs"
+         ],
+         "classification" : "intended_refusal",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/repaired2/exe-metadata-only.log",
+         "log_sha256" : "e740118b9fb560099dad5592f20d38ec049a09a8aee0cd83eb366aadb7cf6145",
+         "name" : "exe-metadata-only",
+         "refusal" : "InvalidArtifact(\"rustc computed no crate hash for an artifact that publishes facts",
+         "sidecars" : [],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/depr.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "depr",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/lib-rlib-direct.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "lib-rlib-direct",
+         "refusal" : "",
+         "sidecars" : [],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/dep.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "dep",
+            "--crate-type",
+            "lib",
+            "--emit=metadata,link",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/dep.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/dep-emit-metadata.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "dep-emit-metadata",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/user.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "user",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/user-consumes.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-consumes",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/u_artifact_digest.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_artifact_digest",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "intended_refusal",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/repaired2/user-stale-artifact_digest.log",
+         "log_sha256" : "0abd958fa4b076faafda53bc876830b6d1e1d5bbd33e03f0186d4d64d2847499",
+         "name" : "user-stale-artifact_digest",
+         "refusal" : "InvalidArtifact(\"stale or mismatched dependency facts",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/u_crate_hash.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_crate_hash",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "intended_refusal",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/repaired2/user-stale-crate_hash.log",
+         "log_sha256" : "0abd958fa4b076faafda53bc876830b6d1e1d5bbd33e03f0186d4d64d2847499",
+         "name" : "user-stale-crate_hash",
+         "refusal" : "InvalidArtifact(\"stale or mismatched dependency facts",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/u_missing.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_missing",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "intended_refusal",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 1,
+         "log" : "logs/frozen/repaired2/user-missing.log",
+         "log_sha256" : "ed23227aade6181b0beed9ad0189dfc45e622d59b8f021c58a11cba10e21124d",
+         "name" : "user-missing",
+         "refusal" : "DependencyNotBuiltByCollector",
+         "sidecars" : [],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/u_restored.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "u_restored",
+            "--crate-type",
+            "lib",
+            "--extern",
+            "dep=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/libdep.rmeta",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/user.rs"
+         ],
+         "classification" : "intended_pass",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 0,
+         "log" : "logs/frozen/repaired2/user-restored.log",
+         "log_sha256" : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+         "name" : "user-restored",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+            "rustc",
+            "--preset=aeneas",
+            "--error-on-warnings",
+            "--dest-file=/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2/broken.llbc",
+            "--",
+            "--edition=2024",
+            "--crate-name",
+            "broken",
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+            "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/broken.rs"
+         ],
+         "classification" : "rustc_error_control",
+         "cwd" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/runs/repaired2",
+         "env" : {
+            "CHARON_EMIT_ARTIFACTS" : "1",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "LD_LIBRARY_PATH" : "/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/lib",
+            "PATH" : "/nix/store/xcnqqnhw9hb4j5rjgds2yjryi8qki5f3-gcc-wrapper-15.2.0/bin:/nix/store/wq92i79ivn1w1nrdhmzl1mqx0wcyrawi-rust-default-1.100.0-nightly-2026-08-18/bin:/run/current-system/sw/bin"
+         },
+         "executable" : "/home/jgoppert/rumoca-checkpoints/2026-09-08-artifact-capture-tools-qMcVKl/repaired2/bin/charon",
+         "exit" : 2,
+         "log" : "logs/frozen/repaired2/lib-broken.log",
+         "log_sha256" : "3b288d752227f588d242a3da02caad76921c5210f0a96006de4e0b3e3deb820f",
+         "name" : "lib-broken",
+         "refusal" : "",
+         "sidecars" : [
+            "libdep.rmeta.charon-closure-regions.json"
+         ],
+         "tool" : "repaired2"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "CARGO_INCREMENTAL=0",
+            "cargo",
+            "test",
+            "--test",
+            "cargo"
+         ],
+         "binaries_before" : {
+            "charon" : "74c194598184f45dd125141a7cfd874bf006abc5833c45284021e26ed8e00a3d",
+            "charon_driver" : "57ae01ab8d3673521f40e0a191f86f051b5258e59c54dd659a4e32c27b81a8b2"
+         },
+         "classification" : "intended_pass",
+         "cwd" : "<scratch repaired tree>: the composed retention source plus artifact-capture.patch 4650334e; cargo test relinks target/debug/{charon,charon-driver} per invocation, so the binaries the suite ran are the tree build recorded here, not the frozen pair",
+         "env" : {
+            "CARGO_INCREMENTAL" : "0",
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "IN_CI" : "1"
+         },
+         "exit" : 0,
+         "log" : "logs/repaired2/cargo-suite-in-ci-noincremental-attempt2.log",
+         "log_sha256" : "e6d988cbe13ddc41f17fbef801804894a49efaf2be50b04877a4ce96987dc9c5",
+         "name" : "cargo-suite",
+         "result" : "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s",
+         "tool" : "repaired-tree"
+      },
+      {
+         "argv" : [
+            "env",
+            "IN_CI=1",
+            "cargo",
+            "test",
+            "--test",
+            "ui"
+         ],
+         "binaries_after" : {
+            "charon" : "dd3b8db72153a648250bff3b57545a7bbf4e90e80ef9e1b03ab54b2b32ad867c",
+            "charon_driver" : "eaecafa4a98d1e136687ac29adcbe769a1ff6dcf3dc96a07cba80417f4e147a1"
+         },
+         "classification" : "inherited_red",
+         "classification_note" : "the same 18 closure/lifetime snapshots fail on the base tree (ui-expectations packet); none is new",
+         "cwd" : "<scratch repaired tree>: the composed retention source plus artifact-capture.patch 4650334e; cargo test relinks target/debug/{charon,charon-driver} per invocation, so the binaries the suite ran are the tree build recorded here, not the frozen pair",
+         "env" : {
+            "CHARON_MIRI_SYSROOTS" : "/nix/store/hn2iv4l973b0dpi1nrlw951qdygb0xsg-charon-full-mir-sysroots",
+            "CHARON_TOOLCHAIN_IS_IN_PATH" : "1",
+            "IN_CI" : "1"
+         },
+         "exit" : 101,
+         "log" : "logs/repaired2/ui-suite-in-ci.log",
+         "log_sha256" : "e80c6aacf8db63aa78f663d437d0d696256cdce75c5a9409515abe68919fb650",
+         "name" : "ui-suite",
+         "result" : "test result: FAILED. 422 passed; 18 failed; 2 ignored; 0 measured; 0 filtered out; finished in 13.70s",
+         "tool" : "repaired-tree"
+      }
+   ],
+   "tools" : {
+      "base" : {
+         "driver_sha256" : "97034bede3cc1176e811fae5b81665d3272db4b7362fcada5f6c2d87d8a7971e",
+         "note" : "composed base source (retention chain, charon 10ca62cd) built with cargo dev profile, no patch"
+      },
+      "repaired" : {
+         "charon_sha256" : "e5673df9f7a256de18aef5f5131c133c61590850f3cfd97deb50c1385ee79cf1",
+         "driver_sha256" : "bf6e1a0bab72fbb4a5e03d063ac6532dd8fca3e67650599afb0132e8247fda8f",
+         "note" : "same source plus artifact-capture.patch, cargo dev profile"
+      },
+      "repaired2" : {
+         "charon_sha256" : "e5673df9f7a256de18aef5f5131c133c61590850f3cfd97deb50c1385ee79cf1",
+         "driver_sha256" : "7f6d684f680261fb6af8f638b343a1e70a8148352a588ff435270084ff1cbc81",
+         "note" : "revision: Capture is an opaque struct with a private Option<PendingArtifact>, so only capture can issue the no-publication disposition; same two dispositions, no extra checks; every control rerun on these bytes",
+         "patch_sha256" : "4650334e284c25d8795cc41f9ee846dead74e9af42ab758fb78fa39302501b0a"
+      }
+   }
+}

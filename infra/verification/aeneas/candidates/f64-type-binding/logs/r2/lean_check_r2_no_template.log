@@ -1,0 +1,6 @@
+AssociatedFloat/Types.lean:3:0: error: object file '/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/leancheck-r2-no-template/AssociatedFloat/TypesExternal.olean' of module AssociatedFloat.TypesExternal does not exist
+AssociatedFloat/Types exit=1
+AssociatedFloat/Funs.lean:3:0: error: object file '/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/leancheck-r2-no-template/AssociatedFloat/Types.olean' of module AssociatedFloat.Types does not exist
+AssociatedFloat/Funs exit=1
+Inspect.lean:1:0: error: object file '/tmp/claude-1000/-home-jgoppert-git-rumoca/ee0e239d-9ce9-4e2f-b840-49aff4e99284/scratchpad/f64impl/r2/leancheck-r2-no-template/AssociatedFloat/Funs.olean' of module AssociatedFloat.Funs does not exist
+Inspect exit=1
