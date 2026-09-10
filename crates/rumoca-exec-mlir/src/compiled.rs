@@ -202,14 +202,6 @@ impl CompiledMlirResidual {
     pub fn implicit_rows(&self) -> usize {
         self.implicit_rows
     }
-
-    pub fn has_implicit_rhs(&self) -> bool {
-        self.implicit_fn.is_some()
-    }
-
-    pub fn has_jacobian_v(&self) -> bool {
-        self.jvp_fn.is_some()
-    }
 }
 
 fn validate_output_len(
