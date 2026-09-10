@@ -8,6 +8,7 @@ mod algebraic;
 mod assertions;
 mod lifecycle;
 mod reported_models;
+mod tensor_algebra;
 mod typed_functions;
 
 use std::fs;

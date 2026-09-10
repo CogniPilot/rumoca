@@ -58,6 +58,15 @@
 {%- elif op.kind == "PureCall" %}    if (rumoca_scalar_pure_{{ op.owner }}((const double*[]){ {% for start in op.input_starts %}&r[{{ start }}],{% else %}NULL{% endfor %} }, &r[{{ op.dst }}])) return {{ error_status }};
 {%- elif op.kind == "TensorLoad" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = m->{{ op.input | lower }}[{{ op.input_start }}+k];
 {%- elif op.kind == "TensorBinary" and op.lanes == 1 %}    for (size_t k=0; k<{{ op.count }}; ++k) r[{{ op.dst }}+k] = {{ binary(op.operator, op.lhs_start ~ "+k*" ~ op.lhs_stride, op.rhs_start ~ "+k*" ~ op.rhs_stride) }};
+{%- elif op.kind == "MatrixMultiply" and op.lanes == 1 %}
+    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) {
+        double sum=0.0;
+        for (size_t k=0; k<{{ op.inner }}; ++k) sum+=r[{{ op.lhs_start }}+i*{{ op.inner }}+k]*r[{{ op.rhs_start }}+k*{{ op.columns }}+j];
+        r[{{ op.dst }}+i*{{ op.columns }}+j]=sum;
+    }
+{%- elif op.kind == "TensorTranspose" and op.lanes == 1 %}
+    for (size_t i=0; i<{{ op.rows }}; ++i) for (size_t j=0; j<{{ op.columns }}; ++j) for (size_t k=0; k<{{ op.element_width }}; ++k)
+        r[{{ op.dst }}+(i*{{ op.columns }}+j)*{{ op.element_width }}+k]=r[{{ op.src_start }}+(j*{{ op.rows }}+i)*{{ op.element_width }}+k];
 {%- elif op.kind == "TensorCross" and op.lanes == 1 %}{%- for i in range(3) %}    r[{{ op.dst + i }}] = r[{{ op.lhs_start + (i+1)%3 }}]*r[{{ op.rhs_start + (i+2)%3 }}] - r[{{ op.lhs_start + (i+2)%3 }}]*r[{{ op.rhs_start + (i+1)%3 }}];
 {%- endfor %}
 {%- elif op.kind == "StoreOutput" %}    {{ output }}[{{ targets[op.output_index].P.index if targets is not none else op.output_index }}] = r[{{ op.src }}];
