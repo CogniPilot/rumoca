@@ -14,10 +14,6 @@ impl Subscript {
         Self::Index { value, span }
     }
 
-    pub fn generated_index(value: i64, span: Span) -> Self {
-        Self::Index { value, span }
-    }
-
     pub fn generated_index_with_provenance(value: i64, span: ProvenanceSpan) -> Self {
         Self::Index {
             value,
@@ -40,10 +36,6 @@ impl Subscript {
         Self::Colon { span }
     }
 
-    pub fn generated_colon(span: Span) -> Self {
-        Self::Colon { span }
-    }
-
     pub fn generated_colon_with_provenance(span: ProvenanceSpan) -> Self {
         Self::Colon { span: span.span() }
     }
@@ -58,10 +50,6 @@ impl Subscript {
     }
 
     pub fn expr(expr: Box<Expression>, span: Span) -> Self {
-        Self::Expr { expr, span }
-    }
-
-    pub fn generated_expr(expr: Box<Expression>, span: Span) -> Self {
         Self::Expr { expr, span }
     }
 

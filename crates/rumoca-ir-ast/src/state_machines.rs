@@ -11,10 +11,6 @@ use serde::{Deserialize, Serialize};
 use crate::Expression;
 use crate::instance::QualifiedName;
 
-// =============================================================================
-// State Machine Definition (MLS §17.1)
-// =============================================================================
-
 /// MLS §17.1: State Machine.
 ///
 /// A state machine is a hierarchical construct where states are represented
@@ -43,27 +39,9 @@ impl StateMachine {
         }
     }
 
-    /// Add a state to this state machine.
-    pub fn add_state(&mut self, name: String, state: State) {
-        if state.is_initial && self.initial_state.is_none() {
-            self.initial_state = Some(name.clone());
-        }
-        self.states.insert(name, state);
-    }
-
-    /// Add a transition to this state machine.
-    pub fn add_transition(&mut self, transition: Transition) {
-        self.transitions.push(transition);
-    }
-
     /// Get the number of states.
     pub fn num_states(&self) -> usize {
         self.states.len()
-    }
-
-    /// Get the number of transitions.
-    pub fn num_transitions(&self) -> usize {
-        self.transitions.len()
     }
 }
 
@@ -92,17 +70,7 @@ impl State {
             ..Default::default()
         }
     }
-
-    /// Mark this state as initial.
-    pub fn set_initial(mut self) -> Self {
-        self.is_initial = true;
-        self
-    }
 }
-
-// =============================================================================
-// Transition (MLS §17.1)
-// =============================================================================
 
 /// MLS §17.1: Transition Record.
 ///
@@ -145,35 +113,7 @@ impl Transition {
             priority: 1,
         }
     }
-
-    /// Set the immediate flag.
-    pub fn with_immediate(mut self, immediate: bool) -> Self {
-        self.immediate = immediate;
-        self
-    }
-
-    /// Set the reset flag.
-    pub fn with_reset(mut self, reset: bool) -> Self {
-        self.reset = reset;
-        self
-    }
-
-    /// Set the synchronize flag.
-    pub fn with_synchronize(mut self, synchronize: bool) -> Self {
-        self.synchronize = synchronize;
-        self
-    }
-
-    /// Set the priority.
-    pub fn with_priority(mut self, priority: i32) -> Self {
-        self.priority = priority.max(1); // MLS §17.1: "priority >= 1"
-        self
-    }
 }
-
-// =============================================================================
-// State Machine Runtime State (MLS §17.2)
-// =============================================================================
 
 /// MLS §17.2: State Machine State Variables.
 ///
@@ -220,10 +160,6 @@ impl StateMachineState {
         self.in_final_state = false;
     }
 }
-
-// =============================================================================
-// State Machine Collection
-// =============================================================================
 
 /// Collection of all state machines in a model.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

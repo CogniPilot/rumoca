@@ -6,19 +6,6 @@
 
 use crate::BuiltinFunction;
 
-/// Synthetic source name used for compiler-owned MLS-shaped predefined declarations.
-pub const PREDEFINED_MODELICA_SOURCE_NAME: &str = "<rumoca-predefined-mls>";
-
-/// Modelica-shaped source for the predefined type/class declarations.
-///
-/// This is the single source of truth for the implicit predefined type shape
-/// from MLS §4.9. The primitive `*Type` value declarations are specification
-/// mnemonics and are not user-visible dot fields.
-pub const PREDEFINED_MODELICA_SOURCE: &str = include_str!("../modelica/Predefined.mls");
-
-/// Predefined primitive type class names with MLS §4.9 attribute shape.
-pub const PREDEFINED_COMPONENT_TYPES: &[&str] = &["Real", "Integer", "Boolean", "String"];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PredefinedComponentType {
     Real,
@@ -48,8 +35,14 @@ impl PredefinedComponentType {
     }
 }
 
-/// Predefined enumeration type names supplied by the language.
-pub const PREDEFINED_ENUM_TYPES: &[&str] = &["StateSelect", "AssertionLevel"];
+/// Literals declared by the MLS predefined enumeration types.
+pub const PREDEFINED_ENUM_LITERALS: &[(&str, &[&str])] = &[
+    (
+        "StateSelect",
+        &["never", "avoid", "default", "prefer", "always"],
+    ),
+    ("AssertionLevel", &["warning", "error"]),
+];
 
 const REAL_ATTRIBUTES: &[&str] = &[
     "quantity",
@@ -108,49 +101,9 @@ pub fn predefined_component_attribute_names(type_name: &str) -> &'static [&'stat
     }
 }
 
-/// Return true if `attribute_name` is an attribute of the predefined type.
-pub fn is_predefined_component_attribute(type_name: &str, attribute_name: &str) -> bool {
-    predefined_component_attribute_names(type_name).contains(&attribute_name)
-}
-
 /// Return true if `attribute_name` is any predefined primitive-type attribute.
 pub fn is_any_predefined_component_attribute(attribute_name: &str) -> bool {
     PREDEFINED_COMPONENT_ATTRIBUTES.contains(&attribute_name)
-}
-
-/// Standard string/file/scanner intrinsics that cannot be treated as ordinary
-/// numeric functions in DAE or solve IR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelicaStringIntrinsic {
-    /// The frontend must replace the call with a typed value or runtime op.
-    RequiresLowering,
-    /// `Modelica.Utilities.Strings.isEmpty`.
-    IsEmpty,
-    /// `Modelica.Utilities.Strings.hashString`.
-    HashString,
-    /// `Modelica.Utilities.Strings.length`.
-    Length,
-    /// `Modelica.Utilities.Strings.find`.
-    Find,
-    /// `Modelica.Utilities.Strings.findLast`.
-    FindLast,
-}
-
-/// Classify a Modelica string/file/scanner intrinsic by its short name.
-pub fn modelica_string_intrinsic_short_name(short_name: &str) -> Option<ModelicaStringIntrinsic> {
-    match short_name {
-        "getInstanceName" | "fullPathName" | "loadResource" | "readLine" | "substring"
-        | "scanBoolean" | "scanDelimiter" | "scanIdentifier" | "scanInteger" | "scanNoToken"
-        | "scanReal" | "scanString" | "scanToken" | "skipWhiteSpace" => {
-            Some(ModelicaStringIntrinsic::RequiresLowering)
-        }
-        "isEmpty" => Some(ModelicaStringIntrinsic::IsEmpty),
-        "hashString" => Some(ModelicaStringIntrinsic::HashString),
-        "length" => Some(ModelicaStringIntrinsic::Length),
-        "find" => Some(ModelicaStringIntrinsic::Find),
-        "findLast" => Some(ModelicaStringIntrinsic::FindLast),
-        _ => None,
-    }
 }
 
 /// Modification names accepted by the parser on primitive typed components.
@@ -191,11 +144,53 @@ impl BuiltinFunction {
     }
 }
 
+/// Apply the MLS §3.7.1 three-way `sign` function to a scalar Real.
+pub fn modelica_sign(value: f64) -> f64 {
+    if value > 0.0 {
+        1.0
+    } else if value < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// Apply the MLS §3.7.2 `integer(x)` value rule in the compiler's numeric
+/// scalar domain.
+///
+/// The result type in Modelica is Integer, but evaluators and Solve programs
+/// carry numeric scalars as `f64`. Keeping the value rule here prevents those
+/// paths from confusing `integer` with `div`, whose quotient instead truncates
+/// toward zero.
+pub fn modelica_integer_value(value: f64) -> f64 {
+    value.floor()
+}
+
+/// Escape decoded string contents for a Modelica source string literal.
+pub fn escape_modelica_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\x07' => escaped.push_str("\\a"),
+            '\x08' => escaped.push_str("\\b"),
+            '\x0c' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\x0b' => escaped.push_str("\\v"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// Apply a unary scalar math builtin.
 pub fn apply_scalar_unary_math(function: BuiltinFunction, arg: f64) -> Option<f64> {
     match function {
         BuiltinFunction::Abs => Some(arg.abs()),
-        BuiltinFunction::Sign => Some(arg.signum()),
+        BuiltinFunction::Sign => Some(modelica_sign(arg)),
         BuiltinFunction::Sqrt => Some(arg.sqrt()),
         BuiltinFunction::Floor => Some(arg.floor()),
         BuiltinFunction::Ceil => Some(arg.ceil()),
@@ -221,13 +216,9 @@ pub fn apply_scalar_binary_math(function: BuiltinFunction, lhs: f64, rhs: f64) -
         BuiltinFunction::Atan2 => Some(lhs.atan2(rhs)),
         BuiltinFunction::Min => Some(lhs.min(rhs)),
         BuiltinFunction::Max => Some(lhs.max(rhs)),
-        BuiltinFunction::Div => (rhs.abs() > f64::EPSILON).then_some((lhs / rhs).trunc()),
-        BuiltinFunction::Mod => {
-            (rhs.abs() > f64::EPSILON).then_some(lhs - (lhs / rhs).floor() * rhs)
-        }
-        BuiltinFunction::Rem => {
-            (rhs.abs() > f64::EPSILON).then_some(lhs - (lhs / rhs).trunc() * rhs)
-        }
+        BuiltinFunction::Div => (rhs != 0.0).then_some((lhs / rhs).trunc()),
+        BuiltinFunction::Mod => (rhs != 0.0).then_some(lhs - (lhs / rhs).floor() * rhs),
+        BuiltinFunction::Rem => (rhs != 0.0).then_some(lhs - (lhs / rhs).trunc() * rhs),
         _ => None,
     }
 }
@@ -237,25 +228,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn predefined_source_contains_all_component_type_shapes() {
-        for type_name in PREDEFINED_COMPONENT_TYPES {
-            assert!(
-                PREDEFINED_MODELICA_SOURCE.contains(&format!("type {type_name}")),
-                "missing predefined source for {type_name}"
-            );
-            for attribute in predefined_component_attribute_names(type_name) {
-                assert!(
-                    PREDEFINED_MODELICA_SOURCE.contains(attribute),
-                    "predefined source for {type_name} should mention {attribute}"
-                );
-            }
+    fn boolean_shape_does_not_inherit_real_only_attributes() {
+        let attributes = predefined_component_attribute_names("Boolean");
+        assert!(attributes.contains(&"start"));
+        assert!(!attributes.contains(&"min"));
+        assert!(!attributes.contains(&"unit"));
+    }
+
+    #[test]
+    fn modelica_sign_is_zero_for_both_signed_zeros() {
+        assert_eq!(modelica_sign(0.0), 0.0);
+        assert_eq!(modelica_sign(-0.0), 0.0);
+        assert_eq!(modelica_sign(2.0), 1.0);
+        assert_eq!(modelica_sign(-2.0), -1.0);
+    }
+
+    #[test]
+    fn modelica_integer_floors_negative_fractions_and_preserves_boundaries() {
+        assert_eq!(modelica_integer_value(-1.8), -2.0);
+        assert_eq!(modelica_integer_value(-2.0), -2.0);
+        assert_eq!(modelica_integer_value(1.8), 1.0);
+    }
+
+    #[test]
+    fn quotient_domain_uses_exact_zero_not_a_numeric_tolerance() {
+        let tiny = f64::MIN_POSITIVE;
+        assert_eq!(
+            apply_scalar_binary_math(BuiltinFunction::Div, tiny, tiny),
+            Some(1.0)
+        );
+        for function in [
+            BuiltinFunction::Div,
+            BuiltinFunction::Mod,
+            BuiltinFunction::Rem,
+        ] {
+            assert_eq!(apply_scalar_binary_math(function, 1.0, 0.0), None);
         }
     }
 
     #[test]
-    fn boolean_shape_does_not_inherit_real_only_attributes() {
-        assert!(is_predefined_component_attribute("Boolean", "start"));
-        assert!(!is_predefined_component_attribute("Boolean", "min"));
-        assert!(!is_predefined_component_attribute("Boolean", "unit"));
+    fn modelica_string_escaping_is_canonical() {
+        assert_eq!(
+            escape_modelica_string("quote \" slash \\ line\n"),
+            "quote \\\" slash \\\\ line\\n"
+        );
     }
 }

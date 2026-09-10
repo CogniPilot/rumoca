@@ -16,6 +16,35 @@ impl VarNameId {
     pub fn index(self) -> u32 {
         self.0
     }
+
+    /// Interned identity of `text` without materialising a [`VarName`].
+    ///
+    /// Use this at a textual boundary that needs identity but not the payload —
+    /// a cache key, for instance. What it buys is what the key *holds*: a
+    /// `Copy` 4-byte id rather than a 16-byte handle owning a payload `Arc`, so
+    /// a map keyed on it stores no reference counts and drops nothing.
+    ///
+    /// It is not measurably faster to *obtain* than [`VarName::intern`] (both
+    /// take the read lock and probe the same map; skipping the `Arc` clone is
+    /// lost in the noise), and it does not skip hashing `text` — deriving an id
+    /// from a string is a string hash by definition. A caller that already
+    /// holds a `VarName` should pass it along rather than re-derive the id from
+    /// text; that is the only way this is cheaper than hashing the text.
+    pub fn intern(text: &str) -> Self {
+        let interner = var_name_interner();
+        {
+            let guard = interner
+                .read()
+                .expect("VarName interner read lock should not be poisoned");
+            if let Some(id) = guard.ids.get(text) {
+                return *id;
+            }
+        }
+        let mut guard = interner
+            .write()
+            .expect("VarName interner write lock should not be poisoned");
+        guard.intern(text).id
+    }
 }
 
 /// A globally unique, fully-qualified variable name (e.g., `"body.position.x"`).
@@ -68,6 +97,15 @@ impl VarName {
     /// Create a new variable name.
     pub fn new(name: impl Into<String>) -> Self {
         intern_var_name(&name.into())
+    }
+
+    /// Intern an existing string slice without first allocating an owned
+    /// `String` on an interner hit.
+    ///
+    /// Equality/hash-heavy compiler paths should use this entry point when
+    /// crossing a textual compatibility boundary into semantic identity.
+    pub fn intern(name: &str) -> Self {
+        intern_var_name(name)
     }
 
     /// Get the variable name as a string slice.
@@ -131,26 +169,6 @@ impl VarName {
     /// Get the compact process-local interned identity.
     pub fn id(&self) -> VarNameId {
         self.id
-    }
-
-    /// Structural ancestors of this name: every proper segment prefix, plus
-    /// each prefix's subscript-stripped form so an aggregate reference
-    /// (`voltageSource.v`) is recognized as an ancestor of a scalarized
-    /// element (`voltageSource.v[1].re`). Composed from the interned
-    /// segmentation; nothing re-parses the rendered path.
-    pub fn structural_ancestors(&self) -> Vec<VarName> {
-        let text = self.as_str();
-        let mut ancestors = Vec::new();
-        for dot in self.data.top_level_dots.iter() {
-            let prefix = &text[..*dot as usize];
-            ancestors.push(VarName::new(prefix));
-            if let Some(stripped) = crate::strip_trailing_subscript_suffix(prefix)
-                && stripped != prefix
-            {
-                ancestors.push(VarName::new(stripped));
-            }
-        }
-        ancestors
     }
 }
 
@@ -218,7 +236,7 @@ impl std::fmt::Display for VarName {
 
 impl From<&str> for VarName {
     fn from(s: &str) -> Self {
-        Self::new(s)
+        Self::intern(s)
     }
 }
 
@@ -259,8 +277,12 @@ impl VarNameInterner {
 
 static VAR_NAME_INTERNER: OnceLock<RwLock<VarNameInterner>> = OnceLock::new();
 
+fn var_name_interner() -> &'static RwLock<VarNameInterner> {
+    VAR_NAME_INTERNER.get_or_init(|| RwLock::new(VarNameInterner::default()))
+}
+
 fn intern_var_name(text: &str) -> VarName {
-    let interner = VAR_NAME_INTERNER.get_or_init(|| RwLock::new(VarNameInterner::default()));
+    let interner = var_name_interner();
     {
         let guard = interner
             .read()

@@ -1,5 +1,6 @@
 use super::Visitor;
 use crate::{ComponentReference, Expression};
+use rumoca_core::ComponentPath;
 use std::ops::ControlFlow::{self, Break, Continue};
 
 /// Check if an expression contains any component references matching a predicate.
@@ -93,4 +94,40 @@ pub fn collect_component_refs(expr: &Expression) -> Vec<ComponentReference> {
     let mut collector = ComponentRefCollector::new();
     let _ = collector.visit_expression(expr);
     collector.refs
+}
+
+/// Return the structured component path denoted by a path-shaped expression.
+///
+/// Instantiation can represent a projected reference as `FieldAccess` and
+/// `ArrayIndex` nodes rather than a single `ComponentReference`. Keeping this
+/// conversion in the AST crate gives evaluators and semantic phases one
+/// definition of the path spelling without re-parsing rendered expressions.
+pub fn expression_component_path(expr: &Expression) -> Option<ComponentPath> {
+    match expr {
+        Expression::ComponentReference(reference) if !reference.parts.is_empty() => Some(
+            ComponentPath::from_parts(reference.parts.iter().map(ToString::to_string)),
+        ),
+        Expression::Parenthesized { inner, .. } => expression_component_path(inner),
+        Expression::FieldAccess { base, field, .. } => {
+            let base = expression_component_path(base)?;
+            Some(base.join(&ComponentPath::from_parts([field.clone()])))
+        }
+        Expression::ArrayIndex {
+            base, subscripts, ..
+        } => {
+            let base = expression_component_path(base)?;
+            let mut parts = base.into_parts();
+            let last = parts.last_mut()?;
+            let subscripts = subscripts
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            last.push('[');
+            last.push_str(&subscripts);
+            last.push(']');
+            Some(ComponentPath::from_parts(parts))
+        }
+        _ => None,
+    }
 }
