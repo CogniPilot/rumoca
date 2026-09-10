@@ -2,6 +2,14 @@ use std::time::Duration;
 
 use rumoca_core::{OptionalTimer, maybe_elapsed_seconds, maybe_start_timer_if};
 
+/// Tracing target for the backend-neutral simulation driver.
+///
+/// The driver is shared by every ODE backend, so its diagnostics must not be
+/// filed under a concrete backend's namespace (SPEC_0029 §3b). Each backend
+/// keeps its own `<backend crate>::<subsystem>` target for backend-specific
+/// step diagnostics.
+pub const DRIVER_TRACE_TARGET: &str = "rumoca_solver::driver";
+
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeTraceContext {
     pub enabled: bool,
