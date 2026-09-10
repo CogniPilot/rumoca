@@ -17,20 +17,6 @@ pub(crate) fn workspace_symbol_query_match_score(name: &str, query: &str) -> u8 
     }
 }
 
-pub(crate) fn class_component_members_from_tree(
-    tree: &ast::ClassTree,
-    class_name: &str,
-) -> Vec<(String, String)> {
-    let Some(class) = resolve_class_for_completion(tree, class_name) else {
-        return Vec::new();
-    };
-
-    let mut members = IndexMap::<String, String>::new();
-    let mut visiting = std::collections::HashSet::<DefId>::new();
-    collect_class_component_members(tree, class, &mut members, &mut visiting);
-    members.into_iter().collect()
-}
-
 pub(crate) fn collect_qualified_class_names_recursive(
     classes: &ast::AstIndexMap<String, ast::ClassDef>,
     prefix: &str,

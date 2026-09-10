@@ -47,9 +47,6 @@ impl Session {
                 SourceRootInputChange::Replace { key, kind, uris } => {
                     self.apply_source_root_change_at_revision(&key, kind, uris, revision);
                 }
-                SourceRootInputChange::Remove { key } => {
-                    self.remove_source_root_at_revision(&key, revision);
-                }
             }
         }
         for change in change.file_changes {
@@ -236,10 +233,6 @@ impl Session {
                 .source_sets
                 .get(key)
                 .is_none_or(|record| record.kind != *kind || record.uris != *uris),
-            SourceRootInputChange::Remove { key } => self
-                .source_sets
-                .get(key)
-                .is_some_and(|record| !record.uris.is_empty()),
         }
     }
 

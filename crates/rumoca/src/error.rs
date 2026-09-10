@@ -1,10 +1,8 @@
 //! Error types for the rumoca compiler.
 
 use miette::Diagnostic;
-use rumoca_compile::compile::{
-    ModelFailureDiagnostic,
-    core::{Diagnostic as CommonDiagnostic, SourceMap},
-};
+use rumoca_compile::compile::ModelFailureDiagnostic;
+use rumoca_core::{Diagnostic as CommonDiagnostic, SourceMap};
 use thiserror::Error;
 
 /// Errors that can occur during compilation.

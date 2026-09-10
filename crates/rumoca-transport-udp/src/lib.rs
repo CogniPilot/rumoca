@@ -58,15 +58,4 @@ impl UdpTransport {
     pub fn send(&self, data: &[u8]) {
         let _ = self.socket.send_to(data, &self.send_addr);
     }
-
-    pub fn listen_addr(&self) -> String {
-        self.socket
-            .local_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_default()
-    }
-
-    pub fn send_addr(&self) -> &str {
-        &self.send_addr
-    }
 }

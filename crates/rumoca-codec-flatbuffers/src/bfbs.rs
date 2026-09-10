@@ -146,6 +146,7 @@ impl SchemaSet {
     ///
     /// Field type indices from the .bfbs are remapped from the local schema's
     /// object array to the merged SchemaSet's object array.
+    // SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
     #[allow(clippy::excessive_nesting)]
     pub fn load_bfbs(&mut self, path: &Path) -> anyhow::Result<()> {
         let data = std::fs::read(path)?;
@@ -186,17 +187,6 @@ impl SchemaSet {
 
     pub fn object_by_name(&self, name: &str) -> Option<&Object> {
         self.name_to_idx.get(name).map(|&i| &self.objects[i])
-    }
-
-    /// Resolve a field type's object index to an Object (for Obj fields).
-    /// The index refers to the object's position within the *original* .bfbs
-    /// objects vector. Since we merge schemas, we look up by name instead
-    /// when resolving nested types during codec compilation.
-    pub fn object_by_index_in(&self, schema_objects: &[Object], index: i32) -> Option<&Object> {
-        let name = schema_objects
-            .get(index as usize)
-            .map(|o| o.name.as_str())?;
-        self.object_by_name(name)
     }
 }
 
@@ -437,86 +427,4 @@ pub fn parse_bfbs(buf: &[u8]) -> anyhow::Result<Schema> {
         objects,
         file_ident,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_cerebri2_topics() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_topics.bfbs",
-        );
-        if !path.exists() {
-            eprintln!("skipping test: bfbs not found");
-            return;
-        }
-        let data = std::fs::read(path).unwrap();
-        let schema = parse_bfbs(&data).unwrap();
-
-        eprintln!("Objects:");
-        for obj in &schema.objects {
-            eprintln!(
-                "  {} (struct={}, size={}, align={})",
-                obj.name, obj.is_struct, obj.bytesize, obj.minalign
-            );
-            for f in &obj.fields {
-                eprintln!(
-                    "    {} id={} offset={} type={:?} index={}",
-                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index
-                );
-            }
-        }
-
-        // Vec3f should exist with 3 float fields
-        let vec3f = schema
-            .object_by_name("cerebri2.topic.Vec3f")
-            .expect("Vec3f not found");
-        assert!(vec3f.is_struct);
-        assert_eq!(vec3f.fields.len(), 3);
-        assert_eq!(vec3f.bytesize, 12);
-
-        // MotorOutput should be a table
-        let motor = schema
-            .object_by_name("cerebri2.topic.MotorOutput")
-            .expect("MotorOutput not found");
-        assert!(!motor.is_struct);
-        assert!(motor.field_by_name("armed").is_some());
-    }
-
-    #[test]
-    fn parse_cerebri2_sil() {
-        let path = Path::new(
-            "/home/micah/cognipilot/ws/cerebri/build-native_sim/generated/flatbuffers/cerebri2_sil.bfbs",
-        );
-        if !path.exists() {
-            eprintln!("skipping test: bfbs not found");
-            return;
-        }
-        let data = std::fs::read(path).unwrap();
-        let schema = parse_bfbs(&data).unwrap();
-
-        eprintln!("file_ident: {:?}", schema.file_ident);
-        eprintln!("Objects:");
-        for obj in &schema.objects {
-            eprintln!(
-                "  {} (struct={}, size={}, align={})",
-                obj.name, obj.is_struct, obj.bytesize, obj.minalign
-            );
-            for f in &obj.fields {
-                eprintln!(
-                    "    {} id={} offset={} type={:?} index={}",
-                    f.name, f.id, f.offset, f.field_type.base_type, f.field_type.index
-                );
-            }
-        }
-
-        let sim = schema
-            .object_by_name("cerebri2.sil.SimInput")
-            .expect("SimInput not found");
-        assert!(!sim.is_struct);
-        assert!(sim.field_by_name("gyro").is_some());
-        assert_eq!(schema.file_ident.as_deref(), Some("C2SI"));
-    }
 }

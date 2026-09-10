@@ -82,54 +82,36 @@ fn workspace_a_subtree_root_v2() -> Vec<(String, ast::StoredDefinition)> {
     ]
 }
 
-fn partitioned_workspace_definitions_v1() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_workspace_definitions_v1() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "Other/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage Other\n  model M1\n  end M1;\nend Other;\n",
-                "Other/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage Other\n  model M1\n  end M1;\nend Other;\n",
+            "Other/package.mo",
         ),
     ]
 }
 
-fn partitioned_workspace_definitions_v2() -> Vec<(String, ast::StoredDefinition)> {
+fn partitioned_workspace_definitions_v2() -> Vec<ParsedSourceDocument> {
     vec![
-        (
-            "NewFolder/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage NewFolder\nend NewFolder;\n",
-                "NewFolder/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage NewFolder\nend NewFolder;\n",
+            "NewFolder/package.mo",
         ),
-        (
-            "NewFolder/Test.mo".to_string(),
-            parse_definition(
-                "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
-                "NewFolder/Test.mo",
-            ),
+        parse_source_document(
+            "within NewFolder;\nmodel Test\n  Real x;\nend Test;\n",
+            "NewFolder/Test.mo",
         ),
-        (
-            "Other/package.mo".to_string(),
-            parse_definition(
-                "within ;\npackage Other\n  model M1\n  end M1;\nend Other;\n",
-                "Other/package.mo",
-            ),
+        parse_source_document(
+            "within ;\npackage Other\n  model M1\n  end M1;\nend Other;\n",
+            "Other/package.mo",
         ),
     ]
 }

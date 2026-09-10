@@ -1,6 +1,5 @@
 use indexmap::IndexMap;
 use rumoca_ir_dae as dae;
-use rumoca_ir_solve as solve;
 
 #[cfg(feature = "scheduled-sim")]
 use crate::SimulationSessionApi;
@@ -43,14 +42,19 @@ impl SimulationSession {
     }
 
     pub fn set_input(&mut self, name: &str, value: f64) -> Result<(), SimulationDiagnosticError> {
+        self.set_inputs(&[(name, value)])
+    }
+
+    /// Apply one atomic component input batch, restarting changed history once.
+    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimulationDiagnosticError> {
         match &mut self.inner {
             #[cfg(feature = "solver-diffsol")]
             SimulationSessionInner::Diffsol(session) => session
-                .set_input(name, value)
+                .set_inputs(inputs)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
             #[cfg(feature = "solver-rk45")]
             SimulationSessionInner::RkLike(session) => session
-                .set_input(name, value)
+                .set_inputs(inputs)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
     }
@@ -66,13 +70,6 @@ impl SimulationSession {
                 .reset(t_start)
                 .map_err(|err| SimulationDiagnosticError::Solver(err.to_string())),
         }
-    }
-
-    pub fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), SimulationDiagnosticError> {
-        for (name, value) in inputs {
-            self.set_input(name, *value)?;
-        }
-        Ok(())
     }
 
     pub fn advance_to(&mut self, target_time: f64) -> Result<(), SimulationDiagnosticError> {
@@ -185,8 +182,8 @@ impl SimulationSessionApi for SimulationSession {
         Self::reset(self, t_start)
     }
 
-    fn set_input(&mut self, name: &str, value: f64) -> Result<(), Self::Error> {
-        Self::set_input(self, name, value)
+    fn set_inputs(&mut self, inputs: &[(&str, f64)]) -> Result<(), Self::Error> {
+        Self::set_inputs(self, inputs)
     }
 
     fn ensure_end_time(&mut self, target_time: f64) {
@@ -235,34 +232,59 @@ impl SimulationSessionApi for SimulationSession {
 fn lower_for_simulation_session(
     dae_model: &dae::Dae,
     opts: &rumoca_solver::SimOptions,
-) -> Result<solve::SolveModel, SimulationDiagnosticError> {
-    crate::solve_lowering::lower_for_simulation_with_overrides(dae_model, opts)
+) -> Result<
+    (
+        rumoca_solver::fmi_me::MeModelArtifact,
+        Option<rumoca_solver::fmi_me::MeExecutionBackend>,
+    ),
+    SimulationDiagnosticError,
+> {
+    crate::solve_lowering::lower_runtime_fmi_artifact(dae_model, opts)
 }
 
 fn new_auto_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
-    let solve_model = lower_for_simulation_session(dae_model, &opts)?;
-    #[cfg(feature = "solver-diffsol")]
+    let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
+    #[cfg(all(feature = "solver-diffsol", feature = "solver-rk45"))]
     {
-        crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
-            SimulationSession {
-                inner: SimulationSessionInner::Diffsol(Box::new(session)),
+        match crate::diffsol::select_auto_integrator(&artifact, &opts, execution_backend.clone())
+            .map_err(|error| SimulationDiagnosticError::Solver(error.to_string()))?
+        {
+            crate::diffsol::SelectedAutoIntegrator::Bdf => {
+                crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend)
+                    .map(|session| SimulationSession {
+                        inner: SimulationSessionInner::Diffsol(Box::new(session)),
+                    })
             }
-        })
+            crate::diffsol::SelectedAutoIntegrator::RkLike => {
+                crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend)
+                    .map(|session| SimulationSession {
+                        inner: SimulationSessionInner::RkLike(Box::new(session)),
+                    })
+            }
+        }
+    }
+    #[cfg(all(feature = "solver-diffsol", not(feature = "solver-rk45")))]
+    {
+        crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
+            |session| SimulationSession {
+                inner: SimulationSessionInner::Diffsol(Box::new(session)),
+            },
+        )
     }
     #[cfg(all(not(feature = "solver-diffsol"), feature = "solver-rk45"))]
     {
-        crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
-            SimulationSession {
+        crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
+            |session| SimulationSession {
                 inner: SimulationSessionInner::RkLike(Box::new(session)),
-            }
-        })
+            },
+        )
     }
     #[cfg(not(any(feature = "solver-diffsol", feature = "solver-rk45")))]
     {
-        let _ = (solve_model, opts);
+        let _ = (artifact, execution_backend, opts);
         Err(SimulationDiagnosticError::Solver(
             "no simulation solver backend is enabled".to_string(),
         ))
@@ -275,12 +297,12 @@ fn new_bdf_session(
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
     #[cfg(feature = "solver-diffsol")]
     {
-        let solve_model = lower_for_simulation_session(dae_model, &opts)?;
-        crate::diffsol::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
-            SimulationSession {
+        let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
+        crate::diffsol::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
+            |session| SimulationSession {
                 inner: SimulationSessionInner::Diffsol(Box::new(session)),
-            }
-        })
+            },
+        )
     }
     #[cfg(not(feature = "solver-diffsol"))]
     {
@@ -295,18 +317,18 @@ fn new_rk_like_session(
     dae_model: &dae::Dae,
     opts: rumoca_solver::SimOptions,
 ) -> Result<SimulationSession, SimulationDiagnosticError> {
-    let solve_model = lower_for_simulation_session(dae_model, &opts)?;
+    let (artifact, execution_backend) = lower_for_simulation_session(dae_model, &opts)?;
     #[cfg(feature = "solver-rk45")]
     {
-        crate::rk45::SimulationSession::from_solve_model(solve_model, opts).map(|session| {
-            SimulationSession {
+        crate::rk45::SimulationSession::from_artifact(artifact, opts, execution_backend).map(
+            |session| SimulationSession {
                 inner: SimulationSessionInner::RkLike(Box::new(session)),
-            }
-        })
+            },
+        )
     }
     #[cfg(not(feature = "solver-rk45"))]
     {
-        let _ = (solve_model, opts);
+        let _ = (artifact, execution_backend, opts);
         Err(SimulationDiagnosticError::Solver(
             "rk-like solver requested, but this build does not include the rk45 backend"
                 .to_string(),

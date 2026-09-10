@@ -35,15 +35,6 @@ pub trait UnpackCodec: Send + Sync {
     fn expected_size(&self) -> usize;
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// FlatBuffers backend adapters.
-//
-// `rumoca-codec-flatbuffers` exposes concrete `PackCodec` / `UnpackCodec`
-// types that don't implement our abstract traits (and can't, since that
-// crate doesn't depend on this one — preserves the dep direction).  The
-// adapter structs below wrap the concrete types and implement the traits.
-// ──────────────────────────────────────────────────────────────────────────
-
 struct FlatbuffersPack(rumoca_codec_flatbuffers::codec::PackCodec);
 
 impl PackCodec for FlatbuffersPack {

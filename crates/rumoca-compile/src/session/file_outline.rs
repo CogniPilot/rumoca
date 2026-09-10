@@ -175,11 +175,50 @@ fn add_document_symbol_group(
     });
 }
 
+/// Byte span accumulated across a section's child symbols.
+///
+/// Grouped outline nodes ("Parameters", "Inputs", ...) are synthesized rather
+/// than parsed, so they have no token of their own. Tracking the children's
+/// byte offsets keeps `start`/`end` usable by the IDE layer, which converts
+/// byte spans to UTF-16 LSP ranges (children whose span is `0..0` carry no
+/// provenance and are skipped).
+#[derive(Debug, Clone, Copy)]
+struct GroupByteSpan {
+    start: u32,
+    end: u32,
+}
+
+impl GroupByteSpan {
+    const fn empty() -> Self {
+        Self {
+            start: u32::MAX,
+            end: 0,
+        }
+    }
+
+    fn absorb(&mut self, location: &rumoca_core::Location) {
+        if location.end <= location.start {
+            return;
+        }
+        self.start = self.start.min(location.start);
+        self.end = self.end.max(location.end);
+    }
+
+    /// `(start, end)` for a `Location`, or `(0, 0)` when nothing contributed.
+    const fn resolved(self) -> (u32, u32) {
+        if self.start == u32::MAX || self.end <= self.start {
+            return (0, 0);
+        }
+        (self.start, self.end)
+    }
+}
+
 fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> rumoca_core::Location {
     let mut min_start = u32::MAX;
     let mut max_end = 0u32;
     let mut min_column = u32::MAX;
     let mut max_column = 0u32;
+    let mut byte_span = GroupByteSpan::empty();
 
     for symbol in symbols {
         if symbol.range.start_line < min_start
@@ -194,7 +233,10 @@ fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> rumoca_core::Locat
             max_end = symbol.range.end_line;
             max_column = symbol.range.end_column;
         }
+        byte_span.absorb(&symbol.range);
     }
+
+    let (start, end) = byte_span.resolved();
 
     if min_start == u32::MAX {
         return rumoca_core::Location {
@@ -202,22 +244,79 @@ fn document_symbol_group_range(symbols: &[DocumentSymbol]) -> rumoca_core::Locat
             start_column: 1,
             end_line: 1,
             end_column: 1,
-            start: 0,
-            end: 0,
-            file_name: String::new(),
+            start,
+            end,
+            ..rumoca_core::Location::default()
         };
     }
+
+    // The group inherits its children's file identity; they all come from one
+    // class body, so the first child is representative. With no children there
+    // is no provenance to inherit, which is what `SourceId::DUMMY` records.
+    let source = symbols
+        .first()
+        .map(|symbol| symbol.range.source)
+        .unwrap_or(rumoca_core::SourceId::DUMMY);
 
     rumoca_core::Location {
         start_line: min_start,
         start_column: min_column,
         end_line: max_end,
         end_column: max_column,
-        start: 0,
-        end: 0,
-        file_name: symbols
-            .first()
-            .map(|symbol| symbol.range.file_name.clone())
-            .unwrap_or_default(),
+        start,
+        end,
+        source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn component_symbol(name: &str, start: u32, end: u32) -> DocumentSymbol {
+        DocumentSymbol {
+            name: name.to_string(),
+            detail: None,
+            kind: DocumentSymbolKind::Component,
+            range: rumoca_core::Location {
+                start_line: 2,
+                start_column: 3,
+                end_line: 2,
+                end_column: 10,
+                start,
+                end,
+                ..rumoca_core::Location::default()
+            },
+            selection_range: rumoca_core::Location::default(),
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn group_range_spans_child_byte_offsets() {
+        // Grouped outline nodes ("Parameters", ...) are synthesized and own no
+        // token, so their byte span has to come from their children; without it
+        // the IDE layer cannot convert them to UTF-16 ranges from the span.
+        let symbols = [component_symbol("k", 20, 30), component_symbol("j", 40, 55)];
+        let range = document_symbol_group_range(&symbols);
+        assert_eq!(range.start, 20);
+        assert_eq!(range.end, 55);
+    }
+
+    #[test]
+    fn group_range_ignores_children_without_provenance() {
+        let mut without_span = component_symbol("synthetic", 0, 0);
+        without_span.range.start_line = 1;
+        let symbols = [without_span, component_symbol("k", 20, 30)];
+        let range = document_symbol_group_range(&symbols);
+        assert_eq!(range.start, 20, "a 0..0 child must not drag the span to 0");
+        assert_eq!(range.end, 30);
+    }
+
+    #[test]
+    fn group_range_without_any_provenance_stays_zero() {
+        let symbols = [component_symbol("synthetic", 0, 0)];
+        let range = document_symbol_group_range(&symbols);
+        assert_eq!((range.start, range.end), (0, 0));
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
-use rumoca_compile::compile::core::{PrimaryLabel, SourceMap};
 use rumoca_core::Span;
+use rumoca_core::{PrimaryLabel, SourceMap};
 
 #[test]
 fn source_diagnostic_report_preserves_spans() {
