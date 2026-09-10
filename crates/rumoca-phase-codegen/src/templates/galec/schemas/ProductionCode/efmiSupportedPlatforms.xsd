@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+	<xs:simpleType name="efmiSupportedPlatforms">
+		<xs:restriction base="xs:normalizedString">
+			<xs:enumeration value="Legacy">
+				<xs:annotation>
+					<xs:documentation>
+						Means no standardized platform support.
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="Classic AUTOSAR">
+				<xs:annotation>
+					<xs:documentation>
+						Means that software is based on Classic AUTOSAR platform (https://www.autosar.org/standards/classic-platform/).
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+			<xs:enumeration value="Adaptive AUTOSAR">
+				<xs:annotation>
+					<xs:documentation>
+						Means that software is based on AUTOSAR Adaptive Platform (https://www.autosar.org/standards/adaptive-platform).
+					</xs:documentation>
+				</xs:annotation>
+			</xs:enumeration>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

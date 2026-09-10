@@ -1,1 +1,16 @@
-{{- galec_c_header -}}
+{% extends "galec-model.h.jinja" %}
+{#- The GALEC-derived C body is target-agnostic and shared with the
+    `embedded-c-galec` target; only the conformance banner differs, so this
+    target overrides exactly that block. These files are the ProductionCode/
+    representation of a schema-valid eFMU, so they must claim the "eFMI
+    Production Code export" rung and name the manifest as the conformance
+    surface — the embedded-c "NOT an eFMI Production Code container" claim
+    would be false here. -#}
+{% block conformance %}/* {{ algorithm_code.block_name | replace("*/", "* /") | replace("/*", "/ *") }}
+ * eFMI Production Code representation; rung: eFMI Production Code export
+ * (SPEC_0034 GAL-021/GAL-024).
+ * Conformance surface: ProductionCode/manifest.xml (LogicalData), not these
+ * C names.
+ * Designed for the MISRA C:2023 assurance profile in SPEC_0034 GAL-029/030.
+ * MISRA compliance and DO-178C compliance are not claimed.
+ * Target syntax and layout are owned by this template. */{% endblock %}

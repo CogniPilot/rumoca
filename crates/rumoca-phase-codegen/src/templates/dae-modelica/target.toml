@@ -2,8 +2,22 @@ version = 1
 ir = "dae"
 name = "dae-modelica"
 description = "Modelica source reconstructed from DAE IR"
+readiness_level = 1
 execution_mode = "source-transform"
 deployment_class = "modelica"
+
+[capabilities]
+runtime_events = false
+structured_equation_families = true
+# The dae_modelica template's function_decl macro has no rendering for an
+# external interface: it emits `algorithm` + statements, and an external body
+# has none, so the `external "C"` declaration was silently DROPPED and the
+# emitted function read an undefined output. Declaring the capability false is
+# the honest statement of what the template can render, and it converts that
+# silent wrong output into a capability rejection at the target boundary
+# (SEV-155's gate, which structurally could not fire here while the key was
+# absent).
+external_functions = false
 
 [[files]]
 path = "{{ model_name }}_dae.mo"

@@ -1,0 +1,45 @@
+{#- The formatter standard the generated C already satisfies.
+
+    This file is emitted, not merely documented, because the acceptance
+    property is idempotence: running `clang-format --style=file --dry-run
+    -Werror` over the generated `.c`/`.h` next to it must report nothing. A
+    downstream consumer that reformats the sources with a different style would
+    produce a diff against the artifact the manifest checksums, so the style
+    has to travel with the code.
+
+    `ColumnLimit: 0` is the load-bearing choice. Generated expressions are
+    machine-sized — a single fused covariance update can be a thousand columns
+    — and any finite limit would make the formatter re-wrap them, which both
+    destroys the emitter's own line structure and makes the output depend on
+    the clang-format version. With no limit the formatter normalizes
+    indentation, spacing and brace placement and preserves every line break the
+    emitter chose. Nothing here is deprecated in any clang-format from 14
+    onward, so the check is portable across the versions a project is likely to
+    pin. -#}
+# clang-format configuration for rumoca-generated GALEC C ({{ algorithm_code.block_name }}).
+# The generated sources already conform: `clang-format --style=file --dry-run
+# -Werror *.c *.h` reports no replacements. Reformatting with any other style
+# invalidates the checksums recorded in the manifest.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+ColumnLimit: 0
+IndentWidth: 4
+ContinuationIndentWidth: 4
+UseTab: Never
+AlignAfterOpenBracket: DontAlign
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+SpaceAfterCStyleCast: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+IndentCaseLabels: true
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
+SortIncludes: Never
+ReflowComments: false
+AlignTrailingComments: false
+AlignConsecutiveAssignments: false
+IndentPPDirectives: None

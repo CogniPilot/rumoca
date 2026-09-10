@@ -1,0 +1,101 @@
+{%- macro integer(value) -%}
+{%- if value|string == "-9223372036854775808" -%}INT64_MIN
+{%- elif value < 0 -%}(-INT64_C({{ -value }}))
+{%- else -%}INT64_C({{ value }}){%- endif -%}
+{%- endmacro %}
+
+{%- macro declaration(name, ty) %}
+{%- if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" %}double
+{%- elif ty.scalar.kind == "integer" %}int64_t
+{%- elif ty.scalar.kind == "boolean" %}bool
+{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: scalar type") }}{% endif %} {{ name }}[{{ ty.scalar_count if ty.scalar_count > 0 else 1 }}]; (void){{ name }};
+{%- endmacro %}
+
+{%- macro copy(dst, src) %}
+memcpy({{ dst }}, {{ src }}, sizeof({{ dst }}));
+{%- endmacro %}
+
+{%- macro domain_check(dst, ty) %}
+{%- if ty.scalar.kind == "integer" and (ty.scalar.profile.minimum|string != "-9223372036854775808" or ty.scalar.profile.maximum|string != "9223372036854775807") %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) if ({{ dst }}[k]<{{ integer(ty.scalar.profile.minimum) }} || {{ dst }}[k]>{{ integer(ty.scalar.profile.maximum) }}) return 1;
+{%- endif %}
+{%- endmacro %}
+
+{%- macro to_integer(dst, expression, ty) %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { double v={{ expression }}; if (!isfinite(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) return 1; {{ dst }}[k]=(int64_t)v; }
+{{ domain_check(dst, ty) }}
+{%- endmacro %}
+
+{%- macro import_scalars(dst, src, ty) %}
+{%- if ty.scalar.kind == "real" and ty.scalar.profile.format == "binary64" %}
+{{ copy(dst, src) }}
+{%- elif ty.scalar.kind == "integer" %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) if (trunc({{ src }}[k]) != {{ src }}[k]) return 1;
+{{ to_integer(dst, src ~ "[k]", ty) }}
+{%- elif ty.scalar.kind == "boolean" %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) { if ({{ src }}[k] != 0.0 && {{ src }}[k] != 1.0) return 1; {{ dst }}[k] = {{ src }}[k] != 0.0; }
+{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: input type") }}{% endif %}
+{%- endmacro %}
+
+{%- macro unary(operator, a, ty) -%}
+{%- if operator == "negate" -%}(-{{ a }})
+{%- elif operator == "not" -%}(!{{ a }})
+{%- elif operator == "sign" -%}({{ a }}>0 ? 1 : ({{ a }}<0 ? -1 : 0))
+{%- elif operator == "abs" and ty.scalar.kind == "integer" -%}({{ a }}<0 ? -{{ a }} : {{ a }})
+{%- elif operator in ["abs", "ceiling", "truncate"] -%}{{ {"abs":"fabs", "ceiling":"ceil", "truncate":"trunc"}[operator] }}({{ a }})
+{%- elif operator in ["sqrt", "floor", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "log", "log10"] -%}{{ operator }}({{ a }})
+{%- else -%}{{ fail("unsupported-feature:fmi.c.pure-call: unary " ~ operator) }}{% endif -%}
+{%- endmacro %}
+
+{%- macro binary(operator, a, b) -%}
+{%- if operator in ["power", "atan2", "min", "max"] -%}{{ {"power":"pow", "atan2":"atan2", "min":"fmin", "max":"fmax"}[operator] }}({{ a }},{{ b }})
+{%- elif operator in ["add", "subtract", "multiply", "divide", "and", "or"] -%}({{ a }} {{ {"add":"+", "subtract":"-", "multiply":"*", "divide":"/", "and":"&&", "or":"||"}[operator] }} {{ b }})
+{%- else -%}{{ fail("unsupported-feature:fmi.c.pure-call: binary " ~ operator) }}{% endif -%}
+{%- endmacro %}
+
+{%- macro integer_binary(operator, dst, a, b) %}
+{%- if operator == "add" %}
+if (({{ b }}>0 && {{ a }}>INT64_MAX-{{ b }}) || ({{ b }}<0 && {{ a }}<INT64_MIN-{{ b }})) return 1;
+{{ dst }} = {{ a }}+{{ b }};
+{%- elif operator == "subtract" %}
+if (({{ b }}<0 && {{ a }}>INT64_MAX+{{ b }}) || ({{ b }}>0 && {{ a }}<INT64_MIN+{{ b }})) return 1;
+{{ dst }} = {{ a }}-{{ b }};
+{%- elif operator == "multiply" %}
+if ({{ a }}>0 ? ({{ b }}>0 ? {{ a }}>INT64_MAX/{{ b }} : {{ b }}<INT64_MIN/{{ a }}) : ({{ a }}<0 ? ({{ b }}>0 ? {{ a }}<INT64_MIN/{{ b }} : ({{ b }}<0 && {{ a }}<INT64_MAX/{{ b }})) : 0)) return 1;
+{{ dst }} = {{ a }}*{{ b }};
+{%- elif operator in ["min", "max"] %}
+{{ dst }} = {{ a }} {{ "<" if operator == "min" else ">" }} {{ b }} ? {{ a }} : {{ b }};
+{%- else %}{{ fail("unsupported-feature:fmi.c.pure-call: integer binary " ~ operator) }}{% endif %}
+{%- endmacro %}
+
+{%- macro arithmetic(op, program) %}
+{% set dst = "r" ~ op.destination %}{% set ty = program.register_types[op.destination] %}
+{% if op.operation == "constant" %}
+{% set value = op.value.kind %}
+{% if value.kind == "real64" %}{{ dst }}[0] = rumoca_real64(UINT64_C({{ value.bits }}));
+{% elif value.kind == "integer" %}{{ dst }}[0] = {{ integer(value.bits) }};
+{% elif value.kind == "boolean" %}{{ dst }}[0] = {{ "true" if value.bits else "false" }};
+{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: constant type") }}{% endif %}
+{% elif op.operation == "convert" %}
+{% if op.operator == "integer_to_real" %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {{ dst }}[k] = (double)r{{ op.operand }}[k];
+{% elif op.operator in ["real_to_integer_toward_zero", "real_to_integer_toward_negative_infinity"] %}
+{{ to_integer(dst, ("trunc" if op.operator == "real_to_integer_toward_zero" else "floor") ~ "(r" ~ op.operand ~ "[k])", ty) }}
+{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: conversion") }}{% endif %}
+{% else %}
+for (size_t k=0; k<{{ ty.scalar_count }}; ++k) {
+{% if op.operation == "unary" %}
+{% set a = "r" ~ op.operand ~ "[k]" %}
+{% if ty.scalar.kind == "integer" and op.operator in ["negate", "abs"] %}if ({{ a }} == INT64_MIN) return 1;{% endif %}
+{{ dst }}[k] = {{ unary(op.operator, a, ty) }};
+{% elif op.operation == "binary" %}
+{% set a = "r" ~ op.lhs ~ "[k]" %}{% set b = "r" ~ op.rhs ~ "[k]" %}
+{% if ty.scalar.kind == "integer" %}{{ integer_binary(op.operator, dst ~ "[k]", a, b) }}
+{% else %}{{ dst }}[k] = {{ binary(op.operator, a, b) }};{% endif %}
+{% elif op.operation == "compare" %}
+{{ dst }}[k] = r{{ op.lhs }}[k] {{ {"equal":"==", "not_equal":"!=", "less":"<", "less_equal":"<=", "greater":">", "greater_equal":">="}[op.operator] }} r{{ op.rhs }}[k];
+{% else %}{{ fail("unsupported-feature:fmi.c.pure-call: arithmetic operation") }}{% endif %}
+}
+{{ domain_check(dst, ty) }}
+{% endif %}
+{%- endmacro %}
