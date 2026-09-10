@@ -1,0 +1,22 @@
+[
+  "Modelica.Blocks.Examples.BooleanNetwork1",
+  "Modelica.Blocks.Examples.Noise.AutomaticSeed",
+  "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+  "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
+  "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
+  "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
+  "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
+  "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
+  "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
+  "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
+  "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
+  "Modelica.Electrical.Analog.Examples.OpAmps.OpAmpCircuits.Add",
+  "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
+  "Modelica.Electrical.Digital.Examples.Counter",
+  "Modelica.Electrical.Digital.Examples.FullAdder",
+  "Modelica.Electrical.Polyphase.Examples.TransformerYD",
+  "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
+  "Modelica.StateGraph.Examples.ShowCompositeStep",
+  "Modelica.Mechanics.Rotational.Examples.Friction",
+  "Modelica.Mechanics.Rotational.Examples.FirstGrounded"
+]

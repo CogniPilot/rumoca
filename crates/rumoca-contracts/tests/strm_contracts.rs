@@ -144,6 +144,182 @@ fn strm_003_stream_connector_flow_is_scalar_real_ok() {
 }
 
 #[test]
+fn strm_003_replaceable_medium_interface_real_alias_ok() {
+    expect_success(
+        r#"
+        package Units
+            type MassFlowRate = Real;
+        end Units;
+
+        partial package PartialMedium
+            type RateAlias = Units.MassFlowRate;
+            type MassFlowRate = RateAlias;
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            Real p;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn strm_003_replaceable_interface_member_constraint_real_ok() {
+    expect_success(
+        r#"
+        package Units
+            type MassFlowRate = Real;
+        end Units;
+
+        partial package PartialMedium
+            replaceable type MassFlowRate = Units.MassFlowRate;
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            Real p;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+#[test]
+fn strm_003_replaceable_medium_interface_integer_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        partial package PartialMedium
+            type MassFlowRate = Integer;
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+        "ER066",
+    );
+}
+
+#[test]
+fn strm_003_replaceable_medium_missing_interface_member_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        partial package PartialMedium
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+        "ER066",
+    );
+}
+
+#[test]
+fn strm_003_replaceable_medium_ambiguous_interface_member_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        package LeftMedium
+            type MassFlowRate = Real;
+        end LeftMedium;
+
+        package RightMedium
+            type MassFlowRate = Real;
+        end RightMedium;
+
+        partial package PartialMedium
+            extends LeftMedium;
+            extends RightMedium;
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+        "ER066",
+    );
+}
+
+#[test]
+fn strm_003_explicit_medium_constraint_controls_interface_rejected() {
+    expect_resolve_failure_with_code(
+        r#"
+        package DefaultMedium
+            type MassFlowRate = Real;
+        end DefaultMedium;
+
+        partial package PartialMedium
+        end PartialMedium;
+
+        connector Port
+            replaceable package Medium = DefaultMedium constrainedby PartialMedium;
+            flow Medium.MassFlowRate m_flow;
+            stream Real h_outflow;
+        end Port;
+
+        model Test
+            Port a;
+            Port b;
+        equation
+            connect(a, b);
+        end Test;
+    "#,
+        "Test",
+        "ER066",
+    );
+}
+
+#[test]
 fn strm_003_stream_connector_flow_must_be_real_rejected() {
     expect_resolve_failure_with_code(
         r#"

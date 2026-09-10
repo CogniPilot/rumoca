@@ -1,52 +1,5 @@
 use super::*;
-use rumoca_compile::codegen::{
-    render_dae_template_with_name, render_flat_template_with_name, templates,
-};
-
-// =============================================================================
-// Render + simulation orchestration helpers
-// =============================================================================
-
-pub(super) fn maybe_render_model_outputs(
-    name: &str,
-    result: &rumoca_compile::compile::CompilationResult,
-    ctx: &RenderSimContext<'_>,
-) {
-    if !msl_render_enabled() {
-        return;
-    }
-    let is_partial = result.dae.metadata.is_partial;
-    let should_render =
-        !is_partial && (!ctx.run_simulation || is_standalone_sim_target(name, result, ctx));
-    if !should_render {
-        return;
-    }
-
-    write_rendered_artifact(
-        render_dae_template_with_name(
-            &result.dae,
-            templates::builtin_template_source("dae-modelica", "dae_modelica.mo.jinja").unwrap(),
-            name,
-        ),
-        ctx.dae_dir.join(format!("{name}.mo")),
-        ctx.dae_rendered,
-        ctx.render_errors,
-    );
-
-    write_rendered_artifact(
-        render_flat_template_with_name(
-            &result.flat,
-            templates::builtin_template_source("flat-modelica", "flat_modelica.mo.jinja").unwrap(),
-            name,
-        ),
-        ctx.flat_dir.join(format!("{name}.mo")),
-        ctx.flat_rendered,
-        ctx.render_errors,
-    );
-
-    let done = ctx.render_completed.fetch_add(1, Ordering::Relaxed) + 1;
-    maybe_log_render_progress(ctx.run_simulation, done, ctx.total_render_targets);
-}
+use std::collections::HashSet;
 
 pub(super) fn simulation_solver_override() -> Option<String> {
     // No solver override; use the model's experiment annotation (else auto).
@@ -58,220 +11,7 @@ pub(super) fn simulation_stop_time_override() -> Option<f64> {
     None
 }
 
-pub(super) fn simulation_settings_from_result(
-    result: &rumoca_compile::compile::CompilationResult,
-) -> SimExecutionSettings {
-    simulation_settings_from_parts(
-        result.experiment_start_time,
-        result.experiment_stop_time,
-        result.experiment_tolerance,
-        result.experiment_interval,
-        result.experiment_solver.as_deref(),
-    )
-}
-
-pub(super) fn simulation_settings_from_dae_result(
-    result: &rumoca_compile::compile::DaeCompilationResult,
-) -> SimExecutionSettings {
-    simulation_settings_from_parts(
-        result.experiment_start_time,
-        result.experiment_stop_time,
-        result.experiment_tolerance,
-        result.experiment_interval,
-        result.experiment_solver.as_deref(),
-    )
-}
-
-fn simulation_settings_from_parts(
-    experiment_start_time: Option<f64>,
-    experiment_stop_time: Option<f64>,
-    experiment_tolerance: Option<f64>,
-    experiment_interval: Option<f64>,
-    experiment_solver: Option<&str>,
-) -> SimExecutionSettings {
-    let mut t_start = experiment_start_time
-        .filter(|seconds| seconds.is_finite())
-        .unwrap_or(0.0);
-    let mut t_end = experiment_stop_time
-        .filter(|seconds| seconds.is_finite() && *seconds > t_start)
-        .unwrap_or(t_start + DEFAULT_SIM_END_TIME_SECS);
-
-    if !t_start.is_finite() || !t_end.is_finite() || t_end <= t_start {
-        t_start = 0.0;
-        t_end = DEFAULT_SIM_END_TIME_SECS;
-    }
-    if let Some(stop_time) = simulation_stop_time_override()
-        && stop_time > t_start
-    {
-        t_end = stop_time;
-    }
-
-    let tolerance = experiment_tolerance.filter(|value| value.is_finite() && *value > 0.0);
-
-    SimExecutionSettings {
-        t_start,
-        t_end,
-        dt: experiment_interval.filter(|value| value.is_finite() && *value > 0.0),
-        rtol: tolerance,
-        atol: tolerance,
-        solver: simulation_solver_override()
-            .or_else(|| experiment_solver.map(ToString::to_string))
-            .unwrap_or_else(|| "auto".to_string()),
-        timeout_seconds: None,
-    }
-}
-
-pub(super) fn maybe_run_simulation(
-    name: &str,
-    result: &rumoca_compile::compile::CompilationResult,
-    ctx: &RenderSimContext<'_>,
-    remaining_budget_secs: Option<f64>,
-) -> Option<MslSimModelResult> {
-    if !ctx.run_simulation || !is_standalone_sim_target(name, result, ctx) {
-        return None;
-    }
-    ctx.sim_attempted.fetch_add(1, Ordering::Relaxed);
-    let settings = match gate_simulation_settings_by_compile_budget(
-        simulation_settings_from_result(result),
-        remaining_budget_secs,
-    ) {
-        Ok(settings) => settings,
-        Err(_) => {
-            return Some(MslSimModelResult {
-                name: name.to_string(),
-                status: SimStatus::Timeout,
-                error: Some(
-                    "model attempt timeout exhausted before simulation could start".to_string(),
-                ),
-                ic_status: None,
-                ic_error: None,
-                ic_seconds: None,
-                n_states: Some(result.dae.variables.states.len()),
-                n_algebraics: Some(result.dae.variables.algebraics.len()),
-                sim_seconds: Some(0.0),
-                sim_build_seconds: Some(0.0),
-                ir_solve_seconds: Some(0.0),
-                ir_solve_structural_dae_seconds: Some(0.0),
-                ir_solve_lower_seconds: Some(0.0),
-                sim_backend_build_seconds: Some(0.0),
-                sim_run_seconds: Some(0.0),
-                sim_wall_seconds: Some(0.0),
-                sim_trace_file: None,
-                sim_perf_profile_file: None,
-                sim_trace_error: None,
-                ir_dae_file: None,
-                ir_solve_file: None,
-                ir_solve_error: None,
-            });
-        }
-    };
-    Some(try_simulate_dae_with_settings(&result.dae, name, &settings))
-}
-
-fn is_standalone_sim_target(
-    name: &str,
-    result: &rumoca_compile::compile::CompilationResult,
-    ctx: &RenderSimContext<'_>,
-) -> bool {
-    if result.dae.metadata.is_partial || !is_selected_sim_target(name, ctx) {
-        return false;
-    }
-    if sim_targets_file_override().is_some() {
-        return true;
-    }
-    is_root_standalone_msl_example_model(name, result)
-}
-
-pub(super) fn maybe_log_sim_progress(done: usize, ctx: &RenderSimContext<'_>) {
-    if !done.is_multiple_of(10) && done != ctx.total_sim_targets {
-        return;
-    }
-    let attempted = ctx.sim_attempted.load(Ordering::Relaxed);
-    let ok = ctx.sim_ok_live.load(Ordering::Relaxed);
-    let nan = ctx.sim_nan_live.load(Ordering::Relaxed);
-    let timeout = ctx.sim_timeout_live.load(Ordering::Relaxed);
-    let solver = ctx.sim_solver_fail_live.load(Ordering::Relaxed);
-    let balance = ctx.sim_balance_fail_live.load(Ordering::Relaxed);
-    let fail = nan + timeout + solver + balance;
-    let progress_pct = pct(done, ctx.total_sim_targets);
-    let ok_pct = pct(ok, done);
-    let fail_pct = pct(fail, done);
-    eprintln!(
-        "  simulation progress: completed={done}/{total} ({progress_pct:.1}%) attempted={attempted} | ok={ok} ({ok_pct:.1}%) fail={fail} ({fail_pct:.1}%) [timeout={timeout}, solver={solver}, nan={nan}, balance={balance}]",
-        total = ctx.total_sim_targets
-    );
-}
-
-pub(super) fn update_live_sim_status(sim: &MslSimModelResult, ctx: &RenderSimContext<'_>) {
-    match sim.status {
-        SimStatus::Ok => {
-            ctx.sim_ok_live.fetch_add(1, Ordering::Relaxed);
-        }
-        SimStatus::Nan => {
-            ctx.sim_nan_live.fetch_add(1, Ordering::Relaxed);
-        }
-        SimStatus::Timeout => {
-            ctx.sim_timeout_live.fetch_add(1, Ordering::Relaxed);
-        }
-        SimStatus::SolverFail => {
-            ctx.sim_solver_fail_live.fetch_add(1, Ordering::Relaxed);
-        }
-        SimStatus::BalanceFail => {
-            ctx.sim_balance_fail_live.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-pub(super) fn convert_compile_result_entry(
-    entry: ModelCompileEntry,
-    ctx: &RenderSimContext<'_>,
-) -> MslModelResult {
-    let ModelCompileEntry {
-        model_name: name,
-        compile_outcome,
-        remaining_budget_secs,
-        compile_seconds,
-        compile_perf_profile_file,
-    } = entry;
-
-    let sim_result = if let Some(result) = compile_outcome.success_result() {
-        maybe_dump_model_introspection(&name, result, ctx);
-        maybe_render_model_outputs(&name, result, ctx);
-        maybe_run_simulation(&name, result, ctx, remaining_budget_secs)
-    } else {
-        None
-    };
-
-    let mut model_result = convert_compile_outcome(name, compile_outcome);
-    model_result.compile_seconds = Some(compile_seconds);
-    model_result.compile_perf_profile_file = compile_perf_profile_file;
-    if let Some(sim) = sim_result {
-        let done = ctx.sim_completed.fetch_add(1, Ordering::Relaxed) + 1;
-        update_live_sim_status(&sim, ctx);
-        maybe_log_sim_progress(done, ctx);
-        model_result.sim_status = Some(sim.status.to_string());
-        model_result.sim_error = sim.error;
-        model_result.ic_status = sim.ic_status;
-        model_result.ic_error = sim.ic_error;
-        model_result.ic_seconds = sim.ic_seconds;
-        model_result.sim_seconds = sim.sim_seconds;
-        model_result.sim_build_seconds = sim.sim_build_seconds;
-        model_result.sim_run_seconds = sim.sim_run_seconds;
-        model_result.sim_wall_seconds = sim.sim_wall_seconds;
-        model_result.sim_trace_file = sim.sim_trace_file;
-        model_result.sim_perf_profile_file = sim.sim_perf_profile_file;
-        model_result.sim_trace_error = sim.sim_trace_error;
-    }
-
-    model_result
-}
-
 pub(super) struct RenderSimSetup {
-    dae_dir: PathBuf,
-    flat_dir: PathBuf,
-    dae_rendered: AtomicUsize,
-    flat_rendered: AtomicUsize,
-    render_errors: AtomicUsize,
     sim_attempted: AtomicUsize,
     sim_completed: AtomicUsize,
     sim_ok_live: AtomicUsize,
@@ -279,20 +19,13 @@ pub(super) struct RenderSimSetup {
     sim_timeout_live: AtomicUsize,
     sim_solver_fail_live: AtomicUsize,
     sim_balance_fail_live: AtomicUsize,
-    render_completed: AtomicUsize,
     sim_target_names: Option<HashSet<String>>,
     sim_target_models: Vec<String>,
-    total_render_targets: usize,
     total_sim_targets: usize,
 }
 
 impl RenderSimSetup {
     fn new_from_compile_scope(compile_scope_names: &[String], run_simulation: bool) -> Self {
-        let dae_dir = msl_results_dir().join("rumoca_dae");
-        let flat_dir = msl_results_dir().join("rumoca_flat");
-        let _ = fs::create_dir_all(&dae_dir);
-        let _ = fs::create_dir_all(&flat_dir);
-
         let sim_target_names =
             select_sim_target_names_from_compile_scope(compile_scope_names, run_simulation);
         let sim_target_models = match sim_target_names.as_ref() {
@@ -301,18 +34,6 @@ impl RenderSimSetup {
         };
         let sim_target_name_set = sim_target_models.iter().cloned().collect();
         let total_sim_targets = sim_target_models.len();
-        let total_render_targets = if !msl_render_enabled() {
-            0
-        } else if run_simulation {
-            total_sim_targets
-        } else {
-            compile_scope_names.len()
-        };
-
-        println!(
-            "Target models for render artifacts: {}",
-            total_render_targets
-        );
         if run_simulation {
             println!(
                 "Target standalone models for simulation: {}",
@@ -321,11 +42,6 @@ impl RenderSimSetup {
         }
 
         Self {
-            dae_dir,
-            flat_dir,
-            dae_rendered: AtomicUsize::new(0),
-            flat_rendered: AtomicUsize::new(0),
-            render_errors: AtomicUsize::new(0),
             sim_attempted: AtomicUsize::new(0),
             sim_completed: AtomicUsize::new(0),
             sim_ok_live: AtomicUsize::new(0),
@@ -333,14 +49,12 @@ impl RenderSimSetup {
             sim_timeout_live: AtomicUsize::new(0),
             sim_solver_fail_live: AtomicUsize::new(0),
             sim_balance_fail_live: AtomicUsize::new(0),
-            render_completed: AtomicUsize::new(0),
             sim_target_names: if run_simulation {
                 Some(sim_target_name_set)
             } else {
                 None
             },
             sim_target_models,
-            total_render_targets,
             total_sim_targets,
         }
     }
@@ -349,13 +63,7 @@ impl RenderSimSetup {
         RenderSimContext {
             run_simulation,
             sim_target_names: self.sim_target_names.as_ref(),
-            total_render_targets: self.total_render_targets,
             total_sim_targets: self.total_sim_targets,
-            dae_dir: &self.dae_dir,
-            flat_dir: &self.flat_dir,
-            dae_rendered: &self.dae_rendered,
-            flat_rendered: &self.flat_rendered,
-            render_errors: &self.render_errors,
             sim_attempted: &self.sim_attempted,
             sim_completed: &self.sim_completed,
             sim_ok_live: &self.sim_ok_live,
@@ -363,33 +71,10 @@ impl RenderSimSetup {
             sim_timeout_live: &self.sim_timeout_live,
             sim_solver_fail_live: &self.sim_solver_fail_live,
             sim_balance_fail_live: &self.sim_balance_fail_live,
-            render_completed: &self.render_completed,
         }
     }
 
     pub(super) fn print_summary(&self, run_simulation: bool) {
-        if msl_render_enabled() {
-            println!(
-                "DAE Modelica: {}/{} rendered to {:?}",
-                self.dae_rendered.load(Ordering::Relaxed),
-                self.total_render_targets,
-                self.dae_dir,
-            );
-            println!(
-                "Flat Modelica: {}/{} rendered to {:?}",
-                self.flat_rendered.load(Ordering::Relaxed),
-                self.total_render_targets,
-                self.flat_dir,
-            );
-            if self.render_errors.load(Ordering::Relaxed) > 0 {
-                println!(
-                    "Render errors: {}",
-                    self.render_errors.load(Ordering::Relaxed),
-                );
-            }
-        } else {
-            println!("DAE/Flat artifact rendering: disabled (set RUMOCA_MSL_RENDER=1 to enable).");
-        }
         if run_simulation {
             println!(
                 "Simulated {} standalone selected models (target={})",

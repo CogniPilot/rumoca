@@ -3,6 +3,7 @@
 //! Tests for the 29 connection contracts defined in SPEC_0022.
 
 use rumoca_compile::compile::FailedPhase;
+use rumoca_compile::{Session, SessionConfig};
 use rumoca_contracts::test_support::{
     expect_balanced, expect_failure_in_phase_with_code, expect_resolve_failure_with_code,
     expect_success,
@@ -426,6 +427,166 @@ fn conn_028_parameter_connector_component_rejected() {
     );
 }
 
+/// The MLS §9.3 clause itself, which is the one SPEC_0022 files CONN-028
+/// under: a `connect` may pair a parameter member only with another parameter
+/// member. (The sibling `conn_028_parameter_connector_component_rejected` above
+/// covers the *other* rule, MLS §9.1's ban on declaring a connector component
+/// `parameter`, enforced in resolve as `ER027`.) Two connector classes agreeing
+/// on member names but disagreeing on the `parameter` prefix leave the
+/// non-parameter side with no connection equation, so the pair is rejected
+/// instead of dropped.
+///
+/// The repro is doubly invalid and this test does **not** isolate the clause:
+/// a member that is `parameter` on one side and a variable on the other also
+/// makes one connector violate the §9.3.1 balance rule (`PlugQ` has two
+/// potential variables against one flow), which is inherent — MLS §4.7 excludes
+/// parameters from the potential count, so the prefix difference always shifts
+/// the balance. OMC reports exactly that as a warning while still accepting the
+/// model. rumoca's own CONN-017 balance check does not fire here because it
+/// skips non-Real members, so the failure observed below is the intended
+/// `EF028` and not a balance rejection — but a future CONN-017 that counts
+/// Integer members would give this model a second, independent reason to fail.
+#[test]
+fn conn_028_parameter_member_connected_to_variable_member_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector PlugP
+            parameter Integer m = 3;
+            Real v;
+            flow Real i;
+        end PlugP;
+        connector PlugQ
+            Integer m;
+            Real v;
+            flow Real i;
+        end PlugQ;
+        model Test
+            PlugP a;
+            PlugQ b;
+        equation
+            connect(a, b);
+            a.v = 1;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF028",
+    );
+}
+
+/// The accepting half of the same clause: parameter-to-parameter is legal, and
+/// MLS §9.3 generates no connection equation for it. A generated `a.p.m = b.p.m`
+/// would add a fifth equation over the same four unknowns, so the balance is
+/// what pins "connections are not generated".
+#[test]
+fn conn_028_parameter_member_connected_to_parameter_member_accepted() {
+    expect_balanced(
+        r#"
+        connector Plug
+            parameter Integer m = 3;
+            Real v;
+            flow Real i;
+        end Plug;
+        model Comp
+            Plug p;
+            parameter Real r = 1;
+        equation
+            p.v = r * p.i;
+        end Comp;
+        model Test
+            Comp a;
+            Comp b;
+        equation
+            connect(a.p, b.p);
+        end Test;
+    "#,
+        "Test",
+    );
+}
+
+// =============================================================================
+// CONN-030: Stream-to-stream
+// "Stream variables may only connect to other stream variables" (MLS §9.3)
+// =============================================================================
+
+/// MLS §9.3 admits "stream variables only to other stream variables", and MLS
+/// §15.1 (STRM-005) says a stream variable at an inside connector leads to no
+/// connection equation at all. Pairing a stream member with a non-stream member
+/// therefore selects no equation on either reading: the flat model used to get
+/// either nothing (silently under-constraining the non-stream side) or a
+/// potential equality that STRM-005 forbids on the stream side.
+///
+/// OMC rejects the same model outright: "The connectors in connect(a, b) are
+/// not type compatible."
+#[test]
+fn conn_030_stream_member_matched_with_non_stream_member_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector StreamPort
+            Real p;
+            flow Real m_flow;
+            stream Real h_outflow;
+        end StreamPort;
+        connector PlainPort
+            Real h_outflow;
+            flow Real m_flow;
+        end PlainPort;
+        model Test
+            StreamPort a;
+            PlainPort b;
+        equation
+            connect(a, b);
+            a.p = 1;
+            a.h_outflow = 300;
+            b.h_outflow = 400;
+        end Test;
+    "#,
+        "Test",
+        FailedPhase::Flatten,
+        "EF027",
+    );
+}
+
+/// The accepting half: matched stream members still form a §15.2 stream set and
+/// never receive a §9.2 equality of their own.
+#[test]
+fn conn_030_stream_member_matched_with_stream_member_accepted() {
+    let result = expect_success(
+        r#"
+        connector StreamPort
+            Real p;
+            flow Real m_flow;
+            stream Real h_outflow;
+        end StreamPort;
+        model Vol
+            StreamPort port;
+            parameter Real h_out = 2;
+            Real h_in;
+        equation
+            port.h_outflow = h_out;
+            h_in = inStream(port.h_outflow);
+        end Vol;
+        model Test
+            Vol v1(h_out = 2);
+            Vol v2(h_out = 4);
+        equation
+            connect(v1.port, v2.port);
+            v1.port.p = 1;
+            v1.port.m_flow = 1;
+        end Test;
+    "#,
+        "Test",
+    );
+    assert!(
+        result
+            .flat
+            .variables
+            .iter()
+            .any(|(name, variable)| name.as_str() == "v1.port.h_outflow" && variable.connected),
+        "a stream-to-stream connect must still join a stream connection set"
+    );
+}
+
 // =============================================================================
 // CONN-023: Overconstrained not in function
 // "None of these operators allowed inside function classes" (MLS §9.4)
@@ -470,14 +631,318 @@ fn conn_011_expandable_connect_neither_declared_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
+    );
+}
+
+#[test]
+fn conn_011_declared_expandable_member_is_not_treated_as_virtual() {
+    expect_success(
+        r#"
+        partial model M
+            expandable connector Bus
+                Real sig;
+            end Bus;
+            Bus b1;
+            Bus b2;
+        equation
+            connect(b1.sig, b2.sig);
+        end M;
+    "#,
+        "M",
+    );
+}
+
+#[test]
+fn conn_011_empty_expandable_buses_can_connect_without_member_synthesis() {
+    expect_success(
+        r#"
+        model M
+            expandable connector Bus
+            end Bus;
+            Bus b1;
+            Bus b2;
+        equation
+            connect(b1, b2);
+        end M;
+    "#,
+        "M",
     );
 }
 
 // =============================================================================
 // CONN-019: Subscripts shall be evaluable expressions or special operator :
 // =============================================================================
+
+// The accepted case first (SPEC_0008): a literal subscript on an array of a
+// *simple* connector is evaluable, so `connect(a, gate.x[1])` is a connection
+// to one element of `gate.x`. A simple connector has no members to expand, so
+// the flat model declares the array once, with its dimension intact, and owns
+// nothing named `gate.x[1]`. The generated connection equation therefore has to
+// reach the DAE as the declared coordinate carrying a subscript; a reference
+// whose *name* embedded the index would name no declaration and be rejected as
+// an unresolved Flat reference.
+#[test]
+fn conn_019_connect_to_array_connector_element_accepted() {
+    expect_success(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            RealInput x[2];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model M
+            Gate gate;
+            RealOutput a;
+            RealOutput b;
+            Real probe;
+        equation
+            connect(a, gate.x[1]);
+            connect(b, gate.x[2]);
+            probe = gate.y;
+            a = 1.0;
+            b = 2.0;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// The same element connection one level deeper: the composite that owns the
+// element connection is itself a component, which is the shape that reaches
+// flattening as a nested rendered path.
+#[test]
+fn conn_019_nested_connect_to_array_connector_element_accepted() {
+    expect_success(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            RealInput x[2];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model Adder
+            Gate gate;
+            RealInput u;
+            RealOutput c;
+        equation
+            connect(u, gate.x[2]);
+            gate.x[1] = 1.0;
+            c = gate.y;
+        end Adder;
+        model M
+            Adder adder;
+            Real probe;
+        equation
+            adder.u = 2.0;
+            probe = adder.c;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// An endpoint subscript may leave dimensions behind. MLS §10.5: a subscript
+// consumes one leading declared dimension, so `snk.u[1]` of a `Real[2,3]`
+// declaration denotes `Real[3]` and connects to another `Real[3]`. MLS §9.2
+// generates one equality per scalar leaf and MLS §4.8 counts those scalars, so
+// the connection contributes three equations, not one. Counting a subscripted
+// endpoint as a single scalar leaves this legal model short of equations and
+// gets it rejected as unbalanced. OMC (devshell build a96aa1a) `checkModel(M)` reports "14
+// equation(s) and 14 variable(s)" and simulates it to snk.s = 7.0.
+#[test]
+fn conn_019_connect_to_array_connector_slice_is_balanced() {
+    expect_balanced(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Src
+            RealOutput y[2,3];
+        equation
+            y = {{1.0,2.0,3.0},{4.0,5.0,6.0}};
+        end Src;
+        model Snk
+            RealInput u[2,3];
+            RealOutput s;
+        equation
+            s = u[1,1] + u[2,3];
+        end Snk;
+        model M
+            Src src;
+            Snk snk;
+            Real probe;
+        equation
+            connect(snk.u[1], src.y[1]);
+            connect(snk.u[2], src.y[2]);
+            probe = snk.s;
+        end M;
+    "#,
+        "M",
+    );
+}
+
+// The counterpart rejection (CONN-008, MLS §9.2 "same named elements with the
+// same dimensions"): `snk.u[1]` denotes `Real[2]` while `src.y[1]` denotes
+// `Real[3]`, so the connection is genuinely unbalanced and keeps the typed
+// incompatible-connector error. OMC (devshell build a96aa1a) rejects the same model with "The
+// connectors in connect(snk.u[1], src.y[1]) are not type compatible."
+#[test]
+fn conn_008_connect_array_connector_slice_shape_mismatch_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Src
+            RealOutput y[2,3];
+        equation
+            y = {{1.0,2.0,3.0},{4.0,5.0,6.0}};
+        end Src;
+        model Snk
+            RealInput u[2,2];
+            RealOutput s;
+        equation
+            s = u[1,1] + u[2,2];
+        end Snk;
+        model M
+            Src src;
+            Snk snk;
+            Real probe;
+        equation
+            connect(snk.u[1], src.y[1]);
+            probe = snk.s;
+        end M;
+    "#,
+        "M",
+        FailedPhase::Flatten,
+        "EF002",
+    );
+}
+
+// MLS §10.5 gives a subscript no dimension to select along when the declaration
+// has none, so `connect(a[1], b)` on a scalar connector `a` is an error, not a
+// connection of the whole of `a`. OMC (devshell build a96aa1a) rejects it with "Wrong number of
+// subscripts in a[1] (1 subscripts for 0 dimensions)".
+#[test]
+fn conn_019_connect_subscript_on_dimensionless_connector_rejected() {
+    expect_failure_in_phase_with_code(
+        r#"
+        connector C
+            Real e;
+            flow Real f;
+        end C;
+        model M
+            C a;
+            C b;
+        equation
+            connect(a[1], b);
+            a.e = 1.0;
+        end M;
+    "#,
+        "M",
+        FailedPhase::Flatten,
+        "EF026",
+    );
+}
+
+// MLS §7.3 allows an extends-modification to redeclare a component together
+// with array dimensions the base declaration did not have. OMC accepts this
+// model. Rumoca's instantiation keeps only the redeclared *type*, so `a`
+// reaches flatten carrying the base declaration's rank of zero — a fact about
+// this compiler, not about the source. Whatever else this model does
+// downstream, the connection phase must not blame the source for it: the
+// rank-zero endpoint check is suppressed when the rank is not authoritative.
+#[test]
+fn conn_019_redeclared_array_dimensions_are_not_reported_as_a_dimensionless_connector() {
+    let source = r#"
+        connector C
+            Real e;
+            flow Real f;
+        end C;
+        model Base
+            replaceable C a;
+        end Base;
+        model Drv
+            C p[2];
+            Real s;
+        equation
+            s = p[1].e + p[2].e;
+        end Drv;
+        model M
+            extends Base(redeclare C a[2]);
+            Drv d;
+            Real probe;
+        equation
+            connect(a[1], d.p[1]);
+            connect(a[2], d.p[2]);
+            probe = d.s;
+        end M;
+    "#;
+    let mut session = Session::new(SessionConfig::default());
+    session
+        .add_document("test.mo", source)
+        .expect("parse redeclared-dimension model");
+    let codes: Vec<String> = session
+        .compile_model_diagnostics("M")
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.code.clone())
+        .collect();
+    // The connection phase abstains, so what is left is the instantiate gap
+    // itself: the redeclared dimensions never arrive, `a` stays a scalar, and
+    // the model is short two equations. Asserting that exact outcome keeps this
+    // from passing vacuously on some third result, and makes it fail loudly if
+    // the redeclare-dimension gap is ever closed (then this model compiles and
+    // this expectation should become `expect_balanced`).
+    assert!(
+        !codes.iter().any(|code| code.ends_with("EF026")),
+        "a rank dropped by the redeclare-dimension gap must not be reported as a \
+         dimensionless connector, got codes: {codes:?}"
+    );
+    assert!(
+        codes.iter().any(|code| code.ends_with("ED001")),
+        "the surviving failure must be the unbalanced-model report caused by the \
+         dropped redeclare dimensions, got codes: {codes:?}"
+    );
+}
+
+// Acceptance before rejection: the subscript budget comes from the declaration,
+// so an element of a parameter-sized connector array stays a legal connect
+// argument. OMC (devshell build a96aa1a) `checkModel(M)` reports "6 equation(s) and 6 variable(s)".
+#[test]
+fn conn_019_connect_to_parameter_sized_connector_array_element_accepted() {
+    expect_balanced(
+        r#"
+        connector RealInput = input Real;
+        connector RealOutput = output Real;
+        model Gate
+            parameter Integer n = 2;
+            RealInput x[n];
+            RealOutput y;
+        equation
+            y = x[1] + x[2];
+        end Gate;
+        model M
+            Gate gate;
+            RealOutput a;
+            RealOutput b;
+            Real probe;
+        equation
+            connect(a, gate.x[1]);
+            connect(b, gate.x[2]);
+            probe = gate.y;
+            a = 1.0;
+            b = 2.0;
+        end M;
+    "#,
+        "M",
+    );
+}
 
 #[test]
 fn conn_019_connect_subscript_not_evaluable_rejected() {
@@ -657,8 +1122,8 @@ fn conn_014_branch_cycle_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED017",
+        FailedPhase::Flatten,
+        "EF022",
     );
 }
 
@@ -687,8 +1152,8 @@ fn conn_015_two_connected_definite_roots_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::ToDae,
-        "ED017",
+        FailedPhase::Flatten,
+        "EF022",
     );
 }
 
@@ -837,12 +1302,12 @@ fn conn_022_overdetermined_type_with_flow_member_rejected() {
 
 // =============================================================================
 // CONN-012/021: expandable connector causality deduction. Member synthesis
-// from component connects is not implemented yet, so these models (and
-// therefore every deduction conflict) are rejected during typecheck.
+// from component connects is not implemented yet, so these models are rejected
+// explicitly at the pre-connection-set augmentation boundary.
 // =============================================================================
 
 #[test]
-fn conn_012_expandable_duplicate_sources_rejected() {
+fn unsupported_expandable_duplicate_sources_fail_closed() {
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -863,13 +1328,13 @@ fn conn_012_expandable_duplicate_sources_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
     );
 }
 
 #[test]
-fn conn_021_expandable_input_without_source_rejected() {
+fn unsupported_expandable_input_without_source_fails_closed() {
     expect_failure_in_phase_with_code(
         r#"
         model M
@@ -886,7 +1351,7 @@ fn conn_021_expandable_input_without_source_rejected() {
         end M;
     "#,
         "M",
-        FailedPhase::Typecheck,
-        "ET001",
+        FailedPhase::Flatten,
+        "EF020",
     );
 }

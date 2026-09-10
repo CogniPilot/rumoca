@@ -1,20 +1,16 @@
 use anyhow::{Context, Result, bail};
-use rumoca_compile::compile::core::{
-    msl_cache_dir_from_manifest, workspace_root_from_manifest_dir,
-};
+use rumoca_core::{msl_cache_dir_from_manifest, workspace_root_from_manifest_dir};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MSL_VERSION: &str = "4.1.0";
-// Keep OMC compile/reference isolated per model by default so a single hung
-// model cannot poison an entire batch.
-pub const BATCH_SIZE_OMC_REFERENCE_DEFAULT: usize = 1;
 // Keep OMC simulation isolated per model with a strict timeout budget.
 pub const BATCH_SIZE_OMC_SIMULATION_DEFAULT: usize = 1;
 // Per-model OMC simulate() wall budget. Shared with the rumoca sim worker
@@ -22,7 +18,6 @@ pub const BATCH_SIZE_OMC_SIMULATION_DEFAULT: usize = 1;
 // simulate a model — a model is only fairly comparable under an equal budget.
 pub const BATCH_TIMEOUT_SECONDS_DEFAULT: u64 = rumoca_worker::MSL_SIM_TIMEOUT_SECS as u64;
 pub const AUTO_WORKERS_DEFAULT: usize = 0;
-pub const AUTO_WORKERS_RESERVED_CPUS: usize = 3;
 pub const OMC_THREADS_DEFAULT: usize = 1;
 pub const SIM_STOP_TIME_DEFAULT: f64 = 1.0;
 pub const OMC_BATCH_TIMEOUT_POLL: Duration = Duration::from_millis(25);
@@ -58,12 +53,6 @@ const MSL_PACKAGE_SPECS: &[MslPackageSpec] = &[
         package_name: "ModelicaTestOverdetermined",
         candidates: &["ModelicaTestOverdetermined.mo"],
     },
-];
-
-pub const EXCLUDE_PREFIXES: [&str; 3] = [
-    "ObsoleteModelica4",
-    "ModelicaTestConversion4",
-    "ModelicaReference",
 ];
 
 #[derive(Debug, Clone)]
@@ -129,17 +118,6 @@ impl MslPaths {
         self.results_dir = results_dir;
         self
     }
-
-    pub fn work_dir_for_run_id(&self, run_id: Option<&str>) -> PathBuf {
-        let Some(run_id) = run_id else {
-            return self.work_dir.clone();
-        };
-        if run_id.is_empty() {
-            self.work_dir.clone()
-        } else {
-            self.work_dir.join(run_id)
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,14 +128,6 @@ pub struct BatchTimingDetail {
     pub elapsed_seconds: f64,
     pub timed_out: bool,
     pub skipped: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingBatch {
-    pub batch_idx: usize,
-    pub start_idx: usize,
-    pub end_idx: usize,
-    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -173,16 +143,6 @@ pub struct CommandRunOutput {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
-}
-
-pub fn resolve_worker_count(workers_requested: usize) -> Result<usize> {
-    if workers_requested == 0 {
-        let cpu_count = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1);
-        return Ok(cpu_count.saturating_sub(AUTO_WORKERS_RESERVED_CPUS).max(1));
-    }
-    Ok(workers_requested.max(1))
 }
 
 pub fn choose_effective_batch_size(
@@ -246,13 +206,6 @@ pub fn msl_load_lines(paths: &MslPaths) -> Vec<String> {
         .collect()
 }
 
-pub fn msl_top_packages(paths: &MslPaths) -> Vec<&'static str> {
-    resolve_msl_packages(paths)
-        .into_iter()
-        .map(|(package_name, _)| package_name)
-        .collect()
-}
-
 pub fn get_omc_version() -> String {
     let mut command = Command::new("omc");
     command.arg("--version");
@@ -275,12 +228,87 @@ pub fn get_git_commit(repo_root: &Path) -> String {
     }
 }
 
+/// Whether the working tree carried uncommitted changes when an artifact was
+/// written.
+///
+/// A commit alone is not provenance for a locally-produced artifact: a dirty
+/// tree means the numbers came from code that is not at that commit, so a later
+/// reader cannot reproduce them from the commit alone. Recording the flag makes
+/// that checkable instead of assumed.
+pub fn git_worktree_is_dirty(repo_root: &Path) -> bool {
+    let mut command = Command::new("git");
+    command
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(repo_root);
+    match run_command_with_timeout(&mut command, Duration::from_secs(10)) {
+        Ok(output) => !output.stdout.trim().is_empty(),
+        // An unreadable tree cannot be shown clean; say dirty rather than
+        // stamping an artifact with a cleanliness nobody verified.
+        Err(_) => true,
+    }
+}
+
+/// A content digest of the working tree's uncommitted changes, or `None` when
+/// the tree is clean.
+///
+/// [`git_worktree_is_dirty`] says *that* an artifact came from uncommitted
+/// code; it cannot say *which* uncommitted code. Two runs of one commit with
+/// different working-tree content — exactly how a change is iterated before it
+/// lands — produce artifacts that are indistinguishable by commit and dirty
+/// flag alone, so a reader cannot tell which run a table describes, nor order
+/// two of them. Hashing `git diff HEAD` together with the untracked-file roster
+/// makes each working-tree state self-identifying.
+///
+/// An unreadable tree yields a sentinel rather than `None`: "clean" is a claim,
+/// and a claim nobody verified must not be stamped on an artifact.
+pub fn git_worktree_content_digest(repo_root: &Path) -> Option<String> {
+    let mut diff = Command::new("git");
+    diff.arg("diff")
+        .arg("HEAD")
+        .arg("--binary")
+        .current_dir(repo_root);
+    let mut untracked = Command::new("git");
+    untracked
+        .arg("ls-files")
+        .arg("--others")
+        .arg("--exclude-standard")
+        .current_dir(repo_root);
+    let timeout = Duration::from_secs(30);
+    let (Ok(diff), Ok(untracked)) = (
+        run_command_with_timeout(&mut diff, timeout),
+        run_command_with_timeout(&mut untracked, timeout),
+    ) else {
+        return Some("unverified".to_string());
+    };
+    if diff.stdout.trim().is_empty() && untracked.stdout.trim().is_empty() {
+        return None;
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(diff.stdout.as_bytes());
+    hasher.update(b"\0untracked\0");
+    hasher.update(untracked.stdout.as_bytes());
+    Some(hasher.finalize().to_hex().to_string())
+}
+
 pub fn run_command_with_timeout(
     command: &mut Command,
     timeout: Duration,
 ) -> std::io::Result<CommandRunOutput> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn()?;
+    let stdout_reader = spawn_pipe_reader(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("child stdout pipe was not available"))?,
+    );
+    let stderr_reader = spawn_pipe_reader(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("child stderr pipe was not available"))?,
+    );
     let deadline = Instant::now() + timeout;
     let timed_out = loop {
         if child.try_wait()?.is_some() {
@@ -292,12 +320,31 @@ pub fn run_command_with_timeout(
         }
         thread::sleep(OMC_BATCH_TIMEOUT_POLL);
     };
-    let output = child.wait_with_output()?;
+    child.wait()?;
+    let stdout = join_pipe_reader(stdout_reader, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, "stderr")?;
     Ok(CommandRunOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
         timed_out,
     })
+}
+
+fn spawn_pipe_reader(mut pipe: impl Read + Send + 'static) -> JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe_reader(
+    reader: JoinHandle<io::Result<Vec<u8>>>,
+    stream_name: &str,
+) -> io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| io::Error::other(format!("child {stream_name} reader panicked")))?
 }
 
 pub fn apply_omc_thread_env(command: &mut Command, omc_threads: usize) {
@@ -307,77 +354,6 @@ pub fn apply_omc_thread_env(command: &mut Command, omc_threads: usize) {
     command.env("OPENBLAS_NUM_THREADS", &threads);
     command.env("MKL_NUM_THREADS", &threads);
     command.env("NUMEXPR_NUM_THREADS", &threads);
-}
-
-pub fn run_parallel_batches_with_progress<R, F, P>(
-    pending_batches: Vec<PendingBatch>,
-    workers: usize,
-    task: F,
-    mut on_complete: P,
-) -> Result<Vec<(PendingBatch, R)>>
-where
-    R: Send + 'static,
-    F: Fn(PendingBatch) -> Result<R> + Send + Sync + 'static,
-    P: FnMut(&PendingBatch, &R),
-{
-    if pending_batches.is_empty() {
-        return Ok(Vec::new());
-    }
-    if workers <= 1 {
-        let mut outputs = Vec::with_capacity(pending_batches.len());
-        for batch in pending_batches {
-            let output = task(batch.clone())?;
-            on_complete(&batch, &output);
-            outputs.push((batch, output));
-        }
-        return Ok(outputs);
-    }
-
-    let worker_count = workers.min(pending_batches.len()).max(1);
-    let queue = Arc::new(Mutex::new(VecDeque::from(pending_batches)));
-    let task = Arc::new(task);
-    let (tx, rx) = mpsc::channel::<Result<(PendingBatch, R)>>();
-    let mut handles = Vec::with_capacity(worker_count);
-
-    for _ in 0..worker_count {
-        let queue = Arc::clone(&queue);
-        let task = Arc::clone(&task);
-        let tx = tx.clone();
-        handles.push(thread::spawn(move || {
-            while let Some(batch) = pop_pending_batch(&queue) {
-                let result = task(batch.clone()).map(|output| (batch, output));
-                let _ = tx.send(result);
-            }
-        }));
-    }
-    drop(tx);
-
-    let mut outputs = Vec::new();
-    let mut first_error: Option<anyhow::Error> = None;
-    for message in rx {
-        match message {
-            Ok((batch, output)) => {
-                on_complete(&batch, &output);
-                outputs.push((batch, output));
-            }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
-        }
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-    if let Some(error) = first_error {
-        return Err(error);
-    }
-    Ok(outputs)
-}
-
-fn pop_pending_batch(queue: &Arc<Mutex<VecDeque<PendingBatch>>>) -> Option<PendingBatch> {
-    queue.lock().ok().and_then(|mut queue| queue.pop_front())
 }
 
 pub fn has_fatal_omc_error(error_text: &str) -> bool {
@@ -432,6 +408,82 @@ pub fn load_target_models(path: &Path) -> Result<Vec<String>> {
         names.push(name.to_string());
     }
     Ok(names)
+}
+
+/// Repository-relative path of the tracked trace-comparison exclusion list.
+///
+/// Owned here rather than by either consumer because two of them read it: the
+/// comparator (which skips the model) and the band table (which records *why* a
+/// cohort model is absent). A second copy of the path would let the two drift.
+pub const TRACE_EXCLUSIONS_FILE_REL: &str =
+    "crates/rumoca-test-msl/tests/msl_tests/msl_trace_compare_exclusions.json";
+
+/// Schema tag of the exclusions file, so a foreign list is rejected rather than
+/// read as "nothing is excluded".
+pub const TRACE_EXCLUSIONS_SCHEMA: &str = "msl_trace_compare_exclusions";
+
+/// Read the tracked exclusion list: model name -> the reason that model is not
+/// compared.
+///
+/// # Acceptance contract
+///
+/// Accepts exactly an object carrying [`TRACE_EXCLUSIONS_SCHEMA`] and an
+/// `exclusions` array whose every entry has a non-empty `model_name` and a
+/// non-empty `reason`. It rejects a bare name list (the shape this file used to
+/// have), an entry without a reason, and a duplicated model.
+///
+/// The per-entry reason is mandatory because the caller *records* it: with one
+/// shared reason constant, excluding a non-stochastic model would publish a
+/// false rationale in every artifact that quotes the exclusion.
+pub fn load_trace_exclusions_file(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read trace exclusions '{}'", path.display()))?;
+    let payload: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse trace exclusions '{}'", path.display()))?;
+    parse_trace_exclusions(&payload)
+        .with_context(|| format!("invalid trace exclusions '{}'", path.display()))
+}
+
+fn parse_trace_exclusions(payload: &Value) -> Result<std::collections::BTreeMap<String, String>> {
+    let Some(object) = payload.as_object() else {
+        bail!(
+            "trace exclusions must be an object with '{TRACE_EXCLUSIONS_SCHEMA}' and per-entry \
+             reasons; a bare model-name list cannot say why a model is excluded"
+        );
+    };
+    let schema = object.get("schema").and_then(Value::as_str).unwrap_or("");
+    if schema != TRACE_EXCLUSIONS_SCHEMA {
+        bail!("trace exclusions schema is '{schema}', expected '{TRACE_EXCLUSIONS_SCHEMA}'");
+    }
+    let Some(entries) = object.get("exclusions").and_then(Value::as_array) else {
+        bail!("trace exclusions object is missing the `exclusions` array");
+    };
+    let mut exclusions = std::collections::BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let model_name = entry
+            .get("model_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .with_context(|| format!("exclusions[{index}] has no `model_name`"))?;
+        let reason = entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .with_context(|| {
+                format!("exclusion '{model_name}' has no `reason`; every exclusion must record why")
+            })?;
+        if exclusions
+            .insert(model_name.to_string(), reason.to_string())
+            .is_some()
+        {
+            bail!("exclusions list '{model_name}' more than once");
+        }
+    }
+    Ok(exclusions)
 }
 
 pub fn write_pretty_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -495,6 +547,24 @@ mod tests {
             omc_trace_dir: PathBuf::from("/tmp/results/sim_traces/omc"),
             rumoca_trace_dir: PathBuf::from("/tmp/results/sim_traces/rumoca"),
         }
+    }
+
+    #[test]
+    fn command_timeout_reader_drains_output_larger_than_a_pipe_buffer() {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("head -c 1048576 /dev/zero | tr '\\000' x; printf stderr-sentinel >&2");
+
+        let output = run_command_with_timeout(&mut command, Duration::from_secs(5))
+            .expect("large child output should be drained while the process runs");
+
+        assert!(
+            !output.timed_out,
+            "a finite producer must not deadlock on its pipe"
+        );
+        assert_eq!(output.stdout.len(), 1_048_576);
+        assert_eq!(output.stderr, "stderr-sentinel");
     }
 
     #[test]
@@ -565,10 +635,6 @@ mod tests {
                 .any(|line| line.contains("ModelicaTest 4.1.0/package.mo")),
             "expected ModelicaTest release-layout package load"
         );
-        assert_eq!(
-            msl_top_packages(&paths),
-            vec!["Complex", "ModelicaServices", "Modelica", "ModelicaTest"]
-        );
     }
 
     #[test]
@@ -588,7 +654,6 @@ mod tests {
                 .any(|line| line.contains("ModelicaTest/package.mo")),
             "expected source-tree ModelicaTest package load"
         );
-        assert_eq!(msl_top_packages(&paths), vec!["ModelicaTest"]);
     }
 
     #[test]
@@ -625,5 +690,97 @@ mod tests {
             list_names,
             vec!["Modelica.A".to_string(), "Modelica.B".to_string()]
         );
+    }
+
+    /// Every entry carries its own reason, so an artifact that quotes an
+    /// exclusion quotes the rationale that was actually reviewed for it.
+    #[test]
+    fn trace_exclusions_carry_a_reason_per_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("exclusions.json");
+        fs::write(
+            &path,
+            r#"{"schema":"msl_trace_compare_exclusions","exclusions":[
+                {"model_name":"A.Stochastic","reason":"stochastic random-input model"},
+                {"model_name":"B.Timing","reason":"wall-clock dependent"}
+            ]}"#,
+        )
+        .expect("write exclusions");
+
+        let exclusions = load_trace_exclusions_file(&path).expect("load exclusions");
+
+        assert_eq!(exclusions.len(), 2);
+        assert_eq!(
+            exclusions.get("B.Timing").map(String::as_str),
+            Some("wall-clock dependent"),
+            "each entry must keep its own reason rather than a shared constant"
+        );
+    }
+
+    #[test]
+    fn trace_exclusions_reject_a_bare_name_list_and_a_reasonless_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bare = temp.path().join("bare.json");
+        fs::write(&bare, r#"["A.Stochastic"]"#).expect("write bare list");
+        let error = load_trace_exclusions_file(&bare)
+            .expect_err("a bare name list cannot say why a model is excluded")
+            .to_string();
+        assert!(
+            format!("{error:#}").contains("exclusions"),
+            "got: {error:#}"
+        );
+
+        let reasonless = temp.path().join("reasonless.json");
+        fs::write(
+            &reasonless,
+            r#"{"schema":"msl_trace_compare_exclusions","exclusions":[{"model_name":"A.Stochastic"}]}"#,
+        )
+        .expect("write reasonless");
+        let error = load_trace_exclusions_file(&reasonless)
+            .expect_err("an exclusion without a reason must be rejected");
+        assert!(
+            format!("{error:#}").contains("no `reason`"),
+            "got: {error:#}"
+        );
+    }
+
+    /// The tracked list is the one the comparator and the band table both read;
+    /// a shape change that breaks it would silence models with no reason on
+    /// record.
+    #[test]
+    fn tracked_exclusions_are_reviewed_and_reasoned() {
+        let path = workspace_root_from_manifest_dir(env!("CARGO_MANIFEST_DIR"))
+            .join(TRACE_EXCLUSIONS_FILE_REL);
+        let exclusions = load_trace_exclusions_file(&path).expect("tracked exclusions must parse");
+        let expected = [
+            "Modelica.Blocks.Examples.DemoSignalCharacteristic",
+            "Modelica.Electrical.Analog.Examples.ChuaCircuit",
+            "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc",
+            "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
+            "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator",
+            "Modelica.Electrical.Analog.Examples.SwitchWithArc",
+            "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
+            "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
+            "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
+            "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
+            "Modelica.Mechanics.Translational.Examples.PreLoad",
+            "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut",
+        ];
+        assert_eq!(exclusions.len(), expected.len());
+        for model_name in expected {
+            let reason = exclusions
+                .get(model_name)
+                .unwrap_or_else(|| panic!("missing reviewed exclusion for {model_name}"));
+            assert!(
+                reason.split_whitespace().count() >= 8,
+                "reviewed exclusion for {model_name} must explain the oracle-test boundary"
+            );
+        }
     }
 }

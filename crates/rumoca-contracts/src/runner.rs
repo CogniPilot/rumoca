@@ -122,21 +122,6 @@ impl TestRunner {
     pub fn registry(&self) -> &ContractRegistry {
         &self.registry
     }
-
-    /// Count passed tests.
-    pub fn passed_count(&self) -> usize {
-        self.results.values().filter(|r| r.passed).count()
-    }
-
-    /// Count failed tests.
-    pub fn failed_count(&self) -> usize {
-        self.results.values().filter(|r| !r.passed).count()
-    }
-
-    /// Count registered tests.
-    pub fn test_count(&self) -> usize {
-        self.tests.len()
-    }
 }
 
 #[cfg(test)]
@@ -177,10 +162,23 @@ mod tests {
 
         runner.run_all();
 
-        assert_eq!(runner.test_count(), 2);
         assert_eq!(runner.results().len(), 2);
-        assert_eq!(runner.passed_count(), 1);
-        assert_eq!(runner.failed_count(), 1);
+        assert_eq!(
+            runner
+                .results()
+                .values()
+                .filter(|result| result.passed)
+                .count(),
+            1
+        );
+        assert_eq!(
+            runner
+                .results()
+                .values()
+                .filter(|result| !result.passed)
+                .count(),
+            1
+        );
 
         let fail = runner
             .results()

@@ -83,8 +83,12 @@ fn build_profile_helper(repo_root: &Path) -> Command {
         .current_dir(repo_root)
         .arg("build")
         .arg("--release")
+        .arg("--package")
+        .arg("rumoca-test-msl")
         .arg("--bin")
-        .arg("rumoca-msl-profile");
+        .arg("rumoca-msl-profile")
+        .arg("--features")
+        .arg("rumoca-test-msl/msl-profile-bin");
     build
 }
 
@@ -206,7 +210,16 @@ mod tests {
         assert_eq!(command.get_program(), "cargo");
         assert_eq!(
             args_to_strings(&command),
-            vec!["build", "--release", "--bin", "rumoca-msl-profile"]
+            vec![
+                "build",
+                "--release",
+                "--package",
+                "rumoca-test-msl",
+                "--bin",
+                "rumoca-msl-profile",
+                "--features",
+                "rumoca-test-msl/msl-profile-bin",
+            ]
         );
         assert_eq!(
             profile_helper_binary_path(repo_root),

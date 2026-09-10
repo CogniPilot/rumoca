@@ -71,7 +71,11 @@ pub(super) fn simulation_stop_time_override() -> Option<f64> {
 pub(super) fn current_simulation_parity_cache_policy() -> SimulationParityCachePolicy {
     let stop_time_override = simulation_stop_time_override();
     SimulationParityCachePolicy {
-        batch_timeout_seconds: OMC_SIM_REFERENCE_BATCH_TIMEOUT_SECONDS,
+        // Match the timeout actually passed to `rumoca-msl-tools`. The effective
+        // value scales with the Rumoca simulation ceiling; keying/checking only
+        // the 120-second floor makes every ordinary 10-second run miss its own
+        // freshly persisted 300-second cache entry.
+        batch_timeout_seconds: omc_sim_reference_timeout_secs(),
         use_experiment_stop_time: stop_time_override.is_none(),
         stop_time_override,
     }
@@ -114,6 +118,150 @@ pub(super) fn parity_cache_entry_path(kind: &str, cache_key: &str) -> PathBuf {
         .join(format!("{cache_key}.json"))
 }
 
+fn simulation_parity_cache_trace_dir(cache_path: &Path) -> PathBuf {
+    cache_path.with_extension("traces")
+}
+
+const CACHE_TRACE_DIGESTS_FIELD: &str = "cache_trace_blake3";
+
+fn safe_relative_cache_path(path: &Path) -> bool {
+    path.is_relative()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+}
+
+fn cached_omc_trace_paths(payload: &serde_json::Value) -> Option<Vec<PathBuf>> {
+    let Some(models) = payload.get("models").and_then(serde_json::Value::as_object) else {
+        return Some(Vec::new());
+    };
+    let mut paths = Vec::new();
+    for model in models.values() {
+        if model.get("status").and_then(serde_json::Value::as_str) != Some("success") {
+            continue;
+        }
+        let trace = model
+            .get("trace_file")
+            .and_then(serde_json::Value::as_str)?;
+        let path = PathBuf::from(trace);
+        if !safe_relative_cache_path(&path) {
+            return None;
+        }
+        paths.push(path);
+    }
+    Some(paths)
+}
+
+fn cached_trace_digest(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn attach_cached_trace_digests(
+    payload: &mut serde_json::Value,
+    source_root: &Path,
+) -> io::Result<()> {
+    let paths = cached_omc_trace_paths(payload)
+        .ok_or_else(|| io::Error::other("OMC cache contains an unsafe or missing trace path"))?;
+    let mut digests = serde_json::Map::new();
+    for relative_path in paths {
+        let source = source_root.join(&relative_path);
+        digests.insert(
+            relative_path.to_string_lossy().into_owned(),
+            cached_trace_digest(&source)?.into(),
+        );
+    }
+    payload[CACHE_TRACE_DIGESTS_FIELD] = digests.into();
+    Ok(())
+}
+
+fn cached_traces_are_valid(cache_path: &Path, payload: &serde_json::Value) -> io::Result<bool> {
+    let Some(paths) = cached_omc_trace_paths(payload) else {
+        return Ok(false);
+    };
+    let Some(digests) = payload
+        .get(CACHE_TRACE_DIGESTS_FIELD)
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(false);
+    };
+    let trace_root = simulation_parity_cache_trace_dir(cache_path);
+    for relative_path in paths {
+        let key = relative_path.to_string_lossy();
+        let Some(expected) = digests
+            .get(key.as_ref())
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Ok(false);
+        };
+        let trace_path = trace_root.join(&relative_path);
+        if !trace_path.is_file() || cached_trace_digest(&trace_path)? != expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn transfer_cached_omc_traces(
+    payload: &serde_json::Value,
+    source_root: &Path,
+    destination_root: &Path,
+) -> io::Result<()> {
+    let paths = cached_omc_trace_paths(payload)
+        .ok_or_else(|| io::Error::other("OMC cache contains an unsafe or missing trace path"))?;
+    for relative_path in paths {
+        let source = source_root.join(&relative_path);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = destination_root.join(&relative_path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        link_or_copy_cached_omc_trace(&source, &destination)?;
+    }
+    Ok(())
+}
+
+fn link_or_copy_cached_omc_trace(source: &Path, destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+            fs::remove_file(destination)?;
+        }
+        Ok(_) => {
+            return Err(io::Error::other(format!(
+                "cached OMC trace destination '{}' is not a file",
+                destination.display()
+            )));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    // Full MSL trace sets are hundreds of MB. The workspace cache and results
+    // normally share a filesystem, so a hard link keeps the keyed artifact
+    // alive across cleanup without doubling disk use. A copy preserves
+    // portability when the paths happen to cross filesystem boundaries.
+    if fs::hard_link(source, destination).is_err() {
+        fs::copy(source, destination).map_err(|error| {
+            io::Error::other(format!(
+                "failed to copy cached OMC trace '{}' -> '{}': {error}",
+                source.display(),
+                destination.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 pub(super) fn materialize_simulation_parity_cache_entry(
     cache_path: &Path,
     active_path: &Path,
@@ -131,10 +279,22 @@ pub(super) fn materialize_simulation_parity_cache_entry(
                 cache_path.display()
             ))
         })?;
+    if !cached_traces_are_valid(cache_path, &payload)? {
+        return Err(io::Error::other(format!(
+            "simulation parity cache '{}' has missing or stale OMC traces",
+            cache_path.display()
+        )));
+    }
     if let Some(parent) = active_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let sanitized = sanitize_simulation_parity_cache_payload(payload);
+    let active_root = active_path.parent().unwrap_or_else(|| Path::new("."));
+    transfer_cached_omc_traces(
+        &sanitized,
+        &simulation_parity_cache_trace_dir(cache_path),
+        active_root,
+    )?;
     fs::write(
         active_path,
         serde_json::to_vec_pretty(&sanitized).map_err(|error| {
@@ -161,6 +321,10 @@ pub(super) fn sanitize_simulation_parity_cache_payload(
     };
     root.remove("runtime_comparison");
     root.remove("trace_comparison");
+    // These fields describe the disposable results directory that produced the
+    // cache entry. Neither participates in OMC result reuse, and retaining them
+    // would make a workspace-global cache carry machine-specific absolute paths.
+    root.remove("target_selection");
 
     let Some(models) = root
         .get_mut("models")
@@ -181,6 +345,7 @@ pub(super) fn sanitize_simulation_parity_cache_payload(
         model.remove("rumoca_sim_wall_seconds");
         model.remove("rumoca_trace_file");
         model.remove("rumoca_trace_error");
+        model.remove("result_file");
     }
     payload
 }
@@ -202,7 +367,14 @@ pub(super) fn persist_simulation_parity_cache_entry(
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let sanitized = sanitize_simulation_parity_cache_payload(payload);
+    let mut sanitized = sanitize_simulation_parity_cache_payload(payload);
+    let active_root = active_path.parent().unwrap_or_else(|| Path::new("."));
+    attach_cached_trace_digests(&mut sanitized, active_root)?;
+    transfer_cached_omc_traces(
+        &sanitized,
+        active_root,
+        &simulation_parity_cache_trace_dir(cache_path),
+    )?;
     fs::write(
         cache_path,
         serde_json::to_vec_pretty(&sanitized).map_err(|error| {
@@ -312,13 +484,15 @@ pub(super) fn simulation_parity_cache_matches(
     if use_experiment_stop_time != Some(policy.use_experiment_stop_time) {
         return Ok(false);
     }
-    let Some(stop_time_override) = policy.stop_time_override else {
-        return Ok(true);
-    };
-    let stop_time = payload.get("stop_time").and_then(serde_json::Value::as_f64);
-    Ok(stop_time.is_some_and(|value| {
-        (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
-    }))
+    if let Some(stop_time_override) = policy.stop_time_override {
+        let stop_time = payload.get("stop_time").and_then(serde_json::Value::as_f64);
+        if !stop_time.is_some_and(|value| {
+            (value - stop_time_override).abs() <= f64::EPSILON.max(stop_time_override.abs() * 1e-12)
+        }) {
+            return Ok(false);
+        }
+    }
+    cached_traces_are_valid(path, &payload)
 }
 
 pub(super) fn run_msl_tool_command<I, S>(exe: &Path, args: I) -> io::Result<()>

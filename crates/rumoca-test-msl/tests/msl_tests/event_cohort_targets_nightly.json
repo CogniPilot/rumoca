@@ -1,0 +1,12 @@
+[
+  "Modelica.Electrical.Analog.Examples.SimpleTriacCircuit",
+  "Modelica.Fluid.Examples.HeatingSystem",
+  "Modelica.Mechanics.Rotational.Examples.Backlash",
+  "Modelica.Mechanics.Rotational.Examples.CoupledClutches",
+  "Modelica.Mechanics.Rotational.Examples.Friction",
+  "Modelica.Mechanics.Rotational.Examples.SimpleGearShift",
+  "Modelica.Mechanics.Translational.Examples.Friction",
+  "Modelica.Mechanics.Translational.Examples.Vehicle",
+  "Modelica.StateGraph.Examples.ControlledTanks",
+  "Modelica.StateGraph.Examples.ExecutionPaths"
+]

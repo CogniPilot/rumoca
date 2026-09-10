@@ -1,3 +1,4 @@
+pub mod band_table;
 pub mod common;
 pub mod compare_balance;
 pub mod compatibility_report;
