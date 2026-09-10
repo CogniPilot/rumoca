@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use rayon::prelude::*;
+use rumoca_core::{SourceId, Span};
 use rumoca_ir_ast as ast;
 use std::path::Path;
 use std::sync::Once;
@@ -83,9 +84,60 @@ pub fn parse_source_to_ast_with_errors(
     rumoca_phase_parse::parse_to_ast_with_errors(source, file_name)
 }
 
+/// Expand a document's extension constructs before it is stored and parsed.
+///
+/// A document owns both its text and its tree, and every span the compiler
+/// later resolves is an offset into that text. Expansion therefore happens on
+/// the text: the document that gets stored *is* the standard Modelica the
+/// compiler compiles, so a generated function has real source of its own and
+/// nothing downstream has to special-case a synthesized span.
+///
+/// A source without the surface construct is returned borrowed and untouched.
+pub(crate) fn expanded_document_source<'source>(
+    source: &'source str,
+    file_name: &str,
+) -> std::result::Result<std::borrow::Cow<'source, str>, rumoca_phase_autodiff::Refusal> {
+    if !rumoca_phase_autodiff::may_expand(source) {
+        return Ok(std::borrow::Cow::Borrowed(source));
+    }
+    match rumoca_phase_autodiff::expand_source(source, file_name) {
+        Ok(expanded) => Ok(std::borrow::Cow::Owned(expanded)),
+        // A source that does not parse is reported by the parse that follows,
+        // with the parser's own structured error rather than this one.
+        Err(rumoca_phase_autodiff::ExpansionError::Parse(_)) => {
+            Ok(std::borrow::Cow::Borrowed(source))
+        }
+        Err(rumoca_phase_autodiff::ExpansionError::Refused(refusal)) => Err(refusal),
+    }
+}
+
+/// Report a refused expansion where a file's parse diagnostics go.
+pub(crate) fn refusal_parse_error(
+    refusal: &rumoca_phase_autodiff::Refusal,
+    file_name: &str,
+) -> ParseError {
+    ParseError::SyntaxError {
+        message: refusal.to_string(),
+        expected: Vec::new(),
+        unexpected: None,
+        span: refusal
+            .span()
+            .unwrap_or_else(|| Span::from_offsets(SourceId::from_source_name(file_name), 0, 1)),
+    }
+}
+
 /// Validate Modelica syntax for a source string.
 pub fn validate_source_syntax(source: &str, file_name: &str) -> Result<()> {
     parse_source_to_ast(source, file_name).map(|_| ())
+}
+
+/// Rewrite a source text into the portable standard Modelica it expands to.
+///
+/// The compiler consumes the same expansion through [`parse_source_to_ast`];
+/// this entry writes it back as text so another Modelica tool can elaborate
+/// exactly what the compiler compiled.
+pub fn expand_source_to_standard_modelica(source: &str, file_name: &str) -> Result<String> {
+    rumoca_phase_autodiff::expand_source(source, file_name).map_err(anyhow::Error::from)
 }
 
 /// Parse multiple Modelica files in parallel using rayon.
