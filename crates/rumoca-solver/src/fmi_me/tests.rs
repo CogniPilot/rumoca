@@ -1,0 +1,1726 @@
+//! Contract tests for the SPEC_0038 ME operations.
+//!
+//! The staging tests are pure: they exercise the value-level rules a host's
+//! failure bucketing depends on without instantiating a component. The
+//! directional-derivative tests run a real component, because the operation's
+//! whole point is that the *component* owns the derivative.
+
+mod failure_atomicity;
+
+use indexmap::IndexMap;
+use rumoca_ir_solve as solve;
+
+use super::kernel::{
+    continuous_state_values_changed, event_right_limit_state_derivatives,
+    event_update_application_time,
+};
+use super::{
+    MeError, MeEventCause, MeEventEntry, MeInstanceConfig, MeModelSource, MeOutputCursor,
+    MeRetainedComponent, MeStage, MeTime, SolveMeKernel, driver::live_session_options,
+    resolve_me_stage, session::MeAdvanceOutcome,
+};
+
+#[test]
+fn zero_state_event_continuation_is_independent_of_value_tolerance() {
+    let mut model = solve::SolveModel::default();
+    model.problem.events.scheduled_time_events = vec![2.5e-9];
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("zero-state fixture refresh owners construct");
+    let run = |atol| {
+        let retained = MeRetainedComponent::instantiate(
+            MeModelSource::fixture(&model),
+            &fixture_instance_config(),
+            None,
+        )
+        .expect("zero-state component should instantiate");
+        let options = live_session_options(0.0, atol, atol, 1.0e-10, None)
+            .expect("zero-state session options should construct");
+        let host = retained
+            .into_lease(options)
+            .expect("zero-state component should initialize");
+        let mut session = host
+            .into_session(None)
+            .expect("zero-state session should select the time-only plugin");
+        let mut cursor = MeOutputCursor::empty();
+        [2.4e-9, 2.5e-9, 2.6e-9, 5.0e-9]
+            .into_iter()
+            .map(|target| {
+                session
+                    .advance_to(target, &mut cursor)
+                    .expect("zero-state session should reach every local boundary");
+                session.time().to_bits()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let loose = run(1.0e-6);
+    let tight = run(1.0e-12);
+    assert_eq!(loose, tight);
+    assert_eq!(loose[2], 2.6e-9_f64.to_bits());
+    assert_eq!(loose[3], 5.0e-9_f64.to_bits());
+}
+
+#[test]
+fn state_event_application_time_preserves_clock_and_numerical_owners() {
+    let semantic_root = 0.21500000000000002;
+    let snapped_horizon = 0.215;
+
+    assert_eq!(
+        event_update_application_time(semantic_root, snapped_horizon, false).to_bits(),
+        snapped_horizon.to_bits(),
+        "ordinary root rows execute at the host's numerical application point"
+    );
+    assert_eq!(
+        event_update_application_time(semantic_root, snapped_horizon, true).to_bits(),
+        semantic_root.to_bits(),
+        "a coincident clock pass retains the semantic tick"
+    );
+}
+
+// -- staging (B5) --------------------------------------------------------
+
+#[test]
+fn an_unrecorded_stage_takes_the_incoming_one() {
+    assert_eq!(
+        resolve_me_stage(None, MeStage::Integration),
+        MeStage::Integration
+    );
+}
+
+#[test]
+fn a_recorded_stage_wins_over_a_coarser_outer_boundary() {
+    assert_eq!(
+        resolve_me_stage(Some(MeStage::EventIteration), MeStage::Integration),
+        MeStage::EventIteration
+    );
+}
+
+#[test]
+fn resolving_a_stage_is_idempotent() {
+    let resolved = resolve_me_stage(None, MeStage::Initialization);
+    assert_eq!(
+        resolve_me_stage(Some(resolved), MeStage::Integration),
+        resolved
+    );
+}
+
+#[test]
+fn annotating_preserves_the_rendered_message() {
+    let raw = MeError::Evaluation {
+        message: "projection did not converge".to_string(),
+    };
+    let rendered = raw.to_string();
+    assert_eq!(
+        raw.at_stage(MeStage::ManifoldProjection).to_string(),
+        rendered
+    );
+}
+
+#[test]
+fn kind_peels_annotations_so_variant_matching_is_unchanged() {
+    let staged = MeError::NoContinuousStates
+        .at_stage(MeStage::Integration)
+        .at_stage(MeStage::Instantiate);
+    assert!(matches!(staged.kind(), MeError::NoContinuousStates));
+    assert!(matches!(staged.into_kind(), MeError::NoContinuousStates));
+}
+
+#[test]
+fn the_innermost_stage_survives_an_outer_annotation() {
+    let staged = MeError::Contract {
+        reason: "buffer length".to_string(),
+    }
+    .at_stage(MeStage::EventIteration)
+    .at_stage(MeStage::Integration);
+    assert_eq!(staged.stage(), Some(MeStage::EventIteration));
+}
+
+#[test]
+fn an_unannotated_failure_reports_no_stage() {
+    assert_eq!(MeError::NoContinuousStates.stage(), None);
+}
+
+// -- fmi3GetDirectionalDerivative ----------------------------------------
+
+/// `der(x) = v`, `der(v) = -4·x`: a pure ODE whose exact state Jacobian is the
+/// constant `[[0, 1], [-4, 0]]`, so the expected directional derivative for any
+/// seed is closed form and no tolerance is needed.
+fn harmonic_oscillator() -> solve::SolveModel {
+    let derivative = block(
+        vec![
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadY { dst: 0, index: 0 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: -4.0,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        "fmi_me_harmonic.mo",
+    );
+    let jacobian_v = block(
+        vec![
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 1 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadSeed { dst: 0, index: 0 },
+                solve::LinearOp::Const {
+                    dst: 1,
+                    value: -4.0,
+                },
+                solve::LinearOp::Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        "fmi_me_harmonic_jvp.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                ],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "v".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        artifacts: solve::SolveArtifacts {
+            continuous: solve::ContinuousSolveArtifacts {
+                full_jacobian_v: jacobian_v,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![1.0, 0.0],
+        solver_nominals: vec![1.0, 1.0],
+        visible_names: vec!["x".to_string(), "v".to_string()],
+        ..Default::default()
+    }
+}
+
+fn nonlinear_right_limit_implicit_jvp() -> solve::ScalarProgramBlock {
+    use solve::LinearOp::{Binary, Const, LoadSeed, LoadY, StoreOutput};
+    block(
+        vec![
+            vec![LoadSeed { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                Const { dst: 0, value: 2.0 },
+                LoadY { dst: 1, index: 1 },
+                Binary {
+                    dst: 2,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                LoadSeed { dst: 3, index: 1 },
+                Binary {
+                    dst: 4,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 2,
+                    rhs: 3,
+                },
+                LoadSeed { dst: 5, index: 0 },
+                Binary {
+                    dst: 6,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 4,
+                    rhs: 5,
+                },
+                StoreOutput { src: 6 },
+            ],
+        ],
+        "fmi_me_right_limit_implicit_jvp.mo",
+    )
+}
+
+fn nonlinear_right_limit_seed_model() -> solve::SolveModel {
+    use solve::LinearOp::{Binary, LoadSeed, LoadY, StoreOutput};
+    let derivative = block(
+        vec![vec![LoadY { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        "fmi_me_right_limit_derivative.mo",
+    );
+    let implicit = block(
+        vec![
+            vec![LoadY { dst: 0, index: 0 }, StoreOutput { src: 0 }],
+            vec![
+                LoadY { dst: 0, index: 1 },
+                Binary {
+                    dst: 1,
+                    op: solve::BinaryOp::Mul,
+                    lhs: 0,
+                    rhs: 0,
+                },
+                LoadY { dst: 2, index: 0 },
+                Binary {
+                    dst: 3,
+                    op: solve::BinaryOp::Sub,
+                    lhs: 1,
+                    rhs: 2,
+                },
+                StoreOutput { src: 3 },
+            ],
+        ],
+        "fmi_me_right_limit_implicit.mo",
+    );
+    let implicit_jvp = nonlinear_right_limit_implicit_jvp();
+    let derivative_jvp = block(
+        vec![vec![LoadSeed { dst: 0, index: 1 }, StoreOutput { src: 0 }]],
+        "fmi_me_right_limit_derivative_jvp.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(implicit),
+                implicit_row_targets: vec![
+                    Some(solve::scalar_slot_y(0)),
+                    Some(solve::scalar_slot_y(1)),
+                ],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                algebraic_projection_plan: solve::AlgebraicProjectionPlan {
+                    blocks: vec![solve::AlgebraicProjectionBlock {
+                        rows: vec![1],
+                        y_indices: vec![1],
+                        tearing: None,
+                    }],
+                },
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string(), "a".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                algebraic_scalar_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        artifacts: solve::SolveArtifacts {
+            continuous: solve::ContinuousSolveArtifacts {
+                implicit_jacobian_v: solve::ComputeBlock::from_scalar_program_block(
+                    implicit_jvp.clone(),
+                ),
+                implicit_jacobian_v_scalar: implicit_jvp,
+                full_jacobian_v: derivative_jvp,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![4.0, 2.0],
+        solver_nominals: vec![1.0, 1.0],
+        visible_names: vec!["x".to_string(), "a".to_string()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn event_right_limit_derivative_retains_the_full_algebraic_seed() {
+    let model = nonlinear_right_limit_seed_model();
+    let runtime = crate::runtime::solve_runtime::SolveRuntime::new_fixture(&model)
+        .expect("right-limit seed fixture should prepare");
+    let settle = crate::runtime::solve_runtime::AlgebraicSettle {
+        tol: 1.0e-12,
+        max_iters: 32,
+    };
+
+    let derivative =
+        event_right_limit_state_derivatives(&runtime, &model.initial_y, 0.0, &[4.0], &[], settle)
+            .expect("the retained positive algebraic branch should remain solvable");
+    assert_eq!(derivative, vec![2.0]);
+
+    let error =
+        event_right_limit_state_derivatives(&runtime, &[4.0, 0.0], 0.0, &[4.0], &[], settle)
+            .expect_err("a zeroed algebraic seed is singular for a² - x at a = 0");
+    assert!(
+        error
+            .to_string()
+            .contains("algebraic projection did not converge"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("target=a"), "{error}");
+}
+
+fn strict_root_relation_memory() -> solve::SolveModel {
+    let derivative = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 1.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_strict_root_derivative.mo",
+    );
+    let root = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::LoadY { dst: 1, index: 0 },
+            solve::LinearOp::Binary {
+                dst: 2,
+                op: solve::BinaryOp::Sub,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        "fmi_me_strict_root_indicator.mo",
+    );
+    let condition_memory = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.0 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::StoreOutput { src: 2 },
+        ]],
+        "fmi_me_strict_root_memory.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+            continuous: solve::ContinuousSolveSystem {
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                rhs: condition_memory,
+                update_targets: vec![solve::scalar_slot_p(0)],
+                row_roles: vec![solve::DiscreteRowRole::ConditionMemory],
+                pre_modes: vec![solve::DiscreteEventPreMode::FollowCurrent],
+                observation_refresh: vec![false],
+                integrator_history_effects: vec![solve::IntegratorHistoryEffect::Preserve],
+                clock_owners: vec![None],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: root,
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                root_zero_domains: vec![solve::RootZeroDomain::Positive],
+                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                condition_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["x".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                compiled_parameter_len: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![-1.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0],
+        visible_names: vec!["x".to_string()],
+        ..Default::default()
+    }
+}
+
+fn static_true_relation_memory() -> solve::SolveModel {
+    let derivative = zero_derivative("fmi_me_static_relation_derivative.mo");
+    let root = block(
+        vec![vec![
+            solve::LinearOp::Const {
+                dst: 0,
+                value: -1.0,
+            },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_static_relation_root.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 1),
+            continuous: solve::ContinuousSolveSystem {
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: root,
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                parameter_count: 1,
+                compiled_parameter_len: 1,
+                relation_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![1.0],
+        visible_names: vec!["state".to_string()],
+        ..Default::default()
+    }
+}
+
+fn post_pre_relation_cycle() -> solve::SolveModel {
+    let derivative = block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_derivative.mo",
+    );
+    let runtime_assignment = block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 0 },
+            solve::LinearOp::Const { dst: 1, value: 0.5 },
+            solve::LinearOp::Compare {
+                dst: 2,
+                op: solve::CompareOp::Gt,
+                lhs: 0,
+                rhs: 1,
+            },
+            solve::LinearOp::Const { dst: 3, value: 1.0 },
+            solve::LinearOp::Const {
+                dst: 4,
+                value: -1.0,
+            },
+            solve::LinearOp::Select {
+                dst: 5,
+                cond: 2,
+                if_true: 3,
+                if_false: 4,
+            },
+            solve::LinearOp::StoreOutput { src: 5 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_assignment.mo",
+    );
+    let root = block(
+        vec![vec![
+            solve::LinearOp::LoadP { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_post_pre_relation_cycle_root.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            continuous: solve::ContinuousSolveSystem {
+                implicit_rhs: solve::ComputeBlock::from_scalar_program_block(derivative.clone()),
+                implicit_row_targets: vec![Some(solve::scalar_slot_y(0))],
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                runtime_assignment_rhs: runtime_assignment,
+                runtime_assignment_targets: vec![solve::scalar_slot_p(1)],
+                runtime_assignment_roles: vec![solve::RuntimeAssignmentRole::RelationEvaluating],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: root,
+                root_relation_memory_targets: vec![Some(solve::scalar_slot_p(0))],
+                root_zero_domains: vec![solve::RootZeroDomain::Previous],
+                root_relation_refresh_roles: vec![solve::RootRelationRefreshRole::Frozen],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                compiled_parameter_len: 2,
+                relation_memory_parameter_indices: vec![0],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![0.0, 0.0],
+        visible_names: vec!["state".to_string()],
+        ..Default::default()
+    }
+}
+
+fn post_commit_alias_with_frozen_parameter_root() -> solve::SolveModel {
+    let derivative = zero_derivative("fmi_me_post_commit_frozen_root_derivative.mo");
+    let alias_program = vec![
+        solve::LinearOp::LoadP { dst: 0, index: 0 },
+        solve::LinearOp::StoreOutput { src: 0 },
+    ];
+    let alias = block(
+        vec![alias_program.clone()],
+        "fmi_me_post_commit_frozen_root_runtime.mo",
+    );
+    let runtime_assignments = block(
+        vec![
+            alias_program,
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::Const { dst: 1, value: 0.0 },
+                solve::LinearOp::Compare {
+                    dst: 2,
+                    op: solve::CompareOp::Gt,
+                    lhs: 0,
+                    rhs: 1,
+                },
+                solve::LinearOp::StoreOutput { src: 2 },
+            ],
+        ],
+        "fmi_me_post_commit_frozen_root_runtime.mo",
+    );
+    let roots = block(
+        vec![
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 3 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+            vec![
+                solve::LinearOp::LoadP { dst: 0, index: 2 },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ],
+        ],
+        "fmi_me_post_commit_frozen_root_conditions.mo",
+    );
+    solve::SolveModel {
+        problem: solve::SolveProblem {
+            layout: solve::VarLayout::from_parts(IndexMap::new(), 1, 4),
+            continuous: solve::ContinuousSolveSystem {
+                derivative_rhs: solve::ComputeBlock::from_scalar_program_block(derivative),
+                ..Default::default()
+            },
+            discrete: solve::DiscreteSolveSystem {
+                runtime_assignment_rhs: runtime_assignments,
+                runtime_assignment_targets: vec![solve::scalar_slot_p(2), solve::scalar_slot_p(3)],
+                runtime_assignment_roles: vec![
+                    solve::RuntimeAssignmentRole::RelationFree,
+                    solve::RuntimeAssignmentRole::RelationEvaluating,
+                ],
+                post_commit_assignment_rhs: alias,
+                post_commit_assignment_targets: vec![solve::scalar_slot_p(2)],
+                post_commit_assignment_runtime_rows: vec![0],
+                ..Default::default()
+            },
+            events: solve::SolveEventPartition {
+                root_conditions: roots,
+                root_relation_memory_targets: vec![
+                    Some(solve::scalar_slot_p(0)),
+                    Some(solve::scalar_slot_p(1)),
+                ],
+                root_zero_domains: vec![
+                    solve::RootZeroDomain::Previous,
+                    solve::RootZeroDomain::Previous,
+                ],
+                root_relation_refresh_roles: vec![
+                    solve::RootRelationRefreshRole::Frozen,
+                    solve::RootRelationRefreshRole::Frozen,
+                ],
+                ..Default::default()
+            },
+            solve_layout: solve::SolveLayout {
+                solver_maps: solve::SolverNameIndexMaps {
+                    names: vec!["state".to_string()],
+                    ..Default::default()
+                },
+                state_scalar_count: 1,
+                parameter_count: 4,
+                compiled_parameter_len: 4,
+                relation_memory_parameter_indices: vec![0, 1],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        initial_y: vec![0.0],
+        solver_nominals: vec![1.0],
+        parameters: vec![1.0, 1.0, -1.0, -1.0],
+        visible_names: vec!["state".to_string()],
+        ..Default::default()
+    }
+}
+
+fn zero_derivative(name: &'static str) -> solve::ScalarProgramBlock {
+    block(
+        vec![vec![
+            solve::LinearOp::Const { dst: 0, value: 0.0 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        name,
+    )
+}
+
+fn block(rows: Vec<Vec<solve::LinearOp>>, name: &'static str) -> solve::ScalarProgramBlock {
+    let span = rumoca_core::Span::from_offsets(rumoca_core::SourceId::from_source_name(name), 1, 2);
+    solve::ScalarProgramBlock::with_source_span(
+        rows,
+        span.require_provenance("fmi_me fixture")
+            .expect("fixture span is source-backed"),
+    )
+    .expect("fixture program is computable")
+}
+
+fn instantiate(model: &solve::SolveModel) -> SolveMeKernel {
+    let mut model = model.clone();
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("ME fixture refresh owners construct");
+    SolveMeKernel::instantiate(
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-test", 1.0e-10, 0.0, 1.0)
+            .expect("fixture instance configuration constructs"),
+    )
+    .expect("fixture instantiates")
+}
+
+#[test]
+fn callback_caches_require_the_exact_fmi_coordinate() {
+    let model = harmonic_oscillator();
+    let kernel = instantiate(&model);
+    let time = 0.25_f64;
+    let adjacent_time = f64::from_bits(time.to_bits() + 1);
+    let state = [2.0, 3.0];
+    let adjacent_state = [f64::from_bits(2.0f64.to_bits() + 1), 3.0];
+
+    kernel.cache_derivative(time, &state, &[4.0, 5.0]);
+    assert_eq!(kernel.cached_derivative(time, &state), Some(vec![4.0, 5.0]));
+    assert_eq!(kernel.cached_derivative(adjacent_time, &state), None);
+    assert_eq!(kernel.cached_derivative(time, &adjacent_state), None);
+
+    kernel.cache_root_conditions(time, &state, &[6.0]);
+    assert_eq!(kernel.cached_root_conditions(time, &state), Some(vec![6.0]));
+    assert_eq!(kernel.cached_root_conditions(adjacent_time, &state), None);
+    assert_eq!(kernel.cached_root_conditions(time, &adjacent_state), None);
+}
+
+#[test]
+fn repeated_directional_seeds_reuse_only_the_exact_settled_coordinate() {
+    let model = nonlinear_right_limit_seed_model();
+    let mut kernel = instantiate(&model);
+    let state = [4.0];
+    let mut derivative = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut derivative)
+        .expect("the nonlinear algebraic coordinate should settle");
+    assert_eq!(derivative, vec![2.0]);
+    assert!(kernel.verification_continuous_linearization_cache_matches(0.0, &state, &[]));
+
+    let mut sensitivity = vec![f64::NAN];
+    kernel
+        .get_directional_derivative(&[1.0], &mut sensitivity)
+        .expect("the cached exact coordinate should support another seed");
+    assert_eq!(sensitivity, vec![0.25]);
+
+    let adjacent_time = f64::from_bits(1);
+    kernel
+        .set_time(MeTime::at(adjacent_time))
+        .expect("the adjacent finite time is a legal FMI coordinate");
+    assert!(!kernel.verification_continuous_linearization_cache_matches(
+        adjacent_time,
+        &state,
+        &[]
+    ));
+    kernel
+        .get_directional_derivative(&[1.0], &mut sensitivity)
+        .expect("a coordinate miss must fall back to checked settling");
+    assert_eq!(sensitivity, vec![0.25]);
+    assert!(kernel.verification_continuous_linearization_cache_matches(adjacent_time, &state, &[]));
+}
+
+#[test]
+fn roots_refresh_from_the_exact_derivative_algebraic_branch() {
+    let mut model = nonlinear_right_limit_seed_model();
+    model.problem.events.root_conditions = block(
+        vec![vec![
+            solve::LinearOp::LoadY { dst: 0, index: 1 },
+            solve::LinearOp::StoreOutput { src: 0 },
+        ]],
+        "fmi_me_cached_root_branch.mo",
+    );
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("cached-root fixture refresh owners construct");
+    let kernel = SolveMeKernel::instantiate(
+        MeModelSource::fixture(&model),
+        &MeInstanceConfig::new("fmi-me-cached-root-test", 1.0e-10, 0.0, 1.0)
+            .expect("cached-root instance configuration constructs"),
+    )
+    .expect("cached-root fixture instantiates");
+    kernel.verification_cache_continuous_linearization(0.0, &[4.0], &[], &[4.0, -2.0]);
+    let mut indicators = Vec::new();
+
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the complete root refresh should retain the derivative's settled branch");
+
+    assert_eq!(indicators, vec![-2.0]);
+}
+
+#[test]
+fn empty_manifold_artifact_does_not_settle_unrelated_observation_algebraics() {
+    let model = nonlinear_right_limit_seed_model();
+    let mut kernel = instantiate(&model);
+    let mut state = [-1.0];
+
+    let changed = kernel
+        .project_continuous_states(&mut state)
+        .expect("an empty checked manifold artifact certifies an unchanged state");
+
+    assert!(!changed);
+    assert_eq!(state, [-1.0]);
+}
+
+#[test]
+fn rejected_lifecycle_transitions_leave_the_legal_path_available() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+
+    let error = kernel
+        .exit_initialization_mode()
+        .expect_err("initialization cannot be exited before it is entered");
+    assert_eq!(error.stage(), Some(MeStage::Initialization));
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+
+    kernel
+        .enter_initialization_mode()
+        .expect("the rejected transition must not consume Instantiated");
+    kernel
+        .exit_initialization_mode()
+        .expect("the legal transition remains available");
+    kernel
+        .enter_continuous_time_mode()
+        .expect_err("the initial event update must complete first");
+    kernel
+        .update_discrete_states()
+        .expect("the rejected continuous-mode entry must leave Event Mode intact");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("the canonical initialization path reaches Continuous-Time Mode");
+}
+
+#[test]
+fn discrete_update_reports_the_complete_fmi_output_set() {
+    let mut model = harmonic_oscillator();
+    model.problem.events.scheduled_time_events = vec![0.5];
+    let mut kernel = instantiate(&model);
+
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    let discrete = kernel
+        .update_discrete_states()
+        .expect("initial discrete update");
+
+    assert!(!discrete.discrete_states_need_update);
+    assert!(discrete.terminate_simulation.is_none());
+    assert!(
+        !discrete.values_of_continuous_states_changed,
+        "an event-free initial update must report that its state vector is unchanged"
+    );
+    assert!(!discrete.nominals_of_continuous_states_changed);
+    assert_eq!(
+        discrete.next_event_time.map(f64::to_bits),
+        Some(0.5f64.to_bits())
+    );
+}
+
+#[test]
+fn continuous_state_change_flag_uses_the_exact_fmi_state_vector() {
+    assert!(!continuous_state_values_changed(&[1.0, -2.0], &[1.0, -2.0]));
+    assert!(continuous_state_values_changed(&[1.0, -2.0], &[1.0, -3.0]));
+    assert!(continuous_state_values_changed(&[0.0], &[-0.0]));
+    assert!(continuous_state_values_changed(&[1.0], &[1.0, 2.0]));
+}
+
+#[test]
+fn terminated_is_fail_closed_until_snapshot_restore() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+    let saved = kernel.fmu_state();
+    kernel.terminate().expect("termination is legal once");
+
+    assert!(kernel.set_time(super::MeTime::at(0.25)).is_err());
+    assert!(kernel.set_continuous_states(&[2.0, 3.0]).is_err());
+    assert!(kernel.terminate().is_err());
+
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("snapshot restore is the one exit from Terminated");
+    kernel
+        .enter_initialization_mode()
+        .expect("the saved Instantiated lifecycle is restored exactly");
+}
+
+#[test]
+fn fmu_state_restore_replays_the_same_scheduled_event_continuation() {
+    let mut model = harmonic_oscillator();
+    model.problem.events.scheduled_time_events = vec![0.5];
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    kernel
+        .update_discrete_states()
+        .expect("initial event update");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("enter continuous time");
+    kernel
+        .set_time(MeTime::at(0.25))
+        .expect("set checkpoint time");
+    kernel
+        .set_continuous_states(&[2.0, 3.0])
+        .expect("set checkpoint state");
+    let mut cached_derivative = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut cached_derivative)
+        .expect("populate derivative cache");
+    let stop = kernel.next_event_stop(0.75).expect("schedule next event");
+    assert_eq!(stop.time.to_bits(), 0.5f64.to_bits());
+    assert!(stop.is_event);
+    let saved_observable = kernel.verification_observable_state();
+    let saved = kernel.fmu_state();
+
+    let first = continue_from_scheduled_event(&mut kernel);
+    assert!(
+        !first.2,
+        "a scheduled event with no state update must preserve the exact state vector"
+    );
+    kernel
+        .terminate()
+        .expect("terminate after first continuation");
+    assert!(!kernel.verification_matches_snapshot(&saved));
+    kernel
+        .reset_to_fmu_state(&saved)
+        .expect("same-instance exact restore");
+    assert_eq!(kernel.verification_observable_state(), saved_observable);
+    assert!(kernel.verification_matches_snapshot(&saved));
+    let second = continue_from_scheduled_event(&mut kernel);
+
+    assert_eq!(first, second);
+}
+
+fn continue_from_scheduled_event(kernel: &mut SolveMeKernel) -> (Vec<u64>, Vec<u64>, bool) {
+    kernel
+        .set_time(MeTime::at(0.5))
+        .expect("reach scheduled event");
+    kernel
+        .capture_pre_event_state()
+        .expect("capture event pre-state");
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::TimeEvent,
+            event_time: 0.5,
+            horizon: 0.75,
+        })
+        .expect("enter scheduled event");
+    let discrete = kernel
+        .update_discrete_states()
+        .expect("apply scheduled event");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("resume continuous time");
+    let mut states = vec![0.0; 2];
+    kernel
+        .get_continuous_states(&mut states)
+        .expect("read continued state");
+    let mut derivatives = Vec::new();
+    kernel
+        .get_continuous_state_derivatives(&mut derivatives)
+        .expect("read continued derivative");
+    (
+        states.into_iter().map(f64::to_bits).collect(),
+        derivatives.into_iter().map(f64::to_bits).collect(),
+        discrete.values_of_continuous_states_changed,
+    )
+}
+
+#[test]
+fn instance_brands_reject_foreign_capabilities_without_mutation() {
+    let mut model = harmonic_oscillator();
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.problem.solve_layout.input_scalar_names = vec!["u".to_string()];
+    model.parameters = vec![1.0];
+    let mut first = instantiate(&model);
+    let mut second = instantiate(&model);
+    let first_ref = first
+        .value_reference("u")
+        .expect("input has a value reference");
+    let second_ref = second
+        .value_reference("u")
+        .expect("the other instance has its own reference");
+
+    let error = first
+        .set_float64(&[first_ref, second_ref], &[2.0, 3.0])
+        .expect_err("a foreign reference rejects the whole batch");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert_eq!(
+        first.verification_observable_state().3,
+        vec![1.0f64.to_bits()]
+    );
+
+    let foreign_observation = first.observe().expect("first instance observes");
+    let mut values = Vec::new();
+    second
+        .get_outputs(&foreign_observation, 0.0, &mut values)
+        .expect_err("observations cannot cross component instances");
+
+    let foreign_state = first.fmu_state();
+    second
+        .reset_to_fmu_state(&foreign_state)
+        .expect_err("saved component state cannot cross instances");
+    assert_eq!(
+        second.verification_observable_state().3,
+        vec![1.0f64.to_bits()]
+    );
+}
+
+#[test]
+fn the_component_retains_the_typed_post_side_of_a_strict_root() {
+    let model = strict_root_relation_memory();
+    model
+        .validate()
+        .expect("strict-root fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("strict-root initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("strict-root initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("strict-root initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("strict-root model should enter continuous time");
+
+    let entered_time = f64::from_bits(1.0f64.to_bits() + 1);
+    let entered_state = entered_time - 1.0;
+    kernel
+        .set_time(MeTime::at(entered_time))
+        .expect("component should reach the first checked point in the entered domain");
+    kernel
+        .set_continuous_states(&[entered_state])
+        .expect("component should use the least state in the entered relation domain");
+    assert!(
+        kernel.model_description().needs_completed_integrator_step,
+        "the linked kernel declares its accepted-step history requirement"
+    );
+    let completed = kernel
+        .completed_integrator_step(true)
+        .expect("the integrator should report the located root");
+    assert_eq!(
+        completed,
+        super::MeCompletedIntegratorStep {
+            enter_event_mode: true,
+            terminate_simulation: false,
+        },
+        "the standard callback reports the component-observed domain change"
+    );
+    kernel
+        .enter_event_mode(MeEventEntry {
+            cause: MeEventCause::StateEvent,
+            event_time: entered_time,
+            horizon: entered_time,
+        })
+        .expect("the component should enter root event iteration");
+    kernel
+        .update_discrete_states()
+        .expect("the strict-root event should settle");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits()],
+        "the first checked point in the entered domain owns the strict post-root value"
+    );
+    kernel
+        .enter_continuous_time_mode()
+        .expect("the settled strict-root event should resume integration");
+}
+
+#[test]
+fn neutral_static_root_never_fabricates_a_relation_crossing() {
+    let model = static_true_relation_memory();
+    model
+        .validate()
+        .expect("static-relation fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("static-relation initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("static-relation initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("static-relation initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("static-relation model should enter continuous time");
+
+    let mut indicators = Vec::new();
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the parameter-static relation is outside the FMI indicator domain");
+    assert!(indicators.is_empty());
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits()],
+        "full event iteration must retain the true relation value"
+    );
+
+    let completed = kernel
+        .completed_integrator_step(true)
+        .expect("the unchanged static root should complete without an event");
+    assert!(!completed.enter_event_mode);
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![1.0f64.to_bits()],
+        "an excluded parameter-static relation must not overwrite relation memory"
+    );
+}
+
+#[test]
+fn post_pre_canonicalization_holds_parameter_only_relation_memory() {
+    let model = post_pre_relation_cycle();
+    let mut kernel = instantiate(&model);
+    let mut solver_y = model.initial_y.clone();
+
+    kernel
+        .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
+        .expect("derived settling must not start a second relation-memory event iteration");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![0.0f64.to_bits(), 0.0f64.to_bits()],
+        "the RelationEvaluating owner is not replayed after pre commits"
+    );
+    assert_eq!(
+        solver_y,
+        vec![0.0],
+        "derived settling observes the selected side without feeding back into relation memory"
+    );
+}
+
+#[test]
+fn post_commit_relation_free_alias_cannot_flip_a_parameter_only_root() {
+    let model = post_commit_alias_with_frozen_parameter_root();
+    model
+        .problem
+        .validate()
+        .expect("fixture certificates must satisfy the Solve shape contract");
+    let mut kernel = instantiate(&model);
+    let mut solver_y = model.initial_y.clone();
+
+    kernel
+        .verification_canonicalize_committed_event_view(0.0, &mut solver_y)
+        .expect("relation-free alias should settle without reopening frozen roots");
+
+    assert_eq!(
+        kernel.verification_observable_state().3,
+        vec![
+            1.0f64.to_bits(),
+            1.0f64.to_bits(),
+            1.0f64.to_bits(),
+            (-1.0f64).to_bits(),
+        ],
+        "the alias changes P2, but the separate P2-root relation memory P1 stays frozen"
+    );
+}
+
+#[test]
+fn the_component_preserves_a_nonzero_root_distance_inside_solver_tolerance() {
+    let mut model = strict_root_relation_memory();
+    let positive_distance = 5.0e-11;
+    model.initial_y = vec![-positive_distance];
+    model
+        .validate()
+        .expect("near-root fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("near-root initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("near-root initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("near-root initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("near-root model should enter continuous time");
+
+    let mut indicators = Vec::new();
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the component should expose its signed root distance");
+
+    assert_eq!(indicators, vec![positive_distance]);
+}
+
+#[test]
+fn the_directional_derivative_is_the_exact_state_jacobian_product() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+    kernel
+        .set_continuous_states(&[3.0, 5.0])
+        .expect("state buffer matches the model description");
+
+    let mut sensitivity = vec![f64::NAN; 2];
+    kernel
+        .get_directional_derivative(&[1.0, 0.0], &mut sensitivity)
+        .expect("a pure ODE has a directional derivative everywhere");
+    // First column of [[0, 1], [-4, 0]].
+    assert_eq!(sensitivity, vec![0.0, -4.0]);
+
+    kernel
+        .get_directional_derivative(&[0.0, 1.0], &mut sensitivity)
+        .expect("second seed evaluates too");
+    assert_eq!(sensitivity, vec![1.0, 0.0]);
+}
+
+/// The operation is a *directional* derivative, not a column extractor: a
+/// non-unit seed must come back scaled, or a host's Newton direction would be
+/// silently renormalized.
+#[test]
+fn the_directional_derivative_is_linear_in_the_seed() {
+    let model = harmonic_oscillator();
+    let mut kernel = instantiate(&model);
+    kernel
+        .set_continuous_states(&[0.25, -1.5])
+        .expect("state buffer matches the model description");
+
+    let mut sensitivity = vec![f64::NAN; 2];
+    kernel
+        .get_directional_derivative(&[2.0, -3.0], &mut sensitivity)
+        .expect("a pure ODE has a directional derivative everywhere");
+    assert_eq!(sensitivity, vec![-3.0, -8.0]);
+}
+
+#[test]
+fn a_mismatched_seed_length_is_a_contract_violation_at_the_integration_stage() {
+    let model = harmonic_oscillator();
+    let kernel = instantiate(&model);
+
+    let mut sensitivity = vec![0.0; 2];
+    let error = kernel
+        .get_directional_derivative(&[1.0], &mut sensitivity)
+        .expect_err("a seed that is not one entry per continuous state is rejected");
+
+    assert_eq!(error.stage(), Some(MeStage::Integration));
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("1 entries for 2 continuous states")
+    );
+}
+
+#[test]
+fn a_mismatched_sensitivity_length_is_rejected_before_evaluation() {
+    let model = harmonic_oscillator();
+    let kernel = instantiate(&model);
+
+    let mut sensitivity = vec![0.0; 3];
+    let error = kernel
+        .get_directional_derivative(&[1.0, 0.0], &mut sensitivity)
+        .expect_err("a sensitivity buffer that is not one entry per state derivative is rejected");
+
+    assert_eq!(error.stage(), Some(MeStage::Integration));
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+}
+
+// -- instantiation staging -----------------------------------------------
+
+/// ME-ZERO-001: a zero-state model constructs the same component. The common
+/// session chooses its time-only numerical plugin from the checked component
+/// width; a separate routing error would recreate a second host path.
+#[test]
+fn a_zero_state_model_constructs_the_common_component() {
+    let model = refresh_owned(solve::SolveModel::default());
+    let component =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .expect("a model with no continuous states still has an FMI ME component");
+
+    assert_eq!(component.model_description().continuous_state_count, 0);
+}
+
+#[test]
+fn a_rejected_model_is_staged_at_instantiation() {
+    let mut model = harmonic_oscillator();
+    model.initial_y = vec![1.0];
+    let error =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .err()
+            .expect("an initial vector that contradicts the solver layout is rejected");
+
+    assert_eq!(error.stage(), Some(MeStage::Instantiate));
+    assert!(matches!(error.kind(), MeError::Evaluation { .. }));
+}
+
+fn constant_delay_model() -> solve::SolveModel {
+    let constant_row = |value, source| {
+        block(
+            vec![vec![
+                solve::LinearOp::Const { dst: 0, value },
+                solve::LinearOp::StoreOutput { src: 0 },
+            ]],
+            source,
+        )
+    };
+    let mut model = solve::SolveModel::default();
+    model.problem.solve_layout.compiled_parameter_len = 1;
+    model.parameters = vec![0.0];
+    model.problem.events.delays = solve::SolveDelayPartition {
+        source_rhs: constant_row(3.0, "fmi_me_delay_source.mo"),
+        delay_time_rhs: constant_row(0.2, "fmi_me_delay_time.mo"),
+        delay_max_rhs: constant_row(1.0, "fmi_me_delay_max.mo"),
+        value_parameter_indices: vec![0],
+        source_is_discrete: vec![false],
+    };
+    refresh_owned(model)
+}
+
+#[test]
+fn maximum_step_duration_is_a_checked_standard_float64_read() {
+    let model = constant_delay_model();
+    let missing = SolveMeKernel::instantiate(
+        MeModelSource::ablated_max_step_duration_fixture(&model, false),
+        &fixture_instance_config(),
+    )
+    .err()
+    .expect("a delay-bearing component without the annotation is rejected");
+    assert_eq!(missing.stage(), Some(MeStage::Instantiate));
+    assert!(matches!(missing.kind(), MeError::Contract { .. }));
+
+    let mut kernel =
+        SolveMeKernel::instantiate(MeModelSource::fixture(&model), &fixture_instance_config())
+            .expect("the checked delay annotation and kernel are correlated");
+    kernel
+        .enter_initialization_mode()
+        .expect("enter initialization");
+    kernel
+        .exit_initialization_mode()
+        .expect("exit initialization");
+    kernel
+        .update_discrete_states()
+        .expect("settle the initial event");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("enter continuous-time mode");
+
+    let reference = kernel
+        .max_step_duration_value_reference()
+        .expect("the checked inventory declares the Float64 local");
+    let mut values = [0.0];
+    kernel
+        .get_float64(std::slice::from_ref(&reference), &mut values)
+        .expect("the local is readable through the standard batched getter");
+    assert_eq!(values, [0.2]);
+
+    let mut undeclared = reference;
+    undeclared.backing = super::MeFloat64Backing::MaxStepDuration(u32::MAX);
+    let error = kernel
+        .get_float64(std::slice::from_ref(&undeclared), &mut values)
+        .expect_err("an unreadable value reference is rejected");
+    assert!(matches!(error.kind(), MeError::Contract { .. }));
+}
+
+// -- the sole master algorithm, end to end ---------------------------------
+
+/// The first execution of [`super::session::MeSimulationSession`] over a real
+/// component.
+///
+/// Everything below it — the checked options, the lease, the plugin arity
+/// check, the accepted-step proof, the unconditional sampler validation, the
+/// output cursor, the trace recorder — is exercised by driving one FMI
+/// component with the unrelated conformance plugin. The plugin reaches the
+/// component *only* through the capability the host lends per call, which is
+/// what makes this evidence for ME-INT-001 rather than for a fixture.
+#[test]
+fn the_common_host_integrates_a_component_through_the_thin_plugin_contract() {
+    use super::integrator::conformance::{HermiteStepIntegrator, SamplerQuality};
+    use super::session::{
+        MeOutputCursor, MeRetainedComponent, MeSessionOptions, MeSessionOptionsInput,
+    };
+
+    let model = refresh_owned(harmonic_oscillator());
+    let mut retained = MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the fixture component instantiates");
+
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        start_time: 0.0,
+        stop_time: Some(1.0),
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.05,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: true,
+    })
+    .expect("the fixture options are admissible");
+
+    let host = retained.lease(options).expect("the sole lease is granted");
+    let state_count = host.state_count();
+    assert_eq!(state_count, 2);
+    let mut session = host
+        .into_session(Some(Box::new(HermiteStepIntegrator::new(
+            state_count,
+            SamplerQuality::Native,
+        ))))
+        .expect("a state-carrying component admits a state-carrying plugin");
+
+    let mut cursor = MeOutputCursor::new(
+        (0..=10)
+            .map(|tenth| f64::from(tenth) / 10.0)
+            .collect::<Vec<_>>(),
+    )
+    .expect("the output schedule is sorted and unique");
+    // Yield at each requested coordinate, exactly as an incremental host does.
+    // The conformance plugin takes one accepted step per request, so this is
+    // also what bounds its step: the contract, not a plugin-owned schedule.
+    for tenth in 0..=10 {
+        let boundary = f64::from(tenth) / 10.0;
+        let outcome = session
+            .advance_to(boundary, &mut cursor)
+            .expect("the master algorithm reaches each yield boundary");
+        assert!(
+            matches!(
+                outcome,
+                MeAdvanceOutcome::Yielded | MeAdvanceOutcome::ReachedStop
+            ),
+            "an event-free run neither terminates nor stalls at t={boundary}: {outcome:?}"
+        );
+        assert!((session.time() - boundary).abs() <= 1.0e-12);
+    }
+    assert!(session.is_terminated());
+    assert!(
+        session.verification_component_is_terminated(),
+        "a successful defined-experiment end must terminate the FMI component, not only the host"
+    );
+    let result = session.finish();
+
+    // `der(x) = v`, `der(v) = -4 x` from `x(0) = 1`, `v(0) = 0`, so
+    // `x(t) = cos(2t)`.
+    assert_eq!(result.names, vec!["x".to_string(), "v".to_string()]);
+    assert_eq!(result.times.len(), 11);
+    assert_eq!(result.data.len(), 2);
+    for (index, time) in result.times.iter().copied().enumerate() {
+        let expected = (2.0 * time).cos();
+        let actual = result.data[0][index];
+        assert!(
+            (actual - expected).abs() < 1.0e-4,
+            "x({time}) = {actual}, expected {expected}"
+        );
+    }
+    assert!(result.termination.is_none());
+}
+
+/// A state-carrying component cannot be given the time-only plugin, and the
+/// rejection is typed rather than a rendered message (ME-ZERO-001 in reverse).
+#[test]
+fn a_state_carrying_component_refuses_the_time_only_plugin() {
+    use super::session::{
+        MePluginArity, MeRetainedComponent, MeSessionError, MeSessionOptions, MeSessionOptionsInput,
+    };
+
+    let model = refresh_owned(harmonic_oscillator());
+    let mut retained = MeRetainedComponent::instantiate(
+        MeModelSource::fixture(&model),
+        &fixture_instance_config(),
+        None,
+    )
+    .expect("the fixture component instantiates");
+    let options = MeSessionOptions::new(MeSessionOptionsInput {
+        start_time: 0.0,
+        stop_time: None,
+        relative_tolerance: 1.0e-8,
+        absolute_tolerance: 1.0e-8,
+        output_interval: 0.1,
+        root_scan_resolution: 0.05,
+        root_location_tolerance: 1.0e-10,
+        max_wall_seconds: None,
+        records_trace: false,
+    })
+    .expect("an open live session needs no defined stop");
+    let host = retained.lease(options).expect("the sole lease is granted");
+    let failure = host
+        .into_session(None)
+        .err()
+        .expect("two continuous states cannot be advanced by the time-only plugin");
+    assert!(matches!(
+        failure,
+        MeSessionError::PluginArity {
+            state_count: 2,
+            mismatch: MePluginArity::RequiresANumericalPlugin
+        }
+    ));
+    // The diagnostic names the rule, not a solver: ME-INT-001's thin surface
+    // has no identity operation to ask, and no common enum lists backends
+    assert_eq!(
+        failure.to_string(),
+        "a component with 2 continuous states requires a numerical plugin, and none was supplied"
+    );
+}
+
+fn fixture_instance_config() -> MeInstanceConfig {
+    MeInstanceConfig::new("fmi-me-session", 1.0e-10, 0.0, 1.0)
+        .expect("fixture instance configuration constructs")
+}
+
+/// Build the refresh owners and the solver name index a fixture kernel needs to
+/// answer the batched output getters, without mutating a shared fixture.
+fn refresh_owned(mut model: solve::SolveModel) -> solve::SolveModel {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("ME fixture refresh owners construct");
+    model.problem.solve_layout.solver_maps.name_to_idx = model
+        .problem
+        .solve_layout
+        .solver_maps
+        .names
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, name)| (name, index))
+        .collect();
+    model
+}
+
+// -- the indicator inventory is built once (SPEC_0044 ME-EVENT-001) ---------
+
+/// Sources the indicator step path is drawn from, so the properties below are
+/// checked against the code that actually runs.
+const COMPONENT_SOURCE: &str = include_str!("kernel/component.rs");
+const KERNEL_SOURCE: &str = include_str!("kernel.rs");
+const INDICATOR_PLAN_SOURCE: &str = include_str!("kernel/indicator_plan.rs");
+const SOLVE_OPS_SOURCE: &str = include_str!("../runtime/solve_ops.rs");
+const SOLVE_RUNTIME_SOURCE: &str = include_str!("../runtime/solve_runtime.rs");
+const SOLVE_RUNTIME_PLANS_SOURCE: &str = include_str!("../runtime/solve_runtime/plans.rs");
+
+/// The body of one method declared at `impl` indentation.
+fn method_body<'source>(source: &'source str, signature: &str) -> &'source str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("{signature} must exist"));
+    let body = &source[start..];
+    let end = body
+        .find("\n    }\n")
+        .unwrap_or_else(|| panic!("{signature} must be a method at impl indentation"));
+    &body[..end]
+}
+
+/// The name of the method one occurrence sits in.
+fn enclosing_method<'source>(source: &'source str, needle: &str) -> &'source str {
+    let position = source
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle} must exist"));
+    let header = source[..position]
+        .rfind("\n    fn ")
+        .into_iter()
+        .chain(source[..position].rfind("\n    pub(super) fn "))
+        .chain(source[..position].rfind("\n    pub(crate) fn "))
+        .max()
+        .expect("an occurrence sits inside a method");
+    let name = source[header..position]
+        .split("fn ")
+        .nth(1)
+        .expect("a method header names its function");
+    name.split(['(', '<', ' ']).next().unwrap_or_default()
+}
+
+#[test]
+fn the_indicator_inventory_has_one_constructor_the_step_path_cannot_reach() {
+    assert_eq!(
+        COMPONENT_SOURCE
+            .matches("FmiIndicatorPlan::derive(")
+            .count(),
+        1,
+        "the resolved indicator table is constructed exactly once"
+    );
+    assert_eq!(
+        KERNEL_SOURCE.matches("FmiIndicatorPlan::derive").count(),
+        0,
+        "no operation outside the constructor may build an indicator table"
+    );
+    assert_eq!(
+        enclosing_method(COMPONENT_SOURCE, "FmiIndicatorPlan::derive("),
+        "instantiate_inner",
+        "the only indicator table is the instantiated component's own"
+    );
+    for source in [COMPONENT_SOURCE, KERNEL_SOURCE] {
+        assert_eq!(
+            source.matches(".indicator_plan =").count(),
+            0,
+            "the resolved indicator table is never reassigned"
+        );
+    }
+    assert_eq!(
+        INDICATOR_PLAN_SOURCE.matches("&mut self").count(),
+        0,
+        "the resolved indicator table exposes no operation that could mutate it"
+    );
+}
+
+#[test]
+fn the_step_path_neither_masks_nor_reprojects_the_root_vector() {
+    for name in [
+        "filter_scheduled_root_crossings",
+        "root_condition_is_search_active",
+        "root_search_is_uniformly_inactive",
+    ] {
+        for source in [
+            COMPONENT_SOURCE,
+            KERNEL_SOURCE,
+            SOLVE_OPS_SOURCE,
+            SOLVE_RUNTIME_SOURCE,
+            SOLVE_RUNTIME_PLANS_SOURCE,
+        ] {
+            assert_eq!(
+                source.matches(name).count(),
+                0,
+                "{name} compensated for an unfiltered inventory and has no successor"
+            );
+        }
+    }
+    let evaluation = method_body(COMPONENT_SOURCE, "fn evaluate_inventory_indicators(");
+    assert_eq!(
+        evaluation.matches("full_solver_y").count(),
+        1,
+        "an indicator read settles the full algebraic coordinate at most once"
+    );
+    assert!(
+        evaluation
+            .contains("if self.indicator_plan.reads_deadlines() && settled_guess.is_none() {"),
+        "only a dynamic-time deadline needs a settled algebraic coordinate of its own; \
+         a root-only inventory keeps the root search's own restricted refresh"
+    );
+    for signature in [
+        "fn evaluate_inventory_indicators(",
+        "fn apply_indicator_zero_sides(",
+    ] {
+        let body = method_body(COMPONENT_SOURCE, signature);
+        for reconstruction in [
+            "vec![",
+            "Vec::new()",
+            ".to_vec()",
+            "collect::<Vec<",
+            "FmiEventIndicatorSource",
+        ] {
+            assert!(
+                !body.contains(reconstruction),
+                "{signature} must read the resolved table, not rebuild one with {reconstruction}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_indicator_step_path_never_rebuilds_or_regrows_its_storage() {
+    let mut model = strict_root_relation_memory();
+    model.initial_y = vec![-0.5];
+    model
+        .validate()
+        .expect("stepping fixture must satisfy the finalized Solve contract");
+    let mut kernel = instantiate(&model);
+    kernel
+        .enter_initialization_mode()
+        .expect("stepping fixture initialization should start");
+    kernel
+        .exit_initialization_mode()
+        .expect("stepping fixture initialization should settle");
+    kernel
+        .update_discrete_states()
+        .expect("stepping fixture initial event should run");
+    kernel
+        .enter_continuous_time_mode()
+        .expect("stepping fixture should enter continuous time");
+
+    let mut indicators = Vec::new();
+    kernel
+        .get_event_indicators(&mut indicators)
+        .expect("the stepping fixture publishes its root distance");
+    assert_eq!(
+        indicators.len(),
+        1,
+        "the fixture must exercise a non-empty inventory"
+    );
+    let identity = kernel.verification_indicator_storage();
+
+    // The sweep crosses the root, so the completed-step callback exercises both
+    // the unchanged domains of an ordinary step and the armed crossing of an
+    // accepted event point.
+    let mut crossed = false;
+    for step in 1..=16u32 {
+        let time = f64::from(step) * 0.05;
+        kernel
+            .set_time(MeTime::at(time))
+            .expect("the integrator advances component time");
+        kernel
+            .set_continuous_states(&[-0.5 + time])
+            .expect("the integrator advances the continuous state");
+        kernel
+            .get_event_indicators(&mut indicators)
+            .expect("the host reads indicators at every trial point");
+        crossed |= kernel
+            .completed_integrator_step(true)
+            .expect("the host completes every accepted step")
+            .enter_event_mode;
+        assert_eq!(
+            kernel.verification_indicator_storage(),
+            identity,
+            "step {step} rebuilt or regrew the FMI event-indicator storage"
+        );
+    }
+    assert!(
+        crossed,
+        "the sweep must cross the indicator so the armed-crossing path runs"
+    );
+}
