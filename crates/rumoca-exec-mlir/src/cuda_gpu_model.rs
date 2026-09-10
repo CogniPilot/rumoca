@@ -98,8 +98,6 @@ pub fn build_cuda_ode_model(
     })
 }
 
-// ─── Batch / Monte Carlo support ─────────────────────────────────────────────
-
 /// Run a batch of N ODE trajectories (each with its own parameter set) in
 /// parallel using one CUDA stream per trajectory.
 ///

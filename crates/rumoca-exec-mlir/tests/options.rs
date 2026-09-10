@@ -11,11 +11,16 @@ use rumoca_ir_solve::{
     SolverNameIndexMaps, UnaryOp,
 };
 
+mod support;
+
 fn spb(rows: Vec<Vec<LinearOp>>, label: &str) -> ScalarProgramBlock {
     ScalarProgramBlock::with_source_span(
         rows,
-        Span::from_offsets(SourceId::from_source_name(label), 0, label.len()),
+        Span::from_offsets(SourceId::from_source_name(label), 0, label.len())
+            .require_provenance("MLIR options fixture")
+            .expect("fixture span is source-backed"),
     )
+    .expect("fixture program is computable")
 }
 
 fn decay_model() -> rumoca_ir_solve::SolveModel {
@@ -42,7 +47,7 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
     let derivative_rhs_cb =
         ComputeBlock::from_scalar_program_block(spb(rhs_rows.clone(), "options_derivative.mo"));
 
-    rumoca_ir_solve::SolveModel {
+    let mut model = rumoca_ir_solve::SolveModel {
         problem: SolveProblem {
             schema_version: rumoca_ir_solve::SOLVE_SCHEMA_VERSION,
             layout: rumoca_ir_solve::VarLayout::from_parts(Default::default(), 1, 1),
@@ -55,19 +60,26 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 )),
                 derivative_rhs: derivative_rhs_cb,
                 algebraic_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                manifold_residual: ComputeBlock::default(),
+                manifold_projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                // Not an authored field: the refresh owners are derived from
+                // the finished problem below, so the literal only reserves the
+                // slot Solve lowering fills.
+                refresh_owners: rumoca_ir_solve::ContinuousRefreshOwners::default(),
             },
             initialization: InitializationSolveSystem {
                 residual: ComputeBlock::from_scalar_program_block(zero_rb.clone()),
                 row_targets: Vec::new(),
-                projection_indices: Vec::new(),
-                projection_plan: rumoca_ir_solve::AlgebraicProjectionPlan::default(),
+                row_roles: Vec::new(),
+                projection_unknowns: Vec::new(),
+                projection_plan: rumoca_ir_solve::InitializationProjectionPlan::default(),
                 update_rhs: ScalarProgramBlock::default(),
                 update_targets: Vec::new(),
             },
-            discrete: DiscreteSolveSystem {
-                rhs: zero_rb.clone(),
-                ..Default::default()
-            },
+            // `der(x) = -x` owns no discrete variable, so the discrete system
+            // is empty. A one-row RHS with no update target would claim a
+            // discrete program that assigns nothing.
+            discrete: DiscreteSolveSystem::default(),
             events: SolveEventPartition::default(),
             clocks: SolveClockPartition::default(),
             solve_layout: SolveLayout {
@@ -76,6 +88,8 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                     name_to_idx: IndexMap::from([("x".to_string(), 0)]),
                     base_to_indices: IndexMap::from([("x".to_string(), vec![0])]),
                 },
+                variable_declarations: Vec::new(),
+                variable_storage_runs: Vec::new(),
                 state_scalar_count: 1,
                 algebraic_scalar_count: 0,
                 output_scalar_count: 0,
@@ -86,25 +100,46 @@ fn decay_model() -> rumoca_ir_solve::SolveModel {
                 discrete_valued_scalar_names: Vec::new(),
                 relation_memory_parameter_indices: Vec::new(),
                 initial_event_parameter_index: None,
+                initial_homotopy_parameter_index: None,
+                terminal_event_parameter_index: None,
                 pre_param_bindings: Vec::new(),
             },
         },
+        pure_calls: rumoca_ir_solve::SolvePureCallTable::default(),
         artifacts: rumoca_ir_solve::SolveArtifacts {
             continuous: rumoca_ir_solve::ContinuousSolveArtifacts {
-                mass_matrix: vec![vec![1.0]],
+                structural: rumoca_ir_solve::ContinuousStructuralArtifacts::default(),
+                mass_matrix: rumoca_ir_solve::MassMatrix::Identity,
                 implicit_jacobian_v: zero_block,
                 implicit_jacobian_v_scalar: zero_rb.clone(),
+                manifold_jacobian_v: ComputeBlock::default(),
                 full_jacobian_v: zero_rb.clone(),
             },
             ..Default::default()
         },
         initial_y: vec![1.0],
+        solver_nominals: vec![1.0],
         parameters: Vec::new(),
         external_tables: rumoca_ir_solve::ExternalTables::default(),
         visible_names: vec!["x".to_string()],
         visible_value_rows: ScalarProgramBlock::default(),
         variable_meta: Vec::new(),
-    }
+    };
+    issue_refresh_owners(&mut model);
+    model
+}
+
+/// Issue the checked continuous refresh owners of a finished fixture problem.
+///
+/// Solve lowering issues them from the whole problem once it is complete
+/// (`rumoca-phase-solve/src/lower.rs`), and every runtime fixture in the
+/// workspace re-derives them the same way rather than hand-writing plans, so a
+/// fixture can never carry a refresh inventory the real pipeline would not
+/// produce for the same problem.
+fn issue_refresh_owners(model: &mut rumoca_ir_solve::SolveModel) {
+    model.problem.continuous.refresh_owners =
+        rumoca_eval_solve::refresh_plan::build_continuous_refresh_owners(&mut model.problem)
+            .expect("fixture problem issues checked continuous refresh owners");
 }
 
 #[test]
@@ -125,7 +160,7 @@ fn cpu_vectorized_matches_cpu_native() {
     let native = match build_ode_model_with_opts(&model, "decay_native", &native_opts) {
         Ok(m) => m,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("native compile failed: {e}"),
@@ -134,7 +169,7 @@ fn cpu_vectorized_matches_cpu_native() {
     let vectorized = match build_ode_model_with_opts(&model, "decay_vec", &vec_opts) {
         Ok(m) => m,
         Err(MlirError::ToolNotFound { tool, .. }) => {
-            eprintln!("SKIP: {tool} not found");
+            support::missing_cpu_tool(tool);
             return;
         }
         Err(e) => panic!("vectorized compile failed: {e}"),
