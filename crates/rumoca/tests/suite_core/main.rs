@@ -46,6 +46,7 @@ mod for_loop_element_derivative_alias;
 mod forward_param_jacobian_test;
 mod function_assertion_message_projection;
 mod function_conditional_sequence_test;
+mod function_equation_shape;
 mod function_inner_index_slice_compaction;
 mod function_input_shadow_state_test;
 mod function_loop_carried_record;

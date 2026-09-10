@@ -1,4 +1,8 @@
+mod result_shapes;
+
 use rumoca_ir_ast as ast;
+
+pub(crate) use result_shapes::FunctionResultShapes;
 
 use crate::pipeline::{
     collect_function_calls_from_equation, collect_function_calls_from_expression,
@@ -86,6 +90,7 @@ pub(crate) fn pre_collect_functions(
             }
         }
     }
+    ctx.function_result_shapes = FunctionResultShapes::from_functions(ctx.functions.values());
     Ok(())
 }
 

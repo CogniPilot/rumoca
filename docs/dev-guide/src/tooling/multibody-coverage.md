@@ -121,4 +121,75 @@ revolute-joint, rigid-body, one-dimensional rotor, mounting, connection,
 initialization, and integration paths; it does not establish unrelated joint
 or state-selection behavior.
 
-Full cohort and release gates have not yet been rerun for this change.
+The complete 566-model Tier 2 run at
+`3dec54b64813bfb4e50d6177ab6b664cccb59ef4` passes. It compares 130 models,
+all strict-high, with zero deviating channels or missing traces; 17 unchanged
+reviewed policy exclusions remain skipped and do not count as supported.
+The only model-band transition from the preceding full run is
+`ActuatedDrive`, absent to high. Evidence is retained in
+`target/msl/multibody-constructor-full` and
+`.git/multibody-campaign/constructor-full-receipt.json`. The tracked source
+stayed unchanged throughout the run; the local untracked FastDyn communication
+file accounts for the comparator's dirty-worktree flag. Release gates have
+not yet been rerun for this branch.
+
+## Declared function result dimensions
+
+The remaining balance failure after the constructor fix was
+`Constraints.PrismaticConstraint`: 2427 equations for 2429 unknowns.
+Its `freeMotionScalarInit.initAngularVelocity` component contains:
+
+```modelica
+Frames.angularVelocity2(R_b) =
+  Frames.resolve2(R_b, Frames.angularVelocity1(R_a)) + w_rel_b;
+```
+
+`Frames.angularVelocity2` declares the output `w[3]`, but Flat row 160
+counted this equation as one scalar. The precollected executable function
+already retained the resolved declaration identity and fixed output shape;
+equation shape inference did not consume that evidence. Connection-edge
+removal again contributes zero and cannot explain the deficit.
+
+MLS §§12.4.3 and 10.6.1 establish the first output and equation dimensions.
+MLS §12.4.6 permits automatic vectorization only for a function with one
+scalar result. A fixed array result therefore establishes its declaration's
+axes; a scalar result alone cannot establish the call's dimensions.
+SPEC_0007 assigns this work to flattening, using SPEC_0001 declaration
+identity.
+
+The flattener now indexes declaration-proven array results by `DefId` before
+flattening equations. Every exposure of a declaration must agree on the
+shape. Conflicting exposures, deferred extents, and scalar results remain
+unknown at this boundary. Equation cardinality and the structured domain
+consume the same shape. The real-model Flat difference is exactly row 160's
+cardinality, one to three, and its corresponding `1:3` domain.
+
+The end-to-end angular-velocity regression fails before the fix with seven
+equations for nine unknowns. After the fix it balances and follows the
+independent analytic trace `{3*time, 4*time, 5*time}`. A scalar-function
+vectorization control verifies all three components of `shift(x)={1,2,3}`.
+Unit controls distinguish same-spelling declarations, refuse conflicting
+exposures in either order, and refuse deferred dimensions even when provisional
+effective dimensions look fixed.
+
+Tier 1 validation passes: all 628 flattening tests, the angular-velocity and
+vectorization regressions, the previous torque regression, formatting, and
+focused all-feature Clippy with warnings denied. The fixed twenty-member
+canary has no band, phase, or failure-category changes relative to those same
+members in the complete run at `3dec54b6`. All eight completed traces are
+compared with zero skipped, missing, or deviating channels; twelve targets
+retain their failures. Evidence is in
+`target/msl/multibody-function-shape-canary` and
+`.git/multibody-campaign/function-shape-canary-delta.json`.
+
+The same 42-example diagnostic now proves `PrismaticConstraint` balanced at
+2429 equations and 2429 unknowns. It remains structurally singular, with
+2287 matches in a 2313-by-2313 system, and is not supported. The other 41
+models retain their phase and failure classifications. All four completed
+traces are compared, with zero skipped, missing, or deviating channels.
+There are no remaining balance failures in this focused set. The remaining
+38 failures are 18 structural-analysis failures, twelve timeouts, six
+DAE-construction failures, one runtime-contract failure, and one instantiation
+failure. Evidence is in `target/msl/multibody-function-shape-after` and
+`.git/multibody-campaign/function-shape-multibody-delta.json`; producer hashes
+are in `.git/multibody-campaign/function-shape-proof.json`.

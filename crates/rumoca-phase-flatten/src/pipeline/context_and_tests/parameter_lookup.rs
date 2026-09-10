@@ -39,6 +39,7 @@ impl Context {
             structural_params: std::collections::HashSet::new(),
             non_structural_params: std::collections::HashSet::new(),
             functions: rustc_hash::FxHashMap::default(),
+            function_result_shapes: crate::function_precollect::FunctionResultShapes::default(),
             record_aliases: rustc_hash::FxHashMap::default(),
             component_members: component_member_scope::ComponentMemberScopes::default(),
             vcg_is_root: rustc_hash::FxHashMap::default(),

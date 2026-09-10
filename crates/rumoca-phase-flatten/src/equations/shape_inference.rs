@@ -275,7 +275,7 @@ pub(crate) fn infer_expression_shape(
             infer_binary_shape(op, lhs_shape, rhs_shape)
         }
         ast::Expression::FunctionCall { comp, args, .. } => {
-            if let Some(dims) = infer_constructor_dims(expr, prefix, ctx) {
+            if let Some(dims) = infer_call_result_dims(expr, prefix, ctx) {
                 expression_shape_from_dims(&dims)
             } else if is_size_operator(comp)
                 && let [argument] = args.as_slice()
@@ -390,12 +390,30 @@ fn is_size_operator(comp: &ast::ComponentReference) -> bool {
         && comp.parts[0].ident.text.as_ref() == "size"
 }
 
+fn infer_call_result_dims(
+    expression: &ast::Expression,
+    prefix: &ast::QualifiedName,
+    ctx: &Context,
+) -> Option<Vec<i64>> {
+    if let ast::Expression::Parenthesized { inner, .. } = expression {
+        return infer_call_result_dims(inner, prefix, ctx);
+    }
+    let ast::Expression::FunctionCall { comp, .. } = expression else {
+        return None;
+    };
+    infer_constructor_dims(expression, prefix, ctx).or_else(|| {
+        ctx.function_result_shapes
+            .dimensions(comp.target_def_id())
+            .map(<[i64]>::to_vec)
+    })
+}
+
 fn infer_expression_ndims(
     expression: &ast::Expression,
     prefix: &ast::QualifiedName,
     ctx: &Context,
 ) -> Option<usize> {
-    if let Some(dims) = infer_constructor_dims(expression, prefix, ctx) {
+    if let Some(dims) = infer_call_result_dims(expression, prefix, ctx) {
         return Some(dims.len());
     }
     if let ast::Expression::ComponentReference(reference) = expression {
@@ -445,10 +463,10 @@ pub(crate) fn infer_simple_equation_scalar_count(
     {
         return count;
     }
-    // MLS §10.6.1: either side's complete constructor shape establishes the
+    // MLS §10.6.1: either side's complete result shape establishes the
     // equation cardinality, including ranks beyond vectors and matrices.
     for expression in [lhs, rhs] {
-        if let Some(dims) = infer_constructor_dims(expression, prefix, ctx) {
+        if let Some(dims) = infer_call_result_dims(expression, prefix, ctx) {
             return dims_scalar_size(&dims);
         }
     }
@@ -538,8 +556,8 @@ pub(crate) fn infer_simple_equation_dims(
     scalar_count: usize,
 ) -> Option<Vec<i64>> {
     let candidates = [
-        infer_constructor_dims(lhs, prefix, ctx),
-        infer_constructor_dims(rhs, prefix, ctx),
+        infer_call_result_dims(lhs, prefix, ctx),
+        infer_call_result_dims(rhs, prefix, ctx),
         dims_for_shape(infer_expression_shape(lhs, prefix, ctx)),
         dims_for_shape(infer_expression_shape(rhs, prefix, ctx)),
         find_array_refs_needing_expansion(lhs, prefix, ctx)

@@ -76,6 +76,8 @@ pub(crate) struct Context {
     /// User-defined function definitions for compile-time evaluation (MLS §12.3).
     /// Functions are looked up by qualified name during constant expression evaluation.
     pub functions: rustc_hash::FxHashMap<String, Function>,
+    /// Static array result shapes keyed by their exact source declaration.
+    pub(crate) function_result_shapes: crate::function_precollect::FunctionResultShapes,
     /// Record aliases for resolving field access through record parameter bindings.
     /// Maps record parameter component path -> alias target component path (MLS §7.2.3).
     /// Example: "battery2.cellData" -> "cellData2" allows resolving
