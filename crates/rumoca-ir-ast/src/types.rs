@@ -37,7 +37,6 @@ impl TypeTable {
         self.add_type(Type::Builtin(BuiltinType::String));
         self.add_type(Type::Builtin(BuiltinType::Clock));
 
-        // MLS §4.9/§8.6: predefined enumeration types used by attributes/builtins.
         self.add_type(Type::Enumeration(EnumerationType {
             name: "StateSelect".to_string(),
             literals: vec![
@@ -108,6 +107,12 @@ impl TypeTable {
     pub fn string(&self) -> TypeId {
         self.lookup("String")
             .expect("primitive String not registered")
+    }
+
+    /// Get the TypeId for Clock.
+    pub fn clock(&self) -> TypeId {
+        self.lookup("Clock")
+            .expect("primitive Clock not registered")
     }
 
     /// Get the number of types in the table.
@@ -248,11 +253,6 @@ impl ArrayType {
     pub fn ndims(&self) -> usize {
         self.dims.len()
     }
-
-    /// Check if all dimensions are known.
-    pub fn has_known_dims(&self) -> bool {
-        self.dims.iter().all(|d| d.is_some())
-    }
 }
 
 /// An enumeration type.
@@ -283,10 +283,6 @@ pub struct FunctionType {
     /// Output parameter types.
     pub outputs: Vec<(String, TypeId)>,
 }
-
-// =============================================================================
-// Interface Structure (MLS §6.4)
-// =============================================================================
 
 /// MLS §6.4: Interface (type) of a class.
 ///

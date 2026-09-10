@@ -74,6 +74,7 @@ pub enum ExpressionContext {
     StatementFunctionOutput,
     ExtendModification,
     ExternalArgument,
+    ExternalAnnotation,
 }
 
 pub enum VisitScope<'a> {
@@ -227,7 +228,9 @@ pub fn walk_equation_default<V: Visitor + ?Sized>(
             cond_blocks,
             else_block,
         } => visitor.visit_if_equation(cond_blocks, else_block.as_deref()),
-        Equation::FunctionCall { comp, args } => visitor.visit_equation_function_call(comp, args),
+        Equation::FunctionCall { comp, args, .. } => {
+            visitor.visit_equation_function_call(comp, args)
+        }
         Equation::Assert {
             condition,
             message,
@@ -369,10 +372,6 @@ pub fn walk_class_def_default<V: Visitor + ?Sized>(
 ///
 /// Override methods to add custom behavior. Call child visitors with `?` operator.
 pub trait Visitor {
-    // =========================================================================
-    // Helper methods
-    // =========================================================================
-
     /// Visit each item in a slice, stopping on Break.
     fn visit_each<T, F>(&mut self, items: &[T], mut f: F) -> ControlFlow<()>
     where
@@ -535,10 +534,6 @@ pub trait Visitor {
         Continue(())
     }
 
-    // =========================================================================
-    // Expression methods
-    // =========================================================================
-
     /// Visit any expression.
     fn visit_expression(&mut self, expr: &Expression) -> ControlFlow<()> {
         walk_expression_default(self, expr)
@@ -571,10 +566,6 @@ pub trait Visitor {
         self.enter_for_index(idx)?;
         self.visit_expression(&idx.range)
     }
-
-    // =========================================================================
-    // Equation methods
-    // =========================================================================
 
     /// Visit any equation.
     fn visit_equation(&mut self, eq: &Equation) -> ControlFlow<()> {
@@ -663,10 +654,6 @@ pub trait Visitor {
         self.visit_expression(&block.cond)?;
         self.visit_each(&block.eqs, Self::visit_equation)
     }
-
-    // =========================================================================
-    // Statement methods
-    // =========================================================================
 
     /// Visit any statement.
     fn visit_statement(&mut self, stmt: &Statement) -> ControlFlow<()> {
@@ -765,10 +752,6 @@ pub trait Visitor {
         self.visit_each(&block.stmts, Self::visit_statement)
     }
 
-    // =========================================================================
-    // Class tree methods
-    // =========================================================================
-
     /// Visit a stored definition (root of class tree).
     fn visit_stored_definition(&mut self, def: &StoredDefinition) -> ControlFlow<()> {
         if let Some(within) = &def.within {
@@ -809,6 +792,9 @@ pub trait Visitor {
         }
         for arg in &external.args {
             self.visit_expression_ctx(arg, ExpressionContext::ExternalArgument)?;
+        }
+        for annotation in &external.annotation {
+            self.visit_expression_ctx(annotation, ExpressionContext::ExternalAnnotation)?;
         }
         Continue(())
     }
