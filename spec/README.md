@@ -43,6 +43,7 @@ For setup and day-to-day usage, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 | [SPEC_0048](SPEC_0048_TARGET_REFINEMENT_AND_PREPARED_PRODUCTS.md) | Target Refinement and Prepared Products | target/codegen | ~114 | DRAFT |
 | [SPEC_0049](SPEC_0049_SOLVE_GRAMMAR_CATALOG.md) | Solve Grammar and Effect Catalog | IR | ~214 | REFERENCE |
 | [SPEC_0050](SPEC_0050_TRACE_EVIDENCE_CATALOG.md) | Trace Evidence Catalog | process/verification | ~26 | REFERENCE |
+| [SPEC_0051](SPEC_0051_JACOBIAN_SYNTHESIS.md) | Jacobian Synthesis by Forward-Mode Differentiation | phase/verification | ~212 | PROPOSED |
 
 ### Reference annexes
 

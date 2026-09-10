@@ -15,8 +15,15 @@ pub struct ParsedSourceDocument {
 impl ParsedSourceDocument {
     pub fn parse(uri: impl Into<String>, source: impl Into<String>) -> Result<Self> {
         let uri = uri.into();
-        let source = Arc::<str>::from(source.into());
-        let definition = rumoca_phase_parse::parse_to_ast(&source, &uri)?;
+        let text = source.into();
+        // The retained text is the expanded text, so the spans the parse mints
+        // are offsets into the text this document carries.
+        let source = Arc::<str>::from(
+            crate::parse::expanded_document_source(&text, &uri)
+                .map_err(anyhow::Error::new)?
+                .into_owned(),
+        );
+        let definition = crate::parse::parse_source_to_ast(&source, &uri)?;
         Ok(Self {
             uri,
             source,
