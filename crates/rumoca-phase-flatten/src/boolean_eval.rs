@@ -11,6 +11,191 @@ use rumoca_ir_ast as ast;
 use crate::Context;
 use crate::equations::build_qualified_name;
 
+struct FlattenScalarAdapter<'a> {
+    ctx: Option<&'a Context>,
+    structural_only: bool,
+}
+
+impl FlattenScalarAdapter<'_> {
+    /// True when any operand names a parameter this fold must not read.
+    fn refuses_non_structural(
+        &self,
+        operands: [&ast::Expression; 2],
+        prefix: &ast::QualifiedName,
+    ) -> bool {
+        let Some(ctx) = self.ctx else {
+            return false;
+        };
+        operands.into_iter().any(|operand| {
+            ast::expression_component_path(operand).is_some_and(|path| {
+                scoped_set_contains(&ctx.non_structural_params, &path.to_flat_string(), prefix)
+            })
+        })
+    }
+}
+
+impl rumoca_eval_ast::ast_scalar::AstScalarContext for FlattenScalarAdapter<'_> {
+    fn lookup_integer(&self, expr: &ast::Expression, scope: &str, _depth: usize) -> Option<i64> {
+        let ctx = self.ctx?;
+        let name = ast::expression_component_path(expr)?.to_flat_string();
+        let prefix = ast::QualifiedName::from_dotted(scope);
+        if self.structural_only && scoped_set_contains(&ctx.non_structural_params, &name, &prefix) {
+            return None;
+        }
+        scoped_lookup_integer_param(ctx, &name, &prefix)
+    }
+
+    fn lookup_real(&self, expr: &ast::Expression, scope: &str, _depth: usize) -> Option<f64> {
+        let ctx = self.ctx?;
+        let name = ast::expression_component_path(expr)?.to_flat_string();
+        let prefix = ast::QualifiedName::from_dotted(scope);
+        if self.structural_only && scoped_set_contains(&ctx.non_structural_params, &name, &prefix) {
+            return None;
+        }
+        scoped_lookup_real_param(ctx, &name, &prefix)
+            .or_else(|| scoped_lookup_integer_param(ctx, &name, &prefix).map(|value| value as f64))
+    }
+
+    fn lookup_boolean(&self, expr: &ast::Expression, scope: &str, _depth: usize) -> Option<bool> {
+        let ctx = self.ctx?;
+        let name = ast::expression_component_path(expr)?.to_flat_string();
+        let prefix = ast::QualifiedName::from_dotted(scope);
+        if self.structural_only && scoped_set_contains(&ctx.non_structural_params, &name, &prefix) {
+            return None;
+        }
+        scoped_lookup_map(&ctx.boolean_parameter_values, &name, &prefix)
+    }
+
+    fn call_integer(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        scope: &str,
+        _depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        let ctx = self.ctx?;
+        if function.to_string() == "cardinality" {
+            return lookup_cardinality(Some(ctx), args, &ast::QualifiedName::from_dotted(scope));
+        }
+        if self.structural_only {
+            return None;
+        }
+        crate::eval_const_integer_function_with_scope(function, args, ctx, scope)
+    }
+
+    fn call_boolean(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        scope: &str,
+        _depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<bool> {
+        let prefix = ast::QualifiedName::from_dotted(scope);
+        match function.to_string().as_str() {
+            "Connections.isRoot" => lookup_vcg_is_root(self.ctx, args, &prefix),
+            "Connections.rooted" => lookup_vcg_rooted(self.ctx, args, &prefix),
+            _ => None,
+        }
+    }
+
+    fn call_real(
+        &self,
+        function: &ast::ComponentReference,
+        args: &[ast::Expression],
+        scope: &str,
+        _depth: usize,
+        _span: rumoca_core::Span,
+    ) -> Option<f64> {
+        if self.structural_only {
+            return None;
+        }
+        crate::eval_const_real_function_with_scope(function, args, self.ctx?, scope)
+    }
+
+    fn enum_equal(
+        &self,
+        lhs: &ast::Expression,
+        rhs: &ast::Expression,
+        scope: &str,
+        _depth: usize,
+    ) -> Option<bool> {
+        let prefix = ast::QualifiedName::from_dotted(scope);
+        // Same refusal as the scalar lookups: under `structural_only` a
+        // non-structural parameter must not decide a structural fold, or a
+        // conditional that has to survive to runtime is eliminated here.
+        if self.structural_only && self.refuses_non_structural([lhs, rhs], &prefix) {
+            return None;
+        }
+        let lhs = try_resolve_enum_value(self.ctx, lhs, &prefix)?;
+        let rhs = try_resolve_enum_value(self.ctx, rhs, &prefix)?;
+        Some(rumoca_core::enum_values_equal(&lhs, &rhs))
+    }
+
+    fn coerce_integral_real(&self, value: f64, _span: rumoca_core::Span) -> Option<i64> {
+        (value >= i64::MIN as f64 && value < -(i64::MIN as f64)).then_some(value as i64)
+    }
+
+    fn integer_binary(
+        &self,
+        op: &rumoca_core::OpBinary,
+        lhs: i64,
+        rhs: i64,
+        _span: rumoca_core::Span,
+    ) -> Option<i64> {
+        rumoca_core::eval_ast_integer_binary(op, lhs, rhs)
+    }
+}
+
+pub(crate) fn try_eval_integer_with_scope(
+    expr: &ast::Expression,
+    ctx: &Context,
+    scope: &str,
+) -> Option<i64> {
+    rumoca_eval_ast::ast_scalar::eval_integer(
+        expr,
+        &FlattenScalarAdapter {
+            ctx: Some(ctx),
+            structural_only: false,
+        },
+        scope,
+        0,
+    )
+}
+
+pub(crate) fn try_eval_real_with_scope(
+    expr: &ast::Expression,
+    ctx: &Context,
+    scope: &str,
+) -> Option<f64> {
+    rumoca_eval_ast::ast_scalar::eval_real(
+        expr,
+        &FlattenScalarAdapter {
+            ctx: Some(ctx),
+            structural_only: false,
+        },
+        scope,
+        0,
+    )
+}
+
+pub(crate) fn try_eval_boolean_with_scope(
+    expr: &ast::Expression,
+    ctx: &Context,
+    scope: &str,
+) -> Option<bool> {
+    rumoca_eval_ast::ast_scalar::eval_boolean(
+        expr,
+        &FlattenScalarAdapter {
+            ctx: Some(ctx),
+            structural_only: false,
+        },
+        scope,
+        0,
+    )
+}
+
 /// Try to evaluate an expression to a constant boolean for structural branch selection.
 ///
 /// Per MLS §18.3, compile-time branch selection is only safe for structural
@@ -105,9 +290,9 @@ pub(crate) fn is_structural_expression(
 /// Try to evaluate a boolean expression, but only if it uses structural parameters.
 ///
 /// This is the safe version that respects the Evaluate=true annotation (MLS §18.3).
-/// It first checks that all variable references are structural parameters before
-/// attempting evaluation. This prevents regressions from evaluating non-structural
-/// parameters that may have different values in different contexts.
+/// Lookup of a non-structural value refuses to fold at the point where evaluation
+/// reaches it. This preserves Modelica short-circuit semantics: `false and p`
+/// does not read a non-structural `p`, while `true and p` remains unknown.
 ///
 /// Returns Some(value) if:
 /// - ast::Expression is a literal
@@ -121,13 +306,15 @@ pub(crate) fn try_eval_structural_boolean(
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
 ) -> Option<bool> {
-    // Check if expression only uses structural parameters
-    if !is_structural_expression(ctx, expr, prefix) {
-        return None;
-    }
-
-    // Safe to evaluate with context
-    try_eval_boolean_with_ctx_inner(expr, Some(ctx), prefix)
+    rumoca_eval_ast::ast_scalar::eval_boolean(
+        expr,
+        &FlattenScalarAdapter {
+            ctx: Some(ctx),
+            structural_only: true,
+        },
+        &prefix.to_flat_string(),
+        0,
+    )
 }
 
 /// Inner implementation for boolean evaluation.
@@ -136,128 +323,15 @@ pub(crate) fn try_eval_boolean_with_ctx_inner(
     ctx: Option<&Context>,
     prefix: &ast::QualifiedName,
 ) -> Option<bool> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::Bool,
-            token,
-            ..
-        } => match &*token.text {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
+    rumoca_eval_ast::ast_scalar::eval_boolean(
+        expr,
+        &FlattenScalarAdapter {
+            ctx,
+            structural_only: false,
         },
-
-        ast::Expression::ComponentReference(cr) => {
-            let ctx = ctx?;
-            let cref_name = cr.to_string();
-            scoped_lookup_map(&ctx.boolean_parameter_values, &cref_name, prefix)
-        }
-
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Not,
-            rhs,
-            ..
-        } => {
-            let val = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
-            Some(!val)
-        }
-
-        ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_boolean_with_ctx_inner(inner, ctx, prefix)
-        }
-
-        ast::Expression::Binary { op, lhs, rhs, .. } => {
-            eval_boolean_binary_op(op, lhs, rhs, ctx, prefix)
-        }
-
-        // Handle connection graph functions (MLS §9.4)
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            let func_name = comp.to_string();
-            match func_name.as_str() {
-                "Connections.isRoot" => lookup_vcg_is_root(ctx, args, prefix),
-                "Connections.rooted" => lookup_vcg_rooted(ctx, args, prefix),
-                _ => None,
-            }
-        }
-
-        _ => None,
-    }
-}
-
-/// Evaluate a binary boolean operation.
-pub(crate) fn eval_boolean_binary_op(
-    op: &rumoca_core::OpBinary,
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: Option<&Context>,
-    prefix: &ast::QualifiedName,
-) -> Option<bool> {
-    match op {
-        rumoca_core::OpBinary::And => {
-            let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
-            let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
-            Some(l && r)
-        }
-        rumoca_core::OpBinary::Or => {
-            let l = try_eval_boolean_with_ctx_inner(lhs, ctx, prefix)?;
-            let r = try_eval_boolean_with_ctx_inner(rhs, ctx, prefix)?;
-            Some(l || r)
-        }
-        rumoca_core::OpBinary::Lt => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l < r)
-        }
-        rumoca_core::OpBinary::Le => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l <= r)
-        }
-        rumoca_core::OpBinary::Gt => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l > r)
-        }
-        rumoca_core::OpBinary::Ge => {
-            let l = try_eval_integer_for_comparison(ctx, lhs, prefix)?;
-            let r = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(l >= r)
-        }
-        rumoca_core::OpBinary::Eq => eval_equality(lhs, rhs, ctx, prefix, true),
-        rumoca_core::OpBinary::Neq => eval_equality(lhs, rhs, ctx, prefix, false),
-        _ => None,
-    }
-}
-
-/// Evaluate equality/inequality between two expressions.
-pub(crate) fn eval_equality(
-    lhs: &ast::Expression,
-    rhs: &ast::Expression,
-    ctx: Option<&Context>,
-    prefix: &ast::QualifiedName,
-    is_eq: bool,
-) -> Option<bool> {
-    // Try integers first, then booleans, then enumerations
-    if let (Some(l), Some(r)) = (
-        try_eval_integer_for_comparison(ctx, lhs, prefix),
-        try_eval_integer_for_comparison(ctx, rhs, prefix),
-    ) {
-        return Some(if is_eq { l == r } else { l != r });
-    }
-    if let (Some(l), Some(r)) = (
-        try_eval_boolean_with_ctx_inner(lhs, ctx, prefix),
-        try_eval_boolean_with_ctx_inner(rhs, ctx, prefix),
-    ) {
-        return Some(if is_eq { l == r } else { l != r });
-    }
-    if let (Some(l), Some(r)) = (
-        try_resolve_enum_value(ctx, lhs, prefix),
-        try_resolve_enum_value(ctx, rhs, prefix),
-    ) {
-        let equal = rumoca_core::enum_values_equal(&l, &r);
-        return Some(if is_eq { equal } else { !equal });
-    }
-    None
+        &prefix.to_flat_string(),
+        0,
+    )
 }
 
 /// Try to resolve an expression to an enumeration value string.
@@ -323,52 +397,45 @@ pub(crate) fn try_resolve_enum_value(
     }
 }
 
-/// Try to evaluate an integer expression for comparison purposes.
-///
-/// This is a simplified version that handles common cases needed for
-/// boolean comparison operations (e.g., `n > 0`).
+fn scoped_lookup_real_param(ctx: &Context, name: &str, prefix: &ast::QualifiedName) -> Option<f64> {
+    let name_path = rumoca_core::ComponentPath::from_flat_path(name);
+    let scope_path = prefix.to_component_path();
+    for candidate in rumoca_core::scoped_component_path_candidates(&name_path, &scope_path) {
+        if let Some(value) = lookup_real_exact_or_unindexed(ctx, &candidate) {
+            return Some(value);
+        }
+    }
+    lookup_real_exact_or_unindexed(ctx, name)
+}
+
+fn lookup_real_exact_or_unindexed(ctx: &Context, key: &str) -> Option<f64> {
+    if let Some(value) = ctx.real_parameter_values.get(key).copied() {
+        return Some(value);
+    }
+    for candidate in crate::path_utils::unindexed_lookup_variants(key) {
+        if let Some(value) = ctx.real_parameter_values.get(&candidate).copied() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Evaluate an integer expression for comparison through the shared AST scalar
+/// interpreter, retaining flatten's scoped lookup and cardinality policy.
 pub(crate) fn try_eval_integer_for_comparison(
     ctx: Option<&Context>,
     expr: &ast::Expression,
     prefix: &ast::QualifiedName,
 ) -> Option<i64> {
-    match expr {
-        ast::Expression::Terminal {
-            terminal_type: ast::TerminalType::UnsignedInteger,
-            token,
-            ..
-        } => token.text.parse::<i64>().ok(),
-
-        ast::Expression::ComponentReference(cr) => {
-            let ctx = ctx?;
-            let cref_name = cr.to_string();
-            scoped_lookup_integer_param(ctx, &cref_name, prefix)
-        }
-
-        ast::Expression::Unary {
-            op: rumoca_core::OpUnary::Minus,
-            rhs,
-            ..
-        } => {
-            let val = try_eval_integer_for_comparison(ctx, rhs, prefix)?;
-            Some(-val)
-        }
-
-        ast::Expression::Parenthesized { inner, .. } => {
-            try_eval_integer_for_comparison(ctx, inner, prefix)
-        }
-
-        // MLS §3.7.2.3: cardinality(c) returns the number of connect() statements referencing c
-        ast::Expression::FunctionCall { comp, args, .. } => {
-            let func_name = comp.to_string();
-            if func_name == "cardinality" {
-                return lookup_cardinality(ctx, args, prefix);
-            }
-            None
-        }
-
-        _ => None,
-    }
+    rumoca_eval_ast::ast_scalar::eval_integer(
+        expr,
+        &FlattenScalarAdapter {
+            ctx,
+            structural_only: false,
+        },
+        &prefix.to_flat_string(),
+        0,
+    )
 }
 
 /// Look up `cardinality(c)` in the pre-computed cardinality counts (MLS §3.7.2.3).
@@ -582,13 +649,15 @@ mod tests {
             local: false,
             parts: crate::path_utils::segments(path)
                 .into_iter()
-                .map(|part| ast::ComponentRefPart {
+                .enumerate()
+                .map(|(index, part)| ast::ComponentRefPart {
                     ident: token(part),
                     subs: None,
+                    def_id: Some(rumoca_core::DefId::new(11_001 + index as u32)),
                 })
                 .collect(),
-            def_id: None,
             span: rumoca_core::Span::DUMMY,
+            qualified_display_name: None,
         }
     }
 
@@ -609,6 +678,14 @@ mod tests {
         ast::Expression::Terminal {
             terminal_type: ast::TerminalType::UnsignedInteger,
             token: token(&value.to_string()),
+            span: rumoca_core::Span::DUMMY,
+        }
+    }
+
+    fn bool_expr(value: bool) -> ast::Expression {
+        ast::Expression::Terminal {
+            terminal_type: ast::TerminalType::Bool,
+            token: token(if value { "true" } else { "false" }),
             span: rumoca_core::Span::DUMMY,
         }
     }
@@ -687,6 +764,36 @@ mod tests {
         assert_eq!(
             try_eval_structural_boolean(&ctx, &expr, &ast::QualifiedName::new()),
             None
+        );
+    }
+
+    #[test]
+    fn structural_short_circuit_does_not_read_non_structural_rhs() {
+        let mut ctx = Context::new();
+        ctx.boolean_parameter_values.insert("p".to_string(), true);
+        ctx.non_structural_params.insert("p".to_string());
+        let and = |lhs, rhs| ast::Expression::Binary {
+            op: rumoca_core::OpBinary::And,
+            lhs: Arc::new(lhs),
+            rhs: Arc::new(rhs),
+            span: rumoca_core::Span::DUMMY,
+        };
+
+        assert_eq!(
+            try_eval_structural_boolean(
+                &ctx,
+                &and(bool_expr(false), cref_expr("p")),
+                &ast::QualifiedName::new(),
+            ),
+            Some(false),
+        );
+        assert_eq!(
+            try_eval_structural_boolean(
+                &ctx,
+                &and(bool_expr(true), cref_expr("p")),
+                &ast::QualifiedName::new(),
+            ),
+            None,
         );
     }
 

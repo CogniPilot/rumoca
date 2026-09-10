@@ -6,9 +6,16 @@ pub(crate) fn resolve_component_alias_once(
     source: Option<&ComponentPath>,
     aliases: &FxHashMap<ComponentPath, ComponentPath>,
 ) -> Option<ComponentPath> {
+    if aliases.is_empty() {
+        return None;
+    }
     for prefix_len in (1..=current.len()).rev() {
-        let prefix_parts = &current.parts()[..prefix_len];
-        let Some(alias_target) = aliases.get(prefix_parts) else {
+        // Probe by path identity (an interned id) rather than by a borrowed
+        // `&[String]` slice, which hashed every segment on every probe.
+        let Some(prefix) = current.prefix(prefix_len) else {
+            continue;
+        };
+        let Some(alias_target) = aliases.get(&prefix) else {
             continue;
         };
         let resolved = alias_target.join_part_slice(&current.parts()[prefix_len..]);
