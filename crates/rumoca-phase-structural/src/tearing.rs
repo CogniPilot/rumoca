@@ -26,6 +26,7 @@ fn resolve_causal_equations(
     remaining_unknowns: &mut BTreeSet<usize>,
     causal_sequence: &mut Vec<(usize, usize)>,
     eq_unknowns: &[HashSet<usize>],
+    causal_candidates: &[HashSet<usize>],
 ) {
     let mut changed = true;
     while changed {
@@ -34,13 +35,9 @@ fn resolve_causal_equations(
         // This lets us resolve conflicts deterministically
         let mut var_to_eqs: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
         for &eq in remaining_eqs.iter() {
-            let live: Vec<usize> = eq_unknowns[eq]
-                .iter()
-                .copied()
-                .filter(|v| remaining_unknowns.contains(v))
-                .collect();
-            if live.len() == 1 {
-                let var = live[0];
+            if let Some(var) =
+                unique_live_causal_candidate(eq, remaining_unknowns, eq_unknowns, causal_candidates)
+            {
                 var_to_eqs
                     .entry(var)
                     .or_default()
@@ -64,6 +61,20 @@ fn resolve_causal_equations(
     }
 }
 
+fn unique_live_causal_candidate(
+    equation: usize,
+    remaining_unknowns: &BTreeSet<usize>,
+    equation_unknowns: &[HashSet<usize>],
+    causal_candidates: &[HashSet<usize>],
+) -> Option<usize> {
+    let mut live = equation_unknowns[equation]
+        .iter()
+        .copied()
+        .filter(|variable| remaining_unknowns.contains(variable));
+    let variable = live.next()?;
+    (live.next().is_none() && causal_candidates[equation].contains(&variable)).then_some(variable)
+}
+
 /// Count how many remaining equations reference each remaining unknown.
 fn count_var_appearances(
     remaining_eqs: &BTreeSet<usize>,
@@ -81,6 +92,28 @@ fn count_var_appearances(
     var_count
 }
 
+fn causal_steps_unlocked_by_tearing(
+    tear_var: usize,
+    remaining_eqs: &BTreeSet<usize>,
+    remaining_unknowns: &BTreeSet<usize>,
+    eq_unknowns: &[HashSet<usize>],
+    causal_candidates: &[HashSet<usize>],
+) -> usize {
+    remaining_eqs
+        .iter()
+        .filter(|&&eq| {
+            let mut live = eq_unknowns[eq]
+                .iter()
+                .copied()
+                .filter(|var| remaining_unknowns.contains(var) && *var != tear_var);
+            let Some(candidate) = live.next() else {
+                return false;
+            };
+            live.next().is_none() && causal_candidates[eq].contains(&candidate)
+        })
+        .count()
+}
+
 /// Apply greedy Cellier-style tearing to an algebraic loop.
 ///
 /// Given equations `eq_indices` and unknowns `var_indices` of equal length N,
@@ -96,7 +129,23 @@ fn count_var_appearances(
 ///
 /// Returns `None` if tearing makes no progress (all equations reference all unknowns).
 pub fn tear_algebraic_loop(n: usize, eq_unknowns: &[HashSet<usize>]) -> Option<TearingResult> {
+    tear_algebraic_loop_with_causal_candidates(n, eq_unknowns, eq_unknowns)
+}
+
+/// Apply greedy Cellier-style tearing while restricting which equation/unknown
+/// pairs may become exact causal assignments.
+///
+/// `causal_candidates[e]` contains the variables that equation `e` can solve
+/// exactly. Genuinely implicit equations therefore remain tear residuals.
+pub fn tear_algebraic_loop_with_causal_candidates(
+    n: usize,
+    eq_unknowns: &[HashSet<usize>],
+    causal_candidates: &[HashSet<usize>],
+) -> Option<TearingResult> {
     if n == 0 {
+        return None;
+    }
+    if eq_unknowns.len() != n || causal_candidates.len() != n {
         return None;
     }
 
@@ -106,20 +155,18 @@ pub fn tear_algebraic_loop(n: usize, eq_unknowns: &[HashSet<usize>]) -> Option<T
     let mut tear_vars: Vec<usize> = Vec::new();
 
     loop {
-        // Phase 1: find equations with exactly 1 remaining unknown
         resolve_causal_equations(
             &mut remaining_eqs,
             &mut remaining_unknowns,
             &mut causal_sequence,
             eq_unknowns,
+            causal_candidates,
         );
 
         if remaining_eqs.is_empty() {
             break;
         }
 
-        // Phase 2: select tear variable (most appearances in remaining equations,
-        // break ties by lowest index for determinism)
         let var_count = count_var_appearances(&remaining_eqs, eq_unknowns, &remaining_unknowns);
 
         if var_count.is_empty() {
@@ -129,7 +176,19 @@ pub fn tear_algebraic_loop(n: usize, eq_unknowns: &[HashSet<usize>]) -> Option<T
 
         let &tear_var = var_count
             .iter()
-            .max_by_key(|&(v, count)| (*count, std::cmp::Reverse(*v)))
+            .max_by_key(|&(v, count)| {
+                (
+                    causal_steps_unlocked_by_tearing(
+                        *v,
+                        &remaining_eqs,
+                        &remaining_unknowns,
+                        eq_unknowns,
+                        causal_candidates,
+                    ),
+                    *count,
+                    std::cmp::Reverse(*v),
+                )
+            })
             .map(|(v, _)| v)
             .unwrap();
 
@@ -174,8 +233,12 @@ mod tests {
         ];
         let result = tear_algebraic_loop(3, &eq_unknowns);
         // Fully causal — no tear vars needed, but our function returns None
-        // when tear_vars is empty (meaning the block isn't really a loop)
-        assert!(result.is_none() || result.as_ref().unwrap().tear_var_local_indices.is_empty());
+        // when tear_vars is empty (meaning the block isn't really a loop).
+        // `tear_algebraic_loop` returns `None` whenever `tear_vars` is empty,
+        // so the second half of the old `is_none() || …tear_var_local_indices
+        // .is_empty()` disjunction was unreachable and merely made the
+        // assertion read as if it tolerated two outcomes.
+        assert!(result.is_none(), "a fully causal chain is not a tear loop");
     }
 
     #[test]
@@ -206,5 +269,25 @@ mod tests {
         assert_eq!(r.tear_var_local_indices.len(), 1);
         assert_eq!(r.causal_sequence.len(), 2);
         assert_eq!(r.residual_eq_local_indices.len(), 1);
+    }
+
+    #[test]
+    fn tearing_respects_exact_causal_candidates() {
+        let eq_unknowns = vec![HashSet::from([0, 1]), HashSet::from([0, 1])];
+        let candidates = vec![HashSet::from([0]), HashSet::new()];
+        let result = tear_algebraic_loop_with_causal_candidates(2, &eq_unknowns, &candidates)
+            .expect("one exact causal assignment should reduce the loop");
+
+        assert_eq!(result.tear_var_local_indices, vec![1]);
+        assert_eq!(result.residual_eq_local_indices, vec![1]);
+        assert_eq!(result.causal_sequence, vec![(0, 0)]);
+    }
+
+    #[test]
+    fn tearing_without_causal_assignments_does_not_claim_reduction() {
+        let eq_unknowns = vec![HashSet::from([0, 1]), HashSet::from([0, 1])];
+        let candidates = vec![HashSet::new(), HashSet::new()];
+
+        assert!(tear_algebraic_loop_with_causal_candidates(2, &eq_unknowns, &candidates).is_none());
     }
 }
