@@ -1,0 +1,252 @@
+//! End-to-end regression guard for the SE_2(3) log-linear dynamic-inversion
+//! quadrotor (13-state square-trajectory model).
+//!
+//! This exercises the full Lie-group control chain
+//! (`inverse` -> `product` -> `log_map` -> `left_jacobian`, the `Jl*(BK*xi)`
+//! matmul, quaternion kinematics, and the angular inner loop) against the real
+//! `LieGroups` library, in a 13-element-state context with a non-zero initial
+//! body rate. That combination is what two separate solve-lowering regressions
+//! (both from PR #198 / commit 117ad7ccb) silently corrupted:
+//!
+//!   1. if-branch indexed-binding merge — `log_map`'s small-angle guard fills
+//!      `xi[1..6]` in branches; losing them truncated the Lie-algebra vector.
+//!   2. inlined-output shadow — `product`'s output `X[10]` shadows the model
+//!      state `X[13]`; the inlined output inherited the caller's `X[11..13]`,
+//!      so the control read `X[1]` as the caller's `X[11]`.
+//!
+//! Both made the body-rate derivatives diverge (`der(X[12])` jumped from 0 to
+//! ~10x `der(X[11])`). The model fixture lives under `tests/fixtures/` and the
+//! `LieGroups` library is pulled from the cached CMM snapshot (via
+//! `cargo xtask repo modelica-deps ensure`), so this guards the actual model against the
+//! real library, not a hand-written approximation.
+
+use std::path::{Path, PathBuf};
+
+use rumoca::Compiler;
+use rumoca_sim::{SimOptions, eval_dae_at};
+
+/// The `LieGroups` library ships in the cached CogniPilot Modelica Models
+/// (CMM) snapshot, pulled by `cargo xtask repo modelica-deps ensure`. Resolve its package
+/// directory. This suite is selected explicitly through `heavy-solve-tests`,
+/// so a missing corpus is a hard failure rather than a green test that measured
+/// nothing.
+fn cached_lie_groups() -> PathBuf {
+    let lie_groups =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/cmm/CMM-a642c381/LieGroups");
+    assert!(
+        lie_groups.join("package.mo").is_file(),
+        "heavy Solve regressions require cached CMM at target/cmm/CMM-a642c381; \
+         run `cargo xtask repo modelica-deps ensure`"
+    );
+    lie_groups
+}
+
+fn der_value(report: &rumoca_sim::EvalAtReport, name: &str) -> f64 {
+    report
+        .derivatives
+        .iter()
+        .find(|slot| slot.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "missing derivative {name}; have: {:?}",
+                report
+                    .derivatives
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+            )
+        })
+        .value
+}
+
+fn typed_index_operation_counts(program: &rumoca_ir_solve::TypedProgram) -> (usize, usize) {
+    program
+        .operations()
+        .iter()
+        .fold((0, 0), |(selects, projections), operation| {
+            use rumoca_ir_solve::SolveOperation;
+
+            let (local_selects, local_projections) = match operation.operation() {
+                SolveOperation::Select { .. } => (1, 0),
+                SolveOperation::ProjectElementDynamic { .. } => (0, 1),
+                SolveOperation::Conditional {
+                    if_true, if_false, ..
+                } => {
+                    let true_counts = typed_index_operation_counts(if_true.body());
+                    let false_counts = typed_index_operation_counts(if_false.body());
+                    (
+                        true_counts.0 + false_counts.0,
+                        true_counts.1 + false_counts.1,
+                    )
+                }
+                SolveOperation::Map { body, .. } => typed_index_operation_counts(body.body()),
+                SolveOperation::Fold { transition, .. } => {
+                    typed_index_operation_counts(transition.body())
+                }
+                _ => (0, 0),
+            };
+            (selects + local_selects, projections + local_projections)
+        })
+}
+
+#[test]
+fn quadrotor_se23_13state_initial_derivatives_are_stable() {
+    let lie_groups = cached_lie_groups();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
+    let model = fixtures.join("QuadrotorSquare13_fn.mo");
+
+    let compiled = Compiler::new()
+        .model("QuadrotorSquare13_fn")
+        .source_root(&lie_groups.to_string_lossy())
+        .compile_path_dae(&model)
+        .expect("SE_2(3) 13-state quadrotor should compile to DAE");
+
+    let probe = eval_dae_at(&compiled.dae, &SimOptions::default(), &[], 0.0)
+        .expect("SE_2(3) 13-state quadrotor should lower and evaluate at t=0");
+    let report = &probe.report;
+    assert!(report.error.is_none(), "eval error: {:?}", report.error);
+
+    // Known-good derivative of the 13-state at its initial state (body rate
+    // X[11] = 1.1326...). Captured from the validated build; the regressions
+    // showed up here as der(X[12]) = ~10 x der(X[11]) instead of 0.
+    let expected = [
+        ("der(X[1])", 0.0),
+        ("der(X[2])", 0.0),
+        ("der(X[3])", 0.0),
+        ("der(X[4])", 0.0),
+        ("der(X[5])", 0.0),
+        ("der(X[6])", 0.0),
+        ("der(X[7])", 0.0),
+        ("der(X[8])", 0.5663155510250311),
+        ("der(X[9])", 0.0),
+        ("der(X[10])", 0.0),
+        ("der(X[11])", -2.2652622041001242),
+        ("der(X[12])", 0.0),
+        ("der(X[13])", 0.0),
+    ];
+
+    for (name, want) in expected {
+        let got = der_value(report, name);
+        assert!(
+            got.is_finite(),
+            "{name} is not finite ({got}) — SE_2(3) chain produced NaN/inf"
+        );
+        assert!(
+            (got - want).abs() < 1e-9,
+            "{name} = {got}, expected {want} (tol 1e-9). A solve-lowering \
+             regression in the Lie-group control chain corrupted the derivative."
+        );
+    }
+}
+
+/// Regression guard for the scalar Solve-IR operand-duplication memory
+/// explosion. The SE_2(3) control chain (inverse → product → log_map →
+/// left_jacobian → matmul) used to scalarize into m*n self-contained programs
+/// that each re-inlined their operand op-lists, blowing up multiplicatively
+/// with nesting depth (29 KB → 80 MB → OOM). After the fix each matmul/linsolve
+/// lowers to ONE multi-output program with operands computed once.
+#[test]
+fn quadrotor_se23_scalar_program_does_not_explode() -> Result<(), Box<dyn std::error::Error>> {
+    let lie_groups = cached_lie_groups();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/quadrotor_se23");
+    let model = fixtures.join("QuadrotorSquare13_fn.mo");
+
+    let compiled = Compiler::new()
+        .model("QuadrotorSquare13_fn")
+        .source_root(&lie_groups.to_string_lossy())
+        .compile_path_dae(&model)?;
+
+    let package = rumoca_phase_solve::lower_solve_package(&compiled.dae)?;
+    let problem = &package.problem;
+    let block = &problem.continuous.derivative_rhs;
+    let scalar = rumoca_eval_solve::to_scalar_program_block(block)?;
+    let block_output_count = block.len()?;
+    let total_ops: usize = scalar.programs().iter().map(|program| program.len()).sum();
+    let approx_bytes = total_ops * std::mem::size_of::<rumoca_ir_solve::LinearOp>();
+
+    let mut per_program: Vec<usize> = scalar.programs().iter().map(|p| p.len()).collect();
+    per_program.sort_unstable();
+    let node_kinds: Vec<&str> = block
+        .nodes
+        .iter()
+        .map(|n| match n {
+            rumoca_ir_solve::ComputeNode::ScalarPrograms(_) => "ScalarPrograms",
+            rumoca_ir_solve::ComputeNode::MatMul { .. } => "MatMul",
+            rumoca_ir_solve::ComputeNode::LinSolve { .. } => "LinSolve",
+            rumoca_ir_solve::ComputeNode::Map { .. } => "Map",
+            rumoca_ir_solve::ComputeNode::AffineStencil { .. } => "AffineStencil",
+        })
+        .collect();
+    eprintln!(
+        "SE_2(3) derivative_rhs: nodes={:?}, output_count={}, programs={}, total_ops={}, ~{} KB",
+        node_kinds,
+        block_output_count,
+        scalar.programs().len(),
+        total_ops,
+        approx_bytes / 1024,
+    );
+    eprintln!("per-program op counts (sorted): {per_program:?}");
+
+    // Invariant guaranteed by the multi-output scalarizer fix: the scalar form
+    // produces exactly one output per ComputeBlock output (no off-by-N from the
+    // running StoreOutput counter).
+    assert_eq!(
+        scalar.output_count(),
+        block_output_count,
+        "scalar output count must match the ComputeBlock output count"
+    );
+
+    // The derivative is a single vector function call `Xdot = quad_deriv13(...)`.
+    // Before the multi-output function-projection fix it lowered to 13 programs
+    // that each re-inlined the whole ~158k-op function body (~64 MB, OOM). Now it
+    // lowers to ONE program (~158k ops, ~5 MB) computed once and projected into
+    // 13 outputs. A generous ceiling catches any regression back to per-output
+    // re-inlining (which would be 13x larger).
+    assert_eq!(
+        scalar.programs().len(),
+        1,
+        "vector function-call derivative should lower to one shared program"
+    );
+
+    // Runtime-variable subscripts into the constant reference tables
+    // (`Xref[i-1,j]`, `nref`, `aref`, `tg`, where `i` depends on input time)
+    // remain compact dynamic projections inside the issued typed call owners.
+    // The legacy scalar-call path represented these as `LoadIndexedP`; the
+    // typed path deliberately retains the aggregate parameter and proves each
+    // one-based projection at its construction boundary. Count both the thin
+    // scalar wrapper and the owner bodies so this gate follows the authoritative
+    // representation instead of requiring scalarization to reappear.
+    let scalar_selects = scalar
+        .programs()
+        .iter()
+        .flatten()
+        .filter(|op| matches!(op, rumoca_ir_solve::LinearOp::Select { .. }))
+        .count();
+    let (typed_selects, dynamic_projections) = package
+        .pure_calls
+        .owners()
+        .iter()
+        .map(|owner| typed_index_operation_counts(owner.body()))
+        .fold((0, 0), |lhs, rhs| (lhs.0 + rhs.0, lhs.1 + rhs.1));
+    assert!(
+        approx_bytes < 16 * 1024 * 1024,
+        "scalar derivative program is {} KB — function-projection duplication regression?",
+        approx_bytes / 1024
+    );
+    assert!(
+        dynamic_projections >= 40,
+        "expected runtime table subscripts to remain compact typed dynamic projections \
+         (got {dynamic_projections}); dynamic-index → select-chain regression?"
+    );
+    assert!(
+        total_ops < 20_000,
+        "scalar derivative is {total_ops} ops; expected ~9k after indexed-load lowering — \
+         select-chain blowup regression?"
+    );
+    assert!(
+        scalar_selects + typed_selects < 5_000,
+        "derivative has {} scalar/typed selects; dynamic-index select-chain regression?",
+        scalar_selects + typed_selects
+    );
+    Ok(())
+}

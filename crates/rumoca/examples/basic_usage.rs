@@ -18,12 +18,24 @@ end Integrator;
         .model("Integrator")
         .compile_str(modelica_code, "Integrator.mo")?;
 
-    println!("States (x): {}", result.dae.variables.states.len());
-    println!("Algebraics (y): {}", result.dae.variables.algebraics.len());
-    println!(
-        "Continuous equations (f_x): {}",
-        result.dae.continuous.equations.len()
-    );
+    let (states, algebraics, equations) = result.dae.inspect(|view| {
+        (
+            view.variables()
+                .filter(|(_, variable)| {
+                    variable.role() == rumoca_compile::compile::VariableRole::State
+                })
+                .count(),
+            view.variables()
+                .filter(|(_, variable)| {
+                    variable.role() == rumoca_compile::compile::VariableRole::Algebraic
+                })
+                .count(),
+            view.continuous_owner_count(),
+        )
+    });
+    println!("States (x): {states}");
+    println!("Algebraics (y): {algebraics}");
+    println!("Continuous equations (f_x): {equations}");
     println!("Balance (eq - unknown): {}", result.balance());
     println!("DAE JSON bytes: {}", result.to_json()?.len());
 

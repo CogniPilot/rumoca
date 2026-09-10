@@ -1,3 +1,4 @@
+// SPEC_0021: Exception - cohesive exhaustive flow stays contiguous so ordering remains auditable.
 #![allow(clippy::excessive_nesting, clippy::too_many_lines)]
 //! Quadrotor SIL (Software-in-the-Loop) plant simulator.
 //!
