@@ -99,8 +99,8 @@ Rumoca focuses on five things:
 
 - Full compiler pipeline: parse -> resolve -> typecheck -> instantiate -> flatten -> DAE
 - Multi-file session API for CLI, LSP, WASM, and tests (`rumoca-compile`)
-- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim-core`)
-- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim-core`)
+- DAE simulation with exact AD Jacobians/mass terms and solver fallbacks (`rumoca-sim`)
+- Structural preparation and IC planning for robust initialization (`rumoca-phase-structural`, `rumoca-sim`)
 - Explicit template rendering support for custom code generation
 - MLS contract test framework (`rumoca-contracts`)
 - Spec-driven quality gates (including SPEC_0021 and SPEC_0025)
@@ -131,10 +131,26 @@ The goal is to make model package trees belong to the **models themselves**, not
 cargo build --workspace
 ```
 
-Alternatively, a reproducible [Nix](https://nixos.org) flake lives at the repo
-root (`flake.nix`): `nix develop` drops you into a shell with the exact pinned
-toolchain plus Node/Python, `nix build` produces the `rumoca` CLI, and
-`nix flake check` runs the same build + clippy + rustfmt gate CI uses.
+Nix is only a convenience wrapper. Every Cargo/xtask workflow works with the
+pinned Rust toolchain and required host packages installed normally. As an
+alternative, a reproducible [Nix](https://nixos.org) flake lives at the repo
+root (`flake.nix`). `nix develop` provides the exact pinned Rust and native
+build toolchain without building Rumoca or realizing optional runtimes.
+Task-specific shells add those tools only when needed:
+
+| Command | Additional tools |
+|---|---|
+| `nix develop .#wasm` | Node, Binaryen, and wasm-pack |
+| `nix develop .#python` | Python with JAX/CasADi and maturin |
+| `nix develop .#julia` | Julia (Linux) |
+| `nix develop .#modelica` | Pinned OpenModelica (Linux) |
+| `nix develop .#fmi` | FMI template and validation tools |
+| `nix develop .#docs` | mdBook and documentation WASM tools |
+| `nix develop .#full` | All optional development tools |
+
+Run Rumoca from source with `cargo run -p rumoca -- ...`; `nix build .#rumoca`
+produces the explicit reproducible package, and `nix flake check` runs the
+build, clippy, and rustfmt gates used by CI.
 
 ### Common commands
 
@@ -146,7 +162,7 @@ cargo run -p rumoca -- lint path/to/model.mo
 cargo run -p rumoca -- \
   compile path/to/model.mo \
   --model MyModel \
-  --target solve-ir
+  --emit solve-json
 
 # simulate a model directly
 cargo run -p rumoca -- \
@@ -156,7 +172,7 @@ cargo run -p rumoca -- \
 
 # run a colocated scenario TOML
 cargo run -p rumoca --release -- \
-  sim -c examples/simulation/ball_sim.toml
+  sim -c examples/simulation/rumoca-scenario.ball.toml
 
 # run the LSP server
 cargo run -p rumoca-tool-lsp --bin rumoca-lsp
@@ -188,13 +204,13 @@ Runnable examples are configured by colocated TOML files:
 
 ```bash
 # batch/results-panel simulation
-cargo run -p rumoca --release -- sim -c examples/simulation/ball_sim.toml
+cargo run -p rumoca --release -- sim -c examples/simulation/rumoca-scenario.ball.toml
 
 # interactive quadrotor SIL viewer
-cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/quadrotor_acro.toml
+cargo run -p rumoca --release -- sim -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 
 # validate a scenario without running it
-cargo run -p rumoca -- sim check -c examples/interactive/quadrotor/quadrotor_acro.toml
+cargo run -p rumoca -- sim check -c examples/interactive/quadrotor/rumoca-scenario.acro.toml
 ```
 
 Each scenario declares one task:
@@ -223,8 +239,8 @@ Render a codegen scenario:
 cargo run -p rumoca -- \
   compile examples/models/SympyDecay.mo \
   --model SympyDecay \
-  --target examples/codegen/standalone_web \
-  --output examples/codegen/gen/sympy_decay_standalone_web
+  --target examples/codegen/checked_dae_report \
+  --output examples/codegen/gen/sympy_decay_checked_dae_report
 ```
 
 Codegen scenarios write generated files under `examples/codegen/gen/`, which is
@@ -363,7 +379,7 @@ the local coverage/editor prerequisites are installed (`cargo-llvm-cov`,
 Node 20/npm for package/web tasks, and wasm Rust tooling).
 `cargo xtask verify template-runtimes` wraps the
 equivalent Cargo command for opt-in example-template runtime checks:
-`cargo test -p rumoca --features template-runtime-tests --test backend_template_runtime_regression -- --nocapture`.
+`cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime backend_template_runtime_regression:: -- --nocapture`.
 
 ## Compiler Pipeline
 
@@ -376,14 +392,15 @@ equivalent Cargo command for opt-in example-template runtime checks:
 | Flatten     | `rumoca-phase-flatten`     | Hierarchy flattening, connection expansion, residual equations |
 | ToDAE       | `rumoca-phase-dae`         | Variable classification and DAE construction                   |
 | Structural  | `rumoca-phase-structural`  | BLT, incidence/matching, IC plan generation                    |
-| Simulate    | `rumoca-sim-core`               | IC solving + runtime integration                               |
+| Simulate    | `rumoca-sim`                    | IC solving + runtime integration                               |
 | Codegen     | `rumoca-phase-codegen`     | Template-driven target generation                              |
 
 ## Code Generation Targets
 
 Use explicit template files you own and version with your project.
-The raw template example in `examples/codegen/custom_casadi.jinja` is a
-starting point, not a stable production artifact.
+The raw template example in
+`examples/codegen/custom_checked_variables.jinja` is a starting point, not a
+stable production artifact.
 
 ## VS Code Extension
 

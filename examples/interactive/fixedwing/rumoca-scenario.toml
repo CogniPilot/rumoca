@@ -212,7 +212,7 @@ scene = "fixedwing_scene.js"
 port = 8081
 
 [viewer]
-mode = "results_panel"
+mode = "external_web"
 show_armed = true
 status_title = "Aircraft"
 

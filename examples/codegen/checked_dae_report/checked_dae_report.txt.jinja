@@ -1,0 +1,23 @@
+checked-dae-report {{ dae.schema.version }}
+model {{ model_name }}
+
+variables {{ dae.variables | length }}
+{% for variable in dae.variables -%}
+{{ variable.id }} {{ variable.role }} {{ variable.name }} {{ variable.value_type.scalar }}{% if variable.attributes.unit %} unit={{ variable.attributes.unit }}{% endif %} scalars={{ variable.scalar_count }}
+{% endfor %}
+expressions {{ dae.expressions | length }}
+functions {{ dae.functions | length }}
+domains {{ dae.domains | length }}
+continuous_owners {{ dae.systems.continuous.owners | length }}
+initialization_owners {{ dae.systems.initialization.owners | length }}
+discrete_real_equations {{ dae.systems.discrete_real.residuals | length }}
+b1c_owners {{ dae.systems.discrete_values.owners | length }}
+relations {{ dae.systems.conditions.relations | length }}
+conditions {{ dae.systems.conditions.conditions | length }}
+roots {{ dae.systems.conditions.roots | length }}
+time_events {{ dae.systems.events.time_events | length }}
+event_actions {{ dae.systems.events.actions | length }}
+clocks {{ dae.systems.clocks.clocks | length }}
+previous_values {{ dae.systems.temporal.previous | length }}
+terminals {{ dae.systems.temporal.terminals | length }}
+delays {{ dae.systems.temporal.delays | length }}

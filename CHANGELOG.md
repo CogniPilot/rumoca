@@ -2,6 +2,18 @@
 
 High-level release summary by `0.x` line. Patch releases are rolled up into their parent series.
 
+## 0.10.x
+
+- Export parameter-guarded rigid-body models through FMI 2/3 while preserving assertions and typed array-function execution. Recompute derived parameter bindings after legal parameter changes so invalid mass, gravity, and inertia fail validation.
+
+- Fixed interactive startup by sharing the native/WASM library cache format, opening the viewer during the Run click, and supplying configured inputs before initialization. FixedWing selects the interactive viewer and documents keyboard capture and low-throttle arming (#320).
+- Restored FMI 2 export of explicit algebraic outputs, including PID output equations (#346). FMI 2 and FMI 3 share the checked algebraic assignment kernel and refresh outputs after input, time, and state changes; unsupported implicit systems remain rejected.
+- Added atomic simulation input batches with one integrator restart for a changed batch. Repeating bit-identical inputs preserves integrator history (#348).
+- Run semantic diagnostics when a document opens and include correctly qualified nested models in code lenses (#335, #336). Structural reports now use the same prepared system as simulation (#350).
+- Added the optional `jacobian(f(a, b), a)` source extension and `compile --emit-standard-modelica` for exporting its expansion as ordinary Modelica. Existing declarations named `jacobian` retain precedence.
+- **Changed `--emit solve-json`**: the solver-IR dump no longer carries `rounding`. Every `"rounding": "nearest_ties_to_even"` entry is gone, from both `SolveScalarType::Real` and the arithmetic profile, and nothing else about the dump changed: deleting exactly those entries from a 0.9.x dump reproduces the new one byte for byte. The field named the only mode every backend has ever used, so it discriminated nothing; rounding returns as the SPEC_0047 §4.3 contract, together with the operations that can differ under it. Generated code is unaffected: `--target` output is byte-identical.
+- The `galec` and `galec-production` targets now share one copy of the vendored eFMI schema tree instead of carrying a byte-identical copy each, so `galec-production/` holds no `schemas/` directory of its own. Emitted eFMU containers are unchanged, including all 46 schema files, whether the target is named as a built-in or copied out and passed to `--target <dir>`.
+
 ## 0.9.x
 
 - Added a new SymForce codegen backend with native automatic-differentiation support.
