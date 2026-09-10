@@ -6,7 +6,7 @@
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "rumoca-galec-lsp")]
+#[command(name = "rumoca-lsp-galec")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Rumoca GALEC (.alg) Language Server", long_about = None)]
 struct Cli {
@@ -24,7 +24,7 @@ async fn main() {
     // Parsing gives `--version`/`--help` (for the editor's server probe) and
     // accepts `--stdio`; stdio is the only transport, so the flags are no-ops.
     let _cli = Cli::parse();
-    rumoca_tool_galec_lsp::run_server().await;
+    rumoca_tool_lsp_galec::run_server().await;
 }
 
 #[cfg(test)]
@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn parses_the_stdio_flag() {
-        let cli = Cli::try_parse_from(["rumoca-galec-lsp", "--stdio"]).expect("stdio flag parses");
+        let cli = Cli::try_parse_from(["rumoca-lsp-galec", "--stdio"]).expect("stdio flag parses");
         assert!(cli._stdio);
     }
 
@@ -42,7 +42,7 @@ mod tests {
     fn reports_a_version() {
         // `--version` must exit cleanly (clap handles it) so the editor's
         // `--version` server probe succeeds instead of starting the server.
-        let err = Cli::try_parse_from(["rumoca-galec-lsp", "--version"])
+        let err = Cli::try_parse_from(["rumoca-lsp-galec", "--version"])
             .expect_err("--version exits via clap");
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     }

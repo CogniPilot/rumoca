@@ -23,7 +23,7 @@ imported inside IPython.
 from __future__ import annotations
 
 from . import _native
-from ._export import CasadiModel, JaxModel, SolveExport, SympyModel
+from ._export import SolveExport
 from ._magic import load_ipython_extension, unload_ipython_extension
 
 # ── module-level stateless tools ────────────────────────────────────────────
@@ -55,7 +55,7 @@ GeneratedFile = _native.GeneratedFile
 Target = _native.Target
 SolverInfo = _native.SolverInfo
 
-# ── live symbolic exports (returned by Model.to_casadi/to_jax/to_sympy) ──────
+# ── live checked-Solve exports (returned by Model.to_casadi/to_jax) ──────────
 # (defined in Python; imported above from ._export)
 
 # ── diagnostics & errors ────────────────────────────────────────────────────
@@ -93,9 +93,6 @@ __all__ = [
     "Target",
     "SolverInfo",
     # live symbolic exports
-    "CasadiModel",
-    "JaxModel",
-    "SympyModel",
     "SolveExport",
     # diagnostics & errors
     "Diagnostic",

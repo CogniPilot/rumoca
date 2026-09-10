@@ -3,44 +3,27 @@
 use crate::lint_rules::LintLevel;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 
 /// Configuration file names to search for.
 pub const CONFIG_FILE_NAMES: &[&str] = &[".rumoca_lint.toml", "rumoca_lint.toml"];
 
-/// Error that can occur when loading configuration.
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    /// Failed to read the configuration file.
-    #[error("failed to read config file: {0}")]
-    ReadError(#[from] std::io::Error),
-    /// Failed to parse the configuration file.
-    #[error("failed to parse config file: {0}")]
-    ParseError(#[from] toml::de::Error),
-}
+/// Error that can occur when loading linter configuration.
+///
+/// Local alias only: SPEC_0029 §8 keeps `ToolConfigError` reachable solely from
+/// its owner, so callers that inspect the error import `rumoca_core` directly.
+type ConfigError = rumoca_core::tool_config::ToolConfigError<toml::de::Error>;
 
 /// Find a configuration file by searching the given directory and its parents.
 ///
 /// Returns the path to the first config file found, or None if no config file exists.
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
-    let mut current = start_dir.to_path_buf();
-    loop {
-        for name in CONFIG_FILE_NAMES {
-            let config_path = current.join(name);
-            if config_path.is_file() {
-                return Some(config_path);
-            }
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
+    rumoca_core::tool_config::find_nearest_named_config(start_dir, CONFIG_FILE_NAMES)
 }
 
 /// Load configuration from a specific file path.
 pub fn load_config(path: &Path) -> Result<LintOptions, ConfigError> {
     let content = std::fs::read_to_string(path)?;
-    let options: LintOptions = toml::from_str(&content)?;
+    let options: LintOptions = toml::from_str(&content).map_err(ConfigError::ParseError)?;
     Ok(options)
 }
 

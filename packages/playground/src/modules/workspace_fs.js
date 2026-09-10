@@ -231,19 +231,6 @@ function sanitizeEditorState(value) {
     return Object.keys(sanitized).length > 0 ? sanitized : null;
 }
 
-function serializeWorkspaceMetadata(activeDocumentPath, packageArchives) {
-    return `${JSON.stringify({
-        schemaVersion: WORKSPACE_SCHEMA_VERSION,
-        activeDocument: activeDocumentPath,
-        packageArchives: packageArchives.map((archive) => ({
-            archiveId: archive.archiveId,
-            fileName: archive.fileName,
-            fileCount: archive.fileCount,
-            paths: archive.paths,
-        })),
-        folders: [],
-    }, null, 2)}\n`;
-}
 
 function serializeEditorState(editorState) {
     const sanitized = sanitizeEditorState(editorState);

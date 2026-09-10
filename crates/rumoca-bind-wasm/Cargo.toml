@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 build = "build.rs"
 
 [lib]
@@ -20,13 +21,13 @@ wasm-opt = ['-Oz', '--enable-threads', '--enable-bulk-memory']
 rumoca-compile = { workspace = true }
 rumoca-core = { workspace = true }
 rumoca-eval-ast = { workspace = true }
-rumoca-ir-solve = { workspace = true, optional = true }
+rumoca-phase-galec = { workspace = true }
 rumoca-sim = { workspace = true, default-features = false, optional = true }
 rumoca-tool-lint = { workspace = true }
 # default-features = false drops the `server`+`simulation` features and keeps
 # light builds on completions/diagnostics/helpers only.
 rumoca-tool-lsp = { workspace = true, default-features = false }
-bincode = { workspace = true }
+anyhow = { workspace = true }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 indexmap = { workspace = true }
 wasm-bindgen = "0.2"
@@ -39,6 +40,9 @@ wasm-bindgen-futures = "0.4"
 console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen-rayon = { version = "1.2", optional = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+flate2 = { workspace = true }
+
 [features]
 default = ["console_error_panic_hook"]
 # The full web build is the browser-safe simulation build: explicit rk45 only.
@@ -46,10 +50,9 @@ default = ["console_error_panic_hook"]
 # is not safe in all browsers (guarded by
 # architecture_hardening_test::test_bind_wasm_full_web_uses_browser_safe_solver_graph).
 full-web = ["sim-rk45"]
-sim-wasm = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/wasm-solvers"]
-sim-diffsol = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-diffsol"]
-sim-rk45 = ["dep:rumoca-sim", "dep:rumoca-ir-solve", "rumoca-sim/solver-rk45"]
-session-diffsol = ["sim-diffsol"]
+sim-wasm = ["dep:rumoca-sim", "rumoca-sim/wasm-solvers"]
+sim-diffsol = ["dep:rumoca-sim", "rumoca-sim/solver-diffsol"]
+sim-rk45 = ["dep:rumoca-sim", "rumoca-sim/solver-rk45"]
 wasm-rayon = ["dep:wasm-bindgen-rayon"]
 
 [lints]
