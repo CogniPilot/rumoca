@@ -44,6 +44,9 @@ advertise state serialization or derivatives it does not implement.
 - Tensor decay traces are compared with the analytic solution and FMI 3.
 - Algebraic chains execute through both ME and CS with input overrides and
   analytic checks on every exported output sample.
+- `packaged_fmi_tensor_products_and_transpose_match_independent_numpy_values`
+  checks rectangular matrix/vector products and rank-three transpose against
+  NumPy through both interfaces and FMI versions.
 - `packaged_fmi2_and_fmi3_execute_reported_output_equation_and_pid` covers the
   exact #346 model, a PID output, and algebraic feedback into a derivative.
 - Broken XML and duplicate-name FMUs prove independent validators reject.

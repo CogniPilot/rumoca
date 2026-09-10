@@ -48,6 +48,9 @@ and reject at the ABI.
 - ME and CS traces are checked against the analytic solution, FMI 2, and the
   linked checked kernel.
 - Metadata and ABI negative controls prove unsupported capabilities stay absent.
+- `packaged_fmi_tensor_products_and_transpose_match_independent_numpy_values`
+  checks rectangular matrix/vector products and rank-three transpose against
+  NumPy through both interfaces and FMI versions.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi2_and_fmi3_consume_an_exact_isolable_algebraic_schedule`
   proves both FMI consumers accept the checked exact schedule through their shared C kernel.
 - `cargo test -p rumoca --features template-runtime-tests --test suite_template_runtime -- backend_template_runtime_regression::fmi3_exact_runtime_`
