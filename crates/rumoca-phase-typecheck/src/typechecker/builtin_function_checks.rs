@@ -18,17 +18,76 @@ impl TypeChecker {
         let Some(name) = (comp.parts.len() == 1).then(|| comp.parts[0].ident.text.as_ref()) else {
             return;
         };
+        if comp.root_def_id().is_some() && self.user_function_definition(comp, name).is_some() {
+            return;
+        }
 
         self.check_builtin_arity(comp, name, args);
         self.check_array_builtin_shapes(comp, name, args, type_table);
+        self.check_elementary_builtin_argument_types(comp, name, args, type_table);
         match name {
             "integer" => self.check_integer_builtin(comp, args, type_table),
+            "identity" => self.check_identity_builtin(comp, args, type_table),
             "delay" => self.check_delay_builtin(comp, args, type_table),
             "der" => self.check_der_builtin(comp, args, type_table),
             "String" => self.check_string_builtin(comp, args, type_table),
             "reinit" => self.check_reinit_builtin(comp, args, type_table),
             "homotopy" => self.check_homotopy_builtin(comp, args, type_table),
             _ => {}
+        }
+    }
+
+    fn check_elementary_builtin_argument_types(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        name: &str,
+        args: &[Expression],
+        type_table: &TypeTable,
+    ) {
+        let numeric_args: &[usize] = match name {
+            "abs" | "sign" | "sqrt" | "floor" | "ceil" | "exp" | "log" | "log10" | "sin"
+            | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "tanh" => &[0],
+            "atan2" | "div" | "mod" | "rem" => &[0, 1],
+            "semiLinear" => &[0, 1, 2],
+            "smooth" => &[1],
+            _ => &[],
+        };
+        for &index in numeric_args {
+            let Some(arg) = args.get(index) else {
+                continue;
+            };
+            self.require_builtin_argument_type(
+                comp,
+                arg,
+                type_table,
+                BuiltinArgumentRule {
+                    operator: "elementary function",
+                    argument_name: "argument",
+                    expected_type: "Real or Integer",
+                    predicate: Self::is_numeric_type,
+                },
+            );
+        }
+
+        if name == "edge"
+            && let Some(arg) = args.first()
+        {
+            self.require_builtin_argument_type(
+                comp,
+                arg,
+                type_table,
+                BuiltinArgumentRule {
+                    operator: "edge",
+                    argument_name: "argument",
+                    expected_type: "Boolean",
+                    predicate: |root, type_table| {
+                        matches!(
+                            type_table.get(root),
+                            Some(Type::Builtin(BuiltinType::Boolean))
+                        )
+                    },
+                },
+            );
         }
     }
 
@@ -58,7 +117,7 @@ impl TypeChecker {
         }
     }
 
-    /// MLS §3.7.2.4: homotopy(actual, simplified) takes Real-compatible
+    /// MLS 3.6 §3.7.4.3: homotopy(actual, simplified) takes Real-compatible
     /// scalar expressions (EXPR-034).
     fn check_homotopy_builtin(
         &mut self,
@@ -81,7 +140,7 @@ impl TypeChecker {
         }
     }
 
-    fn is_numeric_type(root: TypeId, type_table: &TypeTable) -> bool {
+    pub(in crate::typechecker) fn is_numeric_type(root: TypeId, type_table: &TypeTable) -> bool {
         matches!(
             type_table.get(root),
             Some(Type::Builtin(BuiltinType::Real | BuiltinType::Integer))
@@ -141,8 +200,9 @@ impl TypeChecker {
         Some(match name {
             "abs" | "sign" | "sqrt" | "exp" | "log" | "log10" | "sin" | "cos" | "tan" | "asin"
             | "acos" | "sinh" | "cosh" | "tanh" | "atan" | "der" | "pre" | "edge" | "change"
-            | "noEvent" => (1, 1),
-            "atan2" | "div" | "mod" | "rem" => (2, 2),
+            | "noEvent" | "pure" | "identity" => (1, 1),
+            "atan2" | "div" | "mod" | "rem" | "cross" => (2, 2),
+            "skew" => (1, 1),
             "semiLinear" => (3, 3),
             "initial" | "terminal" => (0, 0),
             "smooth" => (2, 2),
@@ -230,6 +290,44 @@ impl TypeChecker {
                 },
             },
         );
+    }
+
+    /// MLS §10.3.3: `identity(n)` takes one scalar Integer extent and returns
+    /// an Integer `n x n` matrix.
+    fn check_identity_builtin(
+        &mut self,
+        comp: &rumoca_ir_ast::ComponentReference,
+        args: &[Expression],
+        type_table: &TypeTable,
+    ) {
+        let [extent] = args else {
+            return;
+        };
+        self.require_builtin_argument_type(
+            comp,
+            extent,
+            type_table,
+            BuiltinArgumentRule {
+                operator: "identity",
+                argument_name: "extent",
+                expected_type: "Integer",
+                predicate: |root, type_table| {
+                    matches!(
+                        type_table.get(root),
+                        Some(Type::Builtin(BuiltinType::Integer))
+                    )
+                },
+            },
+        );
+        if self
+            .infer_expression_shape(extent, type_table)
+            .is_some_and(|shape| !shape.is_empty())
+        {
+            self.emit_array_builtin_error(
+                comp,
+                "identity() requires a scalar Integer extent (MLS §10.3.3)".to_string(),
+            );
+        }
     }
 
     fn check_delay_builtin(
@@ -604,8 +702,7 @@ impl TypeChecker {
         ));
     }
 
-    /// MLS §10.4.7: cross/skew are only defined for Real (or Integer)
-    /// 3-vectors.
+    /// MLS §10.4.7: cross/skew are only defined for numeric 3-vectors.
     fn check_three_vector_args(
         &mut self,
         comp: &rumoca_ir_ast::ComponentReference,
@@ -613,7 +710,19 @@ impl TypeChecker {
         args: &[Expression],
         type_table: &TypeTable,
     ) {
+        let operator = if name == "cross" { "cross" } else { "skew" };
         for arg in args {
+            self.require_builtin_argument_type(
+                comp,
+                arg,
+                type_table,
+                BuiltinArgumentRule {
+                    operator,
+                    argument_name: "vector argument",
+                    expected_type: "Real or Integer",
+                    predicate: Self::is_numeric_type,
+                },
+            );
             let Some(shape) = self.infer_expression_shape(arg, type_table) else {
                 continue;
             };

@@ -104,10 +104,6 @@ impl TypeChecker {
         known_paths.contains(candidate) || known_prefixes.contains(candidate)
     }
 
-    pub(crate) fn enclosing_scope_or_root(path: &str) -> &str {
-        crate::path_utils::enclosing_scope_str(path).unwrap_or("")
-    }
-
     fn parent_path(path: &ComponentPath) -> ComponentPath {
         path.parent().unwrap_or_else(ComponentPath::root)
     }

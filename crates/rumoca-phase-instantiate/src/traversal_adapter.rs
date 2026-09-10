@@ -40,6 +40,30 @@ pub(super) fn walk_class_extends_modifications<'a>(
     });
 }
 
+/// Whether a modification expression contains a redeclaration at any depth
+/// (MLS §7.3).
+///
+/// A redeclaration is not always the outermost modification: both
+/// `extends Wrap(h(redeclare C a[2]))` and `Wrap w(h(redeclare C a[2]))` carry
+/// it one level down, where the flag lives in the enclosing
+/// `ClassModification`'s `redeclare_flags` rather than on the modification that
+/// callers see first. Any consumer that must know "was a redeclaration involved
+/// here" has to look through the whole modification subtree.
+pub(super) fn expression_contains_redeclare(expr: &ast::Expression) -> bool {
+    match expr {
+        ast::Expression::ClassModification {
+            modifications,
+            redeclare_flags,
+            ..
+        } => {
+            redeclare_flags.iter().any(|redeclare| *redeclare)
+                || modifications.iter().any(expression_contains_redeclare)
+        }
+        ast::Expression::Modification { value, .. } => expression_contains_redeclare(value),
+        _ => false,
+    }
+}
+
 /// Parse a redeclare-value modification:
 /// `redeclare ... target = value`.
 pub(super) fn redeclare_target_value(

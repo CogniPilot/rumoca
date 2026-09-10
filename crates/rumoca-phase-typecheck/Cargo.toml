@@ -5,18 +5,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 rumoca-core = { workspace = true }
 rumoca-eval-ast = { workspace = true }
 rumoca-ir-ast = { workspace = true }
+rumoca-phase-resolve = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
-miette = { workspace = true }
 
 [dev-dependencies]
+rumoca-phase-instantiate = { workspace = true }
 rumoca-phase-parse = { workspace = true }
-rumoca-phase-resolve = { workspace = true }
 
 [lints]
 workspace = true

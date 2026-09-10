@@ -20,10 +20,20 @@ impl ComponentImports<'_> {
     };
 }
 
+/// True when this class both declares an `outer` component and has at least one
+/// conditional component, i.e. when MLS §5.4 lookup can affect MLS §4.8 evaluation.
+fn needs_outer_condition_values(effective_components: &IndexMap<String, ast::Component>) -> bool {
+    effective_components
+        .values()
+        .any(|comp| comp.condition.is_some())
+        && effective_components.values().any(|comp| comp.outer)
+}
+
 pub(super) fn instantiate_effective_components(
     tree: &ast::ClassTree,
     effective_components: &IndexMap<String, ast::Component>,
     type_overrides: &TypeOverrideMap,
+    owner_class_id: rumoca_core::InstanceId,
     ctx: &mut InstantiateContext,
     overlay: &mut ast::InstanceOverlay,
     imports: ComponentImports<'_>,
@@ -32,21 +42,43 @@ pub(super) fn instantiate_effective_components(
         tree,
         effective_components,
         type_overrides,
+        owner_class_id,
         imports,
     };
 
+    // MLS §5.4: resolve `outer` references once per class so conditions such as
+    // `not world.driveTrainMechanics3D` can read the matching `inner` instance.
+    let resolve_outer = needs_outer_condition_values(effective_components);
+    let outer_bools = if resolve_outer {
+        ctx.outer_reference_bool_values(effective_components)
+    } else {
+        rustc_hash::FxHashMap::default()
+    };
+    let outer_reals = if resolve_outer {
+        ctx.outer_reference_real_values(effective_components)
+    } else {
+        rustc_hash::FxHashMap::default()
+    };
+    let condition_scope = ConditionScope {
+        tree,
+        effective_components,
+        outer_bools: &outer_bools,
+        outer_reals: &outer_reals,
+        imports: imports.attributes,
+    };
+
     for (name, comp) in effective_components {
-        if mark_disabled_component_if_needed(comp, name, ctx, effective_components, tree, overlay) {
+        if mark_disabled_component_if_needed(comp, name, ctx, condition_scope, overlay)? {
             continue;
         }
 
         // MLS §7.3: Apply type override for replaceable type redeclarations.
-        let comp_ref = apply_type_override(tree, comp, type_overrides, Some(ctx.mod_env()))?;
+        let comp_ref = apply_type_override(tree, comp, type_overrides)?;
         let comp = comp_ref.as_ref();
         let type_name = comp.type_name.to_string();
 
         let qualified_shape_expr =
-            qualify_shape_subscripts_imports(&comp.shape_expr, imports.qualification);
+            qualify_shape_subscripts_imports(tree, &comp.shape_expr, imports.qualification);
         let dims = evaluate_array_dimensions(
             &comp.shape,
             &qualified_shape_expr,
@@ -55,14 +87,15 @@ pub(super) fn instantiate_effective_components(
             tree,
             resolve_effective_components_for_eval,
         );
+        let type_info = lookup_type_info(tree, comp, &type_name)?;
         if let Some(dims) = dims.as_ref()
             && dims.contains(&0)
         {
             register_zero_sized_array_component(ctx, overlay, name, dims);
-            continue;
+            if !type_info.is_primitive {
+                continue;
+            }
         }
-
-        let type_info = lookup_type_info(tree, comp, &type_name)?;
         let should_expand = !type_info.is_primitive && dims.as_ref().is_some_and(|d| !d.is_empty());
 
         if should_expand {
@@ -83,9 +116,12 @@ pub(super) fn instantiate_effective_components(
             comp,
             ctx,
             overlay,
-            effective_components,
-            type_overrides,
-            imports,
+            ComponentInstantiationScope {
+                owner_class_id: Some(owner_class_id),
+                effective_components,
+                type_overrides,
+                imports,
+            },
         )?;
         ctx.pop_path();
     }

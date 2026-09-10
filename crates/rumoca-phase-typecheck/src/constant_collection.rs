@@ -145,7 +145,7 @@ impl TypeChecker {
         // MLS §7.3: redeclare values may be multi-part class references
         // (e.g. `Modelica.Media.Incompressible.Examples.Essotherm650`).
         // Parser metadata can attach def_id to the first segment only, so
-        // resolve the full path before falling back to cref.def_id.
+        // resolve the full path before falling back to cref.root_def_id().
         if let Some(def_id) = tree.name_map.get(&target_name).copied() {
             return Some(def_id);
         }
@@ -154,7 +154,7 @@ impl TypeChecker {
         {
             return Some(def_id);
         }
-        if let Some(def_id) = cref.def_id {
+        if let Some(def_id) = cref.root_def_id() {
             return Some(def_id);
         }
 
@@ -512,11 +512,13 @@ impl TypeChecker {
                 format!("{}.{}", prefix, name)
             };
             let type_name = comp.type_name.to_string();
-            let binding =
-                comp.binding
-                    .as_ref()
-                    .or((!matches!(comp.start, Expression::Empty { .. })).then_some(&comp.start));
-            let Some(expr) = binding else { continue };
+            // MLS §4.4.4: a constant's value is its declaration binding. `start`
+            // is an initial guess (MLS §4.9) that the parser seeds with the
+            // declared type's default, so it is not read here — a constant
+            // without a binding contributes no value (SPEC_0008).
+            let Some(expr) = comp.binding.as_ref() else {
+                continue;
+            };
             Self::insert_constant_value(&full_name, &type_name, expr, prefix, ctx);
             // Also extract array dimensions from bindings (e.g., substanceNames = {mediumName})
             Self::insert_constant_dimensions(&full_name, &comp.shape, expr, prefix, ctx);
@@ -684,6 +686,74 @@ impl TypeChecker {
             if new == prev {
                 break;
             }
+        }
+    }
+
+    /// Collect lexically enclosing constants for every instantiated component type.
+    ///
+    /// A declaration inside `Navigation.UKF.Estimator` may use the unqualified
+    /// package constant `TangentLength`.  The top-level model's enclosing scope
+    /// is unrelated, so these values are retained under their exact qualified
+    /// package names and resolved only through the component type's scope chain.
+    pub(crate) fn collect_component_type_enclosing_constants(
+        tree: &ClassTree,
+        overlay: &InstanceOverlay,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        let mut type_names = overlay
+            .components
+            .values()
+            .filter_map(|data| {
+                data.type_def_id
+                    .and_then(|def_id| tree.def_map.get(&def_id))
+                    .cloned()
+                    .or_else(|| {
+                        tree.get_class_by_qualified_name(&data.type_name)
+                            .is_some()
+                            .then_some(data.type_name.clone())
+                    })
+            })
+            .collect::<Vec<_>>();
+        type_names.sort();
+        type_names.dedup();
+
+        const MAX_PASSES: usize = 5;
+        for _ in 0..MAX_PASSES {
+            let previous_count = Self::collected_constant_count(ctx);
+            Self::extract_enclosing_constants(tree, &type_names, ctx);
+            if Self::collected_constant_count(ctx) == previous_count {
+                break;
+            }
+        }
+    }
+
+    /// Total constants collected so far, used to detect the fixpoint.
+    fn collected_constant_count(ctx: &rumoca_eval_ast::eval::TypeCheckEvalContext) -> usize {
+        ctx.integers.len() + ctx.dimensions.len() + ctx.reals.len() + ctx.booleans.len()
+    }
+
+    /// Extract constants from every class enclosing any of `type_names`.
+    fn extract_enclosing_constants(
+        tree: &ClassTree,
+        type_names: &[String],
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for type_name in type_names {
+            Self::extract_constants_enclosing(tree, type_name, ctx);
+        }
+    }
+
+    /// Extract constants from the classes that lexically enclose `type_name`.
+    fn extract_constants_enclosing(
+        tree: &ClassTree,
+        type_name: &str,
+        ctx: &mut rumoca_eval_ast::eval::TypeCheckEvalContext,
+    ) {
+        for enclosing_name in tree.enclosing_class_names_of(type_name) {
+            let Some(enclosing) = tree.get_class_by_qualified_name(enclosing_name) else {
+                continue;
+            };
+            Self::extract_class_constants(enclosing_name, enclosing, ctx);
         }
     }
 
