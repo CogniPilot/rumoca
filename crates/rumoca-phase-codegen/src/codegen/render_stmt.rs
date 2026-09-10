@@ -37,7 +37,6 @@ fn required_attr(
 
 /// Render an equation to `lhs = rhs` form.
 pub(crate) fn render_equation(eq: &Value, cfg: &ExprConfig) -> RenderResult {
-    // Check for explicit form: eq.lhs is set
     if let Ok(lhs_val) = eq.get_attr("lhs")
         && !lhs_val.is_none()
         && !lhs_val.is_undefined()
@@ -263,7 +262,7 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
     let indices = for_stmt.get_attr("indices").ok();
     let equations = for_stmt.get_attr("equations").ok();
 
-    // Extract first index (simplification: handle one index for now)
+    // This scalar-loop renderer consumes the lowered iterator entry.
     let (loop_var, range_parts) = extract_for_loop_index(&indices, cfg)?;
 
     // Generate for loop header based on config
@@ -320,7 +319,6 @@ fn render_for_statement(for_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Ren
         }
     }
 
-    // Render body statements
     let next_indent = format!("{indent}    ");
     if let Some(ref eqs) = equations {
         let body = render_statements(eqs, cfg, &next_indent)?;
@@ -497,12 +495,10 @@ fn render_if_statement(if_stmt: &Value, cfg: &ExprConfig, indent: &str) -> Rende
     let cond_blocks = if_stmt.get_attr("cond_blocks").ok();
     let else_block = if_stmt.get_attr("else_block").ok();
 
-    // Render condition blocks
     if let Some(ref blocks) = cond_blocks {
         result.push_str(&render_if_cond_blocks(blocks, cfg, indent, &next_indent)?);
     }
 
-    // Handle else block
     if let Some(ref else_val) = else_block
         && !else_val.is_none()
     {
@@ -871,7 +867,6 @@ fn render_ast_subscript(sub: &Value, cfg: &ExprConfig) -> RenderResult {
 
 /// Render AST Expression (different from Expression).
 pub(crate) fn render_ast_expression(expr: &Value, cfg: &ExprConfig) -> RenderResult {
-    // Handle None
     if expr.is_none() {
         return Ok("0".to_string());
     }

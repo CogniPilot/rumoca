@@ -38,22 +38,12 @@ pub enum CodegenError {
     )]
     SerializationFailed { message: String },
 
-    /// External functions cannot be emitted by the current simulation codegen.
-    #[error("external function `{function}` is not yet callable from simulation codegen")]
-    #[diagnostic(
-        code(rumoca::codegen::EC004),
-        help(
-            "replace the external function with a supported runtime intrinsic or disable simulation code generation for this model"
-        )
-    )]
-    ExternalFunctionNotCallable {
-        function: String,
-        #[source_code]
-        src: NamedSource<String>,
-        #[label("external function rejected here")]
-        span: SourceSpan,
-    },
-
+    // `EC004` was `ExternalFunctionNotCallable`. External functions are
+    // refused by target capability gating before any rendering starts, so this
+    // phase never reached a call it could not emit and the variant was
+    // constructed only by its own test. The code is left unreused: a retired
+    // diagnostic code that comes back meaning something else is worse than a
+    // gap.
     /// Solve-IR scalar fallback generation failed.
     #[error("Solve-IR scalarization failed: {message}")]
     #[diagnostic(
@@ -75,6 +65,35 @@ pub enum CodegenError {
         message: String,
         span: Option<rumoca_core::Span>,
     },
+
+    /// A template requested scalar equation rows whose authoritative body
+    /// exists only in a compact structured family.
+    #[error("scalar equation view is unavailable for structured family `{origin}` in {partition}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC007),
+        help(
+            "select a target that consumes structured equation families, or lower through DAE/Solve IR"
+        )
+    )]
+    NonMaterializedStructuredFamily {
+        partition: &'static str,
+        origin: String,
+        span: Option<rumoca_core::Span>,
+    },
+
+    /// A target declared structured-family support, but the canonical family
+    /// metadata is incomplete or inconsistent with its DAE partition.
+    #[error("invalid structured-family ownership for `{origin}` in {partition}: {reason}")]
+    #[diagnostic(
+        code(rumoca::codegen::EC008),
+        help("fix the DAE producer; code generation cannot infer missing family semantics")
+    )]
+    InvalidStructuredFamilyOwnership {
+        partition: &'static str,
+        origin: String,
+        reason: String,
+        span: Option<rumoca_core::Span>,
+    },
 }
 
 impl CodegenError {
@@ -85,15 +104,18 @@ impl CodegenError {
         }
     }
 
-    /// Create a stable simulation-codegen diagnostic for unsupported external calls.
-    pub fn external_function_not_callable(function: impl Into<String>) -> Self {
-        let function = function.into();
-        let src = NamedSource::new("external-function", function.clone());
-        let span = SourceSpan::new(0.into(), function.len());
-        Self::ExternalFunctionNotCallable {
-            function,
-            src,
-            span,
+    /// Create a template diagnostic anchored to model source.
+    pub(crate) fn template_render_at(
+        message: impl Into<String>,
+        source_name: impl Into<String>,
+        source: impl Into<String>,
+        span: rumoca_core::Span,
+    ) -> Self {
+        let source_name = source_name.into();
+        Self::TemplateRenderError {
+            message: message.into(),
+            src: NamedSource::new(source_name, source.into()),
+            span: SourceSpan::new(span.start.0.into(), span.end.0.saturating_sub(span.start.0)),
         }
     }
 
@@ -136,13 +158,18 @@ impl From<minijinja::Error> for CodegenError {
             if let Some(source) = err.template_source() {
                 let span = compute_line_span(source, line);
                 return CodegenError::TemplateRenderError {
-                    message: format!("{err:#}"),
+                    // The alternate MiniJinja formatter appends the complete
+                    // serialized render context. For compiler IR this can be
+                    // tens of megabytes and belongs neither in diagnostics nor
+                    // worker protocol rows; source and span are retained
+                    // separately below.
+                    message: err.to_string(),
                     src: NamedSource::new(tmpl_name, source.to_string()),
                     span,
                 };
             }
         }
-        CodegenError::template(format!("{err:#}"))
+        CodegenError::template(err.to_string())
     }
 }
 
@@ -194,7 +221,6 @@ mod tests {
 
     #[test]
     fn test_template_render_error_from_minijinja() {
-        // Create a minijinja error with template context
         let mut env = minijinja::Environment::new();
         env.add_template("test.jinja", "{{ undefined_var.foo }}")
             .unwrap();
@@ -206,6 +232,8 @@ mod tests {
         match &codegen_err {
             CodegenError::TemplateRenderError { message, .. } => {
                 assert!(!message.is_empty());
+                assert!(message.len() < 1024);
+                assert!(!message.contains("Referenced variables:"));
             }
             CodegenError::TemplateError { .. } => {
                 // Also acceptable if debug feature doesn't expose source
@@ -213,11 +241,6 @@ mod tests {
             CodegenError::SerializationFailed { .. } => {
                 unreachable!(
                     "From<minijinja::Error> only constructs template errors, never serialization errors"
-                );
-            }
-            CodegenError::ExternalFunctionNotCallable { .. } => {
-                unreachable!(
-                    "From<minijinja::Error> only constructs template errors, never external-function errors"
                 );
             }
             CodegenError::SolveScalarizationFailed { .. } => {
@@ -230,6 +253,16 @@ mod tests {
                     "From<minijinja::Error> only constructs template errors, never DAE preparation errors"
                 );
             }
+            CodegenError::NonMaterializedStructuredFamily { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family errors"
+                );
+            }
+            CodegenError::InvalidStructuredFamilyOwnership { .. } => {
+                unreachable!(
+                    "From<minijinja::Error> only constructs template errors, never structured-family ownership errors"
+                );
+            }
         }
 
         use miette::Diagnostic;
@@ -238,23 +271,5 @@ mod tests {
             code == Some("rumoca::codegen::EC001".to_string())
                 || code == Some("rumoca::codegen::EC002".to_string())
         );
-    }
-
-    #[test]
-    fn test_external_function_not_callable_error_code_and_span() {
-        let err = CodegenError::external_function_not_callable("ExternalUser");
-
-        use miette::Diagnostic;
-        assert_eq!(
-            err.code().map(|c| c.to_string()),
-            Some("rumoca::codegen::EC004".to_string())
-        );
-        match err {
-            CodegenError::ExternalFunctionNotCallable { span, .. } => {
-                assert_eq!(span.offset(), 0);
-                assert!(!span.is_empty());
-            }
-            other => panic!("expected external-function diagnostic, got {other:?}"),
-        }
     }
 }
